@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6,12 +7,18 @@ from mindflow.config import settings
 from mindflow.models.database import init_db
 from mindflow.api.routes import router as api_router
 from mindflow.api.websocket import router as ws_router
+from mindflow.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("MindFlow starting up...")
     init_db()
+    logger.info("Database initialized")
     yield
+    logger.info("MindFlow shutting down")
 
 
 app = FastAPI(
