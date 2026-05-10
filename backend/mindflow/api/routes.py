@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from mindflow.models.database import get_db
 from mindflow.models.schemas import User, ActivityLog, DailyReport
+from mindflow.config import settings
 from mindflow.collector.tracker import get_active_window_info
 from mindflow.collector.scheduler import collector
 from mindflow.analyzer.features import calculate_focus_score, get_top_apps
@@ -48,9 +49,9 @@ async def get_status(db: Session = Depends(get_db)):
         "user_exists": user is not None,
         "total_activities": activity_count,
         "settings": {
-            "collect_interval_seconds": 5,
-            "idle_threshold_seconds": 60,
-            "focus_threshold_minutes": 30,
+            "collect_interval_seconds": settings.collect_interval_seconds,
+            "idle_threshold_seconds": settings.idle_threshold_seconds,
+            "focus_threshold_minutes": settings.focus_threshold_minutes,
         },
     })
 
