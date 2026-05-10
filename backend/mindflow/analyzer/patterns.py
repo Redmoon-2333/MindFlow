@@ -1,5 +1,4 @@
-from datetime import date, datetime, timedelta
-from typing import Optional
+from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 

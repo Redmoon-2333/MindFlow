@@ -61,7 +61,8 @@ class BehaviorClustering:
         X_scaled = self.scaler.fit_transform(features)
 
         if self.method == "dbscan":
-            eps = max(0.3, np.std(X_scaled) * 0.5)
+            n_features = X_scaled.shape[1]
+            eps = max(0.5, np.sqrt(n_features) * 0.5)
             min_samples = max(3, int(len(X_scaled) * 0.02))
             self.model = DBSCAN(eps=eps, min_samples=min_samples, metric="euclidean")
         else:
@@ -207,7 +208,11 @@ class FocusClassifier:
         self._is_fitted: bool = False
 
     def fit(
-        self, X: np.ndarray, y: np.ndarray, feature_names: list[str]
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: list[str],
+        sample_weight: np.ndarray | None = None,
     ) -> "FocusClassifier":
         """Train the classifier.
 
@@ -215,13 +220,14 @@ class FocusClassifier:
             X: feature matrix of shape (n_samples, n_features)
             y: binary labels (1=focus, 0=distraction)
             feature_names: names for each feature column
+            sample_weight: per-sample confidence weights, same shape as y.
 
         Returns:
             self
         """
         self.feature_names_ = feature_names
         X_scaled = self.scaler.fit_transform(X)
-        self.model.fit(X_scaled, y)
+        self.model.fit(X_scaled, y, sample_weight=sample_weight)
         self._is_fitted = True
         return self
 
@@ -441,12 +447,20 @@ class ModelManager:
         self.classifier = FocusClassifier()
         self.hmm = BehaviorHMM()
 
-    def train_all(self, features_df: pd.DataFrame, labels: np.ndarray) -> dict:
+    def train_all(
+        self,
+        features_df: pd.DataFrame,
+        labels: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+        min_confidence: float = 0.0,
+    ) -> dict:
         """Train all models and return summary dict with metrics.
 
         Args:
             features_df: DataFrame with feature columns
             labels: binary labels (1=focus, 0=distraction)
+            sample_weight: per-sample confidence weights
+            min_confidence: filter samples below this confidence before training
 
         Returns:
             dict with keys: clustering, classifier, hmm_transition, hmm_steady
@@ -474,11 +488,31 @@ class ModelManager:
             ],
         }
 
-        if len(np.unique(labels)) >= 2 and len(X) >= 10:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, labels, test_size=0.2, random_state=42, stratify=labels
+        high_conf_mask = (
+            np.ones(len(X), dtype=bool)
+            if sample_weight is None
+            else sample_weight >= min_confidence
+        )
+        X_high = X[high_conf_mask]
+        y_high = labels[high_conf_mask]
+        sw_high = (
+            None if sample_weight is None
+            else sample_weight[high_conf_mask]
+        )
+        low_conf_count = int((~high_conf_mask).sum())
+
+        if len(np.unique(y_high)) >= 2 and len(X_high) >= 10:
+            X_train, X_test, y_train, y_test, sw_train, sw_test = train_test_split(
+                X_high, y_high,
+                sw_high if sw_high is not None else np.ones(len(X_high)),
+                test_size=0.2,
+                random_state=42,
+                stratify=y_high,
             )
-            self.classifier.fit(X_train, y_train, feature_cols)
+            self.classifier.fit(
+                X_train, y_train, feature_cols,
+                sample_weight=sw_train if sample_weight is not None else None,
+            )
             eval_metrics = self.classifier.evaluate(X_test, y_test)
             summary["classifier"] = {
                 "accuracy": eval_metrics.get("accuracy", 0.0),
@@ -488,12 +522,15 @@ class ModelManager:
                 "cv_mean": eval_metrics.get("cv_mean", 0.0),
                 "cv_std": eval_metrics.get("cv_std", 0.0),
                 "feature_importance": self.classifier.get_feature_importance(),
+                "high_confidence_samples": len(X_high),
+                "filtered_low_confidence": low_conf_count,
             }
         else:
             summary["classifier"] = {
                 "error": "Not enough data for supervised training",
-                "n_samples": len(X),
-                "n_classes": len(np.unique(labels)),
+                "n_samples": len(X_high),
+                "n_classes": len(np.unique(y_high)),
+                "filtered_low_confidence": low_conf_count,
             }
 
         sequences = self._build_state_sequences(features_df, labels)
@@ -516,43 +553,67 @@ class ModelManager:
     def _build_state_sequences(
         self, features_df: pd.DataFrame, labels: np.ndarray
     ) -> list[np.ndarray]:
-        """Build state ID sequences from feature data and labels.
+        """Build state ID sequences from feature data.
 
-        Maps sessions to states: 0=deep_focus, 1=shallow_work, 2=browsing,
-        3=procrastination, 4=idle using productivity_ratio and other features.
+        Uses clustering results to assign each time window a state,
+        then groups consecutive windows belonging to the same day into
+        sequences that capture real temporal transitions.
+
+        Falls back to rule-based state assignment if clustering failed.
         """
+        if "window_start" not in features_df.columns:
+            return []
+
+        df = features_df.copy()
+        states = self._assign_states(df, labels)
+
+        if states is None or len(states) == 0:
+            return []
+
+        df["_state"] = states
+        df["_date"] = pd.to_datetime(df["window_start"]).dt.date
+
         sequences: list[np.ndarray] = []
+        for _, day_df in df.groupby("_date", sort=True):
+            day_states = day_df.sort_values("window_start")["_state"].values
+            if len(day_states) >= 2:
+                sequences.append(day_states.astype(int))
+
+        return sequences
+
+    def _assign_states(
+        self, features_df: pd.DataFrame, labels: np.ndarray
+    ) -> np.ndarray | None:
+        """Assign each window a state ID using clustering or rule-based fallback."""
+        if self.clustering.labels_ is not None and len(self.clustering.labels_) == len(features_df):
+            return self.clustering.labels_
+
         feature_cols = [
             c for c in features_df.columns
             if c not in ("window_start", "date")
         ]
         if "productivity_ratio" not in features_df.columns:
-            return sequences
+            return None
 
-        for _, row in features_df.iterrows():
+        result = np.zeros(len(features_df), dtype=int)
+        for i, (_, row) in enumerate(features_df.iterrows()):
             pr = float(row.get("productivity_ratio", 0.5))
             er = float(row.get("entertainment_ratio", 0.0))
             sr = float(row.get("social_ratio", 0.0))
             ir = float(row.get("idle_ratio", 0.0))
 
             if ir > 0.7:
-                state = 4
+                result[i] = 4
             elif pr > 0.7:
-                state = 0
+                result[i] = 0
             elif pr > 0.4:
-                state = 1
+                result[i] = 1
             elif er > 0.4 or sr > 0.4:
-                state = 3
+                result[i] = 3
             else:
-                state = 2
+                result[i] = 2
 
-            pf = float(row.get("productivity_ratio", 0.5))
-            sf = float(row.get("switch_frequency", 0.0))
-            ss = max(0, int(round(pf * 10 / max(1, sf + 1))))
-            for _ in range(max(ss, 1)):
-                sequences.append(np.array([state]))
-
-        return sequences
+        return result
 
     def save_all(self) -> None:
         """Save all trained models to disk."""

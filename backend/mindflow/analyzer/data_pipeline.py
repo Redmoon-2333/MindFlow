@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
+from mindflow.analyzer.title_analyzer import TitleAnalyzer
+
 
 class BehaviorFeatureExtractor:
     """Extract behavioral features from raw activity logs."""
@@ -11,6 +13,7 @@ class BehaviorFeatureExtractor:
     def __init__(self, window_minutes: int = 30):
         self.window_minutes = window_minutes
         self.app_classifier = AppClassifier()
+        self.title_analyzer = TitleAnalyzer()
         self._feature_names: list[str] = []
 
     def extract_session_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -112,6 +115,17 @@ class BehaviorFeatureExtractor:
             )
             max_app_duration = float(app_durations.max()) if len(app_durations) > 0 else 0.0
 
+            # Title-based features (objective, no app classification)
+            title_features = [
+                self.title_analyzer.analyze(str(t))
+                for t in window_df.get("window_title", pd.Series([""] * len(window_df)))
+            ]
+            code_ratio = sum(1 for tf in title_features if tf["is_code_editor"]) / max(1, len(title_features))
+            doc_ratio = sum(1 for tf in title_features if tf["is_document"]) / max(1, len(title_features))
+            url_ratio = sum(1 for tf in title_features if tf["is_browser"]) / max(1, len(title_features))
+            meeting_ratio = sum(1 for tf in title_features if tf["is_meeting"]) / max(1, len(title_features))
+            entertainment_title_ratio = sum(1 for tf in title_features if tf["is_likely_entertainment"]) / max(1, len(title_features))
+
             records.append(
                 {
                     "window_start": window_start,
@@ -124,6 +138,11 @@ class BehaviorFeatureExtractor:
                     "idle_ratio": round(idle_ratio, 4),
                     "hour_of_day": int(window_start.hour),
                     "day_of_week": int(window_start.weekday()),
+                    "title_code_ratio": round(code_ratio, 4),
+                    "title_doc_ratio": round(doc_ratio, 4),
+                    "title_url_ratio": round(url_ratio, 4),
+                    "title_meeting_ratio": round(meeting_ratio, 4),
+                    "title_entertainment_ratio": round(entertainment_title_ratio, 4),
                 }
             )
 
@@ -139,6 +158,11 @@ class BehaviorFeatureExtractor:
                 "idle_ratio",
                 "hour_of_day",
                 "day_of_week",
+                "title_code_ratio",
+                "title_doc_ratio",
+                "title_url_ratio",
+                "title_meeting_ratio",
+                "title_entertainment_ratio",
             ]
         return result
 
@@ -178,6 +202,11 @@ class BehaviorFeatureExtractor:
             "idle_ratio",
             "hour_of_day",
             "day_of_week",
+            "title_code_ratio",
+            "title_doc_ratio",
+            "title_url_ratio",
+            "title_meeting_ratio",
+            "title_entertainment_ratio",
         ]
         return daily
 
@@ -194,6 +223,11 @@ class BehaviorFeatureExtractor:
                 "idle_ratio",
                 "hour_of_day",
                 "day_of_week",
+                "title_code_ratio",
+                "title_doc_ratio",
+                "title_url_ratio",
+                "title_meeting_ratio",
+                "title_entertainment_ratio",
             ]
         return self._feature_names
 

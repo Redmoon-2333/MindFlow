@@ -1,7 +1,11 @@
 import sys
 import ctypes
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
+
+
+def _utcnow_iso():
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
 def get_active_window_info() -> Optional[dict]:
@@ -9,7 +13,7 @@ def get_active_window_info() -> Optional[dict]:
         return {
             "process_name": "unknown",
             "window_title": "Non-Windows platform",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": _utcnow_iso(),
         }
     try:
         import win32gui
@@ -34,7 +38,7 @@ def get_active_window_info() -> Optional[dict]:
             "process_name": process_name,
             "window_title": window_title or "",
             "window_class": window_class or "",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": _utcnow_iso(),
         }
     except Exception:
         return None

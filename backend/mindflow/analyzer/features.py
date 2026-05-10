@@ -1,7 +1,6 @@
-from datetime import date, datetime, timedelta
-from typing import Optional
+from datetime import date, datetime
 
-from sqlalchemy import func, text
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from mindflow.models.schemas import ActivityLog
