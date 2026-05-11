@@ -5,7 +5,7 @@ a compact JSON payload (~500 tokens) optimized for LLM CBT attribution.
 """
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 
 from mindflow.analyzer.baseline import BaselineModel
 from mindflow.analyzer.deviation import DeviationDetector
@@ -65,9 +65,7 @@ class LLMContextPacker:
         More compact than daily report — focused on the current anomaly.
         """
         payload = {
-            "trigger_time": datetime.now(timezone.utc)
-            .replace(tzinfo=None)
-            .isoformat(),
+            "trigger_time": datetime.now().isoformat(),
             "current_anomaly": current_anomaly,
             "recent_pattern": [
                 {

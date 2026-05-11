@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -16,6 +16,7 @@ class CollectorScheduler:
     def __init__(self):
         self._scheduler: Optional[BackgroundScheduler] = None
         self._running = False
+        self._last_tick: Optional[datetime] = None
 
     @property
     def is_running(self) -> bool:
@@ -34,6 +35,13 @@ class CollectorScheduler:
     def _collect_tick(self):
         db = SessionLocal()
         try:
+            now = datetime.now()
+            if self._last_tick is not None:
+                actual_duration = (now - self._last_tick).total_seconds()
+            else:
+                actual_duration = float(settings.collect_interval_seconds)
+            self._last_tick = now
+
             user_id = self._ensure_default_user(db)
             idle = is_user_idle(settings.idle_threshold_seconds)
             info = get_active_window_info()
@@ -41,21 +49,21 @@ class CollectorScheduler:
             if info is None:
                 activity = ActivityLog(
                     user_id=user_id,
-                    timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
+                    timestamp=now,
                     process_name="unknown",
                     window_title="",
                     window_class="",
-                    duration_seconds=settings.collect_interval_seconds,
+                    duration_seconds=actual_duration,
                     is_idle=1 if idle else 0,
                 )
             else:
                 activity = ActivityLog(
                     user_id=user_id,
-                    timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
+                    timestamp=now,
                     process_name=info.get("process_name", "unknown"),
                     window_title=info.get("window_title", ""),
                     window_class=info.get("window_class", ""),
-                    duration_seconds=settings.collect_interval_seconds,
+                    duration_seconds=actual_duration,
                     is_idle=1 if idle else 0,
                 )
             db.add(activity)
@@ -63,6 +71,7 @@ class CollectorScheduler:
         except Exception:
             db.rollback()
             logger.warning("Collection tick failed", exc_info=True)
+            self._last_tick = None
         finally:
             db.close()
 

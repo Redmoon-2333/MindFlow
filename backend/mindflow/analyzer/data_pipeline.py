@@ -239,6 +239,8 @@ class AppClassifier:
         "code": [
             "code", "vscode", "pycharm", "intellij", "eclipse", "sublime",
             "nvim", "vim", "android studio", "visual studio", "cursor",
+            "claude", "terminal", "powershell", "cmd", "warp", "alacritty",
+            "xcode", "rstudio", "spyder", "datagrip",
         ],
         "document": [
             "word", "excel", "powerpoint", "wps", "notion", "obsidian",

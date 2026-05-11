@@ -152,8 +152,8 @@ class BehaviorClustering:
     def predict(self, features: np.ndarray) -> np.ndarray:
         """Predict cluster labels for new data.
 
-        For KMeans: uses model.predict.
-        For DBSCAN: assigns to nearest cluster centroid (excluding noise).
+        KMeans: uses model.predict directly.
+        DBSCAN or no model: assigns each point to nearest non-noise cluster centroid.
         """
         if self.model is None:
             return np.full(len(features), -1, dtype=int)
@@ -163,14 +163,25 @@ class BehaviorClustering:
         if hasattr(self.model, "predict"):
             return self.model.predict(X_scaled)
 
-        if hasattr(self.model, "cluster_centers_"):
-            centroids = self.model.cluster_centers_
-            distances = np.zeros((len(X_scaled), len(centroids)))
-            for j, c in enumerate(centroids):
-                distances[:, j] = np.linalg.norm(X_scaled - c, axis=1)
-            return np.argmin(distances, axis=1)
+        centroids = self._get_cluster_centroids()
+        if not centroids:
+            return np.full(len(features), -1, dtype=int)
 
-        return np.full(len(features), -1, dtype=int)
+        centroid_ids, centroid_vecs = zip(*centroids)
+        centroid_array = np.stack(centroid_vecs, axis=0)
+        distances = np.zeros((len(X_scaled), len(centroid_array)))
+        for j, c in enumerate(centroid_array):
+            distances[:, j] = np.linalg.norm(X_scaled - c, axis=1)
+        nearest = np.argmin(distances, axis=1)
+        return np.array([centroid_ids[i] for i in nearest], dtype=int)
+
+    def _get_cluster_centroids(self) -> list[tuple[int, np.ndarray]]:
+        """Return list of (cluster_id, centroid) for non-noise clusters."""
+        centroids: list[tuple[int, np.ndarray]] = []
+        for c in self._cluster_info:
+            if c.cluster_id >= 0 and c.centroid_features is not None:
+                centroids.append((c.cluster_id, c.centroid_features))
+        return centroids
 
     def save(self, path: Path) -> None:
         """Save model to disk."""

@@ -7,6 +7,7 @@ from mindflow.analyzer.features import (
     calculate_focus_score,
     get_top_apps,
     calculate_switch_frequency,
+    query_day_activities,
 )
 from mindflow.config import settings
 
@@ -15,17 +16,7 @@ def identify_focus_sessions(db: Session, user_id: int, target_date: date) -> lis
     start_dt = datetime.combine(target_date, datetime.min.time())
     end_dt = datetime.combine(target_date, datetime.max.time())
 
-    activities = (
-        db.query(ActivityLog)
-        .filter(
-            ActivityLog.user_id == user_id,
-            ActivityLog.timestamp >= start_dt,
-            ActivityLog.timestamp <= end_dt,
-            ActivityLog.is_idle == 0,
-        )
-        .order_by(ActivityLog.timestamp.asc())
-        .all()
-    )
+    activities = query_day_activities(db, user_id, target_date)
 
     if len(activities) < 2:
         return []
@@ -52,7 +43,7 @@ def identify_focus_sessions(db: Session, user_id: int, target_date: date) -> lis
         while j < len(activities) and activities[j].process_name == current_app:
             j += 1
 
-        duration = (j - i) * settings.collect_interval_seconds
+        duration = sum(a.duration_seconds for a in activities[i:j])
 
         if duration >= focus_threshold:
             window_activities = activities[i:j]

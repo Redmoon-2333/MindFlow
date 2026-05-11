@@ -5,7 +5,7 @@ across time-of-day and day-of-week buckets. Updates incrementally.
 """
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -34,7 +34,7 @@ class BaselineModel:
 
     def __init__(self, user_id: int):
         self.user_id = user_id
-        self.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.created_at = datetime.now()
         self.updated_at = self.created_at
         self.total_days: int = 0
 
@@ -103,7 +103,7 @@ class BaselineModel:
                 pd.to_datetime(df["window_start"]).dt.date.dropna().unique()
             )
         self.total_days = max(self.total_days, len(unique_dates))
-        self.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.updated_at = datetime.now()
 
         return processed
 

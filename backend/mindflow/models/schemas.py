@@ -1,4 +1,4 @@
-from datetime import datetime, date, timezone
+from datetime import datetime, date
 
 from sqlalchemy import (
     Column, Integer, String, Float, Text, DateTime, Date,
@@ -9,8 +9,8 @@ from sqlalchemy.orm import relationship
 from mindflow.models.database import Base
 
 
-def _utcnow():
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+def _now():
+    return datetime.now()
 
 
 class User(Base):
@@ -18,7 +18,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(255), nullable=False)
-    created_at = Column(DateTime, default=_utcnow)
+    created_at = Column(DateTime, default=_now)
     preferences = Column(JSON, nullable=True)
 
     activities = relationship("ActivityLog", back_populates="user", lazy="dynamic")
@@ -34,7 +34,7 @@ class ActivityLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    timestamp = Column(DateTime, nullable=False, default=_utcnow)
+    timestamp = Column(DateTime, nullable=False, default=_now)
     process_name = Column(String(255), nullable=False)
     window_title = Column(Text, nullable=True)
     window_class = Column(String(255), nullable=True)
@@ -72,6 +72,6 @@ class DailyReport(Base):
     focus_score = Column(Float, default=0.0)
     top_apps = Column(JSON, nullable=True)
     switch_frequency = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=_utcnow)
+    created_at = Column(DateTime, default=_now)
 
     user = relationship("User", back_populates="daily_reports")
