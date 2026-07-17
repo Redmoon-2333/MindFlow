@@ -206,6 +206,8 @@ InterventionLog ──triggered─→ ActivityEvent (反向关联)
 | GET | /api/v1/focus | 今日专注报告 | Must |
 | GET | /api/v1/focus/trend | N 日趋势 | Must |
 | GET | /api/v1/analytics/patterns | 分心模式 | Should |
+| GET | /api/v1/analytics/baseline | 基线模型只读查询（S1 自然延伸，04 评审补充） | Should |
+| GET | /api/v1/analytics/profile | 行为画像（S6） | Should |
 | GET | /api/v1/reports/daily | 日报 | Should |
 | GET | /api/v1/reports/weekly | 周报 | Should |
 | POST | /api/v1/analytics/attribution | LLM 归因(限流) | Could |
