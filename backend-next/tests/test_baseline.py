@@ -252,3 +252,21 @@ class TestBaselineModelPersistence:
         data.pop("top_apps", None)
         restored = BaselineModel.from_dict(data)
         assert restored.user_id == 1
+
+
+class TestBucketSufficiency:
+    """Per-bucket data sufficiency (review M3 contract)."""
+
+    def test_empty_bucket_is_insufficient(self) -> None:
+        model = BaselineModel(user_id=1)
+        assert model.has_bucket_sufficient_data(hour=9, dow=0) is False
+
+    def test_populated_bucket_reaches_sufficiency(self) -> None:
+        model = BaselineModel(user_id=1)
+        rows = [
+            {"hour_of_day": 9, "day_of_week": 0, "switch_frequency": 8.0 + i} for i in range(3)
+        ]
+        model.update(rows)
+        assert model.has_bucket_sufficient_data(hour=9, dow=0, min_samples=2) is True
+        # Other buckets remain insufficient even though overall data exists
+        assert model.has_bucket_sufficient_data(hour=14, dow=3, min_samples=2) is False

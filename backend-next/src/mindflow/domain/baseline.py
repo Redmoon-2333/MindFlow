@@ -149,13 +149,29 @@ class BaselineModel:
         return [{"app": a, "count": c} for a, c in sorted_apps]
 
     def has_sufficient_data(self, min_samples: int = 30) -> bool:
-        """Check if baseline has enough data to be reliable."""
+        """Check if baseline has enough data overall to be reliable.
+
+        Note: counts samples across ALL (hour, dow) buckets. A True here does
+        not guarantee any specific bucket is well-populated — use
+        has_bucket_sufficient_data() for per-bucket checks.
+        """
         total = 0
         for hour_bucket in self._stats.values():
             for dow_bucket in hour_bucket.values():
                 for s in dow_bucket.values():
                     total += int(s.get("n", 0))
         return total >= min_samples
+
+    def has_bucket_sufficient_data(self, hour: int, dow: int, min_samples: int = 2) -> bool:
+        """Check if a specific (hour, dow) bucket has enough samples.
+
+        Complements has_sufficient_data(): deviation scoring for a given time
+        window needs the matching bucket populated, not just the model overall.
+        """
+        bucket = self._stats.get(hour, {}).get(dow, {})
+        if not bucket:
+            return False
+        return all(int(s.get("n", 0)) >= min_samples for s in bucket.values())
 
     def to_dict(self) -> dict[str, Any]:
         return {

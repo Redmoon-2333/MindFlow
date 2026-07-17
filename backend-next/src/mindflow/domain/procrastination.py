@@ -91,14 +91,17 @@ class ProcrastinationAssessment:
     Fields:
         types: 1-3 types sorted by confidence descending (highest first).
         confidence: Per-type confidence in [0, 1].
-        recommended_technique: Primary CBT technique from the highest-confidence type.
+        recommended_technique: Primary CBT technique from the highest-confidence
+            type, or None when no significant procrastination pattern was
+            detected (top confidence < NO_SIGNIFICANT_THRESHOLD) — callers must
+            not act on a technique in that case.
         rationale: Chinese explanation — never contains "诊断/治疗/患者" (NF-S7).
         source: Always "rule_engine" for this module.
     """
 
     types: tuple[ProcrastinationType, ...]
     confidence: Mapping[ProcrastinationType, float]
-    recommended_technique: CBTTechnique
+    recommended_technique: CBTTechnique | None
     rationale: str
     source: Literal["rule_engine"]
 
@@ -179,19 +182,22 @@ class RuleEngine:
         top_type = top_types[0]
         top_confidence = confidences[top_type]
 
-        # When max confidence is below threshold, it's "no significant pattern"
+        # When max confidence is below threshold, it's "no significant pattern":
+        # no technique is recommended so callers can't act on a phantom finding.
         if top_confidence < self.NO_SIGNIFICANT_THRESHOLD:
             rationale = (
                 "未检测到显著的拖延模式，指标总体正常。"
                 "当前行为数据未表现出与已知拖延类型强相关的模式。"
             )
+            technique: CBTTechnique | None = None
         else:
             rationale = self._build_rationale(top_types, confidences)
+            technique = TYPE_TO_TECHNIQUES[top_type][0]
 
         return ProcrastinationAssessment(
             types=top_types,
             confidence={t: confidences[t] for t in top_types},
-            recommended_technique=TYPE_TO_TECHNIQUES[top_type][0],
+            recommended_technique=technique,
             rationale=rationale,
             source="rule_engine",
         )
@@ -327,7 +333,9 @@ class RuleEngine:
         """Linearly map a continuous value to [0.5, 0.95].
 
         Args:
-            value: The observed metric value (must be >= threshold).
+            value: The observed metric value. Values below *threshold* are
+                clamped up to it (guard for direct callers; rule checks
+                already enforce the trigger condition).
             threshold: Value at which confidence = 0.5 (minimum trigger level).
             saturation: Value at which confidence plateaus at 0.95.
 

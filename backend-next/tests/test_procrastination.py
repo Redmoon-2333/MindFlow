@@ -539,6 +539,38 @@ class TestNoSignificant:
         assert max_conf == _NO_SIGNIFICANT_CONF
         assert "未检测到显著的拖延模式" in result.rationale
 
+    def test_no_significant_has_no_recommended_technique(self) -> None:
+        """No-significant path must not recommend a technique (review M1 contract)."""
+        summary = BehaviorSummary(
+            intended_task="正常学习",
+            duration_min=120,
+            actual_focus_min=90,
+            context_switches_per_hour=6,
+            longest_focus_block_s=900,
+            social_media_ratio=0.2,
+            start_delay_min=2,
+            keyword_flags=frozenset(),
+            baseline_deviation=None,
+        )
+        result = _DEFAULT_ENGINE.assess(summary)
+        assert result.recommended_technique is None
+
+    def test_significant_result_has_technique(self) -> None:
+        """Any above-threshold assessment carries a concrete CBT technique."""
+        summary = BehaviorSummary(
+            intended_task="论文",
+            duration_min=120,
+            actual_focus_min=20,
+            context_switches_per_hour=24,
+            longest_focus_block_s=120,
+            social_media_ratio=0.3,
+            start_delay_min=2,
+            keyword_flags=frozenset(),
+            baseline_deviation=None,
+        )
+        result = _DEFAULT_ENGINE.assess(summary)
+        assert result.recommended_technique is not None
+
     def test_source_is_rule_engine(self) -> None:
         """Every assessment from RuleEngine has source='rule_engine'."""
         summary = BehaviorSummary(
