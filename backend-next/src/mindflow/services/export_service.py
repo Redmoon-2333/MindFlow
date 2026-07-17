@@ -257,6 +257,8 @@ class ExportService:
         """
         normalised = fmt.strip().lower()
         if normalised in ("csv", "json"):
-            return normalised  # type: ignore[return-value]
+            from typing import cast
+            result: Literal["csv", "json"] = cast("Literal['csv', 'json']", normalised)
+            return result
         msg = f"Unsupported export format: {fmt!r}. Must be 'csv' or 'json'."
         raise ValueError(msg)

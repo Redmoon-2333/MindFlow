@@ -59,10 +59,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         path = request.scope["path"]
 
-        # Exempt health, docs, and OpenAPI schema endpoints
-        if path in _EXEMPT_PATHS or path.startswith("/docs") or path.startswith(
-            "/openapi.json"
-        ) or path.startswith("/redoc"):
+        # Exempt health, docs, and OpenAPI schema endpoints — single
+        # prefix-based check instead of mixed exact-match + prefix (audit M3).
+        _EXEMPT_PREFIXES: tuple[str, ...] = (
+            "/api/v1/health",
+            "/docs",
+            "/openapi.json",
+            "/redoc",
+        )
+        if any(path.startswith(prefix) for prefix in _EXEMPT_PREFIXES):
             return await call_next(request)
 
         expected_token: str = getattr(request.app.state, "system_token", "")

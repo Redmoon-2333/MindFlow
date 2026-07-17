@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -163,7 +163,10 @@ def run_training(
         _enrich_with_process(_rows_with_process, raw_rows)
 
     baseline = BaselineModel(user_id=user_id)
-    report.baseline_updated = baseline.update(_rows_with_process)  # type: ignore[arg-type]
+    # feature rows are dict[str, Any]; update() accepts Mapping — cast the
+    # list invariance away instead of silencing the checker (slop-scan fix).
+    baseline_rows = cast("list[Mapping[str, Any]]", _rows_with_process)
+    report.baseline_updated = baseline.update(baseline_rows)
     has_data = baseline.has_sufficient_data(min_baseline_samples)
     print(f"       Baseline updated with {report.baseline_updated} windows")
     print(f"       Sufficient data: {has_data}")

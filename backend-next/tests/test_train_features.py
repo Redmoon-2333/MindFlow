@@ -153,7 +153,10 @@ class TestBehaviorFeatureExtractor:
         """Each output dict should have all 14 feature columns plus window_start."""
         now = datetime.now(UTC)
         events = []
-        for i in range(6):
+        # 8 events / 5-min spacing = 35 min — enough to cross one 30-min window
+        # boundary and produce ≥1 feature row (audit fix: the old 6-event / 30-min
+        # case fit exactly inside one bucket and produced zero features).
+        for i in range(8):
             events.append(
                 _event(ts=now + timedelta(minutes=5 * i), duration=300.0)
             )

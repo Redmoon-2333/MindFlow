@@ -25,7 +25,6 @@ from mindflow.infrastructure.repositories.intervention import (
 )
 from mindflow.services.intervention_throttle import (
     InterventionThrottle,
-    ThrottleReason,
 )
 
 

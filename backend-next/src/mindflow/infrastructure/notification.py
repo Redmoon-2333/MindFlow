@@ -128,13 +128,17 @@ class WindowsNotifier:
                 app_id = "MindFlow.MindFlow"
                 toast_manager = self._ToastNotificationManager.create_toast_notifier(app_id)
 
+                # Escape user-influenced text — LLM-generated intervention
+                # copy must not inject XML elements (security audit M1).
+                from xml.sax.saxutils import escape
+
                 toast_xml = (
                     f'<?xml version="1.0" encoding="utf-8"?>'
                     f"<toast>"
                     f'  <visual>'
                     f'    <binding template="ToastGeneric">'
-                    f"      <text>{title}</text>"
-                    f"      <text>{body}</text>"
+                    f"      <text>{escape(title)}</text>"
+                    f"      <text>{escape(body)}</text>"
                     f"    </binding>"
                     f"  </visual>"
                     f"</toast>"

@@ -378,6 +378,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers["X-MindFlow-Version"] = __version__
         response.headers["X-Content-Type-Options"] = "nosniff"
+        # Hardens the HTML docs pages against XSS (security audit L1);
+        # inline allowances are required by Swagger UI.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: "
+            "https://fastapi.tiangolo.com"
+        )
         return response
 
     logger.info("MindFlow app created (v{})", __version__)

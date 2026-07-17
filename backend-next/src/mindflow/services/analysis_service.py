@@ -23,6 +23,7 @@ from loguru import logger
 
 from mindflow.domain.events import ActivityEvent
 from mindflow.domain.features import (
+    _non_idle_events,
     app_usage_ranking,
 )
 from mindflow.infrastructure.repositories.activity import (
@@ -368,8 +369,13 @@ class AnalysisService:
 
 
 def _non_idle(events: list[ActivityEvent]) -> list[ActivityEvent]:
-    """Filter out idle events, preserving order."""
-    return [e for e in events if not e.data.is_idle]
+    """Filter out idle events, preserving order.
+
+    Thin alias over the domain helper — kept as a module-local name for
+    call-site brevity; single implementation lives in domain.features
+    (slop-scan dedup).
+    """
+    return _non_idle_events(events)
 
 
 def _empty_heatmap() -> list[list[int]]:
