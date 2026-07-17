@@ -24,6 +24,10 @@ dependencies = [
     "uuid6>=2024.0.0",
     "httpx>=0.27",
     "apscheduler>=3.10",
+    "numpy>=1.26",
+    "scikit-learn>=1.4",
+    "joblib>=1.3",
+    "pandas>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +38,10 @@ dev = [
     "hypothesis>=6.100",
     "ruff>=0.5",
     "mypy>=1.10",
+    "pandas-stubs>=2.0",
+]
+ml = [
+    "hmmlearn>=0.3",
 ]
 
 [tool.setuptools.packages.find]
@@ -45,6 +53,11 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/mindflow/train/models.py" = ["N803", "N806"]
+"src/mindflow/train/pipeline.py" = ["N806"]
+"src/mindflow/train/features.py" = ["N806"]
 
 [tool.mypy]
 strict = true
@@ -68,6 +81,16 @@ module = [
     "winrt.*",
     "plyer",
     "apscheduler.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "sklearn.*",
+    "joblib",
+    "hmmlearn",
+    "hmmlearn.*",
+    "pandas",
 ]
 ignore_missing_imports = true
 
