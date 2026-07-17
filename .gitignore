@@ -39,3 +39,6 @@ build/
 # IDE
 .idea/
 .vscode/
+
+# OMC 运行时状态
+.omc/
