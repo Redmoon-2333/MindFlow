@@ -57,7 +57,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        path = request.url.path
+        path = request.scope["path"]
 
         # Exempt health, docs, and OpenAPI schema endpoints
         if path in _EXEMPT_PATHS or path.startswith("/docs") or path.startswith(

@@ -89,6 +89,6 @@ class HostValidationMiddleware(BaseHTTPMiddleware):
         if host_header:
             hostname, _port = _parse_host(host_header)
             if hostname.lower() not in _TRUSTED_HOST_LOWERCASE:
-                return _forbidden_host_response(str(request.url.path))
+                return _forbidden_host_response(str(request.scope["path"]))
 
         return await call_next(request)

@@ -329,3 +329,41 @@ class TestIntendedTaskRedaction:
         assert _find_intended_task([_tag(r"C:\Users\me\thesis.docx")]) is None
         assert _find_intended_task([_tag("/home/me/secret/notes.md")]) is None
         assert _find_intended_task([_tag("写毕业论文第三章")]) == "写毕业论文第三章"
+
+
+class TestAnalysisRepositoryRealDB:
+    """E2E-discovered gap: upsert never ran against real SQLite (mocked in
+    the degradation matrix). Exercise the real dialect path."""
+
+    async def test_upsert_twice_single_row_updated(self, tmp_path) -> None:
+        from datetime import UTC, datetime
+
+        from mindflow.infrastructure.database import create_engine, create_session_factory
+        from mindflow.infrastructure.migrations import run_migrations
+        from mindflow.infrastructure.repositories.analysis import (
+            SQLAlchemyProcrastinationAnalysisRepository,
+        )
+
+        url = f"sqlite+aiosqlite:///{tmp_path}/analysis_upsert.db"
+        assert await run_migrations(url)
+        engine = create_engine(url)
+        try:
+            repo = SQLAlchemyProcrastinationAnalysisRepository(create_session_factory(engine))
+            today = datetime.now(UTC).date()
+            for text in ("第一次分析", "第二次分析"):
+                await repo.upsert(
+                    user_id=1,
+                    target_date=today,
+                    procrastination_types=["impulsivity"],
+                    type_confidence={"impulsivity": 0.7},
+                    cognitive_distortions=[],
+                    cbt_technique="stimulus_control",
+                    response_text=text,
+                    llm_model=None,
+                    llm_cost_usd=0.0,
+                )
+            row = await repo.get_by_date(1, today)
+            assert row is not None
+            assert row["response_text"] == "第二次分析"
+        finally:
+            await engine.dispose()

@@ -139,3 +139,26 @@ class TestHostValidationMiddleware:
         """Hostname matching should be case-insensitive."""
         resp = client.get("/api/v1/test", headers={"host": "LOCALHOST"})
         assert resp.status_code == 200
+
+
+class TestMalformedHostRequestLevel:
+    """E2E-discovered regression: request.url parsing crashes on bracketed
+    IPv6 Host with a suffix. Middleware must return 403, never 500."""
+
+    def test_bracket_suffix_host_yields_403_not_500(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from mindflow.api.middleware.host import HostValidationMiddleware
+
+        app = FastAPI()
+        app.add_middleware(HostValidationMiddleware)
+
+        @app.get("/api/v1/ping")
+        async def ping():  # pragma: no cover - trivial
+            return {"ok": True}
+
+        client = TestClient(app, raise_server_exceptions=True)
+        resp = client.get("/api/v1/ping", headers={"host": "[::1].evil.com"})
+        assert resp.status_code == 403
+        assert resp.headers["content-type"].startswith("application/problem+json")

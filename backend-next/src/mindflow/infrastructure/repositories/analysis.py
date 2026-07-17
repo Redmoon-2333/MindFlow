@@ -136,9 +136,11 @@ class SQLAlchemyProcrastinationAnalysisRepository:
             llm_cost_usd=llm_cost_usd,
         )
 
-        # On conflict, update the existing row
+        # On conflict, update the existing row. SQLite dialect requires
+        # index_elements (constraint= is PostgreSQL-only — E2E-discovered bug:
+        # the L3 persistence path crashed with TypeError at runtime).
         stmt = stmt.on_conflict_do_update(
-            constraint="procrastination_analyses_user_id_date_key",  # type: ignore[call-arg]
+            index_elements=["user_id", "date"],
             set_={
                 "procrastination_types_json": stmt.excluded.procrastination_types_json,
                 "type_confidence_json": stmt.excluded.type_confidence_json,

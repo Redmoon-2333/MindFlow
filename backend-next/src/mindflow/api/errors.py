@@ -178,7 +178,7 @@ def _problem_handler(request: Request, exc: ProblemDetail) -> JSONResponse:
     """Convert ProblemDetail exception to RFC 9457 JSON response."""
     return JSONResponse(
         status_code=exc.status,
-        content=exc.to_dict(instance=str(request.url.path)),
+        content=exc.to_dict(instance=str(request.scope["path"])),
         headers={"Content-Type": "application/problem+json"},
     )
 
@@ -193,7 +193,7 @@ def _validation_handler(request: Request, exc: RequestValidationError) -> JSONRe
             "title": "Validation Error",
             "status": status.HTTP_422_UNPROCESSABLE_ENTITY,
             "detail": "请求参数验证失败",
-            "instance": str(request.url.path),
+            "instance": str(request.scope["path"]),
             "validation_errors": [
                 {
                     "loc": err.get("loc", []),
@@ -213,11 +213,11 @@ def _generic_handler(request: Request, exc: Exception) -> JSONResponse:
     Never leaks stack traces to the client — logs at ERROR level and returns
     a generic 500 response (per NF-S4: output sanitisation).
     """
-    logger.error("Unhandled exception processing {}: {}", request.url.path, exc)
+    logger.error("Unhandled exception processing {}: {}", request.scope["path"], exc)
     err = _internal_error()
     return JSONResponse(
         status_code=err.status,
-        content=err.to_dict(instance=str(request.url.path)),
+        content=err.to_dict(instance=str(request.scope["path"])),
         headers={"Content-Type": "application/problem+json"},
     )
 

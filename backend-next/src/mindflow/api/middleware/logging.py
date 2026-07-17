@@ -50,7 +50,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
             logger.info(
                 "{} {} {} ({:.0f}ms)",
                 request.method,
-                request.url.path,
+                request.scope["path"],
                 response.status_code,
                 elapsed_ms,
             )

@@ -170,7 +170,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        path = request.url.path
+        path = request.scope["path"]
 
         # Check per-endpoint limit first (more specific)
         endpoint_bucket = self._endpoint_limits.get(path)
