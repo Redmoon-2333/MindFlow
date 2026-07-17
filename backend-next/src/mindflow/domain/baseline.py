@@ -155,12 +155,17 @@ class BaselineModel:
         not guarantee any specific bucket is well-populated — use
         has_bucket_sufficient_data() for per-bucket checks.
         """
+        total = self.total_samples()
+        return total >= min_samples
+
+    def total_samples(self) -> int:
+        """Return the total number of training samples across all buckets."""
         total = 0
         for hour_bucket in self._stats.values():
             for dow_bucket in hour_bucket.values():
                 for s in dow_bucket.values():
                     total += int(s.get("n", 0))
-        return total >= min_samples
+        return total
 
     def has_bucket_sufficient_data(self, hour: int, dow: int, min_samples: int = 2) -> bool:
         """Check if a specific (hour, dow) bucket has enough samples.

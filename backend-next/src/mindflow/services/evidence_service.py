@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import sqlalchemy as sa
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.baseline import BaselineModel
@@ -70,7 +71,7 @@ _FOCUS_SCORE_MODERATE: float = 30.0
 
 # Severity thresholds for switch_rate_per_hour (higher = worse).
 #   <= 15:          info     — Within normal range.
-#   (15, 30]:       mild     — Elevated, approaching MAX_ACCEPTABLE.
+#   [15, 30]:       mild     — Elevated, approaching MAX_ACCEPTABLE.
 #   (30, 45]:       moderate — Above MAX_ACCEPTABLE (30), high switching.
 #   > 45:           severe   — Extreme task-switching (> 1.5x max acceptable).
 # Rationale: MAX_ACCEPTABLE_SWITCHES_PER_HOUR = 30 is the codebase-wide
@@ -425,8 +426,8 @@ class EvidenceBundleBuilder:
                     confidence=1.0,
                     source="welford_baseline",
                     human_readable=(
-                        "基线尚在建立中（还需"
-                        f"{max(0, MIN_BASELINE_DAYS - baseline.total_days)}天数据）"
+                        f"基线尚在建立中（总计{baseline.total_samples()}个样本，"
+                        f"建议至少{MIN_BASELINE_DAYS * 6}个，可启动训练补齐）"
                     ),
                 )
             ]
@@ -505,8 +506,13 @@ class EvidenceBundleBuilder:
 
         Returns None if no baseline has been built yet for this user.
         """
-        stmt = sa.select(baseline_models.c.model_json).where(
-            baseline_models.c.user_id == user_id
+        # Latest baseline wins — the table has no user_id uniqueness, so a
+        # retrained user may own several rows (review H1: unordered fetchone
+        # could load a stale model).
+        stmt = (
+            sa.select(baseline_models.c.model_json)
+            .where(baseline_models.c.user_id == user_id)
+            .order_by(sa.desc(baseline_models.c.updated_at))
         )
         async with self._session_factory() as session:
             result = await session.execute(stmt)
@@ -544,6 +550,13 @@ class EvidenceBundleBuilder:
             try:
                 triggered_at = datetime.fromisoformat(triggered_at_str)
             except (ValueError, TypeError):
+                # Review M2: never drop history silently — experts receiving an
+                # empty history would wrongly conclude no interventions happened.
+                logger.warning(
+                    "Dropped intervention log {}: bad triggered_at {!r}",
+                    log.get("id"),
+                    triggered_at_str,
+                )
                 continue
             records.append(
                 InterventionRecord(
@@ -649,12 +662,21 @@ def _build_pseudo_row(events: list[ActivityEvent], window_start: datetime) -> di
     max_app_duration = max(app_durations.values()) if app_durations else 0.0
     switch_frequency = switch_rate_per_hour(non_idle)
 
+    # idle_ratio — cheap to compute and raises weighted coverage from 45% to
+    # 55% of DeviationDetector's feature weights (review M1 partial fix).
+    # Full classifier-backed productivity/entertainment/social/title ratios
+    # depend on AppClassifier + pandas and belong in G005.
+    total_dur = sum(ev.duration_s for ev in events)
+    idle_dur = sum(ev.duration_s for ev in events if ev.data.is_idle)
+    idle_ratio = idle_dur / total_dur if total_dur > 0 else 0.0
+
     return {
         "hour_of_day": window_start.hour,
         "day_of_week": window_start.weekday(),
         "switch_frequency": switch_frequency,
         "unique_app_count": float(unique_app_count),
         "max_app_duration": max_app_duration,
+        "idle_ratio": idle_ratio,
         "window_start": window_start.isoformat(),
     }
 
