@@ -28,11 +28,22 @@ class LogSettings(BaseSettings):
 
 
 class LLMSettings(BaseSettings):
-    """LLM API configuration placeholder (Wave 6)."""
+    """LLM API configuration for attribution pipeline (Wave 6).
+
+    Three-tier degradation chain (Architecture §3.3):
+      L1: DeepSeek / OpenAI-compatible API (api_key + base_url + model)
+      L2: Ollama local (ollama_enabled + ollama_base_url + ollama_model)
+      L3: RuleEngine (always available, zero config)
+    """
 
     api_key: str | None = Field(default=None, description="LLM API key (e.g. DeepSeek)")
     base_url: str | None = Field(default=None, description="LLM API base URL")
     model: str | None = Field(default=None, description="LLM model identifier")
+    ollama_enabled: bool = Field(default=False, description="Enable Ollama local fallback (L2)")
+    ollama_base_url: str = Field(
+        default="http://localhost:11434", description="Ollama API base URL"
+    )
+    ollama_model: str = Field(default="qwen3:8b", description="Ollama model name")
 
 
 _cached_data_dir: Path | None = None

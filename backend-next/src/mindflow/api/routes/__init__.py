@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from mindflow.api.routes.activities import router as activities_router
 from mindflow.api.routes.analytics import router as analytics_router
+from mindflow.api.routes.attribution import router as attribution_router
 from mindflow.api.routes.collector import router as collector_router
 from mindflow.api.routes.focus import router as focus_router
 from mindflow.api.routes.health import router as health_router
@@ -29,3 +30,4 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(focus_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(analytics_router, prefix="/api/v1")
+    app.include_router(attribution_router, prefix="/api/v1")

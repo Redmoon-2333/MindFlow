@@ -2,9 +2,10 @@
 
 Wires together:
   - Lifespan: migration → integrity check → token loading → CollectorService
-    → Wave 5 services (analysis, report, maintenance) → scheduler
+    → Wave 5 services (analysis, report, maintenance) → Wave 6 LLM service
+    → scheduler
   - Middleware: logging → host → auth → rate-limit (per §3.5 order)
-  - Routes: health, collector, activities, preferences, Wave 5 endpoints
+  - Routes: health, collector, activities, preferences, Wave 5+6 endpoints
   - WebSocket: /api/v1/ws
   - Exception handlers: RFC 9457 ProblemDetail (8 error codes)
   - Security headers: X-MindFlow-Version, X-Content-Type-Options
@@ -46,6 +47,9 @@ from mindflow.infrastructure.notification import create_notifier
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
+from mindflow.infrastructure.repositories.analysis import (
+    SQLAlchemyProcrastinationAnalysisRepository,
+)
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
@@ -59,6 +63,7 @@ from mindflow.infrastructure.security.token_manager import load_or_create_token
 from mindflow.logging_config import setup_logging
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.collector_service import CollectorService
+from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.report_service import ReportService
 from mindflow.services.scheduler import build_scheduler
@@ -127,6 +132,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     report_repository = SQLAlchemyDailyReportRepository(
         session_factory=session_factory,
     )
+    analysis_repository = SQLAlchemyProcrastinationAnalysisRepository(
+        session_factory=session_factory,
+    )
 
     # ── 5. Collector ──────────────────────────────────────────────────
     collector: EventCollector | None = None
@@ -161,6 +169,26 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         notifier=notifier,
     )
 
+    # ── 7b. Wave 6: LLM service ───────────────────────────────────────
+    llm_service: LLMService | None = None
+    try:
+        from mindflow.infrastructure.llm.client import DeepSeekClient  # noqa: PLC0415
+
+        deepseek = DeepSeekClient(settings.llm) if settings.llm.api_key else None
+        llm_service = LLMService(
+            activity_repo=activity_repository,
+            analysis_repo=analysis_repository,
+            deepseek_client=deepseek,
+            ollama_base_url=settings.llm.ollama_base_url if settings.llm.ollama_enabled else None,
+        )
+        logger.info(
+            "LLMService created (L1: {}, L2: {})",
+            "yes" if deepseek else "no",
+            settings.llm.ollama_enabled,
+        )
+    except Exception as exc:
+        logger.warning("Failed to create LLMService: {}", exc)
+
     # ── 8. Scheduler (Wave 5 cron jobs) ───────────────────────────────
     scheduler = build_scheduler(
         analysis_service=analysis_service,
@@ -182,10 +210,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.notifier = notifier
     app.state.focus_repository = focus_repository
     app.state.report_repository = report_repository
+    app.state.analysis_repository = analysis_repository
     app.state.analysis_service = analysis_service
     app.state.report_service = report_service
     app.state.maintenance_service = maintenance_service
     app.state.scheduler = scheduler
+    app.state.llm_service = llm_service
 
     logger.info("MindFlow v{} startup complete", __version__)
 

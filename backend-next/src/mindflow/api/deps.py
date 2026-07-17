@@ -36,6 +36,7 @@ from mindflow.infrastructure.repositories.report import (
 )
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.collector_service import CollectorService
+from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.report_service import ReportService
 
@@ -103,3 +104,8 @@ def get_maintenance_service(request: Request) -> MaintenanceService:
 def get_notifier(request: Request) -> NotificationService:
     """Return the NotificationService from app.state."""
     return cast(NotificationService, request.app.state.notifier)
+
+
+def get_llm_service(request: Request) -> LLMService:
+    """Return the LLMService from app.state."""
+    return cast(LLMService, request.app.state.llm_service)
