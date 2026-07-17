@@ -99,6 +99,11 @@ class TokenBucket:
 
 # Default per-endpoint rate limit configurations
 _DEFAULT_ENDPOINT_LIMITS: dict[str, TokenBucket] = {
+    "/api/v1/chat": TokenBucket(
+        capacity=5,
+        refill_rate=1.0 / 60.0,
+        daily_hard_limit=60,
+    ),
     "/api/v1/analytics/attribution": TokenBucket(
         capacity=5,
         refill_rate=1.0 / 30.0,

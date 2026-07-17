@@ -43,6 +43,7 @@ from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
+from mindflow.services.chat_service import ChatService
 
 
 def get_collector_service(request: Request) -> CollectorService | None:
@@ -136,3 +137,8 @@ def get_intervention_service(request: Request) -> object:
 def get_effectiveness_service(request: Request) -> object:
     """Return the EffectivenessService from app.state."""
     return getattr(request.app.state, "effectiveness_service", None)
+
+
+def get_chat_service(request: Request) -> ChatService:
+    """Return the ChatService from app.state."""
+    return cast(ChatService, request.app.state.chat_service)

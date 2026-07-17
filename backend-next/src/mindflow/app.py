@@ -66,15 +66,18 @@ from mindflow.infrastructure.repositories.preferences import (
 from mindflow.infrastructure.repositories.report import (
     SQLAlchemyDailyReportRepository,
 )
+from mindflow.infrastructure.security.crisis_detector import CrisisDetector
 from mindflow.infrastructure.security.token_manager import load_or_create_token
 from mindflow.logging_config import setup_logging
 from mindflow.services.analysis_service import AnalysisService
+from mindflow.services.chat_service import ChatService
 from mindflow.services.collector_service import CollectorService
 from mindflow.services.effectiveness_service import EffectivenessService
 from mindflow.services.intervention_service import InterventionService
 from mindflow.services.intervention_throttle import InterventionThrottle
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
+from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
 from mindflow.services.scheduler import build_scheduler
@@ -246,6 +249,32 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.warning("LLMService not available, skipping PanelService creation")
 
+    # ── 7e. G004: Chat service ────────────────────────────────────────────
+    chat_service: ChatService | None = None
+    try:
+        crisis_detector = CrisisDetector()
+        chat_gateway = DeepSeekGateway(
+            api_key=settings.llm.api_key,
+            base_url=settings.llm.base_url,
+        )
+        evidence_builder = EvidenceBundleBuilder(
+            activity_repo=activity_repository,
+            intervention_repo=intervention_repository,
+            session_factory=session_factory,
+        )
+        chat_service = ChatService(
+            session_factory=session_factory,
+            crisis_detector=crisis_detector,
+            llm_gateway=chat_gateway,
+            analysis_repo=analysis_repository,
+            panel_service=panel_service,
+            intervention_repo=intervention_repository,
+            evidence_builder=evidence_builder,
+        )
+        logger.info("ChatService created for G004 conversational assistant")
+    except Exception as exc:
+        logger.warning("Failed to create ChatService: {}", exc)
+
     # ── 8. Scheduler (Wave 5 cron jobs) ───────────────────────────────
     scheduler = build_scheduler(
         analysis_service=analysis_service,
@@ -283,6 +312,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.intervention_repository = intervention_repository
     app.state.intervention_service = intervention_service
     app.state.effectiveness_service = effectiveness_service
+    app.state.chat_service = chat_service
 
     logger.info("MindFlow v{} startup complete", __version__)
 
