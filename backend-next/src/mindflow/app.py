@@ -2,8 +2,9 @@
 
 Wires together:
   - Lifespan: migration → integrity check → token loading → CollectorService
+    → Wave 5 services (analysis, report, maintenance) → scheduler
   - Middleware: logging → host → auth → rate-limit (per §3.5 order)
-  - Routes: health, collector, activities, preferences
+  - Routes: health, collector, activities, preferences, Wave 5 endpoints
   - WebSocket: /api/v1/ws
   - Exception handlers: RFC 9457 ProblemDetail (8 error codes)
   - Security headers: X-MindFlow-Version, X-Content-Type-Options
@@ -31,6 +32,7 @@ from mindflow.api.middleware import (
     StructuredLoggingMiddleware,
 )
 from mindflow.api.routes import register_routes
+from mindflow.api.websocket import close_all_connections
 from mindflow.api.websocket import router as websocket_router
 from mindflow.config import Settings
 from mindflow.infrastructure.collectors.base import EventCollector, create_collector
@@ -44,12 +46,22 @@ from mindflow.infrastructure.notification import create_notifier
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
+from mindflow.infrastructure.repositories.focus import (
+    SQLAlchemyFocusSessionRepository,
+)
 from mindflow.infrastructure.repositories.preferences import (
     PreferencesRepository,
 )
+from mindflow.infrastructure.repositories.report import (
+    SQLAlchemyDailyReportRepository,
+)
 from mindflow.infrastructure.security.token_manager import load_or_create_token
 from mindflow.logging_config import setup_logging
+from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.collector_service import CollectorService
+from mindflow.services.maintenance_service import MaintenanceService
+from mindflow.services.report_service import ReportService
+from mindflow.services.scheduler import build_scheduler
 
 # ── Lifespan ────────────────────────────────────────────────────────────────
 
@@ -61,13 +73,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
       1. Run Alembic migrations (graceful on failure)
       2. Integrity check (attempt VACUUM recovery on failure)
       3. Load/create auth token
-      4. Create CollectorService (not started yet — caller must start)
-      5. Inject engine, session factory, repos into app.state
+      4. Create repositories (activity, preferences, focus, report)
+      5. Create CollectorService (not started yet — caller must start)
+      6. Create Wave 5 services (analysis, report, maintenance)
+      7. Start APScheduler (cron jobs: identify, report, cleanup, backup)
+      8. Inject everything into app.state
 
     Shutdown sequence (reverse order):
-      1. Stop collector
-      2. Flush remaining events
-      3. Dispose engine
+      1. Stop scheduler (Wave 5 cron jobs)
+      2. Close WebSocket connections
+      3. Stop collector
+      4. Dispose engine
     """
     # ── Extract settings ─────────────────────────────────────────────
     settings: Settings = app.state.settings
@@ -105,6 +121,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     preferences_repository = PreferencesRepository(
         session_factory=session_factory,
     )
+    focus_repository = SQLAlchemyFocusSessionRepository(
+        session_factory=session_factory,
+    )
+    report_repository = SQLAlchemyDailyReportRepository(
+        session_factory=session_factory,
+    )
 
     # ── 5. Collector ──────────────────────────────────────────────────
     collector: EventCollector | None = None
@@ -123,6 +145,32 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── 6. Notifier ───────────────────────────────────────────────────
     notifier = create_notifier()
 
+    # ── 7. Wave 5 Services ────────────────────────────────────────────
+    analysis_service = AnalysisService(
+        activity_repo=activity_repository,
+        focus_repo=focus_repository,
+    )
+    report_service = ReportService(
+        activity_repo=activity_repository,
+        focus_repo=focus_repository,
+        report_repo=report_repository,
+    )
+    maintenance_service = MaintenanceService(
+        engine=engine,
+        session_factory=session_factory,
+        notifier=notifier,
+    )
+
+    # ── 8. Scheduler (Wave 5 cron jobs) ───────────────────────────────
+    scheduler = build_scheduler(
+        analysis_service=analysis_service,
+        report_service=report_service,
+        maintenance_service=maintenance_service,
+        event_retention_days=settings.event_retention_days,
+    )
+    scheduler.start()
+    logger.info("Wave 5 scheduler started (cron: identify, report, cleanup, backup)")
+
     # ── Inject into app.state ─────────────────────────────────────────
     app.state.engine = engine
     app.state.session_factory = session_factory
@@ -132,6 +180,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.system_token = system_token
     app.state.migration_applied = migration_applied
     app.state.notifier = notifier
+    app.state.focus_repository = focus_repository
+    app.state.report_repository = report_repository
+    app.state.analysis_service = analysis_service
+    app.state.report_service = report_service
+    app.state.maintenance_service = maintenance_service
+    app.state.scheduler = scheduler
 
     logger.info("MindFlow v{} startup complete", __version__)
 
@@ -140,7 +194,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Graceful shutdown ─────────────────────────────────────────────
     logger.info("Shutting down MindFlow...")
 
-    # 1. Stop collector
+    # 1. Stop scheduler (Wave 5 cron jobs)
+    try:
+        scheduler.shutdown(wait=False)
+        logger.debug("Scheduler shut down")
+    except Exception as exc:
+        logger.warning("Scheduler shutdown error: {}", exc)
+
+    # 2. Close WebSocket connections
+    try:
+        n_closed = await close_all_connections()
+        logger.debug("Closed {} active WebSocket connection(s)", n_closed)
+    except Exception as exc:
+        logger.warning("WebSocket close error: {}", exc)
+
+    # 3. Stop collector
     if collector_service is not None:
         try:
             await asyncio.wait_for(collector_service.stop(), timeout=3.0)
@@ -149,7 +217,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception as exc:
             logger.warning("Collector stop error: {}", exc)
 
-    # 2. Dispose engine
+    # 4. Dispose engine
     try:
         await asyncio.wait_for(engine.dispose(), timeout=3.0)
     except TimeoutError:

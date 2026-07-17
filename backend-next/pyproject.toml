@@ -23,6 +23,7 @@ dependencies = [
     "platformdirs>=4.0",
     "uuid6>=2024.0.0",
     "httpx>=0.27",
+    "apscheduler>=3.10",
 ]
 
 [project.optional-dependencies]
@@ -66,6 +67,7 @@ module = [
     "Quartz",
     "winrt.*",
     "plyer",
+    "apscheduler.*",
 ]
 ignore_missing_imports = true
 

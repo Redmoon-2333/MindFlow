@@ -8,9 +8,12 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from mindflow.api.routes.activities import router as activities_router
+from mindflow.api.routes.analytics import router as analytics_router
 from mindflow.api.routes.collector import router as collector_router
+from mindflow.api.routes.focus import router as focus_router
 from mindflow.api.routes.health import router as health_router
 from mindflow.api.routes.preferences import router as preferences_router
+from mindflow.api.routes.reports import router as reports_router
 
 
 def register_routes(app: FastAPI) -> None:
@@ -23,3 +26,6 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(collector_router, prefix="/api/v1")
     app.include_router(activities_router, prefix="/api/v1")
     app.include_router(preferences_router, prefix="/api/v1")
+    app.include_router(focus_router, prefix="/api/v1")
+    app.include_router(reports_router, prefix="/api/v1")
+    app.include_router(analytics_router, prefix="/api/v1")

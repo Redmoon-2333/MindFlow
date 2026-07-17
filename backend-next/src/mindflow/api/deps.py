@@ -19,13 +19,25 @@ from typing import cast
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from mindflow.infrastructure.notification import (  # noqa: F401
+    NotificationService,
+)
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
+)
+from mindflow.infrastructure.repositories.focus import (
+    SQLAlchemyFocusSessionRepository,
 )
 from mindflow.infrastructure.repositories.preferences import (
     PreferencesRepository,
 )
+from mindflow.infrastructure.repositories.report import (
+    SQLAlchemyDailyReportRepository,
+)
+from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.collector_service import CollectorService
+from mindflow.services.maintenance_service import MaintenanceService
+from mindflow.services.report_service import ReportService
 
 
 def get_collector_service(request: Request) -> CollectorService | None:
@@ -61,3 +73,33 @@ def get_preferences_repo(request: Request) -> PreferencesRepository:
 def get_system_token(request: Request) -> str:
     """Return the system token from app.state."""
     return cast(str, request.app.state.system_token)
+
+
+def get_focus_repo(request: Request) -> SQLAlchemyFocusSessionRepository:
+    """Return the FocusSessionRepository from app.state."""
+    return cast(SQLAlchemyFocusSessionRepository, request.app.state.focus_repository)
+
+
+def get_report_repo(request: Request) -> SQLAlchemyDailyReportRepository:
+    """Return the DailyReportRepository from app.state."""
+    return cast(SQLAlchemyDailyReportRepository, request.app.state.report_repository)
+
+
+def get_analysis_service(request: Request) -> AnalysisService:
+    """Return the AnalysisService from app.state."""
+    return cast(AnalysisService, request.app.state.analysis_service)
+
+
+def get_report_service(request: Request) -> ReportService:
+    """Return the ReportService from app.state."""
+    return cast(ReportService, request.app.state.report_service)
+
+
+def get_maintenance_service(request: Request) -> MaintenanceService:
+    """Return the MaintenanceService from app.state."""
+    return cast(MaintenanceService, request.app.state.maintenance_service)
+
+
+def get_notifier(request: Request) -> NotificationService:
+    """Return the NotificationService from app.state."""
+    return cast(NotificationService, request.app.state.notifier)
