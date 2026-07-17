@@ -15,6 +15,7 @@ Design decisions:
 from __future__ import annotations
 
 import sys
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from mindflow.domain.events import WindowSnapshot
@@ -60,6 +61,17 @@ class EventCollector(Protocol):
             Returns 0.0 when idle detection is unavailable or fails.
         """
         ...
+
+
+def degraded_snapshot() -> WindowSnapshot:
+    """Return a degraded snapshot indicating collector failure."""
+    return WindowSnapshot(
+        app_name="unknown",
+        window_title="",
+        process_name="unknown",
+        is_idle=False,
+        timestamp_utc=datetime.now(UTC),
+    )
 
 
 def create_collector(platform: str | None = None) -> EventCollector:

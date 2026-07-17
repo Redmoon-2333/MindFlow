@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from loguru import logger
 
 from mindflow.domain.events import WindowSnapshot
-from mindflow.infrastructure.collectors.base import CollectorUnavailableError
+from mindflow.infrastructure.collectors.base import CollectorUnavailableError, degraded_snapshot
 
 
 class X11Collector:
@@ -40,7 +40,7 @@ class X11Collector:
             return await asyncio.to_thread(self._snapshot_sync)
         except Exception:
             logger.warning("X11 snapshot failed", exc_info=True)
-            return _degraded()
+            return degraded_snapshot()
 
     async def idle_seconds(self) -> float:
         """Return idle seconds via XScreenSaver extension."""
@@ -59,37 +59,37 @@ class X11Collector:
 
         d = xdisplay.Display()
         e = ewmh.EWMH(d)
-        active = e.getActiveWindow()
+        try:
+            active = e.getActiveWindow()
+            if not active:
+                logger.warning("X11 EWMH getActiveWindow returned None")
+                return degraded_snapshot()
 
-        if not active:
-            logger.warning("X11 EWMH getActiveWindow returned None")
+            name = active.get_wm_name() or ""
+
+            # Try to resolve process name from _NET_WM_PID
+            process_name = "unknown"
+            pid_prop = active.get_property(e._NET_WM_PID)
+            if pid_prop and pid_prop.value:
+                try:
+                    import psutil
+
+                    proc = psutil.Process(pid_prop.value[0])
+                    process_name = proc.name() or "unknown"
+                except ImportError:
+                    pass  # psutil not installed — degraded name is acceptable
+                except Exception:
+                    logger.warning("X11 process name resolution failed", exc_info=True)
+
+            return WindowSnapshot(
+                app_name=process_name,
+                window_title=name,
+                process_name=process_name,
+                is_idle=False,
+                timestamp_utc=datetime.now(UTC),
+            )
+        finally:
             d.close()
-            return _degraded()
-
-        name = active.get_wm_name() or ""
-
-        # Try to resolve process name from _NET_WM_PID
-        process_name = "unknown"
-        pid_prop = active.get_property(e._NET_WM_PID)
-        if pid_prop and pid_prop.value:
-            try:
-                import psutil
-
-                proc = psutil.Process(pid_prop.value[0])
-                process_name = proc.name() or "unknown"
-            except (ImportError, Exception):
-                pass
-
-        app_name = process_name
-        d.close()
-
-        return WindowSnapshot(
-            app_name=app_name,
-            window_title=name,
-            process_name=process_name,
-            is_idle=False,
-            timestamp_utc=datetime.now(UTC),
-        )
 
     def _idle_seconds_sync(self) -> float:
         """Synchronous X11 idle detection — runs in a thread."""
@@ -104,14 +104,3 @@ class X11Collector:
             return 0.0
         finally:
             d.close()
-
-
-def _degraded() -> WindowSnapshot:
-    """Return a degraded snapshot indicating collector failure."""
-    return WindowSnapshot(
-        app_name="unknown",
-        window_title="",
-        process_name="unknown",
-        is_idle=False,
-        timestamp_utc=datetime.now(UTC),
-    )

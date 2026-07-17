@@ -10,8 +10,12 @@ Key design decisions (ADR-007, ADR-002):
     spirit of the new architecture.
   - Single tick failure does not kill the loop; 10 consecutive failures
     transitions to ``degraded`` status and stops.
-  - ``stop()`` is graceful — cancels the task and waits for the
-    current tick to finish.
+  - ``stop()`` is graceful — sets a sentinel flag and waits for the
+    current tick to complete naturally, with a timeout-based cancel
+    fallback. This ensures in-flight events are persisted before
+    shutdown (addresses P1-1).
+  - Each ``_tick()`` call is wrapped in ``asyncio.wait_for`` so that
+    a hung collector never blocks the loop indefinitely (addresses P1-4).
 """
 
 from __future__ import annotations
@@ -26,9 +30,7 @@ from mindflow.config import get_settings
 from mindflow.domain.events import ActivityEvent, EventType, WindowSnapshot
 from mindflow.domain.ids import new_id
 from mindflow.infrastructure.collectors.base import EventCollector
-from mindflow.infrastructure.repositories.activity import (
-    SQLAlchemyActivityRepository,
-)
+from mindflow.infrastructure.repositories.base import ActivityRepository
 
 _IDLE_THRESHOLD_S: int = 60
 """Seconds of inactivity before marking a snapshot as idle."""
@@ -53,7 +55,7 @@ class CollectorService:
     def __init__(
         self,
         collector: EventCollector,
-        repository: SQLAlchemyActivityRepository,
+        repository: ActivityRepository,
         user_id: int = 1,
         interval_s: float | None = None,
         idle_threshold_s: int = _IDLE_THRESHOLD_S,
@@ -68,6 +70,7 @@ class CollectorService:
 
         self._task: asyncio.Task[None] | None = None
         self._status: str = "stopped"
+        self._stop_requested: bool = False
         self._consecutive_failures: int = 0
         self._last_tick_time: datetime | None = None
 
@@ -86,6 +89,7 @@ class CollectorService:
             return
 
         self._status = "running"
+        self._stop_requested = False
         self._consecutive_failures = 0
         self._last_tick_time = None
         self._task = asyncio.create_task(self._run())
@@ -94,16 +98,27 @@ class CollectorService:
     async def stop(self) -> None:
         """Stop the collection loop gracefully.
 
-        Cancels the asyncio task and waits for it to complete. Safe to
-        call even if the service is not running.
+        Sets a sentinel flag so the current tick finishes naturally
+        (preserving in-flight events), then waits for the background
+        task to exit. If the tick takes longer than ``interval_s * 2``,
+        a cancel() fallback kicks in to avoid hanging on shutdown.
+        Safe to call even if the service is not running.
         """
         if self._task is None:
             return
 
         self._status = "stopping"
-        self._task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._task
+        self._stop_requested = True
+        try:
+            await asyncio.wait_for(self._task, timeout=self._interval_s * 2)
+        except TimeoutError:
+            logger.warning(
+                "CollectorService stop timeout — cancelling task (interval={}s)",
+                self._interval_s,
+            )
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
         self._task = None
         self._status = "stopped"
         logger.info("CollectorService stopped")
@@ -111,12 +126,25 @@ class CollectorService:
     # ── Internal: tick loop ──────────────────────────────────────────
 
     async def _run(self) -> None:
-        """Main collection loop — runs until cancelled or degraded."""
-        while True:
+        """Main collection loop — runs until stop_requested or degraded."""
+        while not self._stop_requested:
             tick_start = datetime.now(UTC)
             try:
-                await self._tick()
+                await asyncio.wait_for(self._tick(), timeout=self._interval_s * 2)
                 self._consecutive_failures = 0
+            except TimeoutError:
+                self._consecutive_failures += 1
+                logger.warning(
+                    "Collector tick timed out ({}/{})",
+                    self._consecutive_failures,
+                    10,
+                )
+                if self._consecutive_failures >= 10:
+                    logger.error(
+                        "10 consecutive failures — CollectorService degraded"
+                    )
+                    self._status = "degraded"
+                    break
             except Exception:
                 self._consecutive_failures += 1
                 logger.opt(exception=True).warning(
@@ -134,7 +162,8 @@ class CollectorService:
             # Sleep until the next tick (account for tick duration)
             elapsed = (datetime.now(UTC) - tick_start).total_seconds()
             sleep_time = max(0.0, self._interval_s - elapsed)
-            await asyncio.sleep(sleep_time)
+            if not self._stop_requested:
+                await asyncio.sleep(sleep_time)
 
     async def _tick(self) -> None:
         """Execute a single collection tick."""

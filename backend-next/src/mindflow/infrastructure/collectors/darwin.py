@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from loguru import logger
 
 from mindflow.domain.events import WindowSnapshot
-from mindflow.infrastructure.collectors.base import CollectorUnavailableError
+from mindflow.infrastructure.collectors.base import CollectorUnavailableError, degraded_snapshot
 
 
 class DarwinCollector:
@@ -41,17 +41,12 @@ class DarwinCollector:
             return await asyncio.to_thread(self._snapshot_sync)
         except Exception:
             logger.warning("macOS snapshot failed", exc_info=True)
-            return _degraded()
+            return degraded_snapshot()
 
     async def idle_seconds(self) -> float:
-        """Return idle seconds via Quartz event system."""
+        """Return idle seconds via Quartz event system (runs in thread)."""
         try:
-            import Quartz
-
-            idle = Quartz.CGEventSourceSecondsSinceLastEvent(
-                Quartz.kCGEventSourceStateCombinedSessionState
-            )
-            return float(idle) if idle is not None else 0.0
+            return await asyncio.to_thread(self._idle_seconds_sync)
         except Exception:
             logger.warning("macOS idle detection failed", exc_info=True)
             return 0.0
@@ -67,7 +62,7 @@ class DarwinCollector:
 
         if app is None:
             logger.warning("NSWorkspace.activeApplication returned None")
-            return _degraded()
+            return degraded_snapshot()
 
         app_name = str(app.get("NSApplicationName", "unknown") or "unknown")
         process_name = str(app.get("NSApplicationBundleIdentifier", app_name) or app_name)
@@ -87,13 +82,11 @@ class DarwinCollector:
             timestamp_utc=datetime.now(UTC),
         )
 
+    def _idle_seconds_sync(self) -> float:
+        """Synchronous macOS idle detection — runs in a thread."""
+        import Quartz
 
-def _degraded() -> WindowSnapshot:
-    """Return a degraded snapshot indicating collector failure."""
-    return WindowSnapshot(
-        app_name="unknown",
-        window_title="",
-        process_name="unknown",
-        is_idle=False,
-        timestamp_utc=datetime.now(UTC),
-    )
+        idle = Quartz.CGEventSourceSecondsSinceLastEvent(
+            Quartz.kCGEventSourceStateCombinedSessionState
+        )
+        return float(idle) if idle is not None else 0.0

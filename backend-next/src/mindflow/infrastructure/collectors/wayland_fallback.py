@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from loguru import logger
 
 from mindflow.domain.events import WindowSnapshot
-from mindflow.infrastructure.collectors.base import CollectorUnavailableError
+from mindflow.infrastructure.collectors.base import CollectorUnavailableError, degraded_snapshot
 
 
 class WaylandFallbackCollector:
@@ -50,7 +50,7 @@ class WaylandFallbackCollector:
             return await asyncio.to_thread(self._snapshot_sync)
         except Exception:
             logger.warning("Wayland snapshot failed", exc_info=True)
-            return _degraded()
+            return degraded_snapshot()
 
     async def idle_seconds(self) -> float:
         """No idle detection available on Wayland fallback.
@@ -114,14 +114,3 @@ class WaylandFallbackCollector:
             is_idle=False,
             timestamp_utc=datetime.now(UTC),
         )
-
-
-def _degraded() -> WindowSnapshot:
-    """Return a degraded snapshot indicating collector failure."""
-    return WindowSnapshot(
-        app_name="unknown",
-        window_title="",
-        process_name="unknown",
-        is_idle=False,
-        timestamp_utc=datetime.now(UTC),
-    )

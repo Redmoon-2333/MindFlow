@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from loguru import logger
 
 from mindflow.domain.events import WindowSnapshot
-from mindflow.infrastructure.collectors.base import CollectorUnavailableError
+from mindflow.infrastructure.collectors.base import CollectorUnavailableError, degraded_snapshot
 
 
 class _LastInputInfoStruct(ctypes.Structure):
@@ -57,7 +57,7 @@ class Win32Collector:
             return await asyncio.to_thread(self._snapshot_sync)
         except Exception:
             logger.warning("Win32 snapshot failed", exc_info=True)
-            return _degraded()
+            return degraded_snapshot()
 
     async def idle_seconds(self) -> float:
         """Return idle seconds via GetLastInputInfo (runs in thread)."""
@@ -78,7 +78,7 @@ class Win32Collector:
         hwnd = win32gui.GetForegroundWindow()
         if not hwnd:
             logger.warning("Win32 GetForegroundWindow returned NULL")
-            return _degraded()
+            return degraded_snapshot()
 
         window_title = win32gui.GetWindowText(hwnd) or ""
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
@@ -115,14 +115,3 @@ class Win32Collector:
             return 0.0
 
         return (millis_since_boot - lii.dwTime) / 1000.0  # type: ignore[no-any-return]
-
-
-def _degraded() -> WindowSnapshot:
-    """Return a degraded snapshot indicating collector failure."""
-    return WindowSnapshot(
-        app_name="unknown",
-        window_title="",
-        process_name="unknown",
-        is_idle=False,
-        timestamp_utc=datetime.now(UTC),
-    )

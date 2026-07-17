@@ -1,11 +1,13 @@
 """Tests for CollectorService — lifecycle, tick, failure handling.
 
 Tests cover:
-  - start() creates the asyncio task, stop() cancels it gracefully
+  - start() creates the asyncio task, stop() waits for in-flight tick (P1-1)
   - Double start is idempotent
   - Tick loop calls collector and repository
   - 10 consecutive failures → status degraded
   - Single tick failure doesn't stop the loop
+  - Hanging tick triggers timeout (P1-4)
+  - Stop preserves in-flight events (P1-1)
 """
 
 from __future__ import annotations
@@ -18,9 +20,7 @@ import pytest
 
 from mindflow.domain.events import ActivityEvent, WindowSnapshot
 from mindflow.infrastructure.collectors.base import EventCollector
-from mindflow.infrastructure.repositories.activity import (
-    SQLAlchemyActivityRepository,
-)
+from mindflow.infrastructure.repositories.base import ActivityRepository
 from mindflow.services.collector_service import CollectorService
 
 
@@ -46,8 +46,8 @@ def mock_collector():
 
 @pytest.fixture
 def mock_repository():
-    """Return a mock SQLAlchemyActivityRepository."""
-    repo = MagicMock(spec=SQLAlchemyActivityRepository)
+    """Return a mock ActivityRepository (Protocol-based spec)."""
+    repo = MagicMock(spec=ActivityRepository)
     repo.append_event = AsyncMock()
     return repo
 
@@ -244,3 +244,62 @@ class TestEdgeCases:
         # Service should still be running (single failure doesn't stop)
         # or already stopped (if we exceeded 10 failures)
         assert service.status in ("stopped", "running")
+
+
+class TestStopPreservesEvent:
+    """P1-1: stop() does not lose the in-flight tick event."""
+
+    async def test_stop_preserves_in_flight_append(self, mock_collector, mock_repository):
+        """When stop() is called mid-tick, the pending append still completes."""
+        event_appended = asyncio.Event()
+
+        async def slow_append(event: ActivityEvent) -> None:
+            await asyncio.sleep(0.02)
+            event_appended.set()
+
+        mock_repository.append_event.side_effect = slow_append
+
+        # Use a longer interval to give stop() time to wait for the tick
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.1,
+        )
+
+        await service.start()
+        # Let a tick start (tick calls append which will be slow)
+        await asyncio.sleep(0.05)
+        await service.stop()
+
+        # The in-flight append should have completed
+        assert event_appended.is_set(), "append_event did not complete during stop()"
+        assert mock_repository.append_event.await_count >= 1
+
+
+class TestTickTimeout:
+    """P1-4: A hanging tick triggers TimeoutError and is counted as failure."""
+
+    async def test_hanging_tick_triggers_timeout(self, mock_collector, mock_repository):
+        """A tick that hangs longer than interval_s*2 triggers TimeoutError."""
+        mock_collector.snapshot = AsyncMock(
+            side_effect=lambda: asyncio.sleep(3600)  # Never finishes
+        )
+
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+        )
+
+        await service.start()
+
+        # The tick should time out quickly (timeout = 0.02s)
+        for _ in range(50):
+            if service._consecutive_failures >= 1:
+                break
+            await asyncio.sleep(0.01)
+
+        assert service._consecutive_failures >= 1, "Tick should have timed out"
+        await service.stop()

@@ -261,7 +261,7 @@ class TestHeartbeatMerge:
             _event(app_name="Code", duration_s=5.0, ts=_BASE_TS + timedelta(seconds=6))
         )
 
-        # Total rows = 3 (idle event is separate, the two Code events merge)
+        # Total rows = 2 (idle event + merged Code).
         async with engine.connect() as conn:
             result = await conn.execute(
                 text("SELECT count(*) FROM activity_events")

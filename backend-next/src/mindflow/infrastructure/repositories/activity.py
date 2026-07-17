@@ -56,11 +56,19 @@ activity_events = sa.Table(
 class SQLAlchemyActivityRepository:
     """Activity event repository backed by SQLAlchemy Core + async SQLite.
 
+    Satisfies the ``ActivityRepository`` protocol via structural typing
+    (no explicit subclassing required). See ``repositories/base.py``.
+
     Args:
         session_factory: Async session maker bound to the application engine.
         pulsetime_s: Heartbeat merge window in seconds. Defaults to
             ``settings.heartbeat_pulsetime_s``.
     """
+
+    # Static assertion: SQLAlchemyActivityRepository satisfies the
+    # ActivityRepository protocol. Uncomment to verify at import time:
+    # from mindflow.infrastructure.repositories.base import ActivityRepository
+    # _: type[ActivityRepository] = SQLAlchemyActivityRepository
 
     def __init__(
         self,
