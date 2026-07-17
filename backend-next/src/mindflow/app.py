@@ -224,10 +224,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         analysis_service=analysis_service,
         report_service=report_service,
         maintenance_service=maintenance_service,
+        intervention_service=intervention_service,
+        activity_repository=activity_repository,
         event_retention_days=settings.event_retention_days,
     )
     scheduler.start()
-    logger.info("Wave 5 scheduler started (cron: identify, report, cleanup, backup)")
+    logger.info(
+        "Wave 5+8b scheduler started (cron: identify, report, cleanup, backup; "
+        "interval: auto_intervention)"
+    )
 
     # ── Inject into app.state ─────────────────────────────────────────
     app.state.engine = engine
