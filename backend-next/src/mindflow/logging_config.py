@@ -55,8 +55,7 @@ def setup_logging(settings: Settings) -> None:
         log_dir / "mindflow_{time:YYYY-MM-DD}.log",
         level=settings.log.level,
         format=(
-            "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
-            "{name}:{function}:{line} | {message}"
+            "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}"
         ),
         rotation=settings.log.rotation,
         retention=settings.log.retention,

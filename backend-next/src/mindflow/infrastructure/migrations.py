@@ -48,7 +48,15 @@ async def run_migrations(async_db_url: str) -> bool:
     Returns:
         True if migrations succeeded, False on failure (graceful degradation).
     """
-    sync_url = async_db_url.replace("sqlite+aiosqlite://", "sqlite://")
+    from sqlalchemy.engine import make_url
+
+    # Map async drivers to their sync counterparts so future PostgreSQL
+    # support (NF-A5) doesn't silently pass an async URL to Alembic.
+    url = make_url(async_db_url)
+    sync_drivers = {"sqlite+aiosqlite": "sqlite", "postgresql+asyncpg": "postgresql+psycopg"}
+    sync_url = url.set(
+        drivername=sync_drivers.get(url.drivername, url.drivername)
+    ).render_as_string(hide_password=False)
     try:
         await asyncio.to_thread(_run_migrations_sync, sync_url)
         logger.info("Database migrations applied successfully")

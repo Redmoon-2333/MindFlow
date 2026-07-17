@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -88,10 +88,11 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
 
 
 async def integrity_check(engine: AsyncEngine) -> bool:
-    """Run PRAGMA integrity_check on the database.
+    """Run PRAGMA integrity_check, attempting VACUUM recovery on failure.
 
-    Returns True if check passes (returns "ok"), False otherwise.
-    Does NOT raise — logs warning on failure for graceful degradation (NF-R5).
+    Per §5.2 of the architecture doc: check -> fail -> VACUUM recovery
+    attempt -> re-check. Returns True only if the (possibly recovered)
+    database passes. Does NOT raise — logs for graceful degradation (NF-R5).
     """
     try:
         async with engine.connect() as conn:
@@ -100,7 +101,24 @@ async def integrity_check(engine: AsyncEngine) -> bool:
             if row and row[0] == "ok":
                 return True
             logger.warning("Database integrity check failed: {}", row)
-            return False
+
+        # Recovery attempt: VACUUM rebuilds the database file, which can
+        # clear certain classes of index/page corruption (§5.2).
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("VACUUM"))
+                await conn.commit()
+            async with engine.connect() as conn:
+                result = await conn.execute(text("PRAGMA integrity_check"))
+                row = result.fetchone()
+                if row and row[0] == "ok":
+                    logger.info("Database recovered via VACUUM")
+                    return True
+        except Exception as recovery_exc:
+            logger.error("VACUUM recovery attempt failed: {}", recovery_exc)
+
+        logger.error("Database integrity check failed after recovery attempt")
+        return False
     except Exception as exc:
         logger.error("Database integrity check raised exception: {}", exc)
         return False
@@ -122,6 +140,11 @@ async def backup_database(engine: AsyncEngine, dest: Path) -> bool:
     """
     try:
         dest = Path(dest)
+        # VACUUM INTO cannot use bound parameters; refuse paths that would
+        # break the quoted literal (defense-in-depth for a local-only app).
+        if "'" in str(dest):
+            logger.error("Backup path contains a single quote, refusing: {}", dest)
+            return False
         dest.parent.mkdir(parents=True, exist_ok=True)
         # VACUUM INTO must run via raw connection (sync pragma in async wrapper)
         async with engine.connect() as conn:
@@ -132,10 +155,3 @@ async def backup_database(engine: AsyncEngine, dest: Path) -> bool:
     except Exception as exc:
         logger.error("Database backup failed: {}", exc)
         return False
-
-
-def text(sql: str) -> Any:
-    """Shorthand for SQLAlchemy text() — avoids top-level import."""
-    from sqlalchemy import text as _text
-
-    return _text(sql)

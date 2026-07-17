@@ -112,6 +112,38 @@ class TestMigrations:
         assert columns["data_json"] == "TEXT"
         assert columns["event_type"] == "TEXT"
 
+    async def test_migration_downgrade_removes_core_tables(
+        self, async_db_url: str, sync_db_url: str
+    ):
+        """Upgrade then downgrade to base drops all 7 core tables (P2 review fix)."""
+        await run_migrations(async_db_url)
+
+        def _downgrade() -> None:
+            from alembic.config import Config
+
+            from alembic import command
+            from mindflow.infrastructure.migrations import BASE_DIR
+
+            cfg = Config(str(BASE_DIR / "alembic.ini"))
+            cfg.set_main_option("sqlalchemy.url", sync_db_url)
+            command.downgrade(cfg, "base")
+
+        import asyncio
+
+        await asyncio.to_thread(_downgrade)
+
+        tables = _get_table_names(sync_db_url)
+        core = {
+            "activity_events",
+            "focus_sessions",
+            "daily_reports",
+            "procrastination_analyses",
+            "intervention_logs",
+            "baseline_models",
+            "user_preferences",
+        }
+        assert not (core & tables), f"Core tables still present after downgrade: {core & tables}"
+
     async def test_indexes_exist(self, async_db_url: str, sync_db_url: str):
         """Verify indexes are created for activity_events."""
         await run_migrations(async_db_url)

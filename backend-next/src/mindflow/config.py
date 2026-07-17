@@ -78,9 +78,7 @@ class Settings(BaseSettings):
     )
 
     # --- Data Retention ---
-    event_retention_days: int = Field(
-        default=30, description="Raw event retention in days (7-90)"
-    )
+    event_retention_days: int = Field(default=30, description="Raw event retention in days (7-90)")
 
     @field_validator("event_retention_days")
     @classmethod

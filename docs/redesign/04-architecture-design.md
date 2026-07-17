@@ -495,7 +495,7 @@ class LogOnlyNotifier(NotificationService): ...   # 降级兜底: 仅写日志 (
 |------|--------|------|
 | 恶意本地进程访问 API | localhost:8765 无认证 → 任意读写用户行为数据 | Token 认证 (随机 64B hex 文件, 0600 权限) |
 | 恶意网页 DNS rebinding 打 localhost | 同源策略不保护 localhost | Host header 校验 + Token 兜底 |
-| 恶意软件窃取 token | 读取 ~/.mindflow/token | 文件权限 0600; Windows: 加密存储; macOS: Keychain |
+| 恶意软件窃取 token | 读取 ~/.mindflow/token | 文件权限 0600（POSIX 生效）；Windows 依赖用户目录 NTFS ACL（同用户恶意进程无法被 ACL 阻止 — DPAPI 加密列为后续增强，见 Wave 1 评审记录）；macOS: Keychain 为后续增强 |
 | CSRF (如果后续加 Web 前端) | 浏览器跨域请求 localhost | 当前 N/A (前端同源托管), 未来 SameSite cookie |
 | LLM API 滥用 | 高频调用 DeepSeek → 超预算 | 速率限制 20 次/日 + 内置 key 月度硬上限 |
 | LLM 输出含不安全内容 | DeepSeek 输出注入/诊断用语 | 输出过滤 + constraint decoding Pydantic 双重验证 |
