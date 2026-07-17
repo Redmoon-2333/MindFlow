@@ -14,7 +14,9 @@ to catch and fall through the four-layer degradation chain:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -74,15 +76,36 @@ def _safe_parse_json(raw: str, context: str) -> dict[str, Any] | None:
         return None
 
 
+_CITATION_PATTERN = re.compile(r"\[证据[:：]\s*([A-Za-z0-9_]+)\s*\]")
+
+
+def validate_citations(
+    opinion: ExpertOpinion,
+    valid_metrics: frozenset[str],
+) -> tuple[str, ...]:
+    """Code-level citation validation — never trust the LLM critic alone.
+
+    Extracts every ``[证据: metric]`` reference from the argument plus the
+    structured ``evidence_citations`` field, and returns the subset that does
+    NOT exist in the bundle's metric_names (design §3: hallucinated citations
+    must be caught mechanically; review P1 fix).
+    """
+    cited: set[str] = set(opinion.evidence_citations)
+    cited.update(_CITATION_PATTERN.findall(opinion.argument))
+    return tuple(sorted(cited - valid_metrics))
+
+
 def _parse_expert_opinion(
     raw: str,
     expert: ExpertDef,
     skipped: bool = False,
+    valid_metrics: frozenset[str] | None = None,
 ) -> ExpertOpinion:
     """Parse an expert's raw LLM response into ``ExpertOpinion``.
 
     If JSON parsing fails, returns a skipped opinion (graceful degradation).
-    If forbidden words are found, also skips.
+    If forbidden words are found, also skips. If *valid_metrics* is given,
+    hallucinated citations mark the opinion skipped as well (review P1).
     """
     if skipped:
         return ExpertOpinion(
@@ -137,7 +160,7 @@ def _parse_expert_opinion(
             skipped=True,
         )
 
-    return ExpertOpinion(
+    opinion = ExpertOpinion(
         role=expert.role,
         perspective=expert.perspective,
         attribution_types=attribution_types,
@@ -146,6 +169,29 @@ def _parse_expert_opinion(
         argument=argument,
         raw_json=raw,
     )
+
+    # Code-enforced citation check (review P1): hallucinated metric references
+    # disqualify the opinion regardless of what the LLM critic later says.
+    if valid_metrics is not None:
+        bogus = validate_citations(opinion, valid_metrics)
+        if bogus:
+            logger.warning(
+                "Hallucinated citations {} in {} opinion — skipping",
+                bogus,
+                expert.role,
+            )
+            return ExpertOpinion(
+                role=expert.role,
+                perspective=expert.perspective,
+                attribution_types=(),
+                confidence={},
+                evidence_citations=(),
+                argument="",
+                raw_json=raw,
+                skipped=True,
+            )
+
+    return opinion
 
 
 def _parse_analyst_opinion(
@@ -494,6 +540,8 @@ class PanelOrchestrator:
         self._gateway = gateway
         self._call_count: int = 0
         self._transcript: list[TranscriptEntry] = []
+        # Serializes budget check-and-increment across parallel batches (P2).
+        self._budget_lock = asyncio.Lock()
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -549,7 +597,7 @@ class PanelOrchestrator:
             [(exp, bundle_json) for exp in ATTRIBUTION_EXPERTS],
         )
         attribution_opinions = [
-            _parse_expert_opinion(raw, exp)
+            _parse_expert_opinion(raw, exp, valid_metrics=valid_metrics)
             for raw, exp in zip(raw_attributions, ATTRIBUTION_EXPERTS, strict=True)
         ]
         for op in attribution_opinions:
@@ -584,7 +632,7 @@ class PanelOrchestrator:
             ]
             raw_rebuttals = await self._gather_calls(rebuttal_prompts)
             attribution_opinions = [
-                _parse_expert_opinion(raw, exp)
+                _parse_expert_opinion(raw, exp, valid_metrics=valid_metrics)
                 for raw, exp in zip(raw_rebuttals, ATTRIBUTION_EXPERTS, strict=True)
             ]
             for op in attribution_opinions:
@@ -720,14 +768,17 @@ class PanelOrchestrator:
         Returns:
             Raw response text from the LLM.
         """
-        self._check_budget()
-        raw = await self._gateway.complete(
+        # Atomic check-and-increment (review P2): parallel batches from
+        # _gather_calls must not all pass the cap check simultaneously.
+        # Reserve the slot BEFORE awaiting the gateway.
+        async with self._budget_lock:
+            self._check_budget()
+            self._call_count += 1
+        return await self._gateway.complete(
             system=expert.system_prompt,
             user=user_message,
             model=expert.model,
         )
-        self._call_count += 1
-        return raw
 
     async def _gather_calls(
         self,
@@ -744,8 +795,6 @@ class PanelOrchestrator:
         Returns:
             List of raw response texts (empty string for failed calls).
         """
-        import asyncio  # noqa: PLC0415 — stdlib lazy import
-
         async def _safe_call(expert: ExpertDef, msg: str) -> str:
             try:
                 return await self._call_gateway(expert, msg)

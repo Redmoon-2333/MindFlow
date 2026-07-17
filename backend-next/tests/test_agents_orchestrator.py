@@ -420,3 +420,66 @@ class TestPanelVerdictShape:
         assert hasattr(verdict, "escalated")
         assert hasattr(verdict, "call_count")
         assert hasattr(verdict, "source")
+
+
+class TestCitationValidation:
+    """Review P1: code-enforced citation validation, not prompt trust."""
+
+    def test_bogus_citation_detected(self) -> None:
+        from mindflow.agents.orchestrator import validate_citations
+        from mindflow.agents.types import ExpertOpinion
+
+        op = ExpertOpinion(
+            role="cbt",
+            perspective="CBT",
+            attribution_types=("impulsivity",),
+            confidence={"impulsivity": 0.8},
+            evidence_citations=("focus_score", "made_up_metric"),
+            argument="切换频繁 [证据: switch_rate]，且虚构 [证据: fantasy_stat]",
+            raw_json="{}",
+        )
+        bogus = validate_citations(op, frozenset({"focus_score", "switch_rate"}))
+        assert bogus == ("fantasy_stat", "made_up_metric")
+
+    def test_all_valid_citations(self) -> None:
+        from mindflow.agents.orchestrator import validate_citations
+        from mindflow.agents.types import ExpertOpinion
+
+        op = ExpertOpinion(
+            role="tmt",
+            perspective="TMT",
+            attribution_types=("decisional",),
+            confidence={"decisional": 0.7},
+            evidence_citations=("behavior_deviation",),
+            argument="偏差显著 [证据: behavior_deviation]",
+            raw_json="{}",
+        )
+        assert validate_citations(op, frozenset({"behavior_deviation"})) == ()
+
+    def test_parse_skips_opinion_with_bogus_citation(self) -> None:
+        from mindflow.agents.experts import ATTRIBUTION_EXPERTS
+        from mindflow.agents.orchestrator import _parse_expert_opinion
+
+        raw = (
+            '{"attribution_types": ["impulsivity"], "confidence": {"impulsivity": 0.8},'
+            ' "evidence_citations": ["nonexistent_metric"], "argument": "论证"}'
+        )
+        op = _parse_expert_opinion(
+            raw, ATTRIBUTION_EXPERTS[0], valid_metrics=frozenset({"focus_score"})
+        )
+        assert op.skipped is True
+
+    def test_fullwidth_colon_pattern(self) -> None:
+        from mindflow.agents.orchestrator import validate_citations
+        from mindflow.agents.types import ExpertOpinion
+
+        op = ExpertOpinion(
+            role="emotion",
+            perspective="情绪",
+            attribution_types=("emotional_regulation",),
+            confidence={"emotional_regulation": 0.6},
+            evidence_citations=(),
+            argument="娱乐占比高 [证据：top_apps]",  # 全角冒号
+            raw_json="{}",
+        )
+        assert validate_citations(op, frozenset({"top_apps"})) == ()
