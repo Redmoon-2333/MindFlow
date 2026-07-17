@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends  # noqa: B008
 from loguru import logger
 
 from mindflow.api.deps import get_panel_service
+from mindflow.api.errors import ProblemDetail
 from mindflow.services.panel_service import PanelService
 
 router = APIRouter(tags=["panel"])
@@ -98,6 +99,8 @@ async def post_panel_today(
 
     try:
         verdict = await panel_service.run_daily_panel(user_id=1, target_date=today)
+    except ProblemDetail:
+        raise
     except Exception:
         logger.exception("Panel service failed unexpectedly for user 1 on {}", today)
         from mindflow.api.errors import _internal_error
@@ -124,6 +127,11 @@ async def get_panel_result(
 
     try:
         verdict = await panel_service.run_daily_panel(user_id=1, target_date=today)
+    except ProblemDetail:
+        # E2E finding: the degradation chain legitimately raises ProblemDetail
+        # (e.g. 404 no-activity-data from the single-expert fallback) — let the
+        # RFC 9457 handler render it instead of masking it as a 500.
+        raise
     except Exception:
         logger.exception("Panel service failed unexpectedly for user 1 on {}", today)
         from mindflow.api.errors import _internal_error

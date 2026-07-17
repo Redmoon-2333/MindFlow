@@ -105,18 +105,17 @@ class DeepSeekGateway:
             api_key = settings.llm.api_key
             base_url = base_url or settings.llm.base_url
 
-        if not api_key:
-            raise GatewayNotConfiguredError(
-                "DeepSeek API key is not configured — set MINDFLOW_LLM__API_KEY "
-                "or add llm.api_key to the .env file"
-            )
-
+        # Key-less construction is allowed (E2E finding): the app must be able
+        # to assemble PanelService/ChatService without a configured key so the
+        # degradation chain (panel→single_expert→rule_engine, chat→safe reply)
+        # stays reachable. The raise happens at call time in complete().
+        self._api_key = api_key or ""
         self._base_url = (base_url or "https://api.deepseek.com").rstrip("/")
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=httpx.Timeout(_DEFAULT_TIMEOUT_S),
             headers={
-                "Authorization": f"Bearer {api_key}",
+                "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             },
         )
@@ -128,6 +127,10 @@ class DeepSeekGateway:
         model: Literal["chat", "reasoner"] = "chat",
     ) -> str:
         """Send a completion request and return the response content as raw text.
+
+        Raises GatewayNotConfiguredError at call time if no key was supplied
+        (deferred from __init__ — E2E finding: the app must assemble services
+        without a key so degradation paths stay reachable).
 
         Args:
             system: System prompt.
@@ -144,6 +147,12 @@ class DeepSeekGateway:
             GatewayAPIError: Non-retriable API error.
         """
         model_id = "deepseek-chat" if model == "chat" else "deepseek-reasoner"
+
+        if not self._api_key:
+            raise GatewayNotConfiguredError(
+                "DeepSeek API key is not configured — set MINDFLOW_LLM__API_KEY "
+                "or add llm.api_key to the .env file"
+            )
 
         payload: dict[str, object] = {
             "model": model_id,
