@@ -2,53 +2,40 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-dist/
-build/
-*.egg
-
-# 虚拟环境
-venv/
-.venv/
-env/
-
-# 环境变量
-.env
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# 数据库文件
-*.db
-*.sqlite3
-backend/data/
-
-# 数据集与模型（本地保留，不上传）
-data/datasets/
-data/models/
-
-# 日志
-*.log
-logs/
-
-# 前端
-frontend/node_modules/
-frontend/dist/
-frontend/.tsbuildinfo
-
-# 系统文件
-.DS_Store
-Thumbs.db
-
-# 测试
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
-# 打包输出
-*.spec
+# 环境
+.env
+.venv/
+venv/
 
-# zip 文件
-*.zip
+# 数据与模型 (本地隐私数据不入库)
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
+backend/data/logs/
+backend/data/models/
+backend-next/data/
+data/mindflow.db*
+data/logs/
+data/backups/
+
+# 数据集太大不入库 (保留 README 说明来源)
+backend/data/datasets/manictime/*.csv
+backend/data/datasets/awt-labelled/*.csv
+
+# 前端
+node_modules/
+dist/
+
+# 打包
+build/
+*.spec.bak
+
+# IDE
+.idea/
+.vscode/
