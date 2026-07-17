@@ -33,7 +33,7 @@ from mindflow.api.middleware import (
     StructuredLoggingMiddleware,
 )
 from mindflow.api.routes import register_routes
-from mindflow.api.websocket import close_all_connections
+from mindflow.api.websocket import broadcast, close_all_connections
 from mindflow.api.websocket import router as websocket_router
 from mindflow.config import Settings
 from mindflow.infrastructure.collectors.base import EventCollector, create_collector
@@ -53,6 +53,9 @@ from mindflow.infrastructure.repositories.analysis import (
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
+from mindflow.infrastructure.repositories.intervention import (
+    InterventionLogRepository,
+)
 from mindflow.infrastructure.repositories.preferences import (
     PreferencesRepository,
 )
@@ -63,6 +66,9 @@ from mindflow.infrastructure.security.token_manager import load_or_create_token
 from mindflow.logging_config import setup_logging
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.collector_service import CollectorService
+from mindflow.services.effectiveness_service import EffectivenessService
+from mindflow.services.intervention_service import InterventionService
+from mindflow.services.intervention_throttle import InterventionThrottle
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.report_service import ReportService
@@ -136,6 +142,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         session_factory=session_factory,
     )
 
+    # ── 4b. Wave 7: Intervention repository ───────────────────────────
+    intervention_repository = InterventionLogRepository(
+        session_factory=session_factory,
+    )
+
     # ── 5. Collector ──────────────────────────────────────────────────
     collector: EventCollector | None = None
     collector_service: CollectorService | None = None
@@ -153,7 +164,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── 6. Notifier ───────────────────────────────────────────────────
     notifier = create_notifier()
 
-    # ── 7. Wave 5 Services ────────────────────────────────────────────
+    # ── 7. Wave 7: Effectiveness service (needed by report service) ────
+    effectiveness_service = EffectivenessService(
+        activity_repo=activity_repository,
+        intervention_repo=intervention_repository,
+    )
+
+    # ── 7a. Wave 5 Services ────────────────────────────────────────────
     analysis_service = AnalysisService(
         activity_repo=activity_repository,
         focus_repo=focus_repository,
@@ -162,6 +179,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         activity_repo=activity_repository,
         focus_repo=focus_repository,
         report_repo=report_repository,
+        effectiveness_svc=effectiveness_service,
     )
     maintenance_service = MaintenanceService(
         engine=engine,
@@ -188,6 +206,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     except Exception as exc:
         logger.warning("Failed to create LLMService: {}", exc)
+
+    # ── 7c. Wave 7: Intervention service ───────────────────────────────
+    intervention_throttle = InterventionThrottle(
+        repo=intervention_repository,
+    )
+    intervention_service = InterventionService(
+        intervention_repo=intervention_repository,
+        throttle=intervention_throttle,
+        notifier=notifier,
+        activity_repo=activity_repository,
+        broadcast_fn=broadcast,
+    )
 
     # ── 8. Scheduler (Wave 5 cron jobs) ───────────────────────────────
     scheduler = build_scheduler(
@@ -216,6 +246,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.maintenance_service = maintenance_service
     app.state.scheduler = scheduler
     app.state.llm_service = llm_service
+    app.state.intervention_repository = intervention_repository
+    app.state.intervention_service = intervention_service
+    app.state.effectiveness_service = effectiveness_service
 
     logger.info("MindFlow v{} startup complete", __version__)
 

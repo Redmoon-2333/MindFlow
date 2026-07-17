@@ -28,6 +28,9 @@ from mindflow.infrastructure.repositories.activity import (
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
+from mindflow.infrastructure.repositories.intervention import (
+    InterventionLogRepository,
+)
 from mindflow.infrastructure.repositories.preferences import (
     PreferencesRepository,
 )
@@ -109,3 +112,21 @@ def get_notifier(request: Request) -> NotificationService:
 def get_llm_service(request: Request) -> LLMService:
     """Return the LLMService from app.state."""
     return cast(LLMService, request.app.state.llm_service)
+
+
+def get_intervention_repo(request: Request) -> InterventionLogRepository:
+    """Return the InterventionLogRepository from app.state."""
+    return cast(
+        InterventionLogRepository,
+        request.app.state.intervention_repository,
+    )
+
+
+def get_intervention_service(request: Request) -> object:
+    """Return the InterventionService from app.state."""
+    return getattr(request.app.state, "intervention_service", None)
+
+
+def get_effectiveness_service(request: Request) -> object:
+    """Return the EffectivenessService from app.state."""
+    return getattr(request.app.state, "effectiveness_service", None)

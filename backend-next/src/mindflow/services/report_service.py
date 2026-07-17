@@ -37,6 +37,9 @@ from mindflow.infrastructure.repositories.focus import (
 from mindflow.infrastructure.repositories.report import (
     SQLAlchemyDailyReportRepository,
 )
+from mindflow.services.effectiveness_service import (
+    EffectivenessService,
+)
 
 
 class ReportService:
@@ -46,6 +49,8 @@ class ReportService:
         activity_repo: Repository for activity events.
         focus_repo: Repository for focus sessions.
         report_repo: Repository for daily reports.
+        effectiveness_svc: Optional effectiveness service for
+            intervention impact data in weekly reports.
     """
 
     def __init__(
@@ -53,10 +58,12 @@ class ReportService:
         activity_repo: SQLAlchemyActivityRepository,
         focus_repo: SQLAlchemyFocusSessionRepository,
         report_repo: SQLAlchemyDailyReportRepository,
+        effectiveness_svc: EffectivenessService | None = None,
     ) -> None:
         self._activity_repo = activity_repo
         self._focus_repo = focus_repo
         self._report_repo = report_repo
+        self._effectiveness_svc = effectiveness_svc
 
     # ── Daily report ─────────────────────────────────────────────────
 
@@ -247,6 +254,17 @@ class ReportService:
                 "direction": direction,
             }
 
+        # Wave 7: Intervention effectiveness (optional — null when not wired)
+        intervention_effectiveness: dict[str, Any] | None = None
+        if self._effectiveness_svc is not None:
+            try:
+                intervention_effectiveness = await self._effectiveness_svc.weekly_effectiveness(
+                    user_id, days=7
+                )
+            except Exception:
+                logger.warning("Failed to fetch intervention effectiveness for weekly report")
+                intervention_effectiveness = None
+
         return {
             "week_start": week_start.isoformat(),
             "week_end": week_end.isoformat(),
@@ -254,6 +272,7 @@ class ReportService:
             "averages": averages,
             "trend": trend,
             "week_number": week_start.isocalendar()[1],
+            "intervention_effectiveness": intervention_effectiveness,
         }
 
     # ── Scheduler convenience ─────────────────────────────────────────
