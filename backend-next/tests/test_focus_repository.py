@@ -75,6 +75,31 @@ class TestSaveSessions:
             result = await conn.execute(text("SELECT count(*) FROM focus_sessions"))
             assert result.scalar() == 2
 
+    async def test_save_idempotent_same_call_twice(self, repo, engine):
+        """Calling save_sessions twice for same user+date should not duplicate rows."""
+        sessions = [_session_dict()]
+        await repo.save_sessions(1, sessions)
+        await repo.save_sessions(1, sessions)
+
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT count(*) FROM focus_sessions WHERE user_id = 1")
+            )
+            assert result.scalar() == 1
+
+    async def test_save_idempotent_different_dates(self, repo, engine):
+        """Re-saving sessions for one date should not affect another date."""
+        s1 = [_session_dict(date_str="2026-07-17")]
+        s2 = [_session_dict(date_str="2026-07-18")]
+        await repo.save_sessions(1, s1)
+        await repo.save_sessions(1, s2)
+
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT count(*) FROM focus_sessions WHERE user_id = 1")
+            )
+            assert result.scalar() == 2  # One per date
+
     async def test_save_different_users(self, repo, engine):
         """Sessions for different users should be stored separately."""
         s1 = _session_dict()

@@ -32,7 +32,7 @@ from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
 
-# ── Session thresholds (preserved from old config) ────────────────────
+# ── Default session thresholds (preserved from old config) ────────────
 
 _FOCUS_THRESHOLD_S: int = 300  # 5 minutes minimum for a focus block
 _SWITCH_RATE_FOCUS_CUTOFF: float = 10.0
@@ -45,15 +45,26 @@ class AnalysisService:
     Args:
         activity_repo: Repository for reading activity events.
         focus_repo: Repository for writing / querying focus sessions.
+        focus_threshold_s: Minimum duration (seconds) for a focus block.
+        switch_rate_focus_cutoff: Switch rate below which a session
+            is classified as ``focus``.
+        switch_rate_distraction_cutoff: Switch rate above which a session
+            is classified as ``distraction``.
     """
 
     def __init__(
         self,
         activity_repo: SQLAlchemyActivityRepository,
         focus_repo: SQLAlchemyFocusSessionRepository,
+        focus_threshold_s: int = _FOCUS_THRESHOLD_S,
+        switch_rate_focus_cutoff: float = _SWITCH_RATE_FOCUS_CUTOFF,
+        switch_rate_distraction_cutoff: float = _SWITCH_RATE_DISTRACTION_CUTOFF,
     ) -> None:
         self._activity_repo = activity_repo
         self._focus_repo = focus_repo
+        self._focus_threshold_s = focus_threshold_s
+        self._switch_rate_focus_cutoff = switch_rate_focus_cutoff
+        self._switch_rate_distraction_cutoff = switch_rate_distraction_cutoff
 
     # ── Focus session identification ──────────────────────────────────
 
@@ -94,7 +105,11 @@ class AnalysisService:
             logger.debug("Too few events on {} for user {}", target_date, user_id)
             return []
 
-        # Idempotency
+        # Fast-path idempotency check.  This is a performance optimisation
+        # (skips computation when sessions already exist), not a correctness
+        # guarantee.  The real guard against duplicate rows is the DELETE +
+        # INSERT replace in SQLAlchemyFocusSessionRepository.save_sessions(),
+        # which guarantees correctness even under concurrent callers.
         if await self._focus_repo.exists_for_date(user_id, target_date):
             logger.info("Sessions already exist for {} user {}", target_date, user_id)
             return []
@@ -113,7 +128,7 @@ class AnalysisService:
 
             duration = sum(e.duration_s for e in active[i:j])
 
-            if duration >= _FOCUS_THRESHOLD_S:
+            if duration >= self._focus_threshold_s:
                 window_events = active[i:j]
                 local_switches = sum(
                     1
@@ -124,9 +139,9 @@ class AnalysisService:
                 local_hours = duration / 3600.0
                 switch_rate = local_switches / local_hours if local_hours > 0 else 0.0
 
-                if switch_rate < _SWITCH_RATE_FOCUS_CUTOFF:
+                if switch_rate < self._switch_rate_focus_cutoff:
                     session_type = "focus"
-                elif switch_rate > _SWITCH_RATE_DISTRACTION_CUTOFF:
+                elif switch_rate > self._switch_rate_distraction_cutoff:
                     session_type = "distraction"
                 else:
                     session_type = "neutral"
@@ -137,7 +152,7 @@ class AnalysisService:
                     "end_time": active[j - 1].timestamp_utc.isoformat(),
                     "session_type": session_type,
                     "dominant_app": current_proc,
-                    "focus_score": round(min(duration / _FOCUS_THRESHOLD_S * 100.0, 100.0), 1),
+                    "focus_score": round(min(duration / self._focus_threshold_s * 100.0, 100.0), 1),
                     "switch_count": local_switches,
                 })
 

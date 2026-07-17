@@ -66,11 +66,17 @@ class SQLAlchemyFocusSessionRepository:
         user_id: int,
         sessions: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Batch-insert focus sessions.
+        """Batch-insert focus sessions with idempotent replace semantics.
 
         Each dict in *sessions* must contain:
           ``date``, ``start_time``, ``end_time``, ``session_type``,
           ``dominant_app``, ``focus_score``, ``switch_count``.
+
+        **Idempotency:** Within a single transaction, any existing rows for
+        the same user + date(s) are deleted before inserting the new data
+        (DELETE + INSERT replace).  This guarantees correct behaviour under
+        concurrent callers — the last writer wins and the row count for a
+        user+date never doubles.
 
         A UUIDv7 ``id`` is generated for each session automatically.
 
@@ -81,6 +87,11 @@ class SQLAlchemyFocusSessionRepository:
         Returns:
             The inserted row dicts (with generated ``id``).
         """
+        # Collect unique dates from session data so we know which rows to
+        # replace.  In practice all sessions in one call share the same date,
+        # but we handle the general case.
+        dates_to_replace = {s["date"] for s in sessions}
+
         rows = []
         for s in sessions:
             sid = new_id()
@@ -97,6 +108,12 @@ class SQLAlchemyFocusSessionRepository:
             })
 
         async with self._session_factory() as session, session.begin():
+            # Delete existing rows for user+date(s) before inserting
+            delete_stmt = sa.delete(focus_sessions).where(
+                focus_sessions.c.user_id == user_id,
+                focus_sessions.c.date.in_(dates_to_replace),
+            )
+            await session.execute(delete_stmt)
             await session.execute(focus_sessions.insert(), rows)
 
         # Strip internal fields before returning

@@ -143,6 +143,22 @@ class TestBaseline:
         assert data["status"] == "pending"
         assert "message" in data
 
+    def test_baseline_not_found(self, empty_app):
+        """No baseline should return the stub contract (200 with status pending).
+
+        NOTE: The /analytics/baseline endpoint is a Wave 6 placeholder that
+        always returns a stub dict (status='pending'), never 404.  Once Wave 6
+        integrates BaselineModel, this test should be updated to assert a 404
+        or empty structure depending on the new behaviour.
+        """
+        client = TestClient(empty_app)
+        resp = client.get("/api/v1/analytics/baseline")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "pending"
+        assert "message" in data
+        assert "note" in data
+
 
 class TestProfile:
     """Behavioural profile endpoint tests."""

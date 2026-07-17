@@ -180,3 +180,27 @@ class TestWeeklyReport:
         assert data["week_start"] == "2026-07-13"
         assert "averages" in data
         assert "daily_reports" in data
+
+    def test_weekly_report_empty_week(self, seeded_app):
+        """Empty week should return structure with zero values, not 404."""
+        client = TestClient(seeded_app)
+        # A week with no data — report_service.weekly_report always returns a
+        # structure with 7 daily reports (each filled with zeros), so the
+        # route should return 200, never 404.
+        resp = client.get("/api/v1/reports/weekly?week_start=2025-01-06")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "week_start" in data
+        assert "daily_reports" in data
+        assert len(data["daily_reports"]) == 7
+        assert "averages" in data
+        assert "trend" in data
+        assert "week_number" in data
+
+    def test_weekly_report_invalid_week_start(self, seeded_app):
+        """Invalid date format should return 422."""
+        client = TestClient(seeded_app)
+        resp = client.get("/api/v1/reports/weekly?week_start=not-a-date")
+        assert resp.status_code == 422
+        err = resp.json()
+        assert "detail" in err

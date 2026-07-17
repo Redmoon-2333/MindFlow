@@ -139,3 +139,19 @@ class TestFocusEmpty:
         assert resp.status_code == 200
         data = resp.json()
         assert data["total_sessions"] == 0
+
+    def test_trend_days_boundary(self, seeded_app):
+        """days param boundary: 0→422, 90→200, 91→422 (ge=1, le=90)."""
+        client = TestClient(seeded_app)
+
+        # Below lower bound
+        resp = client.get("/api/v1/focus/trend?days=0")
+        assert resp.status_code == 422
+
+        # At upper bound
+        resp = client.get("/api/v1/focus/trend?days=90")
+        assert resp.status_code == 200
+
+        # Above upper bound
+        resp = client.get("/api/v1/focus/trend?days=91")
+        assert resp.status_code == 422

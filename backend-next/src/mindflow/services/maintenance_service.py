@@ -10,6 +10,7 @@ Implements Wave 5 data-retention and backup policies:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -35,6 +36,9 @@ class MaintenanceService:
         notifier: Notification service for alerting on failures.
         data_dir: Optional data directory override.  Defaults to
             ``platformdirs.user_data_dir("mindflow")``.
+        clock: Optional callable returning the current UTC datetime.
+            Used for testability (inject a fixed clock).  Defaults to
+            ``lambda: datetime.now(UTC)``.
     """
 
     def __init__(
@@ -43,6 +47,7 @@ class MaintenanceService:
         session_factory: async_sessionmaker[AsyncSession],
         notifier: NotificationService,
         data_dir: Path | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._engine = engine
         self._session_factory = session_factory
@@ -50,6 +55,7 @@ class MaintenanceService:
         self._data_dir = data_dir or Path(
             platformdirs.user_data_dir("mindflow", ensure_exists=True)
         )
+        self._now = clock or (lambda: datetime.now(UTC))
 
     # ── Event cleanup ────────────────────────────────────────────────
 
@@ -66,7 +72,7 @@ class MaintenanceService:
         Returns:
             Total number of rows deleted.
         """
-        cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
+        cutoff = (self._now() - timedelta(days=retention_days)).isoformat()
         total_deleted = 0
 
         while True:
@@ -122,7 +128,7 @@ class MaintenanceService:
             True if the backup succeeded, False otherwise.
         """
         backup_dir = self._data_dir / "backups"
-        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        today_str = self._now().strftime("%Y-%m-%d")
         dest = backup_dir / f"mindflow-{today_str}.db"
 
         success = await backup_database(self._engine, dest)
@@ -131,11 +137,14 @@ class MaintenanceService:
             logger.info("Daily backup completed: {}", dest)
         else:
             logger.error("Daily backup FAILED: {}", dest)
-            await self._notifier.send(
-                title="MindFlow 备份失败",
-                body=f"数据库备份到 {dest} 失败，请检查磁盘空间和数据库状态",
-                urgency="critical",
-            )
+            try:
+                await self._notifier.send(
+                    title="MindFlow 备份失败",
+                    body=f"数据库备份到 {dest} 失败，请检查磁盘空间和数据库状态",
+                    urgency="critical",
+                )
+            except Exception:
+                logger.warning("Failed to send backup failure notification")
 
         return success
 

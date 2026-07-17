@@ -21,6 +21,10 @@ from mindflow.services.maintenance_service import MaintenanceService
 
 _BASE = datetime(2026, 7, 17, tzinfo=UTC)
 
+# Fixed clock for deterministic tests — never expires
+def _clock() -> datetime:
+    return datetime(2026, 7, 17, 12, 0, 0, tzinfo=UTC)
+
 
 async def _insert_events(engine, count: int, days_ago: int, user_id: int = 1) -> None:
     """Insert test events via raw SQL (bypasses heartbeat merge)."""
@@ -59,7 +63,7 @@ class TestCleanupOldEvents:
         """Events older than retention_days should be deleted."""
         notifier = AsyncMock()
         svc = MaintenanceService(
-            engine=engine, session_factory=session_factory, notifier=notifier
+            engine=engine, session_factory=session_factory, notifier=notifier, clock=_clock
         )
         deleted = await svc.cleanup_old_events(retention_days=30)
         assert deleted == 5
@@ -74,7 +78,7 @@ class TestCleanupOldEvents:
         """Events within retention window should be preserved."""
         notifier = AsyncMock()
         svc = MaintenanceService(
-            engine=engine, session_factory=session_factory, notifier=notifier
+            engine=engine, session_factory=session_factory, notifier=notifier, clock=_clock
         )
         await svc.cleanup_old_events(retention_days=30)
 
@@ -89,7 +93,7 @@ class TestCleanupOldEvents:
         """Calling cleanup when no old events exist should return 0."""
         notifier = AsyncMock()
         svc = MaintenanceService(
-            engine=engine, session_factory=session_factory, notifier=notifier
+            engine=engine, session_factory=session_factory, notifier=notifier, clock=_clock
         )
         # First cleanup removes old events
         await svc.cleanup_old_events(retention_days=30)
