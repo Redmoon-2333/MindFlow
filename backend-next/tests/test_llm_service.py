@@ -298,3 +298,34 @@ class TestAttributionOutcome:
         assert outcome.degraded is False
         assert outcome.crisis_detected is False
         assert outcome.source == "rule_engine"
+
+
+class TestIntendedTaskRedaction:
+    """Review P3: path-looking manual tags must not reach the LLM payload."""
+
+    def test_path_like_manual_tag_skipped(self) -> None:
+        from datetime import UTC, datetime
+
+        from mindflow.domain.events import ActivityEvent, WindowSnapshot
+        from mindflow.infrastructure.llm.summary import _find_intended_task
+
+        def _tag(text: str) -> ActivityEvent:
+            snap = WindowSnapshot(
+                app_name="manual",
+                window_title=text,
+                process_name="manual",
+                is_idle=False,
+                timestamp_utc=datetime.now(UTC),
+            )
+            return ActivityEvent(
+                id="t1",
+                user_id=1,
+                timestamp_utc=datetime.now(UTC),
+                duration_s=0.0,
+                event_type="manual_tag",
+                data=snap,
+            )
+
+        assert _find_intended_task([_tag(r"C:\Users\me\thesis.docx")]) is None
+        assert _find_intended_task([_tag("/home/me/secret/notes.md")]) is None
+        assert _find_intended_task([_tag("写毕业论文第三章")]) == "写毕业论文第三章"

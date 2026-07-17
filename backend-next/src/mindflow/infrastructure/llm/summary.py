@@ -294,8 +294,16 @@ def _estimate_start_delay(events: list[ActivityEvent]) -> float:
 
 
 def _find_intended_task(events: list[ActivityEvent]) -> str | None:
-    """Find the intended task from manual_tag events."""
+    """Find the intended task from manual_tag events.
+
+    Defensive redaction (review P3): manual tags are user-typed, but pasted
+    file paths would leak into the LLM payload — strip path-looking tags.
+    """
+    _path_markers = ("\\", "://", "/home/", "C:", "D:")
     for ev in events:
         if ev.event_type == "manual_tag" and ev.data.window_title.strip():
-            return ev.data.window_title.strip()
+            tag = ev.data.window_title.strip()
+            if any(marker in tag for marker in _path_markers):
+                continue
+            return tag
     return None

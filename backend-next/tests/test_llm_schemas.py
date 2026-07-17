@@ -155,3 +155,50 @@ class TestLLMAttributionResult:
         payload["procrastination_types"] = ["invalid_type"]
         with pytest.raises(ValidationError):
             LLMAttributionResult.model_validate(payload)
+
+
+class TestReviewRegressionFixes:
+    """Regressions for wave 6 review P1-1 / P2-2 (NF-S7 full coverage)."""
+
+    def _base(self) -> dict:
+        return {
+            "procrastination_types": ["impulsivity"],
+            "type_confidence": {"impulsivity": 0.8},
+            "cognitive_distortions": [],
+            "cbt_technique": "stimulus_control",
+            "response_text": "试试番茄钟，把任务拆成 5 分钟的小块。",
+            "next_action": "关闭聊天软件，专注 5 分钟",
+        }
+
+    def test_forbidden_word_in_next_action_rejected(self) -> None:
+        import pytest
+        from pydantic import ValidationError
+
+        from mindflow.infrastructure.llm.schemas import LLMAttributionResult
+
+        data = self._base()
+        data["next_action"] = "建议接受治疗并开具处方"
+        with pytest.raises(ValidationError):
+            LLMAttributionResult.model_validate(data)
+
+    def test_forbidden_word_in_cognitive_distortions_rejected(self) -> None:
+        import pytest
+        from pydantic import ValidationError
+
+        from mindflow.infrastructure.llm.schemas import LLMAttributionResult
+
+        data = self._base()
+        data["cognitive_distortions"] = ["非黑即白思维", "患者式自我否定"]
+        with pytest.raises(ValidationError):
+            LLMAttributionResult.model_validate(data)
+
+    def test_extra_confidence_keys_rejected(self) -> None:
+        import pytest
+        from pydantic import ValidationError
+
+        from mindflow.infrastructure.llm.schemas import LLMAttributionResult
+
+        data = self._base()
+        data["type_confidence"] = {"impulsivity": 0.8, "perfectionism": 0.3}
+        with pytest.raises(ValidationError):
+            LLMAttributionResult.model_validate(data)

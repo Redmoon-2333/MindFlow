@@ -48,14 +48,15 @@ class AttributionOutcome:
         assessment: The assessment data as a dict, ready for JSON serialization.
             Shape matches either the LLM output contract or the rule-engine
             output, unified for the API consumer.
-        source: Which tier produced the result.
+        source: Which tier produced the result. None only for cached legacy
+            rows that predate source labeling (review P2-1).
         cached: True if the result was served from a previous analysis.
         degraded: True if all LLM tiers failed and the rule engine was used.
         crisis_detected: True if crisis keywords were found.
     """
 
     assessment: dict[str, Any]
-    source: SourceType
+    source: SourceType | None
     cached: bool = False
     degraded: bool = False
     crisis_detected: bool = False
@@ -138,7 +139,9 @@ class LLMService:
                 logger.debug("Cache hit for attribution {}/{}", user_id, target_date)
                 return AttributionOutcome(
                     assessment=cached,
-                    source=cached.get("source", "rule_engine"),
+                    # None (not "rule_engine") for legacy rows without a source —
+                    # a wrong default would misattribute LLM results (review P2-1)
+                    source=cached.get("source"),
                     cached=True,
                 )
 

@@ -92,30 +92,51 @@ class LLMAttributionResult(BaseModel):
 
     # ── Validators ────────────────────────────────────────────────────
 
-    @field_validator("response_text")
+    @field_validator("response_text", "next_action")
     @classmethod
     def _no_forbidden_words(cls, v: str) -> str:
-        """Reject response_text containing forbidden medical terminology.
+        """Reject any free-text output containing forbidden medical terminology.
+
+        Covers every string output field, not just response_text (review P1-1).
 
         Raises:
             ValueError: If any forbidden word appears in the text.
         """
         for word in _FORBIDDEN_WORDS:
             if word in v:
-                msg = f"response_text contains forbidden word: {word!r} (NF-S7)"
+                msg = f"output contains forbidden word: {word!r} (NF-S7)"
                 raise ValueError(msg)
+        return v
+
+    @field_validator("cognitive_distortions")
+    @classmethod
+    def _no_forbidden_words_in_list(cls, v: list[str]) -> list[str]:
+        """Apply the NF-S7 forbidden-word check to each list item (review P1-1)."""
+        for item in v:
+            for word in _FORBIDDEN_WORDS:
+                if word in item:
+                    msg = f"cognitive_distortions contains forbidden word: {word!r} (NF-S7)"
+                    raise ValueError(msg)
         return v
 
     @field_validator("type_confidence")
     @classmethod
     def _confidence_keys_match_types(cls, v: dict[str, float], info: Any) -> dict[str, float]:
-        """Ensure type_confidence keys are a superset of procrastination_types."""
+        """Ensure type_confidence keys exactly match procrastination_types.
+
+        Both directions checked (review P2-2): every listed type has a score,
+        and no scores exist for unlisted types.
+        """
         # Access other fields from validation context
         if isinstance(info.data, dict):
             types = info.data.get("procrastination_types", [])
             missing = [t for t in types if t not in v]
             if missing:
                 msg = f"type_confidence missing keys for types: {missing}"
+                raise ValueError(msg)
+            extra = [k for k in v if k not in types]
+            if extra:
+                msg = f"type_confidence has keys for unlisted types: {extra}"
                 raise ValueError(msg)
         return v
 
