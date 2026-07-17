@@ -88,7 +88,7 @@ class TestTokenBucket:
     async def test_reset_timestamp(self):
         """Reset timestamp should be a future time."""
         bucket = TokenBucket(capacity=5, refill_rate=1.0)
-        bucket.consume(5)  # Exhaust
+        await bucket.consume(5)  # Exhaust
         _allowed, _remaining, reset_ts = await bucket.consume()
         assert reset_ts > time.time()
 
