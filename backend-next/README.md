@@ -80,8 +80,11 @@ conda activate mindflow
 cd backend-next
 pip install -e ".[dev]"
 
-# 3. 启动开发服务器
-uvicorn mindflow.app:create_app --factory --reload --host 127.0.0.1 --port 8765
+# 3. 启动服务（生产入口，含崩溃自动重启 watchdog — E2E 实测验证的启动方式）
+python -m mindflow.main
+
+# 注意：create_app(settings) 是带参工厂，不适用 `uvicorn --factory` 直启。
+# 需要热重载的开发场景，修改代码后 Ctrl+C 重启 python -m mindflow.main 即可（启动 <2s）。
 ```
 
 ### 训练 ML 模型
