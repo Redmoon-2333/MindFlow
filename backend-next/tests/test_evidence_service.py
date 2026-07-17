@@ -741,3 +741,106 @@ class TestSeverityHelpers:
         assert _deviation_severity("mild") == "mild"
         assert _deviation_severity("moderate") == "moderate"
         assert _deviation_severity("severe") == "severe"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tests — G001 review gap: _deviation_to_confidence
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDeviationToConfidence:
+    """Pure-function tests for _deviation_to_confidence() (M3 gap)."""
+
+    def test_zero_deviation(self) -> None:
+        """z = 0.0 → 0.0 confidence."""
+        from mindflow.services.evidence_service import _deviation_to_confidence
+        assert _deviation_to_confidence(0.0) == 0.0
+
+    def test_mild_deviation(self) -> None:
+        """z ≈ 1.5 → ~0.356 (1.5/4.0 * 0.95)."""
+        from mindflow.services.evidence_service import _deviation_to_confidence
+        assert _deviation_to_confidence(1.5) == pytest.approx(0.356, abs=0.001)
+
+    def test_severe_deviation_saturates(self) -> None:
+        """z = 5.0 → 0.95 (saturates at z >= 4.0)."""
+        from mindflow.services.evidence_service import _deviation_to_confidence
+        assert _deviation_to_confidence(5.0) == 0.95
+
+    def test_negative_deviation_absolute(self) -> None:
+        """Negative z uses absolute value."""
+        from mindflow.services.evidence_service import _deviation_to_confidence
+        # z = -3.0 → |3.0| = 3.0 → 3.0/4.0 * 0.95 = 0.7125 → round(0.7125, 3) = 0.712
+        assert _deviation_to_confidence(-3.0) == pytest.approx(0.712, abs=0.001)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tests — G001 review gap: _response_to_effect_note
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestResponseToEffectNote:
+    """Pure-function tests for _response_to_effect_note() (M4 gap)."""
+
+    def test_accepted(self) -> None:
+        from mindflow.services.evidence_service import _response_to_effect_note
+        assert _response_to_effect_note("accepted") == "已接受并执行"
+
+    def test_ignored(self) -> None:
+        from mindflow.services.evidence_service import _response_to_effect_note
+        assert _response_to_effect_note("ignored") == "用户忽略"
+
+    def test_dismissed(self) -> None:
+        from mindflow.services.evidence_service import _response_to_effect_note
+        assert _response_to_effect_note("dismissed") == "用户已关闭"
+
+    def test_none_defaults(self) -> None:
+        from mindflow.services.evidence_service import _response_to_effect_note
+        assert _response_to_effect_note(None) == "尚未回应"
+
+    def test_unknown_defaults(self) -> None:
+        from mindflow.services.evidence_service import _response_to_effect_note
+        assert _response_to_effect_note("unknown") == "尚未回应"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tests — G001 review gap: severity boundary conditions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSeverityBoundaries:
+    """Exact boundary conditions for severity helpers (L1 gap)."""
+
+    def test_focus_at_info_boundary(self) -> None:
+        """focus_score 70.0 → info (exact info threshold)."""
+        from mindflow.services.evidence_service import _focus_severity
+        assert _focus_severity(70.0) == "info"
+
+    def test_focus_at_mild_boundary(self) -> None:
+        """focus_score 50.0 → mild (exact mild threshold)."""
+        from mindflow.services.evidence_service import _focus_severity
+        assert _focus_severity(50.0) == "mild"
+
+    def test_focus_at_moderate_boundary(self) -> None:
+        """focus_score 30.0 → moderate (exact moderate threshold)."""
+        from mindflow.services.evidence_service import _focus_severity
+        assert _focus_severity(30.0) == "moderate"
+
+    def test_block_at_mild_boundary(self) -> None:
+        """block_severity 600.0 → mild (exact mild threshold)."""
+        from mindflow.services.evidence_service import _block_severity
+        assert _block_severity(600.0) == "mild"
+
+    def test_block_at_moderate_boundary(self) -> None:
+        """block_severity 300.0 → moderate (exact moderate threshold)."""
+        from mindflow.services.evidence_service import _block_severity
+        assert _block_severity(300.0) == "moderate"
+
+    def test_switch_at_mild_boundary(self) -> None:
+        """switch_severity 30.0 → mild (at mild threshold)."""
+        from mindflow.services.evidence_service import _switch_severity
+        assert _switch_severity(30.0) == "mild"
+
+    def test_switch_just_above_mild(self) -> None:
+        """switch_severity 30.01 → moderate (just above mild threshold)."""
+        from mindflow.services.evidence_service import _switch_severity
+        assert _switch_severity(30.01) == "moderate"

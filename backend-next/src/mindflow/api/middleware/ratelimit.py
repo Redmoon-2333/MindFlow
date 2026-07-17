@@ -109,6 +109,11 @@ _DEFAULT_ENDPOINT_LIMITS: dict[str, TokenBucket] = {
         refill_rate=1.0 / 60.0,
         daily_hard_limit=3,
     ),
+    "/api/v1/panel/today": TokenBucket(
+        capacity=1,
+        refill_rate=1.0 / 3600.0,
+        daily_hard_limit=3,
+    ),
 }
 
 

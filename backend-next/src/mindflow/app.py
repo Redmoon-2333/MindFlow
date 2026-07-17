@@ -25,6 +25,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from mindflow import __version__
+
+# Agent imports (G002, G003)
+from mindflow.agents.llm_gateway import DeepSeekGateway
+from mindflow.agents.orchestrator import PanelOrchestrator
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.middleware import (
     AuthMiddleware,
@@ -71,6 +75,7 @@ from mindflow.services.intervention_service import InterventionService
 from mindflow.services.intervention_throttle import InterventionThrottle
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
+from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
 from mindflow.services.scheduler import build_scheduler
 
@@ -219,6 +224,28 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         broadcast_fn=broadcast,
     )
 
+    # ── 7d. G003: Panel service ──────────────────────────────────────────
+    panel_service: PanelService | None = None
+    if llm_service is not None:
+        try:
+            gateway = DeepSeekGateway(
+                api_key=settings.llm.api_key,
+                base_url=settings.llm.base_url,
+            )
+            orchestrator = PanelOrchestrator(gateway=gateway)
+            panel_service = PanelService(
+                activity_repo=activity_repository,
+                intervention_repo=intervention_repository,
+                session_factory=session_factory,
+                orchestrator=orchestrator,
+                llm_service=llm_service,
+            )
+            logger.info("PanelService created with expert panel orchestrator")
+        except Exception as exc:
+            logger.warning("Failed to create PanelService: {}", exc)
+    else:
+        logger.warning("LLMService not available, skipping PanelService creation")
+
     # ── 8. Scheduler (Wave 5 cron jobs) ───────────────────────────────
     scheduler = build_scheduler(
         analysis_service=analysis_service,
@@ -226,11 +253,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         maintenance_service=maintenance_service,
         intervention_service=intervention_service,
         activity_repository=activity_repository,
+        panel_service=panel_service,
         event_retention_days=settings.event_retention_days,
     )
     scheduler.start()
     logger.info(
-        "Wave 5+8b scheduler started (cron: identify, report, cleanup, backup; "
+        "Wave 5+8b scheduler started (cron: daily_panel, identify, report, cleanup, backup; "
         "interval: auto_intervention)"
     )
 
@@ -251,6 +279,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.maintenance_service = maintenance_service
     app.state.scheduler = scheduler
     app.state.llm_service = llm_service
+    app.state.panel_service = panel_service
     app.state.intervention_repository = intervention_repository
     app.state.intervention_service = intervention_service
     app.state.effectiveness_service = effectiveness_service

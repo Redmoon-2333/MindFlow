@@ -41,6 +41,7 @@ from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.collector_service import CollectorService
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
+from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
 
 
@@ -112,6 +113,11 @@ def get_notifier(request: Request) -> NotificationService:
 def get_llm_service(request: Request) -> LLMService:
     """Return the LLMService from app.state."""
     return cast(LLMService, request.app.state.llm_service)
+
+
+def get_panel_service(request: Request) -> PanelService:
+    """Return the PanelService from app.state."""
+    return cast(PanelService, request.app.state.panel_service)
 
 
 def get_intervention_repo(request: Request) -> InterventionLogRepository:

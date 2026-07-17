@@ -15,6 +15,7 @@ from mindflow.api.routes.export import router as export_router
 from mindflow.api.routes.focus import router as focus_router
 from mindflow.api.routes.health import router as health_router
 from mindflow.api.routes.intervention import router as intervention_router
+from mindflow.api.routes.panel import router as panel_router
 from mindflow.api.routes.preferences import router as preferences_router
 from mindflow.api.routes.reports import router as reports_router
 
@@ -35,3 +36,4 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(analytics_router, prefix="/api/v1")
     app.include_router(attribution_router, prefix="/api/v1")
     app.include_router(intervention_router, prefix="/api/v1")
+    app.include_router(panel_router, prefix="/api/v1")

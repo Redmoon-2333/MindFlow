@@ -5,6 +5,7 @@ Per ADR-007, APScheduler is used exclusively for cron-style scheduling
 which runs as a bare ``asyncio.create_task`` inside CollectorService.
 
 Registered cron jobs (all times are UTC):
+  - 23:30  — ``daily_panel``: run expert panel deliberation.
   - 23:59  — ``identify_sessions``: run daily session identification.
   - 00:01  — ``daily_report``: generate today's daily report.
   - 03:00  — ``event_cleanup``: delete raw events past retention policy.
@@ -22,6 +23,7 @@ the service skips recomputation.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from loguru import logger
@@ -159,6 +161,7 @@ def build_scheduler(
     maintenance_service: MaintenanceService | None = None,
     intervention_service: InterventionService | None = None,
     activity_repository: SQLAlchemyActivityRepository | None = None,
+    panel_service: Any | None = None,
     event_retention_days: int = 30,
 ) -> AsyncIOScheduler:
     """Create and configure an ``AsyncIOScheduler`` with cron + interval jobs.
@@ -174,6 +177,8 @@ def build_scheduler(
             (required for the interval job).
         activity_repository: Repository for querying recent activity events
             (required for the auto-intervention job).
+        panel_service: Service for the expert panel deliberation
+            (required for the 23:30 daily_panel job).
         event_retention_days: Retention period for raw events in days.
             Passed to the cleanup job.
 
@@ -183,6 +188,29 @@ def build_scheduler(
         ``scheduler.shutdown()`` during application shutdown.
     """
     scheduler = AsyncIOScheduler(timezone=UTC)
+
+    # ── 23:30 — Expert panel deliberation ────────────────────────────
+    if panel_service is not None:
+        from datetime import date as _date
+
+        async def _run_daily_panel() -> None:
+            try:
+                await panel_service.run_daily_panel(user_id=1, target_date=_date.today())
+            except Exception:
+                logger.exception("Daily panel job failed")
+
+        scheduler.add_job(
+            _run_daily_panel,
+            trigger="cron",
+            hour=23,
+            minute=30,
+            id="daily_panel",
+            replace_existing=True,
+            name="Expert panel deliberation",
+        )
+        logger.debug("Scheduler: registered daily_panel at T23:30")
+    else:
+        logger.warning("Scheduler: panel_service not provided, skipping daily_panel")
 
     # ── 23:59 — Session identification ────────────────────────────────
     if analysis_service is not None:
@@ -267,7 +295,7 @@ def build_scheduler(
         )
 
     logger.info(
-        "Scheduler built with jobs: identify_sessions, daily_report, "
+        "Scheduler built with jobs: daily_panel, identify_sessions, daily_report, "
         "event_cleanup, daily_backup, auto_intervention_check"
     )
     return scheduler
