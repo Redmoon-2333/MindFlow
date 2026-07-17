@@ -27,13 +27,24 @@ def _parse_host(host_header: str) -> tuple[str, int | None]:
     """
     host_header = host_header.strip()
     if host_header.startswith("["):
-        if "]" in host_header:
-            bracket_end = host_header.index("]")
-            hostname = host_header[1:bracket_end]
-            rest = host_header[bracket_end + 1 :]
-            port = int(rest[1:]) if rest.startswith(":") else None
-            return hostname, port
-        return host_header[1:], None
+        bracket_end = host_header.find("]")
+        if bracket_end == -1:
+            return host_header, None
+        hostname = host_header[1:bracket_end]
+        rest = host_header[bracket_end + 1 :]
+        if not rest:
+            return hostname, None
+        if rest.startswith(":"):
+            try:
+                return hostname, int(rest[1:])
+            except ValueError:
+                # Malformed port ("[::1]:evil") — treat the whole header as the
+                # hostname so it fails the trust check (review P1-1).
+                return host_header, None
+        # Trailing garbage after the bracket ("[::1].evil.com") would otherwise
+        # be silently discarded, letting attackers smuggle a trusted-looking
+        # IPv6 literal in front of their real domain (review P1-1).
+        return host_header, None
     if ":" in host_header:
         parts = host_header.rsplit(":", 1)
         try:

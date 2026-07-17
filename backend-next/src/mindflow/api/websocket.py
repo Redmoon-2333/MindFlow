@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
@@ -85,12 +86,42 @@ async def broadcast(message: dict[str, Any]) -> int:
     return sent
 
 
-async def broadcast_activity_update(data: dict[str, Any]) -> None:
-    """Broadcast an ``activity_update`` message (throttled externally).
+async def close_all_connections() -> int:
+    """Close every active WebSocket connection (app shutdown, review P2-2).
 
-    The caller should throttle calls to at most once per 2 seconds and
-    skip if the activity state has not changed (per §4.4 throttling rules).
+    Returns:
+        Number of connections closed.
     """
+    async with _connection_lock:
+        closed = 0
+        for ws in _active_connections.values():
+            try:
+                await ws.close(code=1001)  # going away
+                closed += 1
+            except Exception:  # noqa: BLE001 — best-effort during shutdown
+                pass
+        _active_connections.clear()
+    return closed
+
+
+_last_activity_push: float = 0.0
+_last_activity_state: str | None = None
+
+
+async def broadcast_activity_update(data: dict[str, Any]) -> None:
+    """Broadcast an ``activity_update`` message with inline throttling.
+
+    Enforces the §4.4 contract in the function itself (review P3): pushes at
+    most once per 2 seconds, and skips entirely when the activity state
+    (app + idle flag) has not changed since the last push.
+    """
+    global _last_activity_push, _last_activity_state
+    now = time.monotonic()
+    state_key = f"{data.get('app_name')}|{data.get('is_idle')}"
+    if state_key == _last_activity_state and now - _last_activity_push < 2.0:
+        return
+    _last_activity_push = now
+    _last_activity_state = state_key
     await broadcast({"type": "activity_update", "payload": data})
 
 

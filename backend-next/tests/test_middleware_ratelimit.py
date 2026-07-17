@@ -23,73 +23,73 @@ from mindflow.api.middleware.ratelimit import RateLimitMiddleware, TokenBucket
 class TestTokenBucket:
     """Verify TokenBucket algorithm."""
 
-    def test_initial_capacity(self):
+    async def test_initial_capacity(self):
         """A fresh bucket has full capacity."""
         bucket = TokenBucket(capacity=10, refill_rate=1.0)
-        allowed, remaining, _reset = bucket.consume()
+        allowed, remaining, _reset = await bucket.consume()
         assert allowed is True
         assert remaining == pytest.approx(9.0, abs=0.1)
 
-    def test_consume_until_empty(self):
+    async def test_consume_until_empty(self):
         """Consuming all tokens should exhaust the bucket."""
         bucket = TokenBucket(capacity=3, refill_rate=1.0)
         for _ in range(3):
-            allowed, _remaining, _reset = bucket.consume()
+            allowed, _remaining, _reset = await bucket.consume()
             assert allowed is True
-        allowed, remaining, _reset = bucket.consume()
+        allowed, remaining, _reset = await bucket.consume()
         assert allowed is False
         assert remaining == pytest.approx(0.0, abs=0.1)
 
-    def test_refill_over_time(self):
+    async def test_refill_over_time(self):
         """Tokens should refill over time based on refill_rate."""
         bucket = TokenBucket(capacity=10, refill_rate=10.0)  # 10 tokens/sec
         # Exhaust the bucket
         for _ in range(10):
-            bucket.consume()
-        allowed, _remaining, _reset = bucket.consume()
+            await bucket.consume()
+        allowed, _remaining, _reset = await bucket.consume()
         assert allowed is False
 
         # Wait for refill
         time.sleep(0.15)  # Should have ~1.5 tokens
-        allowed, remaining, _reset = bucket.consume()
+        allowed, remaining, _reset = await bucket.consume()
         assert allowed is True
         assert remaining == pytest.approx(0.5, abs=0.3)
 
-    def test_daily_hard_limit(self):
+    async def test_daily_hard_limit(self):
         """Daily hard limit should cap total usage."""
         bucket = TokenBucket(capacity=100, refill_rate=100.0, daily_hard_limit=5)
         for _ in range(5):
-            allowed, _remaining, _reset = bucket.consume()
+            allowed, _remaining, _reset = await bucket.consume()
             assert allowed is True
         # Should hit daily limit
-        allowed, _remaining, _reset = bucket.consume()
+        allowed, _remaining, _reset = await bucket.consume()
         assert allowed is False
 
-    def test_daily_limit_resets(self):
+    async def test_daily_limit_resets(self):
         """Daily limit should reset after 24h."""
         bucket = TokenBucket(capacity=100, refill_rate=100.0, daily_hard_limit=2)
         for _ in range(2):
-            bucket.consume()
-        allowed, _remaining, _reset = bucket.consume()
+            await bucket.consume()
+        allowed, _remaining, _reset = await bucket.consume()
         assert allowed is False
         # Simulate day passing by manipulating internal state
         bucket._last_day_check = 0
         bucket._day_usage = 0
-        allowed, _remaining, _reset = bucket.consume()
+        allowed, _remaining, _reset = await bucket.consume()
         assert allowed is True
 
-    def test_never_exceeds_capacity(self):
+    async def test_never_exceeds_capacity(self):
         """Refill should never exceed the bucket capacity."""
         bucket = TokenBucket(capacity=5, refill_rate=10.0)
         time.sleep(0.5)  # Would refill ~5 tokens
         bucket._refill()
         assert bucket._tokens == pytest.approx(5.0, abs=0.1)
 
-    def test_reset_timestamp(self):
+    async def test_reset_timestamp(self):
         """Reset timestamp should be a future time."""
         bucket = TokenBucket(capacity=5, refill_rate=1.0)
         bucket.consume(5)  # Exhaust
-        _allowed, _remaining, reset_ts = bucket.consume()
+        _allowed, _remaining, reset_ts = await bucket.consume()
         assert reset_ts > time.time()
 
 

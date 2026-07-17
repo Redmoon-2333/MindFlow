@@ -64,6 +64,9 @@ class Watchdog:
                 host=self._host,
                 port=self._port,
                 log_level="info",
+                # WS auth uses ?token= query param; uvicorn access logs would
+                # record the full request line including the token (review P1-2).
+                access_log=False,
             )
             server = Server(config)
 

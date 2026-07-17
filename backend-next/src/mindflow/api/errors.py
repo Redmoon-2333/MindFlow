@@ -157,6 +157,20 @@ def _internal_error() -> ProblemDetail:
     )
 
 
+def _llm_unavailable() -> ProblemDetail:
+    """Return a 503 when the LLM tier degraded to the rule engine (review P2-3).
+
+    Note: per the requirements error table this signals degradation — the
+    request itself still completes via the rule-engine fallback where possible.
+    """
+    return ProblemDetail(
+        type_slug="llm-unavailable",
+        title="LLM Unavailable",
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="LLM 服务暂不可用，已降级为规则引擎分析",
+    )
+
+
 # ── Exception handlers ───────────────────────────────────────────────────────
 
 

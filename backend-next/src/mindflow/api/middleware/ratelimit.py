@@ -4,7 +4,9 @@ Uses a simple in-memory token bucket algorithm (no Redis dependency) since
 this is a local-only desktop application §4.4.
 
 Rate limits:
-  - Global: 100 requests/minute per client (identified by IP)
+  - Global: 100 requests/minute, single shared bucket (local single-user app;
+    per-IP separation is meaningless on localhost). Single-process only —
+    buckets are in-memory and NOT shared across workers.
   - Per-endpoint: configurable via ``endpoint_limits`` dict keyed by path
 
 The middleware adds the following response headers:
@@ -21,6 +23,7 @@ Token bucket parameters:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
@@ -54,6 +57,9 @@ class TokenBucket:
         self._last_refill = time.time()
         self._day_usage = 0
         self._last_day_check = time.time()
+        # Serializes read-check-deduct so concurrent coroutines cannot both
+        # pass the `tokens >= 1` check and drive the bucket negative (review P2-1).
+        self._lock = asyncio.Lock()
 
     def _refill(self) -> None:
         """Refill tokens based on elapsed time."""
@@ -67,27 +73,28 @@ class TokenBucket:
             self._day_usage = 0
             self._last_day_check = now
 
-    def consume(self, tokens: float = 1.0) -> tuple[bool, float, float]:
-        """Try to consume *tokens* from the bucket.
+    async def consume(self, tokens: float = 1.0) -> tuple[bool, float, float]:
+        """Try to consume *tokens* from the bucket (coroutine-safe).
 
         Returns:
             Tuple of (allowed, remaining, reset_timestamp).
         """
-        self._refill()
+        async with self._lock:
+            self._refill()
 
-        if self._daily_hard_limit is not None and self._day_usage >= self._daily_hard_limit:
-            return False, 0.0, self._last_refill + 86400
+            if self._daily_hard_limit is not None and self._day_usage >= self._daily_hard_limit:
+                return False, 0.0, self._last_refill + 86400
 
-        if self._tokens >= tokens:
-            self._tokens -= tokens
-            if self._daily_hard_limit is not None:
-                self._day_usage += 1
-            return True, self._tokens, self._last_refill + (
-                self._capacity - self._tokens
-            ) / max(self._refill_rate, 0.001)
+            if self._tokens >= tokens:
+                self._tokens -= tokens
+                if self._daily_hard_limit is not None:
+                    self._day_usage += 1
+                return True, self._tokens, self._last_refill + (
+                    self._capacity - self._tokens
+                ) / max(self._refill_rate, 0.001)
 
-        next_token_time = (tokens - self._tokens) / max(self._refill_rate, 0.001)
-        return False, 0.0, self._last_refill + next_token_time
+            next_token_time = (tokens - self._tokens) / max(self._refill_rate, 0.001)
+            return False, 0.0, self._last_refill + next_token_time
 
 
 # Default per-endpoint rate limit configurations
@@ -168,12 +175,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Check per-endpoint limit first (more specific)
         endpoint_bucket = self._endpoint_limits.get(path)
         if endpoint_bucket is not None:
-            allowed, _remaining, reset_ts = endpoint_bucket.consume()
+            allowed, _remaining, reset_ts = await endpoint_bucket.consume()
             if not allowed:
                 return _build_429_response(path, reset_ts)
 
         # Check global bucket
-        allowed, remaining, reset_ts = self._global_bucket.consume()
+        allowed, remaining, reset_ts = await self._global_bucket.consume()
         if not allowed:
             return _build_429_response(path, reset_ts)
 

@@ -60,6 +60,16 @@ class TestParseHost:
         assert hostname == "evil.com"
         assert port == 9999
 
+    def test_ipv6_bracket_suffix_smuggling_not_trusted(self):
+        """[::1].evil.com must NOT parse to a trusted '::1' (review P1-1)."""
+        hostname, _port = _parse_host("[::1].evil.com")
+        assert hostname == "[::1].evil.com"  # full untrusted string
+
+    def test_ipv6_malformed_port_not_trusted(self):
+        """[::1]:notaport must not fall back to a trusted hostname (review P1-1)."""
+        hostname, _port = _parse_host("[::1]:notaport")
+        assert hostname == "[::1]:notaport"
+
 
 class TestHostValidationMiddleware:
     """Verify Host header validation."""
