@@ -13,10 +13,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from apscheduler.triggers.interval import IntervalTrigger
 
+from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 from mindflow.services.scheduler import (
     _auto_intervention_check,
     build_scheduler,
 )
+
+
+def _make_assessment(confidence: float, top_type: ProcrastinationType = ProcrastinationType.TASK_AVERSION) -> MagicMock:
+    """Create a mock ProcrastinationAssessment with a specific confidence."""
+    a = MagicMock()
+    a.types = (top_type,)
+    a.confidence = {top_type: confidence}
+    a.recommended_technique = CBTTechnique.GRADED_EXPOSURE
+    a.rationale = "test"
+    a.source = "rule_engine"
+    return a
 
 
 class TestBuildScheduler:
@@ -261,3 +273,163 @@ class TestAutoInterventionCheck:
 
             mock_repo.query_range.assert_awaited_once()
             mock_svc.maybe_intervene.assert_awaited_once()
+
+
+class TestAutoInterventionCheckThreeTier:
+    """Three-tier routing (G005) tests for _auto_intervention_check.
+
+    All tests use a mock RuleEngine for deterministic confidence control.
+    The real rule-engine → confidence mapping is tested in TestAutoInterventionCheck.
+
+    Covers:
+      - Autonomy disabled → skip
+      - < 0.5 confidence → skip (tier 0)
+      - 0.5 <= confidence < 0.75 → direct maybe_intervene (tier 1)
+      - >= 0.75 with panel → panel escalation (tier 2)
+      - >= 0.75 but panel fails → fallback to rule engine
+      - >= 0.75 but autonomy disabled → skip before panel
+    """
+
+    async def test_skips_when_autonomy_disabled(self) -> None:
+        """Autonomy service reports disabled → skip."""
+        mock_repo = AsyncMock()
+        mock_svc = MagicMock()
+        mock_autonomy = MagicMock()
+        mock_autonomy.is_enabled = AsyncMock(return_value=False)
+
+        with patch("mindflow.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC)
+            mock_dt.UTC = UTC
+            mock_dt.timedelta = __import__("datetime").timedelta
+
+            await _auto_intervention_check(
+                mock_repo, mock_svc, autonomy_service=mock_autonomy
+            )
+
+            mock_repo.query_range.assert_not_called()
+            mock_svc.maybe_intervene.assert_not_called()
+
+    async def _run_with_mock_rule(
+        self, confidence: float, panel_service: object = None, autonomy_service: object = None
+    ) -> MagicMock:
+        """Run _auto_intervention_check with a mock rule engine at *confidence*.
+
+        Returns the mock intervention_service for assertion.
+        """
+        from mindflow.domain.events import make_event
+
+        base = datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC)
+        events = [
+            make_event(
+                user_id=1,
+                timestamp_utc=base,
+                duration_s=10.0,
+                process_name="Code.exe",
+                app_name="Code.exe",
+            ),
+        ]
+        mock_repo = AsyncMock()
+        mock_repo.query_range = AsyncMock(return_value=events)
+
+        mock_engine = MagicMock()
+        mock_engine.assess.return_value = _make_assessment(confidence=confidence)
+
+        mock_result = MagicMock()
+        mock_result.skipped = False
+        mock_svc = MagicMock()
+        mock_svc.maybe_intervene = AsyncMock(return_value=mock_result)
+
+        with patch("mindflow.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC)
+            mock_dt.UTC = UTC
+            mock_dt.timedelta = __import__("datetime").timedelta
+
+            await _auto_intervention_check(
+                mock_repo,
+                mock_svc,
+                rule_engine=mock_engine,
+                panel_service=panel_service,  # type: ignore[arg-type]
+                autonomy_service=autonomy_service,  # type: ignore[arg-type]
+            )
+
+        return mock_svc
+
+    async def test_skip_on_low_confidence(self) -> None:
+        """Mock engine returns confidence 0.3 < 0.5 → skip (tier 0)."""
+        svc = await self._run_with_mock_rule(confidence=0.3)
+        svc.maybe_intervene.assert_not_called()
+
+    async def test_mid_confidence_direct_intervention(self) -> None:
+        """Mock engine returns confidence 0.6 → direct maybe_intervene (tier 1)."""
+        svc = await self._run_with_mock_rule(confidence=0.6)
+        svc.maybe_intervene.assert_awaited_once()
+
+    async def test_high_confidence_panel_escalation(self) -> None:
+        """Mock engine returns confidence 0.85 → escalate to panel (tier 2)."""
+        from mindflow.agents.types import PanelVerdict
+
+        verdict = PanelVerdict(
+            types=(ProcrastinationType.IMPULSIVITY,),
+            confidence={ProcrastinationType.IMPULSIVITY: 0.85},
+            recommended_technique=CBTTechnique.STIMULUS_CONTROL,
+            rationale="测试裁决",
+            dissent=(),
+            transcript=(),
+            escalated=False,
+            call_count=1,
+            source="panel",
+        )
+        mock_panel = MagicMock()
+        mock_panel.run_daily_panel = AsyncMock(return_value=verdict)
+
+        from mindflow.services.scheduler import _DAILY_PANEL_RUN_DATES
+
+        _DAILY_PANEL_RUN_DATES.clear()
+
+        svc = await self._run_with_mock_rule(confidence=0.85, panel_service=mock_panel)
+
+        mock_panel.run_daily_panel.assert_awaited_once()
+        svc.maybe_intervene.assert_awaited_once()
+        _DAILY_PANEL_RUN_DATES.discard("2026-07-17")
+
+    async def test_panel_failure_fallback_to_rule(self) -> None:
+        """Panel raises PanelUnavailableError → fallback to rule (tier 2 fallback)."""
+        mock_panel = MagicMock()
+        from mindflow.agents.types import PanelUnavailableError
+
+        mock_panel.run_daily_panel = AsyncMock(
+            side_effect=PanelUnavailableError(reason="Test failure")
+        )
+
+        from mindflow.services.scheduler import _DAILY_PANEL_RUN_DATES
+
+        _DAILY_PANEL_RUN_DATES.discard("2026-07-17")
+
+        svc = await self._run_with_mock_rule(confidence=0.85, panel_service=mock_panel)
+
+        mock_panel.run_daily_panel.assert_awaited_once()
+        svc.maybe_intervene.assert_awaited_once()
+
+    async def test_autonomy_disabled_before_panel(self) -> None:
+        """Autonomy disabled → skip even with high confidence."""
+        mock_repo = AsyncMock()
+        mock_svc = MagicMock()
+        mock_autonomy = MagicMock()
+        mock_autonomy.is_enabled = AsyncMock(return_value=False)
+        mock_panel = MagicMock()
+
+        with patch("mindflow.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC)
+            mock_dt.UTC = UTC
+            mock_dt.timedelta = __import__("datetime").timedelta
+
+            await _auto_intervention_check(
+                mock_repo,
+                mock_svc,
+                panel_service=mock_panel,
+                autonomy_service=mock_autonomy,
+            )
+
+            mock_repo.query_range.assert_not_called()
+            mock_panel.run_daily_panel.assert_not_called()
+            mock_svc.maybe_intervene.assert_not_called()

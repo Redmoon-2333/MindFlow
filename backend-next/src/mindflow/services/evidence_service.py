@@ -48,6 +48,10 @@ from mindflow.infrastructure.repositories.activity import (
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
 )
+from mindflow.services.effectiveness_service import (
+    EffectivenessReport,
+    EffectivenessService,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Constants
@@ -235,6 +239,8 @@ class EvidenceBundleBuilder:
         activity_repo: Repository for activity event data.
         intervention_repo: Repository for intervention history.
         session_factory: SQLAlchemy session factory for baseline_models query.
+        effectiveness_service: Optional effectiveness service for enriching
+            intervention records with outcome data (G005 learning loop).
     """
 
     def __init__(
@@ -242,10 +248,12 @@ class EvidenceBundleBuilder:
         activity_repo: SQLAlchemyActivityRepository,
         intervention_repo: InterventionLogRepository,
         session_factory: async_sessionmaker[AsyncSession],
+        effectiveness_service: EffectivenessService | None = None,
     ) -> None:
         self._activity_repo = activity_repo
         self._intervention_repo = intervention_repo
         self._session_factory = session_factory
+        self._effectiveness_service = effectiveness_service
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API
@@ -540,9 +548,29 @@ class EvidenceBundleBuilder:
         """Query recent intervention logs and convert to ``InterventionRecord``.
 
         Covers the *INTERVENTION_LOOKBACK_DAYS* days leading up to *window_end*.
+        When *effectiveness_service* is available, enriches the most recent 5
+        records with outcome summaries (G005 learning loop).
         """
         lookback_start = window_end - timedelta(days=_INTERVENTION_LOOKBACK_DAYS)
         logs = await self._intervention_repo.query_range(user_id, lookback_start, window_end)
+
+        # ── Pre-fetch effectiveness data for last 5 interventions ──────
+        # Bounded at 5 to prevent N+1 across all logs (G005 learning loop).
+        effect_data: dict[str, str] = {}
+        if self._effectiveness_service is not None and logs:
+            recent_logs = logs[-5:]
+            for log_entry in recent_logs:
+                lid: str = log_entry.get("id", "")
+                if not lid:
+                    continue
+                try:
+                    report = await self._effectiveness_service.compare_windows(lid)
+                    if report.has_data:
+                        summary = self._format_effectiveness_summary(report)
+                        if summary:
+                            effect_data[lid] = summary
+                except Exception:
+                    logger.debug("No effectiveness data for intervention {}", lid)
 
         records: list[InterventionRecord] = []
         for log in logs:
@@ -558,15 +586,42 @@ class EvidenceBundleBuilder:
                     triggered_at_str,
                 )
                 continue
+
+            initial_note = _response_to_effect_note(log.get("user_response"))
+            enhanced = effect_data.get(log.get("id", ""), "")
+            effect_note = f"{enhanced}；{initial_note}" if enhanced else initial_note
+
             records.append(
                 InterventionRecord(
                     intervention_type=str(log.get("intervention_type", "unknown")),
                     triggered_at=triggered_at,
                     user_response=log.get("user_response"),
-                    effect_note=_response_to_effect_note(log.get("user_response")),
+                    effect_note=effect_note,
                 )
             )
         return records
+
+    @staticmethod
+    def _format_effectiveness_summary(report: EffectivenessReport) -> str:
+        """Format an ``EffectivenessReport`` into a Chinese summary string.
+
+        Produces text like "干预后专注 +18%" for use in effect_note.
+        Returns empty string when no meaningful delta is present.
+        """
+        parts: list[str] = []
+        focus_delta = report.deltas.get("focus_score", 0.0)
+        switch_delta = report.deltas.get("switch_rate", 0.0)
+
+        if abs(focus_delta) >= 1.0:
+            sign = "+" if focus_delta > 0 else ""
+            parts.append(f"专注{sign}{focus_delta:.0f}%")
+        if abs(switch_delta) >= 0.5:
+            if switch_delta < 0:
+                parts.append(f"切换频率-{abs(switch_delta):.1f}次/时")
+            else:
+                parts.append(f"切换频率+{switch_delta:.1f}次/时")
+
+        return "干预后：" + "，".join(parts) if parts else ""
 
     # ══════════════════════════════════════════════════════════════════════
     # Novelty detection

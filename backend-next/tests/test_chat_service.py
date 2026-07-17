@@ -14,19 +14,17 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from mindflow.agents.types import FORBIDDEN_WORDS
-from mindflow.domain.evidence import EvidenceItem, InterventionRecord
 from mindflow.domain.procrastination import BehaviorSummary
 from mindflow.infrastructure.security.crisis_detector import (
     CrisisDetector,
     CrisisLevel,
 )
-from mindflow.services.chat_service import ChatService, _LLM_DOWN_REPLY, _SAFE_REPLY
+from mindflow.services.chat_service import _LLM_DOWN_REPLY, _SAFE_REPLY, ChatService
 
 
 def _make_empty_bundle() -> MagicMock:

@@ -152,6 +152,16 @@ class ChatService:
         self._intervention_repo = intervention_repo
         self._evidence_builder = evidence_builder
 
+    async def aclose(self) -> None:
+        """Close the underlying LLM gateway HTTP client.
+
+        Cleanup hook for application shutdown (review P2 connection leak).
+        """
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            await self._llm_gateway.close()
+
     # ══════════════════════════════════════════════════════════════════════
     # Public API
     # ══════════════════════════════════════════════════════════════════════

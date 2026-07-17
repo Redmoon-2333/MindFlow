@@ -30,6 +30,7 @@ from mindflow.infrastructure.repositories.activity import (
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
 )
+from mindflow.services.effectiveness_service import EffectivenessService
 from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.llm_service import LLMService
 
@@ -43,6 +44,8 @@ class PanelService:
         session_factory: SQLAlchemy session factory.
         orchestrator: The expert panel orchestrator.
         llm_service: LLM service for fallback (single-expert mode).
+        effectiveness_service: Effectiveness service for enriching intervention
+            records with outcome data (G005 learning loop — optional).
     """
 
     def __init__(
@@ -52,11 +55,13 @@ class PanelService:
         session_factory: async_sessionmaker[AsyncSession],
         orchestrator: PanelOrchestrator,
         llm_service: LLMService,
+        effectiveness_service: EffectivenessService | None = None,
     ) -> None:
         self._builder = EvidenceBundleBuilder(
             activity_repo=activity_repo,
             intervention_repo=intervention_repo,
             session_factory=session_factory,
+            effectiveness_service=effectiveness_service,
         )
         self._orchestrator = orchestrator
         self._llm_service = llm_service
@@ -113,6 +118,16 @@ class PanelService:
         )
 
         return self._outcome_to_verdict(outcome)
+
+    async def aclose(self) -> None:
+        """Close the underlying LLM gateway HTTP client.
+
+        Cleanup hook for application shutdown (review P2 connection leak).
+        """
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            await self._orchestrator._gateway.close()  # noqa: SLF001
 
     # ══════════════════════════════════════════════════════════════════════════
     # Helpers

@@ -11,8 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from mindflow.infrastructure.repositories.chat import ChatRepository, chat_messages

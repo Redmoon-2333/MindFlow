@@ -556,6 +556,129 @@ class TestInterventionHistory:
         assert bundle.intervention_history == ()
 
 
+class TestEffectivenessEffectNote:
+    """Effectiveness-driven effect_note enrichment (G005 learning loop).
+
+    Tests that effect_note contains effectiveness summary when
+    EffectivenessService is provided.
+    """
+
+    async def test_effect_note_enriched_with_effectiveness(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        activity_repo: SQLAlchemyActivityRepository,
+        create_tables: None,
+    ) -> None:
+        """effect_note includes '干预后专注' when effectiveness data exists."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from mindflow.infrastructure.repositories.intervention import (
+            InterventionLogRepository,
+        )
+        from mindflow.services.effectiveness_service import EffectivenessReport
+        from mindflow.services.evidence_service import EvidenceBundleBuilder
+
+        intervention_repo = InterventionLogRepository(
+            session_factory=session_factory,
+        )
+
+        # Insert an intervention log
+        now = datetime.now(UTC)
+        await intervention_repo.log_triggered(
+            user_id=1,
+            intervention_type="nudge",
+            context={},
+            intervention_id="test-eff-001",
+            triggered_at=now,
+        )
+
+        # Mock effectiveness service returning positive data
+        mock_eff = MagicMock()
+        report = EffectivenessReport(
+            intervention_id="test-eff-001",
+            before={"focus_score": 50.0, "switch_rate": 20.0, "distraction_ratio": 0.3},
+            after={"focus_score": 68.0, "switch_rate": 15.0, "distraction_ratio": 0.2},
+            deltas={"focus_score": 18.0, "switch_rate": -5.0, "distraction_ratio": -0.1},
+            has_data=True,
+        )
+        mock_eff.compare_windows = AsyncMock(return_value=report)
+
+        builder = EvidenceBundleBuilder(
+            activity_repo=activity_repo,
+            intervention_repo=intervention_repo,
+            session_factory=session_factory,
+            effectiveness_service=mock_eff,
+        )
+
+        window_end = now + timedelta(hours=1)
+        window_start = window_end - timedelta(hours=2)
+
+        bundle = await builder.build(1, window_start, window_end)
+
+        assert len(bundle.intervention_history) >= 1
+        record = bundle.intervention_history[0]
+        assert "干预后" in record.effect_note
+        assert "专注" in record.effect_note
+        assert "18" in record.effect_note
+
+    async def test_effect_note_unchanged_without_data(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        activity_repo: SQLAlchemyActivityRepository,
+        create_tables: None,
+    ) -> None:
+        """effect_note falls back to user_response when no effectiveness data."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from mindflow.infrastructure.repositories.intervention import (
+            InterventionLogRepository,
+        )
+        from mindflow.services.effectiveness_service import EffectivenessReport
+        from mindflow.services.evidence_service import EvidenceBundleBuilder
+
+        intervention_repo = InterventionLogRepository(
+            session_factory=session_factory,
+        )
+
+        now = datetime.now(UTC)
+        await intervention_repo.log_triggered(
+            user_id=1,
+            intervention_type="task_breakdown",
+            context={},
+            intervention_id="test-eff-002",
+            triggered_at=now,
+        )
+
+        # Mock effectiveness returning no data
+        mock_eff = MagicMock()
+        report = EffectivenessReport(
+            intervention_id="test-eff-002",
+            before={"focus_score": 0.0, "switch_rate": 0.0, "distraction_ratio": 0.0},
+            after={"focus_score": 0.0, "switch_rate": 0.0, "distraction_ratio": 0.0},
+            deltas={"focus_score": 0.0, "switch_rate": 0.0, "distraction_ratio": 0.0},
+            has_data=False,
+        )
+        mock_eff.compare_windows = AsyncMock(return_value=report)
+
+        builder = EvidenceBundleBuilder(
+            activity_repo=activity_repo,
+            intervention_repo=intervention_repo,
+            session_factory=session_factory,
+            effectiveness_service=mock_eff,
+        )
+
+        window_end = now + timedelta(hours=1)
+        window_start = window_end - timedelta(hours=2)
+
+        bundle = await builder.build(1, window_start, window_end)
+
+        assert len(bundle.intervention_history) >= 1
+        record = bundle.intervention_history[0]
+        # Should use default human-readable note, not effectiveness summary
+        assert "尚未回应" in record.effect_note
+        assert "干预后" not in record.effect_note
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tests — Novelty detection
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -70,14 +70,15 @@ from mindflow.infrastructure.security.crisis_detector import CrisisDetector
 from mindflow.infrastructure.security.token_manager import load_or_create_token
 from mindflow.logging_config import setup_logging
 from mindflow.services.analysis_service import AnalysisService
+from mindflow.services.autonomy_service import AutonomyService
 from mindflow.services.chat_service import ChatService
 from mindflow.services.collector_service import CollectorService
 from mindflow.services.effectiveness_service import EffectivenessService
+from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.intervention_service import InterventionService
 from mindflow.services.intervention_throttle import InterventionThrottle
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
-from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
 from mindflow.services.scheduler import build_scheduler
@@ -153,6 +154,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── 4b. Wave 7: Intervention repository ───────────────────────────
     intervention_repository = InterventionLogRepository(
         session_factory=session_factory,
+    )
+
+    # ── 4c. G005: Autonomy service ──────────────────────────────────
+    autonomy_service = AutonomyService(
+        preferences_repo=preferences_repository,
     )
 
     # ── 5. Collector ──────────────────────────────────────────────────
@@ -242,6 +248,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 session_factory=session_factory,
                 orchestrator=orchestrator,
                 llm_service=llm_service,
+                effectiveness_service=effectiveness_service,
             )
             logger.info("PanelService created with expert panel orchestrator")
         except Exception as exc:
@@ -261,6 +268,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             activity_repo=activity_repository,
             intervention_repo=intervention_repository,
             session_factory=session_factory,
+            effectiveness_service=effectiveness_service,
         )
         chat_service = ChatService(
             session_factory=session_factory,
@@ -283,6 +291,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         intervention_service=intervention_service,
         activity_repository=activity_repository,
         panel_service=panel_service,
+        autonomy_service=autonomy_service,
         event_retention_days=settings.event_retention_days,
     )
     scheduler.start()
@@ -313,6 +322,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.intervention_service = intervention_service
     app.state.effectiveness_service = effectiveness_service
     app.state.chat_service = chat_service
+    app.state.autonomy_service = autonomy_service
 
     logger.info("MindFlow v{} startup complete", __version__)
 
@@ -327,6 +337,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.debug("Scheduler shut down")
     except Exception as exc:
         logger.warning("Scheduler shutdown error: {}", exc)
+
+    # 1b. Close LLM gateway connections (review P2 — connection leak)
+    if panel_service is not None:
+        try:
+            await panel_service.aclose()
+        except Exception as exc:
+            logger.warning("PanelService gateway close error: {}", exc)
+    if chat_service is not None:
+        try:
+            await chat_service.aclose()
+        except Exception as exc:
+            logger.warning("ChatService gateway close error: {}", exc)
 
     # 2. Close WebSocket connections
     try:

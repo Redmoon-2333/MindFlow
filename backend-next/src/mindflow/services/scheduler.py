@@ -28,15 +28,21 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from loguru import logger
 
+from mindflow.agents.types import (
+    PanelBudgetExceededError,
+    PanelUnavailableError,
+)
 from mindflow.domain.events import ActivityEvent
-from mindflow.domain.procrastination import RuleEngine
+from mindflow.domain.procrastination import ProcrastinationAssessment, RuleEngine
 from mindflow.infrastructure.llm.summary import build_behavior_summary
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
 from mindflow.services.analysis_service import AnalysisService
+from mindflow.services.autonomy_service import AutonomyService
 from mindflow.services.intervention_service import InterventionService
 from mindflow.services.maintenance_service import MaintenanceService
+from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
 
 # Minimum confidence threshold for auto-intervention trigger.
@@ -44,11 +50,22 @@ from mindflow.services.report_service import ReportService
 # and are silently skipped (saves computation and avoids false positives).
 _AUTO_INTERVENTION_MIN_CONFIDENCE: float = 0.5
 
+# Confidence threshold for escalating to the expert panel for a more
+# precise intervention (see G005 three-tier routing).
+_AUTO_INTERVENTION_PANEL_CONFIDENCE: float = 0.75
+
+# Track which dates the daily panel has already been triggered by
+# the auto-intervention check (date string → True).  This prevents
+# redundant panel calls within the same calendar day.
+_DAILY_PANEL_RUN_DATES: set[str] = set()
+
 
 async def _auto_intervention_check(
     activity_repo: SQLAlchemyActivityRepository,
     intervention_service: InterventionService,
     rule_engine: RuleEngine | None = None,
+    panel_service: PanelService | None = None,
+    autonomy_service: AutonomyService | None = None,
     user_id: int = 1,
     window_min: int = 30,
 ) -> None:
@@ -69,11 +86,25 @@ async def _auto_intervention_check(
         activity_repo: Repository for querying recent activity events.
         intervention_service: Service to dispatch interventions.
         rule_engine: RuleEngine instance (created fresh if None).
+        panel_service: Panel service for L1 expert consultation
+            (optional — may be None if PanelService is unavailable).
+        autonomy_service: Autonomy switch service
+            (optional — if None, skips the autonomy check).
         user_id: User identifier (default 1 for single-user mode).
         window_min: Look-back window in minutes (default 30).
     """
     engine = rule_engine or RuleEngine()
     now = datetime.now(UTC)
+
+    # ── Autonomy guard: user-level kill switch (§7 safety boundary) ──
+    if autonomy_service is not None:
+        try:
+            if not await autonomy_service.is_enabled(user_id):
+                logger.debug("Auto-intervention: autonomy disabled, skipping")
+                return
+        except Exception as exc:
+            logger.error("Auto-intervention: autonomy check failed: {}", exc)
+            return
 
     # ── Time-of-day guard: only 08:00-23:00 ─────────────────────────
     hour = now.hour
@@ -132,10 +163,70 @@ async def _auto_intervention_check(
         )
         return
 
+    # ── Three-tier routing (G005) ──────────────────────────────────
+    #   Tier 1 (mid confidence): direct rule-engine intervention
+    #   Tier 2 (high confidence): try expert panel for precise attribution
+    #
+    # Tier 2 is attempted when confidence >= 0.75 AND the panel has not
+    # yet been triggered today.  If the panel fails, we fall back to Tier 1
+    # with the original rule-engine assessment.
+
+    assessment_for_dispatch = assessment
+    panel_attempted = False
+
+    if top_confidence >= _AUTO_INTERVENTION_PANEL_CONFIDENCE and panel_service is not None:
+        today_str = now.strftime("%Y-%m-%d")
+        if today_str not in _DAILY_PANEL_RUN_DATES:
+            logger.info(
+                "Auto-intervention: confidence {:.2f} >= {:.2f}, "
+                "escalating to expert panel",
+                top_confidence,
+                _AUTO_INTERVENTION_PANEL_CONFIDENCE,
+            )
+            panel_attempted = True
+            try:
+                from datetime import date as _date
+
+                verdict = await panel_service.run_daily_panel(
+                    user_id=user_id,
+                    target_date=_date.today(),
+                )
+                _DAILY_PANEL_RUN_DATES.add(today_str)
+
+                # Convert PanelVerdict → ProcrastinationAssessment for
+                # downstream intervention dispatch (more precise attribution).
+                panel_assessment = ProcrastinationAssessment(
+                    types=verdict.types,
+                    confidence=dict(verdict.confidence),
+                    recommended_technique=verdict.recommended_technique,
+                    rationale=verdict.rationale,
+                    source="rule_engine",  # mimic rule_engine for dispatch
+                )
+                assessment_for_dispatch = panel_assessment
+
+                logger.info(
+                    "Panel verdict applied: types={}, technique={}",
+                    [str(t) for t in verdict.types],
+                    verdict.recommended_technique,
+                )
+            except (PanelUnavailableError, PanelBudgetExceededError) as exc:
+                logger.warning(
+                    "Panel escalation failed ({}), falling back to rule engine",
+                    exc,
+                )
+                # Fall through: keep assessment_for_dispatch = assessment
+            except Exception as exc:
+                logger.error("Panel escalation unexpected error: {}", exc)
+
+    if panel_attempted and assessment_for_dispatch is assessment:
+        logger.info(
+            "Auto-intervention: panel failed, falling back to rule-based dispatch"
+        )
+
     # ── Dispatch intervention ───────────────────────────────────────
     try:
         result = await intervention_service.maybe_intervene(
-            assessment=assessment,
+            assessment=assessment_for_dispatch,
             recent_events=events,
             user_id=user_id,
         )
@@ -162,6 +253,7 @@ def build_scheduler(
     intervention_service: InterventionService | None = None,
     activity_repository: SQLAlchemyActivityRepository | None = None,
     panel_service: Any | None = None,
+    autonomy_service: AutonomyService | None = None,
     event_retention_days: int = 30,
 ) -> AsyncIOScheduler:
     """Create and configure an ``AsyncIOScheduler`` with cron + interval jobs.
@@ -179,6 +271,8 @@ def build_scheduler(
             (required for the auto-intervention job).
         panel_service: Service for the expert panel deliberation
             (required for the 23:30 daily_panel job).
+        autonomy_service: Service for the autonomy kill switch
+            (optional — gates both daily_panel and auto_intervention_check).
         event_retention_days: Retention period for raw events in days.
             Passed to the cleanup job.
 
@@ -195,6 +289,12 @@ def build_scheduler(
 
         async def _run_daily_panel() -> None:
             try:
+                # Autonomy guard: user can pause daily panel via kill switch
+                if autonomy_service is not None and not await autonomy_service.is_enabled(  # noqa: E501
+                    user_id=1
+                ):
+                    logger.debug("Daily panel: autonomy disabled, skipping")
+                    return
                 await panel_service.run_daily_panel(user_id=1, target_date=_date.today())
             except Exception:
                 logger.exception("Daily panel job failed")
@@ -273,7 +373,7 @@ def build_scheduler(
     else:
         logger.warning("Scheduler: maintenance_service not provided, skipping daily_backup")
 
-    # ── Every 30 min — Auto intervention check (Wave 8b) ──────────────
+    # ── Every 30 min — Auto intervention check (Wave 8b, G005) ──────────
     if intervention_service is not None and activity_repository is not None:
         scheduler.add_job(
             _auto_intervention_check,
@@ -285,6 +385,8 @@ def build_scheduler(
             kwargs={
                 "activity_repo": activity_repository,
                 "intervention_service": intervention_service,
+                "panel_service": panel_service,
+                "autonomy_service": autonomy_service,
             },
         )
         logger.debug("Scheduler: registered auto_intervention_check (interval=30min)")
