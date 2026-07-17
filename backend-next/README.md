@@ -90,8 +90,39 @@ python -m mindflow.main
 ### 训练 ML 模型
 
 ```bash
-# 使用合成数据训练专注分析模型
-python -m mindflow.analyzer.train
+# 合成数据端到端（种子 42 可复现）
+python -m mindflow.train --source synthetic
+# 真数据训练
+python -m mindflow.train --source db
+# 模型版本管理
+python -m mindflow.train --list-versions
+python -m mindflow.train --rollback 20260717
+```
+
+### 多专家智能体会诊（Phase A-C）
+
+```bash
+# 触发当日会诊（5专家+主持人+批评家, ~6-12次LLM调用）
+curl -X POST -H "Authorization: Bearer $TOKEN" $BASE/panel/today
+
+# 查看最后一次会诊结果
+curl -H "Authorization: Bearer $TOKEN" $BASE/panel
+
+# 对话式问答（4工具 agent loop）
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -d '{"message":"我今天为什么分心？"}' $BASE/chat
+
+# 自主行动体开关
+curl -H "Authorization: Bearer $TOKEN" $BASE/autonomy
+```
+
+无 API key 时自动降级（panel→单专家→规则引擎，chat→规则式安全回复）。
+
+### 评估集（单专家 vs 专家团对比）
+
+```bash
+python -m mindflow.eval --mode both             # mock 模式（确定性回放）
+python -m mindflow.eval --mode both --live --yes  # 真实 LLM（需 key，~180 调用）
 ```
 
 ### 运行测试
