@@ -64,6 +64,8 @@ module = [
     "Xlib.*",
     "AppKit",
     "Quartz",
+    "winrt.*",
+    "plyer",
 ]
 ignore_missing_imports = true
 
