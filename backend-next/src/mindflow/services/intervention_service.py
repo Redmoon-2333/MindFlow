@@ -33,6 +33,7 @@ from mindflow.domain.events import ActivityEvent
 from mindflow.domain.features import focus_score
 from mindflow.domain.ids import new_id
 from mindflow.domain.intervention import (
+    CBT_TECHNIQUE_LABELS_ZH,
     INTENSITY_TEMPLATES,
     INTERVENTION_TYPE_LABELS,
     Intervention,
@@ -170,7 +171,8 @@ def _render_message(
     suggestion = tmpl["suggestion"]
 
     if cbt_technique:
-        suggestion = f"{suggestion}（可尝试 {cbt_technique} 方法）"
+        cbt_label = CBT_TECHNIQUE_LABELS_ZH.get(cbt_technique, cbt_technique)
+        suggestion = f"{suggestion}（可尝试 {cbt_label} 方法）"
 
     title_tmpl, body_tmpl = INTENSITY_TEMPLATES[intensity]
 
@@ -263,6 +265,17 @@ class InterventionService:
             decision = ThrottleDecision(ThrottleReason.OK, detail="手动触发，绕过节流")
 
         # ── 4. Determine CBT technique ────────────────────────────────
+        # TOCTOU note (can_intervene → log_triggered):
+        #   In the current single-user + SQLite single-writer deployment,
+        #   the race window between throttle check and log persistence is
+        #   negligible — no concurrent scheduler ticks or API requests
+        #   can interleave.
+        #   When a multi-threaded scheduler is added (Wave 8+), this
+        #   check→persist gap must be wrapped in an exclusive transaction
+        #   (option A: SELECT … FOR UPDATE on the throttle boundary,
+        #    or option B: transactional INSERT + post-commit recheck).
+
+        # ── 5. Determine CBT technique ────────────────────────────────
         cbt_technique: str | None = None
         if assessment.recommended_technique:
             cbt_technique = str(assessment.recommended_technique)

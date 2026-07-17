@@ -182,7 +182,7 @@ class EffectivenessService:
         switch_deltas: list[float] = []
         distraction_deltas: list[float] = []
 
-        for log_entry in logs[:20]:  # Limit to 20 for performance
+        for log_entry in logs[-20:]:  # Limit to 20 most recent for performance
             lid = log_entry.get("id", "")
             report = await self.compare_windows(lid)
             if report.has_data:

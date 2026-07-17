@@ -32,7 +32,8 @@ class FakeClock:
     """Deterministic clock for throttle testing."""
 
     def __init__(self, start: datetime | None = None) -> None:
-        self._now = start or datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC)
+        # Non-today date to prove date-independence (P0 regression)
+        self._now = start or datetime(2026, 1, 15, 8, 0, 0, tzinfo=UTC)
 
     def now(self) -> datetime:
         return self._now
@@ -52,13 +53,13 @@ class TestThrottleRules:
             await conn.run_sync(intervention_logs.metadata.create_all)
 
     @pytest.fixture
-    def repo(self, session_factory, intervention_tables) -> InterventionLogRepository:
-        """Repository bound to a test DB with intervention_logs table."""
-        return InterventionLogRepository(session_factory=session_factory)
+    def repo(self, session_factory, intervention_tables, clock) -> InterventionLogRepository:
+        """Repository bound to a test DB with intervention_logs table, same clock as throttle."""
+        return InterventionLogRepository(session_factory=session_factory, clock=clock)
 
     @pytest.fixture
     def clock(self) -> FakeClock:
-        """Deterministic clock starting at 2026-07-17 08:00 UTC."""
+        """Deterministic clock starting at 2026-01-15 08:00 UTC (non-today)."""
         return FakeClock()
 
     @pytest.fixture
@@ -280,4 +281,27 @@ class TestThrottleRules:
         decision = await throttle.can_intervene(1, "nudge")
         assert not decision.allowed
         # Cooldown should be the reason, not type cap
+        assert decision.reason == ThrottleReason.COOLDOWN
+
+    # ── Cross-day cooldown ──────────────────────────────────────────
+
+    async def test_cooldown_cross_day_boundary(self, throttle, clock, repo) -> None:
+        """Intervention at 23:30 yesterday → 00:45 today should still block.
+
+        Regression for P1: the cooldown query previously only looked at
+        today's interventions, missing yesterday's late interventions.
+        """
+        # Set clock to yesterday 23:30 and log an intervention
+        clock._now = clock._now.replace(hour=23, minute=30)
+        await repo.log_triggered(
+            user_id=1,
+            intervention_type="nudge",
+            triggered_at=clock.now(),
+        )
+
+        # Advance to today 00:45 (only 1h15m later, well within cooldown)
+        clock._now = clock._now.replace(hour=0, minute=45) + timedelta(days=1)
+
+        decision = await throttle.can_intervene(1, "task_breakdown")
+        assert not decision.allowed
         assert decision.reason == ThrottleReason.COOLDOWN

@@ -20,12 +20,13 @@ Design:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Protocol
 
 from mindflow.infrastructure.repositories.intervention import (
+    Clock,
     InterventionLogRepository,
+    UTCCLock,
 )
 
 
@@ -75,22 +76,6 @@ class ThrottleDecision:
 
     def __repr__(self) -> str:
         return f"ThrottleDecision({self.reason}, allowed={self.allowed})"
-
-
-# ── Clock protocol (for test injection) ────────────────────────────────
-
-
-class Clock(Protocol):
-    """Minimal clock protocol for injectable time."""
-
-    def now(self) -> datetime: ...
-
-
-class UTCCLock:
-    """Production clock — returns datetime.now(UTC)."""
-
-    def now(self) -> datetime:
-        return datetime.now(UTC)
 
 
 # ── Throttle implementation ────────────────────────────────────────────
@@ -150,7 +135,6 @@ class InterventionThrottle:
             the intervention may proceed, otherwise the specific rejection.
         """
         now = self._clock.now()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
         # ── 1. Check fatigue rate early (affects daily limit) ──────────
         ignore_rate = await self._repo.ignore_rate_7d(user_id)
@@ -169,9 +153,12 @@ class InterventionThrottle:
             )
 
         # ── 3. Cooldown ───────────────────────────────────────────────
-        # We need the most recent intervention trigger.  query_range with
-        # a generous window is sufficient since the logs are ordered.
-        recent = await self._repo.query_range(user_id, today_start, now)
+        # We need the most recent intervention trigger (cross-day safe).
+        # Using a look-back of 2x cooldown prevents the "yesterday 23:30
+        # → today 00:45" gap.  query_range with this generous window is
+        # sufficient since the logs are ordered.
+        cooldown_lower_bound = now - timedelta(hours=self._cooldown_h * 2)
+        recent = await self._repo.query_range(user_id, cooldown_lower_bound, now)
         if recent:
             last_ts_str = recent[-1]["triggered_at"]
             try:

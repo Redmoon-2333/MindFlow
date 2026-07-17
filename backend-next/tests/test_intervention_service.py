@@ -138,7 +138,9 @@ class TestRenderMessage:
         title, body = _render_message(
             "task_breakdown", InterventionIntensity.STANDARD, cbt_technique="goal_setting"
         )
-        assert "goal_setting" in body
+        # Uses Chinese label, not raw enum value (P2 requirement)
+        assert "目标设定" in body
+        assert "goal_setting" not in body
 
 
 class TestInterventionService:

@@ -81,6 +81,18 @@ INTERVENTION_TYPE_LABELS: Final[dict[str, str]] = {
     "smart_prioritization": "优先级建议",
 }
 
+# ── CBT technique → Chinese labels for intervention messages ──────────────
+# Values must never contain NF-S7 forbidden terms (诊断/治疗/患者/处方).
+
+CBT_TECHNIQUE_LABELS_ZH: Final[dict[str, str]] = {
+    "behavioral_experiment": "行为实验",
+    "cognitive_restructuring": "认知重构",
+    "stimulus_control": "刺激控制",
+    "goal_setting": "目标设定",
+    "graded_exposure": "渐进暴露",
+    "mindfulness": "正念",
+}
+
 
 @dataclass(frozen=True)
 class Intervention:

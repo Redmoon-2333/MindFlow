@@ -24,12 +24,25 @@ from __future__ import annotations
 import json
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
+
+
+class Clock(Protocol):
+    """Minimal clock protocol for injectable time (reused by throttle)."""
+
+    def now(self) -> datetime: ...
+
+
+class UTCCLock:
+    """Production clock — returns datetime.now(UTC)."""
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
 
 # ── Table definition (matches migration 0001_create_core_tables) ─────
 
@@ -67,8 +80,10 @@ class InterventionLogRepository:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
+        clock: Clock | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._clock = clock or UTCCLock()
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -96,7 +111,7 @@ class InterventionLogRepository:
             The inserted row as a dict.
         """
         row_id = intervention_id or new_id()
-        ts = triggered_at or datetime.now(UTC)
+        ts = triggered_at or self._clock.now()
 
         row = {
             "id": row_id,
@@ -160,7 +175,7 @@ class InterventionLogRepository:
 
     async def count_today(self, user_id: int) -> int:
         """Return the number of interventions triggered today for *user_id*."""
-        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = self._clock.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         stmt = (
             sa.select(sa.func.count())
@@ -178,7 +193,7 @@ class InterventionLogRepository:
 
     async def count_today_by_type(self, user_id: int, intervention_type: str) -> int:
         """Return count of today's interventions of a specific type."""
-        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = self._clock.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         stmt = (
             sa.select(sa.func.count())
@@ -203,7 +218,7 @@ class InterventionLogRepository:
             (not yet responded to). Returns 0.0 if there are no interventions
             in the window.
         """
-        cutoff = datetime.now(UTC) - timedelta(days=7)
+        cutoff = self._clock.now() - timedelta(days=7)
 
         stmt = sa.select(
             sa.func.count().label("total"),

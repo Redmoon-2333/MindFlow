@@ -79,6 +79,9 @@ async def trigger_intervention(
     )
     assessment = rule_engine.assess(summary)
 
+    # Intentionally skip both throttle and deep-work guard on manual trigger:
+    # the user explicitly requested feedback, so limits don't apply here.
+    # The intervention still counts toward rate limits for future automated checks.
     result = await intervention_svc.maybe_intervene(
         assessment=assessment,
         intensity=resolved_intensity,
@@ -160,6 +163,7 @@ async def get_intervention_history(
     Returns:
         A dict with ``interventions`` list and ``count``.
     """
+    # TODO(multi-user): single-user assumption — hardcoded user_id=1
     history = await intervention_svc.get_history(user_id=1, days=days)
     return {
         "interventions": history,
