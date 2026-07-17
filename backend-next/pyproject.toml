@@ -58,6 +58,10 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
 "src/mindflow/train/models.py" = ["N803", "N806"]
 "src/mindflow/train/pipeline.py" = ["N806"]
 "src/mindflow/train/features.py" = ["N806"]
+# E501: Chinese text in system prompts and test fixtures naturally exceeds 100 chars
+"src/mindflow/agents/experts.py" = ["E501"]
+"tests/test_agents_types.py" = ["E501"]
+"tests/test_agents_orchestrator.py" = ["E501"]
 
 [tool.mypy]
 strict = true
