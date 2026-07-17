@@ -57,6 +57,13 @@ module = [
     "alembic.*",
     "uuid6",
     "loguru",
+    "psutil",
+    "win32gui",
+    "win32process",
+    "Xlib",
+    "Xlib.*",
+    "AppKit",
+    "Quartz",
 ]
 ignore_missing_imports = true
 
