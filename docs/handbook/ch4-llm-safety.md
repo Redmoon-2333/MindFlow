@@ -17,10 +17,12 @@ MindFlow 的 LLM 调用承载了核心认知行为功能——它分析用户的
 
 ### 4.1.1 三层降级链（Degradation Chain）
 
-```
-L1: DeepSeek API ──→ L2: Ollama 本地 ──→ L3: 规则引擎
-    (云端)            (本地, 零成本)       (永不失败)
-    ~95% 请求         可选, 需用户部署      ¥0
+#### 图 4-1: 三层降级链
+
+```mermaid
+flowchart LR
+    L1["L1: DeepSeek API（云端）<br/>~95% 请求<br/>输出质量最高"] -->|"失败"| L2["L2: Ollama 本地（可选）<br/>用户部署 qwen3:8b 等<br/>零成本"]
+    L2 -->|"失败"| L3["L3: RuleEngine（永不失败）<br/>纯本地规则<br/>¥0, 零网络"]
 ```
 
 为什么是三层的设计？
@@ -35,11 +37,14 @@ L1: DeepSeek API ──→ L2: Ollama 本地 ──→ L3: 规则引擎
 
 危机检测在**任何 LLM 调用之前**执行：
 
-```
-用户输入 ──→ 危机检测 ──→ CrisisLevel.HIGH? ──→ 是 → 跳过 LLM，直接返回危机热线
-                  │
-                  ↓ 否
-            LLM 调用
+#### 图 4-2: 危机检测前置流程
+
+```mermaid
+flowchart TD
+    Input["用户输入"] --> CrisisDetect["危机检测<br/>纯规则, 零 LLM"]
+    CrisisDetect --> IsHigh{"CrisisLevel.HIGH?"}
+    IsHigh -->|"是"| Hotline["跳过 LLM<br/>直接返回危机热线"]
+    IsHigh -->|"否"| LLMCall["LLM 调用"]
 ```
 
 这是 California SB 243 / Illinois HB 1806 等法规要求的"独立于 LLM 的危机检测机制"（NF-S7b）。核心约束：**零 LLM、零网络**，纯本地规则。
@@ -48,12 +53,15 @@ L1: DeepSeek API ──→ L2: Ollama 本地 ──→ L3: 规则引擎
 
 即使系统提示词（System Prompt）里写了"不要使用医疗用语"，LLM 仍然有可能输出。所以我们在**代码层面**再加一道拦截：
 
-```
-系统提示词 ──→ "不要使用'诊断''治疗''患者''处方'等医疗用语"
-（软约束）
+#### 图 4-3: 禁词双保险
 
-Pydantic Validator ──→ 输出 JSON 后逐字段扫描禁词，命中则拒绝
-（硬约束）
+```mermaid
+flowchart TD
+    SystemPrompt["系统提示词（软约束）<br/>'不要使用诊断、治疗、患者、处方等医疗用语'"] --> LLM["LLM 输出"]
+    LLM --> PydanticValidator["Pydantic Validator（硬约束）<br/>输出 JSON 后逐字段扫描禁词"]
+    PydanticValidator --> Hit{"命中禁词?"}
+    Hit -->|"是"| Reject["拒绝输出<br/>ValueError"]
+    Hit -->|"否"| Pass["通过"]
 ```
 
 两道保险各自的理由：
@@ -78,51 +86,18 @@ Pydantic Validator ──→ 输出 JSON 后逐字段扫描禁词，命中则拒
 
 ## 4.2 安全防线架构图
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                      HTTP Request                                    │
-│              (来自 React 前端 / 本地调度器)                           │
-└──────────────────────────┬───────────────────────────────────────────┘
-                           │
-                    ┌──────▼──────┐
-                    │  Layer 1    │   Host 校验：仅允许 localhost / 127.0.0.1 / [::1]
-                    │  Host       │   防 DNS rebinding 攻击 (NF-S2)
-                    │  Validation │   代码：api/middleware/host.py
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │  Layer 2    │   Token 认证：Bearer token 校验
-                    │  Auth       │   豁免路径：/health, /docs
-                    │  Middleware │   代码：api/middleware/auth.py
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │  Layer 3    │   速率限制：内存令牌桶
-                    │  Rate Limit │   chat 5次/小时, attribution 20次/天
-                    │  Middleware │   代码：api/middleware/ratelimit.py
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │  Business   │   LLM Service 层
-                    │  Logic      │
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │  Layer 4a   │   危机检测：纯规则，零 LLM
-                    │  Crisis     │   命中 → 跳过 LLM，返回热线
-                    │  Detector   │   代码：infrastructure/security/crisis_detector.py
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │  Layer 4b   │   禁词校验：Pydantic field_validator
-                    │  Forbidden  │   "诊断""治疗""患者""处方" → ValueError
-                    │  Words      │   代码：infrastructure/llm/schemas.py
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │  三层降级链  │   L1 DeepSeek → L2 Ollama → L3 RuleEngine
-                    │  Degradation│   代码：services/llm_service.py
-                    └──────────────┘
+#### 图 4-4: 安全防线四层堆叠
+
+```mermaid
+flowchart TD
+    Request["HTTP Request<br/>来自 React 前端 / 本地调度器"] --> L1["Layer 1: Host 校验<br/>仅允许 localhost / 127.0.0.1 / [::1]<br/>防 DNS rebinding 攻击 (NF-S2)<br/>代码: api/middleware/host.py"]
+    L1 --> L2["Layer 2: Token 认证<br/>Bearer token 校验<br/>豁免: /health, /docs<br/>代码: api/middleware/auth.py"]
+    L2 --> L3["Layer 3: 速率限制<br/>内存令牌桶<br/>chat 5次/h, attribution 20次/天<br/>代码: api/middleware/ratelimit.py"]
+    L3 --> Business["Business Logic<br/>LLM Service 层"]
+    Business --> L4a["Layer 4a: 危机检测<br/>纯规则, 零 LLM<br/>命中 -> 跳过 LLM, 返回热线<br/>代码: infrastructure/security/crisis_detector.py"]
+    Business --> L4b["Layer 4b: 禁词校验<br/>Pydantic field_validator<br/>'诊断''治疗''患者''处方' -> ValueError<br/>代码: infrastructure/llm/schemas.py"]
+    L4a --> Degradation["三层降级链<br/>L1 DeepSeek -> L2 Ollama -> L3 RuleEngine<br/>代码: services/llm_service.py"]
+    L4b --> Degradation
 ```
 
 ---
@@ -240,7 +215,7 @@ class LangChainGateway:
 
 两个设计差异值得注意：
 
-- **延迟报错**（E2E 教训）：`LangChainGateway` 允许无 Key 构造，调用时才报错。为什么？因为应用启动时需要能正常组装 PanelService，即使 LLM 不可用，降级路径（panel → single_expert → rule_engine）也必须可达。如果构造时就报错，整个 Service 都创建不了。
+- **延迟报错**（E2E 教训）：`LangChainGateway` 允许无 Key 构造，调用时才报错。为什么？因为应用启动时需要能正常组装 PanelService，即使 LLM 不可用，降级路径（panel -> single_expert -> rule_engine）也必须可达。如果构造时就报错，整个 Service 都创建不了。
 - **协议而非继承**：`PanelLLMGateway` 是一个 `typing.Protocol`，orchestrator 依赖接口而非实现，测试时可以轻松注入 mock。
 
 ### 4.3.2 三层降级链
@@ -253,7 +228,7 @@ async def _run_degradation_chain(
     summary: BehaviorSummary,
     summary_json: str,
 ) -> tuple[dict[str, Any], SourceType, bool]:
-    """Execute L1 → L2 → L3, returning (assessment, source, degraded)."""
+    """Execute L1 -> L2 -> L3, returning (assessment, source, degraded)."""
 
     # L1: DeepSeek API
     if self._deepseek_client is not None:
@@ -291,8 +266,7 @@ async def _run_degradation_chain(
 这段代码体现了降级链的核心设计原则：
 
 - **独立每个层级**：L1 失败了不影响 L2，L2 失败了不影响 L3
-- **L3 永不失败**：RuleEngine 纯本地规则，零网络、零配置——即使没有
-  API Key 也能跑
+- **L3 永不失败**：RuleEngine 纯本地规则，零网络、零配置——即使没有 API Key 也能跑
 - **来源追踪**：返回的 `source` 字段告诉调用方"这个结果来自哪一层"，API 响应里会附带 `meta.degraded=true`
 - **日志分级**：L1 失败打 WARNING（影响用户体验），L3 降级打 INFO（预期行为，不是异常）
 
@@ -302,7 +276,7 @@ RuleEngine 不需要 LLM，纯靠规则判断拖延类型：
 
 | 拖延类型 | 规则 | 参数来源 |
 |---------|------|---------|
-| impulsivity | 最长专注块 < 5分钟 + 切换 > 12次/小时 | 03-requirements.md §3.4 |
+| impulsivity | 最长专注块 < 5分钟 + 切换 > 12次/小时 | 03-requirements.md sec 3.4 |
 | decisional | 启动延迟 > 30分钟 + 启动后恢复专注 | 同上 |
 | perfectionism | 关键词含 self_criticism 或 redo_pattern | 同上 |
 | emotional_regulation | 社交媒体占比 > 55% | 同上 |
@@ -351,6 +325,8 @@ class CrisisDetector:
 
         return CrisisLevel.NONE, None
 ```
+
+用人话说就是：危机检测器就是一个关键词扫描器。检查用户输入的文本是否包含"自杀""不想活"之类的词语，12 个关键词，子串匹配，对性能几乎没有影响。如果命中，就不调用 LLM，直接返回心理援助热线信息。
 
 关键设计决策：
 
@@ -454,7 +430,7 @@ def _confidence_in_range(cls, v: dict[str, float]) -> dict[str, float]:
 - `_confidence_keys_match_types`：确保 LLM 输出的置信度字段和拖延类型字段完全一致——类型和置信度对不上，说明 LLM 输出不一致，拒绝
 - `_confidence_in_range`：置信度必须在 0-1 之间，越界数据直接拒绝
 
-这些校验和 **专家会诊面板** 共享同一套禁词集（`agents/types.py:32-37`），确保两种 LLM 调用路径（归因管线 vs 专家面板）的禁词校验完全一致。
+这些校验和**专家会诊面板**共享同一套禁词集（`agents/types.py:32-37`），确保两种 LLM 调用路径（归因管线 vs 专家面板）的禁词校验完全一致。
 
 ### 4.3.5 Token 认证中间件
 
@@ -507,6 +483,33 @@ class AuthMiddleware(BaseHTTPMiddleware):
 - **Token 文件**：token 存储在 `{data_dir}/token` 文件中，首次启动时自动生成
 - **401 RFC 9457 格式**：错误响应遵循 Problem Details 标准，方便前端统一解析
 
+#### 图 4-5: Token 认证流程
+
+```mermaid
+sequenceDiagram
+    participant Client as 前端 / 客户端
+    participant Auth as AuthMiddleware
+    participant API as API 处理
+
+    Client->>Auth: HTTP Request (带 Authorization: Bearer xxx)
+    Auth->>Auth: 检查路径是否豁免
+    alt 豁免路径 (/health, /docs)
+        Auth->>API: 直接放行
+    else 需要认证
+        Auth->>Auth: 检查 Authorization 头<br/>是否以 "Bearer " 开头
+        alt 格式正确
+            Auth->>Auth: 提取 token 并与预期值对比
+            alt token 匹配
+                Auth->>API: 放行
+            else token 不匹配
+                Auth->>Client: 401 RFC 9457 响应
+            end
+        else 格式错误
+            Auth->>Client: 401 RFC 9457 响应
+        end
+    end
+```
+
 ### 4.3.6 Host 校验：防 DNS Rebinding
 
 ```python
@@ -549,11 +552,7 @@ class HostValidationMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 ```
 
-注释 43 行介绍了一个真实的攻击场景：
-
-> `[::1].evil.com`——攻击者在 IPv6 字面量 `[::1]` 后面拼接恶意域名。如果不处理这个 case，`[::1]` 部分被正确解析，`.evil.com` 被忽略，那 `evil.com` 的页面就能绕过 host 校验访问到本机 API。
-
-代码中 30-47 行的处理逻辑：发现 `]` 后面还有字符且不是 `:端口` 格式，就把整个 header 当作 hostname 返回，必然不在信任列表里，通过不了校验。
+代码中 30-47 行的处理逻辑值得注意：注释 `[::1].evil.com` 描述了一个真实的攻击场景。攻击者在 IPv6 字面量 `[::1]` 后面拼接恶意域名，如果不处理这个 case，`[::1]` 部分被正确解析，`.evil.com` 被忽略，那 `evil.com` 的页面就能绕过 host 校验访问到本机 API。代码的处理方式是：发现 `]` 后面还有字符且不是 `:端口` 格式，就把整个 header 当作 hostname 返回，必然不在信任列表里，通过不了校验。
 
 补充攻击示例：
 
@@ -609,9 +608,11 @@ _DEFAULT_ENDPOINT_LIMITS: dict[str, TokenBucket] = {
 }
 ```
 
+用人话说就是：这就是一个限流器。每个请求消耗一个 token，token 会按一定速率自动补充。如果 token 用完了，返回 429 让客户端等一会再试。外加一个每日硬上限，防止某天用量爆表（比如把 DeepSeek 的 API 额度刷光）。为什么用内存里的令牌桶而不是 Redis？因为这是单用户的本地应用，Redis 的部署成本远大于收益。
+
 为什么用内存令牌桶而不是 Redis？
 
-> 这是本地桌面应用（§4.4），单进程、单用户。Redis 的部署成本 > 收益。`asyncio.Lock()` 保证并发安全，每天重置一次计数器。
+> 这是本地桌面应用（sec 4.4），单进程、单用户。Redis 的部署成本 > 收益。`asyncio.Lock()` 保证并发安全，每天重置一次计数器。
 
 端点限流策略：
 
@@ -694,36 +695,47 @@ def register_exception_handlers(app: FastAPI) -> None:
 设计决策：
 
 - `type` 用英文标识（机器可读），`detail` 用中文（用户可读）
-- `type` URI 不是可解析的 URL（§4.2），只是唯一标识符
+- `type` URI 不是可解析的 URL（sec 4.2），只是唯一标识符
 - 500 错误不泄漏栈信息（NF-S4：输出消毒）
-- `generic_handler` 同时注册 `RuntimeError` 和 `Exception`——Starlette
-  的实现使用确切类型查找（`isinstance` 不生效），双重注册保证兜底
+- `generic_handler` 同时注册 `RuntimeError` 和 `Exception`——Starlette 的实现使用确切类型查找（`isinstance` 不生效），双重注册保证兜底
 
 ---
 
 ## 4.4 与第3章和第5章的衔接
 
-### 从第3章来：ML 输出 → LLM 输入
+### 从第3章来：ML 输出 -> LLM 输入
 
 第3章的 ML 引擎（DeviationDetector + BaselineModel）输出的**不是** LLM 可以消化的格式。两者之间的桥梁是 `EvidenceBundleBuilder`：
 
-```
-ML 引擎输出                                     LLM 输入
-─────────────                                  ──────────
-BehaviorSummary (原始行为指标)                   EvidenceBundle (证据包)
-  ├── focus_score: 72.5                           ├── metric: focus_score, 值: 72.5, 基线: 68.2, z: +0.5
-  ├── switch_count: 15                            ├── metric: switch_count, 值: 15, 基线: 8.5, z: +2.1
-  ├── app_ranking: [...]                          ├── intervention_history: [...]
-  └── anomaly_windows: [...]                      └── severity: moderate
-                                                  │
-                                                  ↓
-                                             to_prompt_json()
-                                                  │
-                                                  ↓
-                                           "{\"metrics\": [{\"name\": \"focus_score\", ...}], ...}"
-                                                  │
-                                                  ↓
-                                           DeepSeek / Ollama / RuleEngine
+#### 图 4-6: ML 引擎到 LLM 输入的数据转换
+
+```mermaid
+flowchart LR
+    subgraph ML["ML 引擎输出"]
+        BS["BehaviorSummary<br/>原始行为指标"]
+        FS["focus_score: 72.5"]
+        SC["switch_count: 15"]
+        AR["app_ranking: [...]"]
+        AW["anomaly_windows: [...]"]
+    end
+
+    subgraph Bridge["EvidenceBundleBuilder"]
+        EB["EvidenceBundle<br/>证据包"]
+        M1["metric: focus_score<br/>值: 72.5, 基线: 68.2, z: +0.5"]
+        M2["metric: switch_count<br/>值: 15, 基线: 8.5, z: +2.1"]
+        IH["intervention_history: [...]"]
+        Sev["severity: moderate"]
+    end
+
+    subgraph LLMInput["LLM 输入"]
+        JSON["to_prompt_json()"]
+        STR["{'metrics': [{'name': 'focus_score', ...}], ...}"]
+        DS["DeepSeek / Ollama / RuleEngine"]
+    end
+
+    BS --> EB
+    ML --> Bridge
+    EB --> JSON --> STR --> DS
 ```
 
 `EvidenceBundle`（`domain/evidence.py`）是这个转换的关键：
@@ -737,26 +749,36 @@ BehaviorSummary (原始行为指标)                   EvidenceBundle (证据包
 
 第5章的专家会诊面板（PanelOrchestrator）并非直接调用 DeepSeek API，而是通过这里的 `LangChainGateway`：
 
-```
-第4章提供 ← → 第5章使用
-─────────────────────────────
-LLMService (单次归因)       PanelOrchestrator (多专家编排)
-  ├── DeepSeekClient          ├── LangChainGateway (协议: PanelLLMGateway)
-  ├── CrisisDetector          ├── 分析师 → 3位归因专家 (并行)
-  ├── Forbidden Word Check    ├── 冲突检测 → 辩论 → 主持人 → 批评家
-  └── 三层降级                  └── 失败时调用 LLMService 降级
-                                      │
-                                      ↓
-                               LLMService.single_expert()
-                               (第4章的降级链)
+#### 图 4-7: 第4章与第5章的协作关系
+
+```mermaid
+flowchart LR
+    subgraph Ch4["第4章 提供"]
+        LS["LLMService (单次归因)"]
+        DC["DeepSeekClient"]
+        CD["CrisisDetector"]
+        FW["Forbidden Word Check"]
+        DG["三层降级"]
+    end
+
+    subgraph Ch5["第5章 使用"]
+        PO["PanelOrchestrator (多专家编排)"]
+        LG["LangChainGateway (Protocol: PanelLLMGateway)"]
+        Experts["分析师 -> 3位归因专家 (并行)"]
+        Debate["冲突检测 -> 辩论 -> 主持人 -> 批评家"]
+        Fallback["失败时调用 LLMService 降级"]
+    end
+
+    Ch4 -->|"single_expert()"| Ch5
+    LG --> Experts --> Debate --> Fallback
+    Fallback --> DG
 ```
 
 四层降级链（`agents/types.py:41`，`PanelSource`）：
 
-```
-panel (专家会诊) → single_expert (LLMService) → ollama (本地) → rule_engine (规则)
-       ↓                      ↓                       ↓               ↓
-  6-12次调用              1次 DeepSeek            1次 Ollama      永不失败
+```mermaid
+flowchart LR
+    P["panel<br/>专家会诊<br/>6-12次调用"] --> S["single_expert<br/>LLMService<br/>1次 DeepSeek"] --> O["ollama<br/>本地<br/>1次 Ollama"] --> R["rule_engine<br/>规则<br/>永不失败"]
 ```
 
 当面板编排（第5章）全部失效时，会调用 `LLMService.single_expert()`（第4章），后者有自己的 L2/L3 降级。这保证了**即使 LangChain gateway 挂掉，用户也能获得规则引擎的兜底分析**。
@@ -769,7 +791,7 @@ panel (专家会诊) → single_expert (LLMService) → ollama (本地) → rule
 |------|------|------|------|
 | DeepSeek Client | `infrastructure/llm/client.py` | L1 主 LLM 调用 | 网络 + API Key |
 | LangChain Gateway | `agents/llm_gateway.py` | L1 新版，供面板使用 | 网络 + API Key |
-| 三层降级链 | `services/llm_service.py` | L1→L2→L3 自动降级 | 按层级递减 |
+| 三层降级链 | `services/llm_service.py` | L1->L2->L3 自动降级 | 按层级递减 |
 | RuleEngine | `domain/procrastination.py` | L3 规则引擎，永不失败 | 无 |
 | CrisisDetector | `infrastructure/security/crisis_detector.py` | 危机检测前置 | 无 |
 | 禁词校验 | `infrastructure/llm/schemas.py` | Pydantic NF-S7 双层校验 | Pydantic |
@@ -777,12 +799,12 @@ panel (专家会诊) → single_expert (LLMService) → ollama (本地) → rule
 | Host 校验 | `api/middleware/host.py` | 防 DNS rebinding | 无 |
 | 速率限制 | `api/middleware/ratelimit.py` | 内存令牌桶限流 | asyncio.Lock |
 | 错误处理 | `api/errors.py` | RFC 9457 Problem Detail | FastAPI |
-| 中间件组装 | `app.py:416-430` | 日志→Host→Auth→RateLimit→CORS | 无 |
+| 中间件组装 | `app.py:416-430` | 日志->Host->Auth->RateLimit->CORS | 无 |
 
 **关键数字**：
 
-- 安全防线叠了 **5 层**（Host → Auth → RateLimit → Crisis → 禁词校验）
-- 降级链 **3 层**（DeepSeek → Ollama → RuleEngine）
+- 安全防线叠了 **5 层**（Host -> Auth -> RateLimit -> Crisis -> 禁词校验）
+- 降级链 **3 层**（DeepSeek -> Ollama -> RuleEngine）
 - 错误码 **8 种**（4xx + 5xx）
 - 禁词 **4 个**（"诊断""治疗""患者""处方"），由两个 Pydantic validator 在不同字段上独立校验
 - 对话限流 **5 次/分钟**，归因限流 **20 次/天**

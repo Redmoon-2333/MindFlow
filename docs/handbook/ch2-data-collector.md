@@ -10,7 +10,7 @@
 
 ### 2.1.1 旧架构的问题
 
-在旧版 `backend/`（位于 `mindflow-app/backend/`）中，ActivityLog 表用 SQLAlchemy ORM 记录每 5 秒的窗口采样。核心缺陷是 **duration 无法精确计算**：
+在旧版 `backend/`（位于 `mindflow-app/backend/`）中，**ActivityLog** 表用 SQLAlchemy ORM 记录每 5 秒的窗口采样。核心缺陷是 **duration 无法精确计算**：
 
 ```python
 # backend/mindflow/models/schemas.py (旧代码)
@@ -22,6 +22,7 @@ class ActivityLog(Base):
 ```
 
 `duration_seconds` 始终等于 `collect_interval_seconds`（5 秒），而不是相邻 tick 之间的实际间隔。这意味着：
+
 - 如果采集器因系统负载被延迟（实际间隔 7 秒），duration 仍记作 5 秒——**数据失真**。
 - 如果用户暂停/恢复采集器，恢复后的第一个 tick 会把缺失时间计入——**统计偏差**。
 - 任何事后分析都无法恢复真实的持续时间信息——**信息永久丢失**。
@@ -30,23 +31,32 @@ class ActivityLog(Base):
 
 ### 2.1.2 Event Sourcing 的核心思想
 
-新架构将行为数据建模为**不可变的事件流**而不是可变的行：
+新架构将行为数据建模为**不可变的事件流**而不是可变的行。下面是旧模式和新模式的直观对比：
 
-```
-CRUD-ORM 模式:    INSERT → UPDATE → UPDATE → DELETE → ... (状态可变)
-Event Sourcing:   APPEND → APPEND → APPEND → ... (不可变追加)
+#### 图1: CRUD vs Event Sourcing 对比
+
+```mermaid
+graph LR
+    subgraph CRUD["CRUD-ORM 模式 (旧)"]
+        direction LR
+        C1["INSERT"] --> C2["UPDATE"] --> C3["UPDATE"] --> C4["DELETE"]
+    end
+    subgraph ES["Event Sourcing (新)"]
+        direction LR
+        E1["APPEND"] --> E2["APPEND"] --> E3["APPEND"]
+    end
 ```
 
-每一条 `ActivityEvent` 都是一次真实观测。duration 从相邻事件的 `timestamp_utc` 之差精确计算，不再依赖配置值。
+CRUD 模式下，一行记录可以被 INSERT、UPDATE、DELETE，状态随时间变化。你无法从最终的行数据恢复历史过程。Event Sourcing 模式下，每条记录只追加一次，从不修改或删除。每一条 `ActivityEvent` 都是一次真实观测。duration 从相邻事件的 `timestamp_utc` 之差精确计算，不再依赖配置值。
 
 ### 2.1.3 append-mostly 与 heartbeat 合并
 
-严格不可变的"纯追加"模型对桌面监控场景并不友好：用户在同一个应用里工作 30 分钟，纯追加模式会产生 ~360 条 tick 记录，99% 的信息是冗余的（app_name 不变）。
+严格不可变的"纯追加"模型对桌面监控场景并不友好——用户在同一个应用里工作 30 分钟，纯追加模式会产生约 360 条 tick 记录，99% 的信息是冗余的（`app_name` 没变过）。
 
-**妥协方案** —— append-mostly（ADR-001）：
+**妥协方案** —— **append-mostly**（ADR-001）：
 
 - **常规行为**: 仅追加写入，从不修改历史事件。
-- **唯一例外**: heartbeat 合并。当用户在 `pulsetime_s` 窗口内（默认 10 秒）未切换应用时，新 tick 不会插入新行，而是 **原子性地将当前行的 `duration_s` 加上 tick 间隔**。
+- **唯一例外**: **heartbeat 合并**。当用户在 `pulsetime_s` 窗口内（默认 10 秒）未切换应用时，新 tick 不会插入新行，而是**原子性地将当前行的 `duration_s` 加上 tick 间隔**。
 
 这个妥协将 90%+ 的磁盘写入压缩为单行 UPDATE，同时保留了"原始 tick 可以精确恢复"的信息完整性。详见 §2.4.2 的代码实现。
 
@@ -56,73 +66,106 @@ Event Sourcing:   APPEND → APPEND → APPEND → ... (不可变追加)
 
 ### 2.2.1 从采集到展示
 
+#### 图2: 从采集到展示的完整数据流
+
+```mermaid
+flowchart LR
+    subgraph Collect["采集层"]
+        EC["EventCollector (Protocol)"]
+        EC_Impl["Win32 / macOS / X11 / Wayland"]
+        EC --- EC_Impl
+    end
+
+    subgraph Service["服务层"]
+        CS["CollectorService (5s tick 循环)"]
+        Tick["1. 调用 collector.snapshot()\n2. 构造 ActivityEvent\n3. 调用 repository.append_event()"]
+        CS --> Tick
+    end
+
+    subgraph Store["存储层 (SQLite WAL)"]
+        AE[("activity_events\n(append-mostly 原始事件流)")]
+        Proj["投影表\nfocus_sessions · daily_reports\nbaseline ..."]
+        Note1["投影表通过调度任务\n或按需从事件流重新计算"]
+        AE --> Proj
+        Note1 -.- Proj
+    end
+
+    subgraph Analysis["分析层"]
+        AS["AnalysisService\n(聚合事件流 → 投影表)"]
+    end
+
+    subgraph API["展示层"]
+        REST["FastAPI REST + WebSocket\n→ 前端展示"]
+    end
+
+    Collect -->|"snapshot() / idle_secs()"| Service
+    Service -->|"append_event()"| Store
+    AE -->|"按需聚合"| Analysis
+    Proj -->|"调度任务定时刷新"| Analysis
+    Analysis -->|"GET /api/v1/..."| REST
 ```
-┌──────────────┐    5s tick      ┌─────────────────────┐
-│  EventCollector │──────────────→│  CollectorService    │
-│  (Protocol)     │  snapshot()   │  (_tick loop)        │
-│  ├─ Win32       │  idle_secs() │                      │
-│  ├─ MacOS       │              │  1. 调用 collector   │
-│  ├─ X11         │              │  2. 构造 ActivityEvent│
-│  └─ Wayland     │              │  3. 调用 repository   │
-└──────────────┘                  └─────┬───────────────┘
-                                        │ append_event()
-                                        ▼
-┌─────────────────────────────────────────────────────────┐
-│              SQLite (WAL Mode)                           │
-│                                                          │
-│  ┌──────────────────┐  ┌──────────────┐                 │
-│  │  activity_events  │  │ focus_sessions│  ← projection  │
-│  │  (append-mostly)  │  │ daily_reports │  ← projection  │
-│  │  ← 原始事件流     │  │ baseline...   │  ← projection  │
-│  └──────────────────┘  └──────────────┘                 │
-│                                                          │
-│  投影表（projections）通过调度任务或按需从事件流重新计算     │
-│  时点始终可追溯——因为原始事件流是完整且不可变的             │
-└──────────────────────────────────────────────────────────┘
-        │                           ▲
-        │ GET /api/v1/...           │ scheduler (cron)
-        ▼                           │
-┌────────────────┐     ┌─────────────────────────┐
-│  FastAPI REST   │     │  AnalysisService         │
-│  + WebSocket    │     │  (聚合事件流 → 投影表)    │
-│  → 前端展示     │     │  FocusSession / DailyReport│
-└────────────────┘     │  Baseline / Deviation     │
-                       └─────────────────────────┘
-```
+
+**数据流说明**：采集层每 5 秒生成一次窗口快照，经过 `CollectorService` 封装为 `ActivityEvent` 后写入 `activity_events` 表。这张表是所有分析的基础——**FocusSession**、**DailyReport**、**BaselineModel** 等投影表都是从原始事件流计算出来的。计算可以按调度任务（每天定时）或按需（用户手动刷新）触发。原始事件流始终完整保留，投影表随时可以重新计算，所以历史数据的精度不会因为分析策略的调整而丢失。
 
 ### 2.2.2 采集器内部时序
 
-```
-时间轴 (单位: 秒)
+#### 图3: 采集器时序交互
 
-t=0      t=5      t=10     t=12     t=17     t=22
- │        │        │        │        │        │
-[snap]─2ms─[snap]─2ms─[snap]─2ms─[snap]─2ms─[snap]─2ms─▶
- │        │        │        │        │
- │        │        │ 切换app│        │
- │        │        │ 新INSERT│       │
- │        │        │        │ 5s后相同app│
- │        │        │        │ 还在pulsetime内
- │        │        │        │ ← heartbeat 合并
- │        │        │        │   UPDATE duration_s += 5
- │        │        │        │
- │        │ 仍相同app       │
- │        │ 在pulsetime内   │
- │        │ ← heartbeat 合并│
- │        │   UPDATE        │
+```mermaid
+sequenceDiagram
+    participant T as 时间轴(s)
+    participant C as EventCollector
+    participant S as CollectorService
+    participant DB as SQLite
+
+    T->>S: t=0
+    S->>C: snapshot()
+    C-->>S: app=A
+    S->>DB: INSERT (app=A, duration=5)
+
+    T->>S: t=5
+    Note over S: app=A, 还在 pulse 窗口内 → heartbeat 合并
+    S->>C: snapshot()
+    C-->>S: app=A
+    S->>DB: UPDATE duration_s += 5
+
+    T->>S: t=10
+    Note over S: app=A, 还在 pulse 窗口内 → heartbeat 合并
+    S->>C: snapshot()
+    C-->>S: app=A
+    S->>DB: UPDATE duration_s += 5
+
+    T->>S: t=12
+    Note over S: 用户切换 app → 新 INSERT
+    S->>C: snapshot()
+    C-->>S: app=B
+    S->>DB: INSERT (app=B, duration=2)
+
+    T->>S: t=17
+    Note over S: app=B, pulse 窗口内 → heartbeat 合并
+    S->>C: snapshot()
+    C-->>S: app=B
+    S->>DB: UPDATE duration_s += 5
+
+    T->>S: t=22
+    Note over S: app=B, pulse 窗口内 → heartbeat 合并
+    S->>C: snapshot()
+    C-->>S: app=B
+    S->>DB: UPDATE duration_s += 5
 ```
 
 关键观察：
-- 第 5 秒和第 10 秒：app_name 未变且时间差 < 10s → 只 UPDATE 上一行 duration_s，不 INSERT。
-- 第 12 秒：用户切换 app → 新 INSERT。
-- 第 17 秒：新 app 持续 → 仍然是新 INSERT（因为上一行是不同 app，不合并）。
-- 第 22 秒：同上 → heartbeat 合并生效。
+- 第 5 秒和第 10 秒：app_name 没变，时间差小于 10 秒 → 只 UPDATE 上一行的 `duration_s`，不 INSERT。
+- 第 12 秒：用户切换 app → 新 INSERT。注意 `duration=2`，这是距离上一个 tick（第 10 秒）的实际时间差。
+- 第 17 秒和第 22 秒：新 app 持续，仍在 pulse 窗口内 → heartbeat 合并继续生效。
 
 ---
 
 ## 2.3 SQLite 7 张表 Schema
 
-> 所有时间戳存储格式为 ISO8601 **带时区**的 UTC 字符串（例如 `"2026-07-18T14:30:05.123456+00:00"`）。废弃旧代码的 naive datetime 策略（P0 技术债 #3）。
+> 所有时间戳存储格式为 **ISO8601 带时区的 UTC 字符串**（例如 `"2026-07-18T14:30:05.123456+00:00"`）。废弃了旧代码的 naive datetime（无时区信息的时间戳）策略（P0 技术债 #3）。
+
+7 张表分为 1 张事件流核心表和 6 张投影表。先看核心表。
 
 ### 2.3.1 事件流核心表
 
@@ -142,7 +185,14 @@ CREATE INDEX idx_events_user_time ON activity_events(user_id, timestamp);
 CREATE INDEX idx_events_type ON activity_events(user_id, event_type, timestamp);
 ```
 
+`activity_events` 表设计要点：
+- `id` 使用 **UUIDv7**（而非自增整数或 UUIDv4），因为 UUIDv7 按时间排序，写入时能利用 SQLite B-tree 的局部性原理（相邻数据在磁盘上相近），减少页分裂。相比之下，UUIDv4 的随机性会导致大量随机 I/O，写入性能下降。
+- `data_json` 存储 JSON 字符串而非平铺列，因为事件类型扩展时平铺列需要改表结构（ALTER TABLE），而 JSON 字段只是换一个数据结构的事。
+- 两个索引分别覆盖"按用户+时间查询"和"按用户+类型+时间查询"这两类最频繁的查询模式。
+
 ### 2.3.2 6 张投影表（从事件流计算得到）
+
+投影表是从原始事件流通过聚合计算得到的分析产物。它们不接收原始写入，而是由调度任务或按需触发重新计算。这种架构保证了**原始数据不丢失，计算结果可追溯**。
 
 ```sql
 -- focus_sessions: 专注会话（调度任务每天 23:59 生成，也可按需触发）
@@ -178,6 +228,8 @@ CREATE TABLE daily_reports (
 );
 ```
 
+**DailyReport 的幂等性**：`UNIQUE(user_id, date)` 保证每天每用户只有一条日报。如果重复调用生成逻辑，第二次会因为唯一约束失败而跳过。这避免了因调度器重复触发而生成重复数据。
+
 ```sql
 -- procrastination_analyses: LLM 归因分析（幂等，每日期望 0-1 条）
 CREATE TABLE procrastination_analyses (
@@ -195,6 +247,8 @@ CREATE TABLE procrastination_analyses (
     UNIQUE(user_id, date)
 );
 ```
+
+`procrastination_analyses` 记录了 LLM 对用户一天行为的归因分析结果。`llm_cost_usd` 字段用于监控 API 费用——如果三层降级链在实际使用中大多落到 L2 或 L3，用户可以据此决定是否值得使用 L1 的付费 API。
 
 ```sql
 -- intervention_logs: 干预推送日志
@@ -235,11 +289,13 @@ CREATE TABLE user_preferences (
 
 ### 2.3.3 投影聚合策略
 
+不同投影表有不同的触发方式和聚合逻辑，下表总结：
+
 | 投影表 | 触发方式 | 聚合逻辑 |
 |--------|----------|----------|
 | FocusSession | 调度任务（每天 23:59）或按需 | 扫描 `activity_events BETWEEN start AND end`，窗口会话聚合，专注块分隔阈值可配置 |
 | DailyReport | 调度任务（每天 00:01）或按需，幂等检查 | 聚合当天 FocusSession + ActivityEvent 统计 |
-| BaselineModel | 每日增量更新 + 事件后缓冲更新 | Welford 在线算法，避免全量重新计算 |
+| BaselineModel | 每日增量更新 + 事件后缓冲更新 | **Welford 在线算法**，避免全量重新计算 |
 | ProcrastinationAnalysis | LLM 归因调用后写入 | 写入一次，幂等性靠 `UNIQUE(user_id, date)` |
 | InterventionLog | 每次干预推送时写入 | 追加日志，不覆盖 |
 | EventCleanup | 调度任务（每天 03:00） | `DELETE FROM activity_events WHERE timestamp < now - 30d`，分批 10,000 行/事务 |
@@ -250,7 +306,7 @@ CREATE TABLE user_preferences (
 
 ### 2.4.1 ActivityEvent frozen dataclass
 
-事件流的基本单元。frozen=True 保证运行时不可变——一旦创建，字段值不再改变。
+事件流的基本单元。**frozen=True** 保证运行时不可变——一旦创建，字段值不再改变。
 
 `backend-next/src/mindflow/domain/events.py`
 
@@ -293,10 +349,11 @@ class ActivityEvent:
 ```
 
 **设计要点**：
-- `frozen=True` 是 Python dataclass 层面的不可变保证，编译器级别不可防恶意代码。
-- `__post_init__` 中验证时区感知——所有 `datetime` 必须 `tzinfo is not None`，这是对旧代码 naive datetime 问题的彻底修复。
-- `to_dict`/`from_dict` 提供 JSON 安全的序列化，`datetime`↔ISO8601 字符串的转换集中在这两个方法里。
-- `WindowSnapshot` 被嵌套为 `ActivityEvent.data`，而不是平铺在表的各列中——这样 event_type 扩展时无需改表结构。
+
+- `frozen=True` 是 Python dataclass（数据类）层面的不可变保证，阻止运行时意外的字段修改。这对应 Event Sourcing 的不可变语义——事件一旦产生就不该被改变。
+- `__post_init__` 中验证时区感知——所有 `datetime` 必须 `tzinfo is not None`。这是对旧代码 naive datetime 问题的彻底修复（之前因为没有时区信息，跨时区数据分析出现错误）。
+- `to_dict`/`from_dict` 提供 JSON 安全的序列化，`datetime` 到 ISO8601 字符串的转换集中在这两个方法里，确保序列化格式一致。
+- `WindowSnapshot` 被嵌套为 `ActivityEvent.data`，而不是平铺在表的各列中。这样当新增 `event_type` 时（比如将来加一个 `screen_capture` 类型），新的数据类型只需要新增一个 dataclass，不需要改表结构。
 
 ### 2.4.2 Heartbeat 合并 SQL UPDATE
 
@@ -345,14 +402,16 @@ def _should_merge(self, last_row: sa.Row[Any], event: ActivityEvent) -> bool:
     return diff < self._pulsetime_s  # 超过时间窗口不合并（默认 10s）
 ```
 
-**解析**：
-- `duration_s = activity_events.c.duration_s + event.duration_s` 是 **SQL 级的原子加法**——在数据库层面累加，没有"读→改→写"的竞争窗口。
-- 整个操作在**同一个事务**内：先查后写，如果合并则跳过 INSERT，保证并发安全。
-- 合并只发生在最近一条 `window_snapshot` 上，历史行从未被修改——这也是"append-mostly"而非"append-only"的精确含义。
+**Heartbeat 合并解析**：
+
+- `duration_s = activity_events.c.duration_s + event.duration_s` 是 **SQL 级的原子加法**——在数据库层面累加，没有"读→改→写"的竞争窗口。如果多个协程同时尝试合并同一行，数据库的事务隔离会保证正确性。
+- 整个操作在**同一个事务**内：先查后写，如果合并则跳过 INSERT，保证并发安全。事务要么全部成功，要么全部回滚，不会出现"查到了但还没来得及写，被另一个协程插队"的情况。
+- 合并只发生在最近一条 `window_snapshot` 上，历史行从未被修改——这也正是"append-mostly"而非"append-only"的精确含义。
+- 三个条件必须全部满足才能合并：事件类型必须是 `window_snapshot`（空闲/手动标签事件不合并）、app 必须与上一行相同（切换应用不合并）、时间差必须在 pulse 窗口内（默认 10 秒）。
 
 ### 2.4.3 EventCollector Protocol 定义
 
-跨平台采集的统一接口，使用 Python `Protocol` 而非 ABC 实现结构性类型检查。
+跨平台采集的统一接口，使用 Python **Protocol**（协议类）而非 ABC 实现结构性类型检查。
 
 `backend-next/src/mindflow/infrastructure/collectors/base.py` (第 34-73 行)
 
@@ -388,11 +447,11 @@ def create_collector(platform: str | None = None) -> EventCollector:
     raise CollectorUnavailableError(f"No collector available for: {platform!r}")
 ```
 
-**解析**：
-- `Protocol`（而非 `ABC`）的好处：**结构性子类型**——只要一个类有 `async def snapshot(self) -> WindowSnapshot` 和 `async def idle_seconds(self) -> float`，在类型系统层面它就自动是 `EventCollector`，无需显式继承。这对测试 mock 和添加新平台都更灵活。
+**为什么用 Protocol 而非 ABC**：`Protocol` 的好处是**结构性子类型**——只要一个类有 `async def snapshot(self) -> WindowSnapshot` 和 `async def idle_seconds(self) -> float`，在类型系统层面它就自动是 `EventCollector`，无需显式继承。这对测试 mock（你不需要继承 `EventCollector`，只要签名匹配就行）和添加新平台（写一个新类，Protocol 自动识别）都更灵活。`ABC` 需要 `class MyCollector(EventCollector)` 的显式继承声明，增加了不必要的耦合。
+
 - `@runtime_checkable` 允许 `isinstance(collector, EventCollector)` 在运行时工作。
-- 工厂函数（`create_collector`）隐藏了平台检测逻辑：调用方只需 `create_collector()`，不需要显式的 if-else。
-- 每种平台实现都限制在 200 行以内（ADR-002）。
+- 工厂函数 `create_collector` 隐藏了平台检测逻辑：调用方只需 `create_collector()`，不需要显式写 if-else 分支。
+- 每种平台实现都限制在 200 行以内（ADR-002），避免单个文件过于庞大。
 
 ### 2.4.4 Win32 采集器核心
 
@@ -455,11 +514,12 @@ class Win32Collector:
             return 0.0
 ```
 
-**解析**：
-- 所有阻塞 Win32 调用通过 `asyncio.to_thread` 在**线程池**中执行，不阻塞 asyncio 事件循环（ADR-007 的核心要求）。
-- 构造函数在导入时检测依赖——`pywin32` 或 `psutil` 缺失时抛出 `CollectorUnavailableError`，但不会在导入 `collectors/` 模块时爆炸，只在真正构造 `Win32Collector()` 时失败。
-- **降级策略**：`snapshot()` 或 `idle_seconds()` 的任何异常都被捕获、记录日志，并返回"垃圾值"（`app_name="unknown"` 的快照或 `0.0` 空闲秒数）。采集器永不崩溃。
-- `_LastInputInfoStruct` 使用 `ctypes` 访问 Windows `GetLastInputInfo` API，其中有 `uint wraparound` 保护——`GetTickCount` 每 ~49.7 天归零。
+**Win32 采集器设计要点**：
+
+- 所有阻塞 Win32 调用通过 `asyncio.to_thread` 在**线程池**中执行，不阻塞 asyncio 事件循环。这是 ADR-007 的核心要求——采集 tick 不应当让整个 API 服务器卡住。
+- 构造函数在调用点（而非导入时）检测依赖——`pywin32` 或 `psutil` 缺失时抛出 `CollectorUnavailableError`，但不会在导入 `collectors/` 模块时爆炸。这意味着在 macOS 上构造 `Win32Collector()` 才会失败，而导入包含 `Win32Collector` 的模块不会。
+- **降级策略**：`snapshot()` 或 `idle_seconds()` 的任何异常都被捕获、记录日志，并返回"安全值"（`app_name="unknown"` 的快照或 `0.0` 空闲秒数）。采集器永不崩溃。如果依赖出了问题，你得到的是降级数据，不是进程崩溃。
+- `_LastInputInfoStruct` 使用 `ctypes` 访问 Windows `GetLastInputInfo` API，其中有 `uint wraparound` 保护——`GetTickCount` 每约 49.7 天归零，代码处理了这个边界情况。
 
 ### 2.4.5 CollectorService tick 循环 + sentinel stop
 
@@ -548,16 +608,17 @@ class CollectorService:
         await self._repository.append_event(event)
 ```
 
-**解析**：
-- `stop()` 使用 **sentinel 模式**：设置 `_stop_requested = True`，等待当前 tick 自然结束，超时后备 `task.cancel()`。这保证 in-flight 的事件被持久化后才关闭（对应 P1-1 需求）。
-- 单 tick 失败不会杀死循环；**连续 10 次失败**才将状态转为 `degraded`（防止瞬时错误误停）。
-- `_tick()` 中的 `actual_duration` 使用**实际测量值**而非配置值——这正是解决旧代码 P0 缺陷的改动。
-- tick 间隔通过 `max(0.0, self._interval_s - elapsed)` 补偿：如果某个 tick 耗时 2s，下次 sleep 只等 3s，维持 5s 的平均间隔。
+**CollectorService 设计解析**：
+
+- `stop()` 使用 **sentinel 模式**（哨兵标志模式）：设置 `_stop_requested = True`，等待当前 tick 自然结束，超时后备 `task.cancel()`。这保证正在写入的事件被持久化后才关闭（对应 P1-1 需求）。相对于强制取消，这种"请求停止→等待完成→超时强杀"的三段式更加安全。
+- 单 tick 失败不会杀死循环；**连续 10 次失败**才将状态转为 `degraded`（防止瞬时错误误停）。这避免了因一次网络抖动或系统负载尖峰就停止采集。
+- `_tick()` 中的 `actual_duration` 使用**实际测量值**而非配置值——这正是解决旧代码 P0 缺陷的关键改动。
+- tick 间隔通过 `max(0.0, self._interval_s - elapsed)` 补偿：如果某个 tick 耗时 2 秒，下次 sleep 只等 3 秒，维持 5 秒的平均间隔。不补偿的话，总体采样频率会低于配置值，长期累积产生系统性的 duration 低估。
 - `asyncio.wait_for` 保护：单个 tick 超过 `interval_s * 2` 自动超时，防止挂死的采集器阻塞循环。
 
 ### 2.4.6 WAL PRAGMA 数据库配置
 
-SQLite WAL 模式的配置通过 SQLAlchemy `event.listen` 绑定到每个新连接。
+SQLite **WAL 模式**（Write-Ahead Logging，预写式日志）的配置通过 SQLAlchemy `event.listen` 绑定到每个新连接。
 
 `backend-next/src/mindflow/infrastructure/database.py` (第 32-71 行)
 
@@ -585,13 +646,14 @@ def create_engine(db_url: str, **kwargs: Any) -> AsyncEngine:
     return engine
 ```
 
-**解析**：
-- `event.listen(engine.sync_engine, "connect", _set_wal_pragmas)` 是 **事件监听器**，不是简单函数调用——每次新数据库连接建立时自动调用，无需调用方手动处理。
-- WAL 模式组合：
+**WAL 配置解析**：
+
+- `event.listen(engine.sync_engine, "connect", _set_wal_pragmas)` 是**事件监听器**，不是简单函数调用——每次新数据库连接建立时自动调用，调用方不需要手动处理。如果你忘记调用，SQLite 会使用默认的 journal 模式（DELETE），那会严重影响并发性能。
+- 每个 PRAGMA 有明确的角色：
   - `journal_mode=WAL`：允许并发读取 + 一个写入器，写入器不阻塞读取器。
-  - `synchronous=NORMAL`：在 checkpoint 时同步 WAL 文件，比 FULL 快约 2x，与 WAL 组合时安全级别等价于旧模式的 FULL。
-  - `busy_timeout=5000`：等待 5 秒而不是立即返回 `SQLITE_BUSY`——这对 5s 采集 tick 特别重要，采集器不会因为短暂锁冲突而丢失 tick。
-  - `journal_size_limit=67108864`：WAL 文件不无限增长，超过 64MB 时自动 checkpoint 压缩。
+  - `synchronous=NORMAL`：在 checkpoint 时同步 WAL 文件，比 FULL 快约 2 倍，与 WAL 组合时安全级别等价于旧模式的 FULL。
+  - `busy_timeout=5000`：等待 5 秒而不是立即返回 `SQLITE_BUSY`——这对 5 秒采集 tick 特别重要，采集器不会因为短暂锁冲突而丢失 tick。
+  - `journal_size_limit=67108864`：WAL 文件不无限增长，超过 64 MB 时自动 checkpoint 压缩。
 
 此外，`integrity_check()`（同文件第 90-124 行）在启动时运行，失败后自动尝试 `VACUUM` 恢复，最终失败则记录日志但允许继续启动——这是 NF-R5 的容错设计。
 
@@ -627,6 +689,8 @@ class EventCollector(Protocol):
 3. **`idle_seconds()` 永不 raise**——失败时返回 `0.0`。
 4. **阻塞调用通过 `asyncio.to_thread` 委托**到线程池，不阻塞事件循环。
 
+这四条规则构成了采集器的**可靠性契约**：调用方不需要 try/except 包裹每一次采集调用，也不需要关心底层平台是哪个。如果出现异常，返回降级数据而不是传播异常。
+
 ### 2.5.3 工厂函数
 
 `create_collector(platform=None)` 处理所有平台路由逻辑。调用方只需：
@@ -645,6 +709,33 @@ await service.start()
 
 第 1 章介绍了四层架构（api → services → domain ← infrastructure）。本章的每个组件明确属于某一层：
 
+#### 图4: 组件层归属
+
+```mermaid
+flowchart LR
+    subgraph API["API 层"]
+        R["路由 / 中间件"]
+    end
+    subgraph SVC["Service 层"]
+        CS["CollectorService"]
+    end
+    subgraph DOM["Domain 层 (零依赖)"]
+        AE["ActivityEvent"]
+        WS["WindowSnapshot"]
+    end
+    subgraph INFRA["Infrastructure 层"]
+        EC["EventCollector Protocol"]
+        IMP["平台实现 (Win32 / macOS / X11)"]
+        REPO["SQLAlchemyActivityRepository"]
+        DB["数据库 PRAGMA 配置"]
+    end
+
+    DOM -.->|"被依赖"| INFRA
+    SVC --> DOM
+    SVC --> INFRA
+    API --> SVC
+```
+
 | 组件 | 层 | 依赖方向 |
 |------|----|----------|
 | `ActivityEvent`, `WindowSnapshot` | Domain | 零依赖（纯 Python） |
@@ -653,22 +744,27 @@ await service.start()
 | `SQLAlchemyActivityRepository` | Infrastructure | 依赖 Domain + SQLAlchemy |
 | 数据库 PRAGMA 配置 | Infrastructure | 依赖 SQLAlchemy aiosqlite |
 
-Domain 层的 Event/WindowSnapshot 被 Infrastructure 层引用，而 Service 层编排两者——这正是"依赖方向"规则的具体实例。
+Domain 层的 Event/WindowSnapshot 被 Infrastructure 层引用，而 Service 层编排两者——这正是第 1 章"依赖方向"规则的具体实例。
 
 ### 与第 3 章的关系
 
-第 3 章的 ML 引擎消费的是**事件流**，而不是直接读写采集数据：
+#### 图5: ML 引擎与事件流的关系
 
+```mermaid
+flowchart LR
+    CS["CollectorService"] -->|"写入"| AE[("activity_events 表\n原始事件流")]
+    AE -->|"消费"| AS["AnalysisService"]
+    AS -->|"生成"| PT["投影表\nFocusSession · DailyReport\nBaseline"]
+    PT -->|"输入"| ML["ML 管线"]
 ```
-CollectorService → activity_events 表 → AnalysisService → 投影表 → ML 管线
-                     ↑                          ↑
-                 原始事件流                  按需/定时聚合
-```
+
+第 3 章的 ML 引擎消费的是**事件流**，而不是直接读写采集数据。具体来说：
 
 - ML 引擎的 **BaselineModel**（Welford 在线算法）在每次新事件到来后增量更新。
-- **DeviationDetector** 在单个时间段内扫描事件流计算 z-score。
+- **DeviationDetector** 在单个时间段内扫描事件流计算 z-score（标准化偏离分数）。
 - **FocusSession** 识别扫描 `activity_events` 按时间窗口聚合。
-- 第 3 章将详细展示这些投影是如何从原始事件流计算得到的。
+
+第 3 章将详细展示这些投影是如何从原始事件流计算得到的。
 
 ---
 
@@ -676,11 +772,11 @@ CollectorService → activity_events 表 → AnalysisService → 投影表 → M
 
 | 概念 | 一句话 |
 |------|--------|
-| Event Sourcing | 不可变事件流，duration 按实际时间差计算，而非配置值估算 |
-| append-mostly | 常规只追加，唯一例外是同应用 pulse 窗口内的 heartbeat UPDATE |
-| heartbeat 合并 | SQL 级原子累加，减少 90%+ 磁盘写入 |
-| EventCollector Protocol | 两个方法、四个平台实现，降级永不崩溃 |
-| WAL 模式 | SQLite 高性能并发所需：WAL + NORMAL + busy_timeout + journal_size_limit |
-| 6 张投影表 | 从原始事件流按需/定时计算的分析结果，始终可追溯 |
+| **Event Sourcing** | 不可变事件流，duration 按实际时间差计算，而非配置值估算 |
+| **append-mostly** | 常规只追加，唯一例外是同应用 pulse 窗口内的 heartbeat UPDATE |
+| **heartbeat 合并** | SQL 级原子累加，减少 90%+ 磁盘写入 |
+| **EventCollector Protocol** | 两个方法、四个平台实现，降级永不崩溃 |
+| **WAL 模式** | SQLite 高性能并发所需：WAL + NORMAL + busy_timeout + journal_size_limit |
+| **6 张投影表** | 从原始事件流按需/定时计算的分析结果，始终可追溯 |
 
 下一章将深入 ML 引擎如何消费这个事件流，从专注分数计算到偏离检测到行为聚类。

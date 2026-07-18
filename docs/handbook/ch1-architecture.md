@@ -2,125 +2,137 @@
 
 ## 1.1 项目定位
 
-**MindFlow** 是一个本地优先的智能专注力追踪与抗拖延助手。它运行在用户的个人电脑上，通过周期性采集活跃窗口信息，分析用户的行为模式，并在检测到拖延倾向时生成个性化的认知行为干预。MindFlow 的核心设计原则是 **高性能 > 高可用 > 高专业度**，始终在本地运行，不依赖云端服务——所有行为数据存储在用户的 SQLite 文件中，LLM 归因分析采用三层降级链（DeepSeek API → Ollama 本地模型 → 规则引擎），确保核心功能在任何网络条件下都可工作。
+**MindFlow** 是一个本地优先的智能专注力追踪与抗拖延助手。它运行在你的个人电脑上，周期性采集活跃窗口信息，分析你的行为模式，在检测到拖延倾向时生成个性化的认知行为干预。
 
-MindFlow 不是 SAAS 产品，而是一个 PyInstaller 打包的单进程桌面应用。它服务于希望了解自己注意力分布、减少无意识拖延的个人用户。
+MindFlow 的设计原则是 **高性能 > 高可用 > 高专业度**。它始终在本地运行，不依赖云端服务——所有行为数据存在你的 SQLite 文件里。LLM 归因分析（用大语言模型判断你是走神了还是真在工作）采用三层降级链：**DeepSeek API** → **Ollama 本地模型** → **规则引擎**。这样，核心功能在任何网络条件下都能工作。
+
+MindFlow 不是 SaaS 产品，而是一个 PyInstaller 打包的单进程桌面应用。它服务于希望了解自己注意力分布、减少无意识拖延的个人用户。
 
 ## 1.2 架构全景
 
 ### 1.2.1 三层架构
 
-MindFlow 采用经典的**分层架构**，依赖方向严格单向：Presentation → Application → Domain ← Infrastructure。
+MindFlow 采用经典**分层架构**，依赖方向严格单向：**Presentation → Application → Domain ← Infrastructure**。
 
-```
-┌─────────────────────────────────────────┐
-│  Presentation 层 (api/)                  │
-│  routes/ · websocket.py · middleware/    │
-│  → FastAPI endpoints + WS handler        │
-│  → 依赖: services, domain                │
-├─────────────────────────────────────────┤
-│  Application 层 (services/)              │
-│  collector_service · analysis_service   │
-│  llm_service · intervention_service     │
-│  → 业务编排, 无框架依赖                   │
-│  → 依赖: domain, infrastructure          │
-├─────────────────────────────────────────┤
-│  Domain 层 (domain/)                     │
-│  events.py · procrastination.py         │
-│  baseline.py · deviation.py · features  │
-│  → 纯 Python, 零外部依赖                  │
-│  → 依赖: 无                              │
-├─────────────────────────────────────────┤
-│  Infrastructure 层 (infrastructure/)     │
-│  database.py · repositories/            │
-│  collectors/ · llm/ · config/           │
-│  → SQLAlchemy/APScheduler/pywin32 适配   │
-│  → 依赖: 外部库 + domain                 │
-└─────────────────────────────────────────┘
+#### 图1: 四层架构依赖关系
+
+```mermaid
+flowchart LR
+    subgraph P["Presentation 层 (api/)"]
+        direction LR
+        P1["routes/ · websocket.py · middleware/"]
+    end
+    subgraph A["Application 层 (services/)"]
+        direction LR
+        A1["collector_service · analysis_service"]
+        A2["llm_service · intervention_service"]
+    end
+    subgraph D["Domain 层 (domain/)"]
+        direction LR
+        D1["events.py · procrastination.py"]
+        D2["baseline.py · deviation.py · features"]
+    end
+    subgraph I["Infrastructure 层 (infrastructure/)"]
+        direction LR
+        I1["database.py · repositories/"]
+        I2["collectors/ · llm/ · config/"]
+    end
+
+    P -->|"依赖"| A
+    A -->|"依赖"| D
+    I -->|"依赖"| D
 ```
 
-**依赖方向说明**：箭头 `→` 表示"依赖"。Domain 位于底层中心，不依赖任何其他层；Infrastructure 依赖 Domain（实现其接口）；Services 编排 Domain 和 Infrastructure；API 是入口，依赖于 Services。
+**依赖方向说明**：箭头表示"依赖"。Domain 位于底层中心，**零外部依赖**——它是纯 Python，不依赖任何框架或外部库。Infrastructure 层依赖 Domain（实现其接口）。Services 层编排 Domain 和 Infrastructure 的协作。API 层是入口，只依赖 Services。
+
+这种单向依赖的好处是：Domain 层的改动不会影响其他层，其他层改了 Domain 不受影响。你可以在不改动核心业务逻辑的前提下，替换数据库（SQLite → PostgreSQL）、切换采集器（Win32 → macOS）、甚至替换 Web 框架（FastAPI → 其他）。
 
 ### 1.2.2 进程与部署拓扑
 
+#### 图2: 应用进程拓扑
+
+```mermaid
+flowchart TB
+    subgraph App["MindFlow Desktop App (单进程)"]
+        direction TB
+        subgraph UV["uvicorn.Server (asyncio event loop)"]
+            direction TB
+            F["FastAPI App (REST :8765)"]
+            WS["WebSocket /api/v1/ws"]
+            DI["Dependency Injection (FastAPI Depends)"]
+            S["Services (业务逻辑)"]
+            R["Repositories (数据访问)"]
+            DB["SQLAlchemy AsyncEngine (aiosqlite) / SQLite WAL"]
+
+            F & WS --> DI --> S & R --> DB
+        end
+    end
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                MindFlow Desktop App (单进程)                    │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │  uvicorn.Server (asyncio event loop)                  │    │
-│  │                                                        │    │
-│  │  ┌──────────────┐  ┌──────────────┐                   │    │
-│  │  │  FastAPI App  │  │  WebSocket    │                   │    │
-│  │  │  (REST :8765) │  │  /api/v1/ws   │                   │    │
-│  │  └──────┬───────┘  └──────┬───────┘                   │    │
-│  │         │                  │                            │    │
-│  │  ┌──────┴──────────────────┴───────┐                   │    │
-│  │  │       Dependency Injection       │                   │    │
-│  │  │  (FastAPI Depends / 接口协议)     │                   │    │
-│  │  └──────┬──────────────────┬───────┘                   │    │
-│  │         │                  │                            │    │
-│  │  ┌──────┴──────┐  ┌───────┴────────┐                  │    │
-│  │  │  Services    │  │  Repositories   │                  │    │
-│  │  │  (业务逻辑)   │  │  (数据访问)      │                  │    │
-│  │  └──────┬──────┘  └───────┬────────┘                  │    │
-│  │         │                  │                            │    │
-│  │  ┌──────┴──────────────────┴───────┐                   │    │
-│  │  │  SQLAlchemy AsyncEngine (aiosqlite) │                │    │
-│  │  │  SQLite WAL 模式                  │                   │    │
-│  │  └──────────────────────────────────┘                   │    │
-│  └──────────────────────────────────────────────────────┘    │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │  CollectorService (同进程 asyncio task)                │    │
-│  │  ┌────────────┐ ┌──────────┐ ┌────────────┐         │    │
-│  │  │ WinTracker │ │MacTracker│ │X11Tracker  │         │    │
-│  │  │ (win32gui) │ │ (pyobjc) │ │(python-xlib)│        │    │
-│  │  └────────────┘ └──────────┘ └────────────┘         │    │
-│  │         ↓ (EventCollector protocol)                   │    │
-│  │  ┌──────────────────────────────────────────────┐    │    │
-│  │  │  asyncio task: 5s tick 循环 (while+sleep)      │    │    │
-│  │  │  → EventBus (asyncio.Queue)                   │    │    │
-│  │  │  → EventWriter → SQLite (append-mostly)        │    │    │
-│  │  └──────────────────────────────────────────────┘    │    │
-│  └──────────────────────────────────────────────────────┘    │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │  LLM Pipeline (可选, 三层降级)                         │    │
-│  │  DeepSeek API → Ollama(local) → RuleEngine           │    │
-│  └──────────────────────────────────────────────────────┘    │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │  Watchdog (崩溃恢复循环)                               │    │
-│  │  最多 3 次重启/小时, 线性 backoff                       │    │
-│  └──────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────┘
+
+#### 图3: 采集器与 LLM 流水线
+
+```mermaid
+flowchart LR
+    subgraph Collector["CollectorService (同进程 asyncio task)"]
+        direction LR
+        C1["WinTracker (win32gui)"]
+        C2["MacTracker (pyobjc)"]
+        C3["X11Tracker (python-xlib)"]
+        C4["5s tick 循环 (while+sleep)"]
+        EB["EventBus (asyncio.Queue)"]
+        EW["EventWriter → SQLite (append-mostly)"]
+
+        C1 & C2 & C3 --> C4 --> EB --> EW
+    end
+
+    subgraph LLM["LLM Pipeline (可选, 三层降级)"]
+        L1["DeepSeek API"]
+        L2["Ollama (local)"]
+        L3["RuleEngine"]
+        L1 --> L2 --> L3
+    end
+
+    subgraph WD["Watchdog (崩溃恢复循环)"]
+        W1["最多 3 次重启/小时, 线性 backoff"]
+    end
+
+    WD -.->|"监控"| Collector
 ```
 
 **关键设计选择**:
 
-- **同进程异步隔离**：采集器作为独立 asyncio task 运行在 API 进程内，通过 EventBus（asyncio.Queue）通信，不与 API 请求路径共享可变状态。对比 ActivityWatch 的多进程方案，降低了约 300 行 IPC 代码。
-- **依赖注入**：所有 Service 和 Repository 通过 FastAPI `Depends()` 获取实例。废弃旧代码中 `from scheduler import collector` 的全局单例模式。
-- **单进程打包**：最终产物是 PyInstaller 打包的单可执行文件，watchdog 进程覆盖崩溃恢复场景。
+- **同进程异步隔离**：采集器作为独立 asyncio task 运行在 API 进程内，通过 **EventBus**（`asyncio.Queue`）通信，不与 API 请求路径共享可变状态。对比 ActivityWatch 的多进程方案，这个设计减少了约 300 行 IPC（进程间通信）代码，也省去了进程间序列化/反序列化的开销。
+- **依赖注入**：所有 Service 和 Repository 通过 FastAPI `Depends()` 获取实例。旧代码中 `from scheduler import collector` 那样的全局单例模式已经废弃。依赖注入让测试时可以轻松替换 mock 对象。
+- **单进程打包**：最终产物是一个 PyInstaller 打包的单可执行文件。watchdog 进程覆盖崩溃恢复场景，不需要系统级的进程管理器（如 systemd 或 launchd）。
 
 ### 1.2.3 三层 LLM 降级链
 
 LLM 归因分析是 MindFlow 的差异化特性，但其可用性不能依赖网络或第三方 API。三层降级保证核心功能永远可用：
 
-```
-L1: DeepSeek API (主路径, 期望 95% 请求)
-  → 成功: 返回 LLM 归因结果
-  → 失败: 降级到 L2
+#### 图4: LLM 三层降级链
 
-L2: Ollama 本地模型 (可选, 零成本)
-  → 成功: 返回本地模型归因结果
-  → 失败: 降级到 L3
+```mermaid
+flowchart TD
+    L1["L1: DeepSeek API (主路径, 期望 95% 请求)"]
+    L1_Success["返回 LLM 归因结果"]
+    L1_Fail["降级到 L2"]
+    L2["L2: Ollama 本地模型 (可选, 零成本)"]
+    L2_Success["返回本地模型归因结果"]
+    L2_Fail["降级到 L3"]
+    L3["L3: RuleEngine (兜底, 永远可用)"]
+    L3_Result["基于 TMT 5 类可计算规则, 输出结构与 LLM 一致"]
 
-L3: RuleEngine (兜底, ¥0, 永远可用)
-  → 基于 TMT 5 类可计算规则, 输出结构与 LLM 一致
+    L1 -->|成功| L1_Success
+    L1 -->|失败| L1_Fail --> L2
+    L2 -->|成功| L2_Success
+    L2 -->|失败| L2_Fail --> L3 --> L3_Result
 ```
+
+**规则引擎兜底的价值**：即使没有网络（DeepSeek 不可用）也没有安装 Ollama，**RuleEngine** 仍然能基于预设的 TMT（时间动机理论）规则给出归因分析。它的输出结构和 LLM 版本完全一致，前端不需要关心当前用的是哪一层。用户看到的始终是同样格式的分析结果，只是深度和细腻度有差异。
 
 ## 1.3 技术栈
+
+MindFlow 的技术选型覆盖了从底层采集到上层 API 的完整链条。下表按层列出了所有依赖及其用途：
 
 | 层 | 技术 | 版本要求 | 用途 |
 |----|------|---------|------|
@@ -146,6 +158,8 @@ L3: RuleEngine (兜底, ¥0, 永远可用)
 | 测试 | pytest + pytest-asyncio + pytest-cov + hypothesis | latest | 全量测试 |
 | 代码质量 | ruff + mypy (strict) | latest | 静态检查 |
 | 路径管理 | platformdirs | ≥4.0 | 跨平台数据目录 |
+
+**选型要点**：数据库选择了 **SQLite WAL 模式**（而非 PostgreSQL）——零配置、单文件、WAL 模式解决并发读写问题（ADR-005）。采集层按平台分别使用不同的原生 API，每种平台实现控制在 200 行以内。ML 层选择了轻量级的 scikit-learn 和 hmmlearn，避免引入重量级深度学习框架的依赖成本。
 
 ## 1.4 目录结构
 
@@ -229,6 +243,8 @@ mindflow-app/backend-next/
             └── crisis_detector.py  # 独立危机检测 (独立于 LLM)
 ```
 
+**目录结构解读**：按层分包的目录设计严格遵循了架构图中的依赖方向。`domain/` 下的文件零外部依赖，`infrastructure/` 下的文件各自依赖外部库（SQLAlchemy、pywin32 等），`services/` 编排前两者，`api/` 暴露 HTTP 接口。新增功能时，开发者只需在对应层添加文件，不需要打乱现有结构。
+
 ## 1.5 关键代码
 
 以下三段代码展示了 MindFlow 最核心的运行机制。
@@ -237,7 +253,9 @@ mindflow-app/backend-next/
 
 **来源**: `src/mindflow/app.py:89-377`
 
-`_lifespan` 协程是 MindFlow 的启动和关闭生命周期管理函数。启动时按顺序装配数据库迁移、完整性检查、认证 Token、仓储实例、采集器、各业务服务、调度器；关闭时按逆序清理：
+`_lifespan` 协程是 MindFlow 的启动和关闭生命周期管理函数。启动时按顺序装配：数据库迁移 → 完整性检查 → 认证 Token → 仓储实例 → 采集器 → 各业务 Service → 调度器。关闭时逆序清理，每一步都有超时保护。
+
+为什么用 **lifespan** 而不是独立的 `startup`/`shutdown` 事件？因为 lifespan 是 FastAPI 原生支持的 ASGI（异步服务网关接口）生命周期协议，用 `yield` 天然区分启动和关闭阶段，比两个独立事件更不容易遗漏清理步骤。
 
 ```python
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -312,13 +330,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await asyncio.wait_for(engine.dispose(), timeout=3.0)
 ```
 
-**解析**：启动阶段按优先级装配组件——数据库是最底层依赖，最先初始化；Scheduler 依赖所有 Services，最后启动。关闭时严格逆序，每个清理步骤有超时保护，确保不因个别步骤挂起而阻塞进程退出。lifespan 是 FastAPI 的 ASGI 生命周期协议，Python 3.10+ 的 `yield` 在 async context manager 中天然区分启动和关闭阶段。
+**启动阶段解析**：数据库是最底层依赖，最先初始化；Scheduler 依赖所有 Services，最后启动。值得注意的是步骤 5——采集器虽然在第 5 步就创建了，但 `_lifespan` 不会自动启动它，启动由外部调用方决定。这是 MindFlow 的设计选择：应用启动时不立即开始采集，给用户一个窗口期来配置偏好。
+
+**关闭阶段解析**：严格逆序，每个清理步骤有 3 秒超时保护。Scheduler 最先关闭，防止在清理过程中产生新任务；WebSocket 连接其次关闭，避免推送给已关闭的客户端；采集器第 3 步关闭，等待正在写入的事件完成；数据库引擎最后关闭，因为不再有任何组件需要访问它。
 
 ### 1.5.2 Watchdog 崩溃恢复循环
 
 **来源**: `src/mindflow/main.py:30-103`
 
-`Watchdog` 类封装了 uvicorn 服务器编程式启动和崩溃恢复逻辑。当服务器因未捕获异常退出时，watchdog 自动重启，但不超过每小时 3 次（NF-R1 可靠性的具体实现）：
+`Watchdog` 类封装了 uvicorn 服务器的编程式启动和崩溃恢复逻辑。当服务器因未捕获异常退出时，watchdog 自动重启，但不超过每小时 3 次——这是 NF-R1 可靠性要求的具体实现。
 
 ```python
 class Watchdog:
@@ -376,13 +396,15 @@ class Watchdog:
         return min(1.0 * count, 5.0) if count else 0.5
 ```
 
-**解析**：`Watchdog` 在无限循环中反复创建 uvicorn `Server` 并 `await server.serve()`。当 `serve()` 因异常返回后，记录崩溃时间戳到滚动列表，检查 1 小时窗口内崩满 3 次则停止。`_backoff_delay()` 实现线性 backoff，避免反复快速重启耗尽系统资源。`main()` 入口使用 `asyncio.wait` 同时等待 watchdog task 和 shutdown signal，配合 `add_signal_handler` 实现 SIGINT/SIGTERM 的优雅退出。
+**Watchdog 工作机制**：`Watchdog` 在无限循环中反复创建 uvicorn `Server` 并 `await server.serve()`。当 `serve()` 因异常返回后，记录崩溃时间戳到滚动列表，检查 1 小时窗口内崩满 3 次则停止。`_backoff_delay()` 实现线性 backoff（退避等待：0.5 秒 → 1 秒 → 2 秒 → 3 秒 → 5 秒封顶），避免反复快速重启耗尽系统资源。
+
+为什么选择线性而非指数 backoff？因为桌面应用的用户在现场等待——几秒的线性 backoff 对用户来说是可接受的中断，而指数 backoff 可能让用户等得不耐烦而强制杀进程。`main()` 入口使用 `asyncio.wait` 同时等待 watchdog task 和 shutdown signal，配合 `add_signal_handler` 实现 SIGINT/SIGTERM 的优雅退出。
 
 ### 1.5.3 配置模型 (Settings)
 
 **来源**: `src/mindflow/config.py:60-113`
 
-配置系统基于 Pydantic `BaseSettings`，多源优先级：环境变量 > `.env` 文件 > 默认值。所有配置项集中管理，类型安全：
+配置系统基于 Pydantic **BaseSettings**（Pydantic 的配置管理基类，自动从环境变量和文件读取配置），多源优先级：环境变量 > `.env` 文件 > 默认值。所有配置项集中管理，类型安全。
 
 ```python
 class Settings(BaseSettings):
@@ -440,7 +462,13 @@ class Settings(BaseSettings):
         return self
 ```
 
-**解析**：`Settings` 是应用配置的唯一入口。`env_prefix="MINDFLOW_"` 使环境变量 `MINDFLOW_HOST`、`MINDFLOW_PORT` 等自动覆盖默认值。`db_url` 使用模板字符串 `{data_dir}`，在 `model_validator` 中解析为用户的平台数据目录（Windows 上为 `%APPDATA%/mindflow`，macOS 为 `~/Library/Application Support/mindflow`）。嵌套的 `LogSettings` 和 `LLMSettings` 子模型让配置结构清晰，不混在同一个平铺命名空间。`field_validator` 保障 `event_retention_days` 被限制在 7-90 天的合理范围。
+**配置设计要点**：
+
+- `env_prefix="MINDFLOW_"` 使环境变量 `MINDFLOW_HOST`、`MINDFLOW_PORT` 等自动覆盖默认值。部署时无需改代码，只需设置环境变量。
+- `db_url` 使用模板字符串 `{data_dir}`，在 `model_validator` 中解析为用户平台数据目录：Windows 上为 `%APPDATA%/mindflow`，macOS 上为 `~/Library/Application Support/mindflow`。这解决了跨平台数据路径不统一的问题。
+- 为什么用 `model_validator(mode="after")` 而不是直接在 `db_url` 默认值里硬编码路径？因为 `_get_data_dir()` 在模块加载时可能还没有 `platformdirs` 的完整初始化——延迟到验证阶段解析更安全。
+- 嵌套的 `LogSettings` 和 `LLMSettings` 子模型让配置结构清晰，不混在同一个平铺命名空间中。每个子模型有自己的 `env_prefix`，比如 `MINDFLOW_LOG_LEVEL`、`MINDFLOW_LLM_API_KEY`。
+- `field_validator` 保障 `event_retention_days` 被限制在 7-90 天的合理范围，超出则抛出可读的错误信息。
 
 ## 1.6 快速开始
 
@@ -464,9 +492,9 @@ open http://127.0.0.1:8765/docs   # macOS
 start http://127.0.0.1:8765/docs  # Windows
 ```
 
-启动后你将看到以下日志输出（省略部分细节）：
+启动后你将看到类似以下的日志输出：
 
-```
+```log
 2026-07-18T10:00:00.123 | INFO     | mindflow.app:setup_logging:...
 2026-07-18T10:00:00.456 | INFO     | mindflow.main:run_forever:67 | Starting MindFlow watchdog (max 3 restarts/hour)
 2026-07-18T10:00:00.789 | INFO     | mindflow.config:_get_data_dir:56 | Data directory: .../mindflow
@@ -476,7 +504,7 @@ start http://127.0.0.1:8765/docs  # Windows
 2026-07-18T10:00:01.890 | INFO     | uvicorn.server:serve:... | Uvicorn running on http://127.0.0.1:8765
 ```
 
-此时服务器已就绪，任何端点调用或 WebSocket 连接都会触发按需初始化。
+日志按时间顺序展示了启动的全过程：先是 watchdog 启动，然后加载配置决定数据目录，接着检查数据库完整性、创建采集器，最后启动成功。此时服务器已就绪，任何端点调用或 WebSocket 连接都会触发按需初始化。
 
 ## 1.7 事件溯源数据模型（衔接第2章）
 
@@ -484,9 +512,9 @@ MindFlow 的核心数据模型选用 **Event Sourcing（事件溯源）** 而非
 
 - **精度**：旧代码的 `duration_seconds` 用配置的采集间隔估算，偏差大。事件流保留原始 tick 数据，duration 从相邻事件时间戳精确计算。
 - **灵活性**：合并在查询时配置，不丢失分辨率——同一个事件流可以适配不同的聚合策略。
-- **可靠性**：事件流是 **append-mostly** 的：常规仅追加，唯一例外是 heartbeat 合并（对最近一行的原子 UPDATE）。这是对 append-only 语义的明确让步，换取 90%+ 的磁盘写削减（ActivityWatch 实践验证）。
+- **可靠性**：事件流是 **append-mostly** 的——常规仅追加，唯一例外是 heartbeat 合并（对最近一行的原子 UPDATE）。这是对 append-only 语义的明确让步，换取 90%+ 的磁盘写入量削减（ActivityWatch 实践验证）。
 
-核心的 Event 模型是一个 frozen dataclass：
+核心的 Event 模型是一个 frozen dataclass（冻结数据类，创建后不可修改）：
 
 ```python
 @dataclass(frozen=True)
@@ -500,13 +528,13 @@ class ActivityEvent:
     data: WindowSnapshot          # 窗口快照
 ```
 
-Layer-by-layer 理解，Domain 层定义了纯净的数据模型（零外部依赖），Infrastructure 层通过 Repository 协议实现对 SQLite 的读写，Service 层编排业务逻辑，API 层对外暴露 REST 端点和 WebSocket。
+从分层视角来理解：**Domain 层**定义了纯净的数据模型（零外部依赖），**Infrastructure 层**通过 Repository 协议实现对 SQLite 的读写，**Service 层**编排业务逻辑，**API 层**对外暴露 REST 端点和 WebSocket。
 
 **详见第2章「数据层：事件溯源与存储设计」**，覆盖全部 Schema 定义、Repository 接口和 heartbeat 合并算法。
 
 ## 1.8 架构决策记录（ADR）
 
-本章涉及的主要架构决策已在 `04-architecture-design.md` 中归档为 ADR。以下是快速索引：
+本章涉及的主要架构决策已在 `04-architecture-design.md` 中归档为 ADR（架构决策记录，记录关键设计权衡的正式文档）。以下是快速索引：
 
 | ADR | 决策 | 关键权衡 |
 |-----|------|---------|

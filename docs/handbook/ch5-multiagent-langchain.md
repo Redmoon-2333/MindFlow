@@ -2,7 +2,7 @@
 
 > **核心演进路径:** 单专家 LLM 调用 → 五专家会诊内核 → LangChain/LangGraph 编排迁移
 
-本章覆盖 MindFlow 中最为核心的架构升级：从最初的单一 LLM 分析调用，演进到五个领域专家组成的"会诊面板"，再进一步将编排内核迁移至 LangChain 与 LangGraph 框架。读完本章，你将理解：
+本章覆盖 MindFlow 中最核心的架构升级：从最初的单一 LLM 分析调用，演进到五个领域专家组成的"会诊面板"，再进一步将编排内核迁移至 LangChain 与 LangGraph 框架。读完本章，你将理解：
 
 - 为什么单专家模式不足以应对拖延行为的复杂性
 - 五专家面板的设计原则与分工协议
@@ -19,7 +19,7 @@
 
 ### 5.1.1 初代方案：单专家分析
 
-在一代架构中，拖延行为分析只有一个 LLM 调用：将行为数据拼成 prompt，发给 deepseek-chat，返回一份 JSON 格式的分析结果。伪代码如下：
+在一代架构中，拖延行为分析只有一个 **LLM 调用**：将行为数据拼成 prompt，发给 deepseek-chat，返回一份 JSON 格式的分析结果。伪代码如下：
 
 ```python
 # 一代架构（已废弃）
@@ -29,11 +29,11 @@ async def analyze(user_data: dict) -> dict:
     return json.loads(response)
 ```
 
-**问题:** 拖延行为是多因的。一个任务畏惧型拖延者可能同时有情绪调节需求；完美主义者在某些场景下也会表现为冲动分心。单一 LLM 调用只能输出"最可能"的一种归因，无法呈现多种理论视角、无法做交叉验证、幻觉引用无法被发现。
+这个方案有两个核心缺陷。第一，拖延行为是多因的——一个任务畏惧型拖延者可能同时有情绪调节需求，完美主义者在某些场景下也会表现为冲动分心。单一 LLM 调用只能输出"最可能"的一种归因，无法呈现多种理论视角。第二，没有交叉验证机制——幻觉引用无法被发现，因为没有人检查 LLM 输出的证据是否真的存在。
 
 ### 5.1.2 二代方案：五专家面板
 
-为解决上述问题，我们设计了一个**多专家会诊系统**，参见 `07-agent-upgrade-design.md` §4，其核心思想是：
+为解决上述问题，我们设计了一个**多专家会诊系统**，参见 `07-agent-upgrade-design.md` §4，其核心思想是三个：
 
 1. **分工**: 每个专家只做自己领域的事
 2. **互相校验**: 批评家检查引用真实性，冲突检测器发现分歧
@@ -52,12 +52,36 @@ async def analyze(user_data: dict) -> dict:
 
 ### 5.1.3 三代方案：LangChain/LangGraph 封装
 
-在多专家面板的基础上，进一步的框架化迁移包括：
+在多专家面板的基础上，进一步的框架化迁移包括四个方向：
 
 - 将后端服务（证据查询、分析记录、干预历史）声明为 LangChain `@tool`，使 LLM agent 可以在对话中按需调用
 - 将面板编排从手工 async 代码迁移到 LangGraph `StateGraph`，获得图拓扑的可读性和条件路由的可靠性
 - 将 LLM 调用封装为 `LangChainGateway`，统一管理 `ChatDeepSeek` 实例和重试逻辑
 - 对话服务使用 LangChain `create_agent` 构建 tool-calling agent loop
+
+#### 图5-1: 架构演进路线
+
+```mermaid
+flowchart LR
+    subgraph v0_1["初代 (v0.1-v0.2)"]
+        A1["单专家 LLM 调用"] --> A2["规则引擎退化"]
+    end
+    
+    subgraph v0_3["本版 (v0.3)"]
+        B1["五专家面板"] <--> B2["LangChain 编排"]
+    end
+    
+    subgraph future["未来 (G005)"]
+        C1["学习循环<br>反馈调整权重"] --> C2["流式输出<br>astream()"]
+    end
+    
+    A2 --> B1
+    B2 -.-> C1
+    
+    style v0_1 fill:#e3f2fd,stroke:#1565c0
+    style v0_3 fill:#c8e6c9,stroke:#2e7d32
+    style future fill:#fff3e0,stroke:#e65100
+```
 
 ---
 
@@ -81,7 +105,7 @@ class EvidenceBundle:
     novelty_flags: tuple[str, ...]
 ```
 
-其中每个 `EvidenceItem`（`domain/evidence.py:52-87`）包含 metric、value、baseline、severity、confidence 等字段，并带有中文的 `human_readable` 描述——这正是五专家面板接收到的证据。
+其中每个 `EvidenceItem`（`domain/evidence.py:52-87`）包含 metric、value、baseline、severity、confidence 等字段，并带有中文的 `human_readable` 描述——这正是五专家面板接收到的证据。整个包是 frozen dataclass，创建后不可修改，保证了数据在跨模块传递过程中的完整性。
 
 ### 5.2.2 EvidenceBundleBuilder
 
@@ -137,7 +161,7 @@ class EvidenceBundleBuilder:
 
 从第 1 步到第 7 步，`build` 方法将原始活动事件逐步转化为结构化的 `EvidenceBundle`。每个 `_build_*` 方法是独立的静态方法——这种设计使单元测试可以针对单个步骤进行，而不需要搭建完整的仓库基础设施。
 
-**解析:** 关键设计决策是"7 步在同一个方法里"——没有拆成多个 service 的原因是所有步骤共享同一个 `window` 和 `events`，拆开会增加不必要的传参。`items.extend()` 的累加模式使每步可以独立返回 0-N 条证据。
+**解析:** 关键设计决策是"7 步在同一个方法里"——没有拆成多个 service 的原因是所有步骤共享同一个 `window` 和 `events`，拆开会增加不必要的传参。`items.extend()` 的累加模式使每步可以独立返回 0-N 条证据，互不干扰。
 
 ---
 
@@ -159,10 +183,7 @@ class ExpertDef:
     model: Literal["chat", "reasoner"] = "chat"
 ```
 
-这种设计的精妙之处在于**零框架依赖**——专家定义是纯数据，不包含任何框架注解或基类。这使得：
-- 专家定义可以在纯 Python 环境中测试，无需 LLM 调用
-- 可以在不同编排框架之间复用（从手工 async 到 LangGraph，定义不变）
-- 可以在 IDE 中获得完整的字段检查和自动补全
+这种设计的精妙之处在于**零框架依赖**——专家定义是纯数据，不包含任何框架注解或基类。这意味着三件事：专家定义可以在纯 Python 环境中测试，无需 LLM 调用；可以在不同编排框架之间复用（从手工 async 到 LangGraph，定义不变）；可以在 IDE 中获得完整的字段检查和自动补全。
 
 ### 5.3.2 五位专家的系统提示词
 
@@ -201,6 +222,8 @@ _ANALYST_PROMPT: str = """你是一个行为数据分析师。你的任务是对
 - 保持客观描述，不做过度推测"""
 ```
 
+注意 prompt 中的两个关键设计。第一，**证据引用规则**要求每条结论标注 `[证据: 指标名]`——这不仅是格式要求，更是后面批评家进行自动化校验的基础。第二，**安全边界**明确禁止医疗用语和隐私字段，这是 MindFlow 隐私设计（NF-S3a）在 prompt 层的落地。
+
 这六个命名常量（`_ANALYST_PROMPT`, `_CBT_PROMPT`, `_TMT_PROMPT`, `_EMOTION_PROMPT`, `_CRITIC_PROMPT`, `_MODERATOR_PROMPT`）最后被组装成六个 `ExpertDef` 实例，加上一个归属专家元组供迭代使用：
 
 `agents/experts.py:370-379`:
@@ -209,7 +232,7 @@ _ANALYST_PROMPT: str = """你是一个行为数据分析师。你的任务是对
 ATTRIBUTION_EXPERTS: tuple[ExpertDef, ExpertDef, ExpertDef] = (CBT, TMT, EMOTION)
 ```
 
-**解析:** 三位归因专家（CBT、TMT、情绪调节）被单独抽成 `ATTRIBUTION_EXPERTS` 元组的原因是它们在"冲突升级"协议中需要被并行调用和批量重试——而数据分析师和批评家是串行执行的。
+**解析:** 三位归因专家（CBT、TMT、情绪调节）被单独抽成 `ATTRIBUTION_EXPERTS` 元组的原因是它们在"冲突升级"协议中需要被并行调用和批量重试——而数据分析师和批评家是串行执行的。这个抽取在纯手工编排时代就已经存在，LangGraph 迁移后没有改变。
 
 ---
 
@@ -217,27 +240,30 @@ ATTRIBUTION_EXPERTS: tuple[ExpertDef, ExpertDef, ExpertDef] = (CBT, TMT, EMOTION
 
 五专家会诊支持两种执行协议。下图展示了完整的流程：
 
+#### 图5-2: 五专家会诊完整流程
+
 ```mermaid
 flowchart TD
     A["📦 EvidenceBundle"] --> B["① 数据分析师"]
-    B --> C["② 归因专家（并行）"]
+    B --> C["② 三位归因专家<br>（CBT / TMT / 情绪·并行）"]
     
     C --> D{"冲突检测<br>纯代码·零 LLM"}
-    D -->|"无冲突"| E["③ 主持人裁决<br>快速通道"]
-    D -->|"有冲突"| F["③ 归因专家反驳<br>（看到其他专家的分析）"]
+    D -->|"无冲突 → 快速通道"| E["③ 主持人裁决"]
+    D -->|"有冲突 → 升级"| F["③ 归因专家反驳<br>（看到其他专家的分析后修正）"]
     F --> E
     
     E --> G["④ 批评家校验"]
     G -->|"通过"| H["🏁 PanelVerdict"]
-    G -->|"打回+重试≤1次"| E
-    G -->|"打回+重试>1次·仍失败"| H
+    G -->|"打回·重试≤1次"| E
+    G -->|"打回·重试>1次<br>仍失败"| H
     
+    style A fill:#f3e5f5,stroke:#7b1fa2
     style D fill:#e1f5fe,stroke:#0288d1
     style H fill:#c8e6c9,stroke:#2e7d32
     style G fill:#fff3e0,stroke:#f57c00
 ```
 
-**快速通道**（默认路径，约 6 次 LLM 调用）：
+**快速通道**（默认路径，约 6 次 LLM 调用）执行以下步骤：
 
 0. `analyst_node`: 数据分析师分析模式 → 1 次调用
 1. `attribution_node`: 三位归因专家并行调用 → 3 次调用
@@ -246,22 +272,20 @@ flowchart TD
 4. `critic_node`: 批评家校验 → 1 次调用
 5. 通过 → 返回 `PanelVerdict`
 
-**冲突升级**（约 9 次 LLM 调用，额外 3 次）：
-
-冲突检测发现以下任一条件时触发：
+**冲突升级**（约 9 次 LLM 调用，额外 3 次）在冲突检测发现以下任一条件时触发：
 
 | 条件 | 定义 | 代码位置 |
 |------|------|----------|
 | 首要类型不一致 | 各专家置信度最高的拖延类型不同 | `conflict.py:98-101` |
 | 同类型置信度差距 > 0.3 | 两个专家对同一类型的置信度差值超过 0.3 | `conflict.py:103-107` |
 
-冲突升级时，每位归因专家会收到其他两位专家的完整分析论证，然后做出反驳或修正。之后主持人再裁决。
+冲突升级时，每位归因专家会收到其他两位专家的完整分析论证，然后做出反驳或修正。之后主持人再裁决。这两个条件覆盖了两种典型的"专家分歧"场景：各执一词型（类型不一致）和程度争议型（置信度差距大）。
 
 ---
 
 ## 5.5 纯代码校验：冲突检测器与证据引用校验
 
-在多智能体系统中，最危险的事情是让一个 LLM 去判断另一个 LLM 的输出是否正确——这会造成无限递归的"幻觉审查"。我们的设计原则是：**能用纯代码做的事，绝不给 LLM 做**。
+在**多智能体系统**中，最危险的事情是让一个 LLM 去判断另一个 LLM 的输出是否正确——这会造成无限递归的"幻觉审查"。我们的设计原则是：**能用纯代码做的事，绝不给 LLM 做**。
 
 ### 5.5.1 冲突检测器
 
@@ -301,7 +325,7 @@ def detect_conflict(opinions: Sequence[ExpertOpinion]) -> ConflictReport:
     if confidence_gap_exceeded:
         details_parts.append(
             f"同类型置信度差距超过0.3（最大差距={gap:.2f}）")
-    details = "；".join(details_parts) if details_parts else "专家意见一致，无冲突"
+    details = ";".join(details_parts) if details_parts else "专家意见一致，无冲突"
 
     return ConflictReport(
         has_conflict=has_conflict,
@@ -311,7 +335,32 @@ def detect_conflict(opinions: Sequence[ExpertOpinion]) -> ConflictReport:
     )
 ```
 
-**解析:** 注意第 105 行 `round(..., 6)`——这并非为了精度，而是为了消除 IEEE 754 浮点运算的产物（`0.80 - 0.50` 可能等于 `0.30000000000000004`）。这个细节在纯 LLM prompt 中很容易被忽略，但在代码中只需一行 `round`。
+**解析:** 注意第 105 行 `round(..., 6)`——这并非为了精度，而是为了消除 IEEE 754 浮点运算的产物（`0.80 - 0.50` 可能等于 `0.30000000000000004`）。如果去掉这个 `round`，`gap` 会略大于 0.3，检测器就会错误地报告冲突。这个细节在纯 LLM prompt 中很容易被忽略，但在代码中只需一行 `round` 就解决了。
+
+下面是冲突升级的决策路径图——它清晰地展示了纯代码检测如何决定了是否要走反驳流程：
+
+#### 图5-3: 冲突升级决策树
+
+```mermaid
+flowchart TD
+    A["三位归因专家<br>（CBT / TMT / 情绪）输出"] --> B{"纯代码检测"}
+    
+    B --> C{"首要类型不一致?"}
+    C -->|"是"| D["冲突标志 = true"]
+    C -->|"否"| E{"同类型置信度<br>差距 > 0.3?"}
+    E -->|"是"| D
+    E -->|"否"| F["冲突标志 = false<br>走快速通道"]
+    
+    D --> G["冲突升级流程"]
+    G --> H["归因专家互相<br>看到对方分析"]
+    H --> I["主持人最终裁决"]
+    
+    F --> I
+    
+    style B fill:#e1f5fe,stroke:#0288d1
+    style D fill:#ffcdd2,stroke:#c62828
+    style F fill:#c8e6c9,stroke:#2e7d32
+```
 
 ### 5.5.2 证据引用校验
 
@@ -338,6 +387,8 @@ def validate_citations(
 ```
 
 这段代码在 orchestrator 解析每个专家输出时（`_parse_expert_opinion` 的第 175-193 行）就会执行——**远在批评家 LLM 被调用之前**。如果发现幻觉引用，该专家意见会被直接标记为 `skipped`，不进入后续流程。
+
+为什么要做两层校验？第一层是代码级的正则提取+集合取差，零成本、零幻觉、零延迟。第二层是批评家 LLM 的逻辑审查，可以检查更深层的推理问题。两层互补，但第一层永远在第二层之前执行，确保幻觉引用在源头上就被拦截。
 
 ---
 
@@ -381,10 +432,7 @@ def make_query_evidence(
     return query_evidence
 ```
 
-**解析:** 这里使用了"工厂函数"模式——`make_query_evidence` 接受一个 `EvidenceBundleBuilder` 实例作为依赖，闭包捕获它，返回一个绑定好的 `@tool` 函数。这种设计使得：
-- 所有工具都在 `ChatService.__init__` 中组合，依赖清晰可见
-- 单元测试可以通过注入 Mock 来测试聊天逻辑
-- 工具的 LangChain schema（参数名、类型、描述）完全由函数签名和 docstring 推导
+**解析:** 这里使用了"工厂函数"模式——`make_query_evidence` 接受一个 `EvidenceBundleBuilder` 实例作为依赖，闭包捕获它，返回一个绑定好的 `@tool` 函数。这种设计带来了三个好处。第一，所有工具都在 `ChatService.__init__` 中组合，依赖清晰可见——你看 `ChatService` 的构造函数就知道它依赖哪些工具，不需要翻遍整个文件。第二，单元测试可以通过注入 Mock 来测试聊天逻辑，不需要真的启动一个 LLM。第三，工具的 LangChain schema（参数名、类型、描述）完全由函数签名和 docstring 推导，不需要手写 Pydantic 模型。
 
 类似地，还有 `make_get_latest_analysis`、`make_run_panel`、`make_query_interventions` 这三个工具工厂函数。`ChatService.__init__` 将它们组合成一个 tool list：
 
@@ -399,13 +447,15 @@ tools: list[Callable[..., Awaitable[str]]] = [
 ]
 ```
 
+这四把"工具"覆盖了聊天助手可能需要的全部后端能力：查行为证据、查历史分析、触发面板会诊、查干预记录。每一种工具背后都是一个独立的 service，LLM 在对话中自主决定调用哪个工具、传什么参数。
+
 ---
 
 ## 5.7 编排引擎：从手工 async 到 LangGraph StateGraph
 
 ### 5.7.1 迁移前：手工编排
 
-在迁移到 LangGraph 之前，`PanelOrchestrator.run()` 是一个很长的函数，用嵌套的 `asyncio.gather` 和条件分支管理流程。伪代码大致如下：
+在迁移到 LangGraph 之前，`PanelOrchestrator.run()` 是一个很长的函数，用嵌套的 `asyncio.gather` 和条件分支管理流程：
 
 ```python
 # 旧版伪代码（已不存在于代码库中，仅供对比）
@@ -429,11 +479,11 @@ async def run(self, bundle):
         critic = await self._call(CRITIC, ...)
 ```
 
-问题是：条件分支和循环逻辑散布在代码中，每次改动都可能破坏流程。新增一个"打回重试"需要理解整个函数。
+这段代码有两个问题。第一，条件分支和循环逻辑散布在代码中——你想看懂流程必须从上读到下，同时记住前面每个分支的 exit。第二，每次改动都可能破坏流程——新增一个"打回重试"步骤需要理解整个函数，不是一个简单的"加一行 `if`"能解决的。
 
 ### 5.7.2 迁移后：LangGraph StateGraph
 
-LangGraph 将编排流程建模为有向图，每个节点是一个独立的函数，边是显式的条件路由：
+LangGraph 将编排流程建模为**有向图**，每个节点是一个独立的函数，边是显式的条件路由：
 
 `agents/orchestrator.py:607-871`（图中的节点注册和边连接）:
 
@@ -513,8 +563,30 @@ def critic_verdict(state: PanelState) -> str:
     return "rejected_exhausted"
 ```
 
+对比手工编排和 LangGraph 编排，迁移带来的收益是四个方面的：
+
+#### 图5-4: 编排模式对比
+
+```mermaid
+flowchart LR
+    subgraph before["迁移前：手工 async"]
+        M1["一层函数<br>嵌套 asyncio.gather"] --> M2["条件分支 + 循环<br>散布在代码中"]
+        M2 --> M3["新增步骤需要<br>理解整个函数"]
+    end
+    
+    subgraph after["迁移后：LangGraph StateGraph"]
+        L1["每个节点<br>是独立函数"] --> L2["边是显式的<br>条件路由"]
+        L2 --> L3["新增步骤=添加节点+边<br>不影响其他部分"]
+    end
+    
+    before -.->|"重构"| after
+    
+    style before fill:#ffebee,stroke:#c62828
+    style after fill:#e8f5e9,stroke:#2e7d32
+```
+
 **解析:** 迁移的好处是：
-1. **路由显式化**: `should_escalate` 和 `critic_verdict` 是独立的纯函数，可以单独测试
+1. **路由显式化**: `should_escalate` 和 `critic_verdict` 是独立的纯函数，可以单独测试——测试 `should_escalate` 不需要创建任何 LLM 连接
 2. **状态集中管理**: `PanelState` 是一个 TypedDict，所有节点共享同一状态对象，不会出现"这个变量在哪里更新的"的困惑
 3. **图拓扑一目了然**: 代码中的 `add_edge` / `add_conditional_edges` 调用序列本身就是一份可读的流程图
 4. **流式执行**: `StateGraph.compile()` 返回的 `CompiledGraph` 支持 `.astream()`，为今后流式输出做准备
@@ -575,12 +647,25 @@ CHAT_SYSTEM_PROMPT: str = (
 
 `services/chat_service.py:203-341` 的 `ask()` 方法是对话入口，执行 6 步管线：
 
-1. **危机检测**（pre-LLM gate）: `CrisisDetector` 扫描输入，命中高危关键词直接返回心理热线信息
-2. **持久化用户消息**: 写到 `ChatRepository`
-3. **加载会话历史**: 最近 10 轮对话，超过的部分压缩为文本摘要
-4. **LangChain agent 调用**: 将 `query_evidence`、`run_panel` 等工具注入 agent，LLM 自主决定调用的时机和参数
-5. **禁词检查（1 次重试）**: 如果输出包含"诊断"等词汇，追加修正指令重试一次
-6. **持久化助理回答**
+#### 图5-5: ChatService.ask 消息处理管线
+
+```mermaid
+flowchart TD
+    A["用户输入消息"] --> B["1. 危机检测<br>（pre-LLM gate）"]
+    B -->|"命中高危关键词"| C["返回心理热线信息"]
+    B -->|"正常消息"| D["2. 持久化用户消息"]
+    D --> E["3. 加载会话历史<br>最近10轮 + 摘要"]
+    E --> F["4. LangChain agent 调用<br>工具自主选择"]
+    F --> G["5. 禁词检查<br>（1次重试）"]
+    G -->|"含禁用词"| H["追加修正指令重试"]
+    G -->|"通过"| I["6. 持久化助理回答"]
+    H --> I
+    I --> J["返回最终回答"]
+    
+    style B fill:#ffcdd2,stroke:#c62828
+    style F fill:#e1f5fe,stroke:#0288d1
+    style G fill:#fff3e0,stroke:#f57c00
+```
 
 关键的工具调用记录在第 4 步中：
 
@@ -605,7 +690,7 @@ for msg_obj in result.get("messages", []):
                 evidence_cited = True
 ```
 
-**解析:** `create_agent` 使用 `langchain-deepseek` 的 `ChatDeepSeek` 模型，自动处理 tool-calling 的循环（LLM 决定调用工具 → 执行工具 → 结果返回 LLM → LLM 生成最终回复）。我们只需调用一次 `ainvoke`，LangChain 在内部完成多轮交互。
+**解析:** `create_agent` 使用 `langchain-deepseek` 的 `ChatDeepSeek` 模型，自动处理 tool-calling 的循环（LLM 决定调用工具 → 执行工具 → 结果返回 LLM → LLM 生成最终回复）。我们只需调用一次 `ainvoke`，LangChain 在内部完成多轮交互。第 5 步的禁词检查是一个"软重试"——如果输出包含"诊断"等词汇，追加修正指令重试一次。注意这里最多重试一次，不会无限循环。
 
 ---
 
@@ -719,23 +804,27 @@ class LangChainGateway:
         ) from last_exc
 ```
 
-**解析:** 关键设计决策包括：
-- **延迟初始化**: ChatDeepSeek 实例在第一次 `complete()` 调用时创建，不是在 `__init__` 中。这使得应用可以在无 API key 下正常启动，退化路径（rule_engine、safe reply）保持可达
-- **双层重试**: 网络层面的重试由 LangChain 的 `max_retries` 参数控制（这里设为 0，由外层 `_retry_attempts` 处理），调用层面的重试由 `_MAX_RETRIES + 1` 循环处理
-- **两种模型类型**: `chat` 层使用 `response_format: json_object` 确保 JSON 输出，`reasoner` 层不使用（deepseek-reasoner 不支持此参数）
-- **SecretStr**: API key 使用 pydantic 的 `SecretStr` 包装，防止在日志或错误输出中泄露
+**解析:** 这个网关封装了四个关键设计决策。第一，**延迟初始化**——ChatDeepSeek 实例在第一次 `complete()` 调用时创建，不是在 `__init__` 中。这使得应用可以在无 API key 下正常启动，退化路径（rule_engine、safe reply）保持可达。第二，**双层重试**——网络层面的重试由 LangChain 的 `max_retries` 参数控制（这里设为 0，由外层 `_retry_attempts` 处理），调用层面的重试由 `_MAX_RETRIES + 1` 循环处理。第三，**两种模型类型**——`chat` 层使用 `response_format: json_object` 确保 JSON 输出，`reasoner` 层不使用（deepseek-reasoner 不支持此参数）。第四，**SecretStr**——API key 使用 pydantic 的 `SecretStr` 包装，防止在日志或错误输出中泄露。
 
 ---
 
 ## 5.10 退化链路：四层保障
 
-整个多专家系统不是"要么全有要么全无"的。它构建在四层退化链路上：
+整个多专家系统不是"要么全有要么全无"的。它构建在四层退化链路上，每层都是下一层的安全网：
 
-```
-L1: 五专家面板 (PanelOrchestrator)    → source="panel"
-L2: 单专家 LLM (LLMService.analyze)   → source="single_expert"
-L3: Ollama 本地模型 (LLMService 内部)  → source="ollama"
-L4: 规则引擎 (RuleEngine)             → source="rule_engine"
+#### 图5-6: 四层退化链路
+
+```mermaid
+flowchart TD
+    L1["L1: 五专家面板<br>PanelOrchestrator<br>source = panel"] -->|"降级"| L2
+    L2["L2: 单专家 LLM<br>LLMService.analyze<br>source = single_expert"] -->|"降级"| L3
+    L3["L3: Ollama 本地模型<br>LLMService 内部<br>source = ollama"] -->|"降级"| L4
+    L4["L4: 规则引擎<br>RuleEngine<br>source = rule_engine"]
+    
+    style L1 fill:#c8e6c9,stroke:#2e7d32
+    style L2 fill:#dcedc8,stroke:#689f38
+    style L3 fill:#fff9c4,stroke:#f9a825
+    style L4 fill:#ffcc80,stroke:#e65100
 ```
 
 `panel_service.py:111-120` 展示了 L1→L2 的回退逻辑：
@@ -757,7 +846,7 @@ outcome = await self._llm_service.analyze(
 return self._outcome_to_verdict(outcome)
 ```
 
-`PanelVerdict.source` 字段（`agents/types.py:41`）标记了结果来源，下游消费者可以根据来源决定是否展示"可能不够准确"的标签。
+**解析:** 这段代码展示了两个关键设计。第一，异常类型区分——`PanelUnavailableError`（面板服务本身不可用，如 API key 未配置）和 `PanelBudgetExceededError`（配额超限，如每天 3 次面板调用上限）都触发 L1→L2 降级，但业务含义不同。第二，`PanelVerdict.source` 字段（`agents/types.py:41`）标记了结果来源——下游消费者（如前端 Dashboard）可以根据来源决定是否展示"可能不够准确"的标签。例如，`source = "rule_engine"` 时前端可以显示"基于规则的分析，仅供参考"。
 
 ---
 
@@ -765,7 +854,7 @@ return self._outcome_to_verdict(outcome)
 
 ### 与第4章的衔接
 
-第4章架构了 LLM 管线的基础设施：API key 管理（`Settings.llm`）、`DeepSeekClient` 的 HTTP 调用封装、prompt 构建、以及输出解析。第5章在此基础上：
+第4章架构了 LLM 管线的基础设施：API key 管理（`Settings.llm`）、`DeepSeekClient` 的 HTTP 调用封装、prompt 构建、以及输出解析。第5章在此基础上做了三项升级：
 
 - 将 `DeepSeekClient`（绑定某一种输出 schema）替换为 `LangChainGateway`（无 schema 绑定），使同一个网关可以服务于五种不同输出格式的专家
 - 增加了 `ChatDeepSeek` + `create_agent` 的对话模式，提供 tool-calling 能力
@@ -798,11 +887,21 @@ return self._outcome_to_verdict(outcome)
 | create_agent | LangChain tool-calling agent | `services/chat_service.py` |
 | LangChainGateway | ChatDeepSeek 封装+重试+模型路由 | `agents/llm_gateway.py` |
 
-### 演进路线图
+#### 图5-7: 核心概念关系图
 
-```
-单专家 LLM 调用        →  单专家但规则引擎退化      →  本版（v0.3）
-                          （v0.1 ~ v0.2）             五专家面板 + LangChain
+```mermaid
+flowchart TD
+    EB["📦 EvidenceBundle<br>数据契约"] --> EXP["👤 ExpertDef<br>专家定义"]
+    EXP --> PANEL["🔄 五专家面板"]
+    PANEL --> CD["⚡ 冲突检测<br>纯代码"]
+    PANEL --> CIT["🔍 证据引用校验<br>正则 + 集合"]
+    PANEL --> LGRAPH["🌐 LangGraph<br>StateGraph 编排"]
+    PANEL --> GATE["🚪 LangChainGateway<br>LLM 网关"]
+    GATE --> AGENT["🤖 ChatService<br>create_agent 对话"]
+    
+    style EB fill:#f3e5f5,stroke:#7b1fa2
+    style PANEL fill:#e3f2fd,stroke:#1565c0
+    style GATE fill:#e8f5e9,stroke:#2e7d32
 ```
 
 未来的版本（G005）将进一步引入：
