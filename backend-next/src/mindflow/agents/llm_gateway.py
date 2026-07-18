@@ -7,24 +7,26 @@ The panel uses this gateway to call arbitrary experts with arbitrary system prom
 Design:
   - ``PanelLLMGateway`` is a typing.Protocol — the orchestrator depends on the
     interface, not the implementation, making it trivially testable with mocks.
-  - ``DeepSeekGateway`` reuses ``Settings.llm`` configuration (api_key, base_url)
-    via the same pattern as ``DeepSeekClient``, but does NOT share the same
-    connection pool (separate httpx.AsyncClient for clarity).
-  - ``response_format: {"type": "json_object"}`` is used for ``chat`` model calls;
-    ``reasoner`` model calls omit this (deepseek-reasoner does not support it).
+  - ``LangChainGateway`` wraps ``ChatDeepSeek`` from ``langchain-deepseek``
+    and reuses ``Settings.llm`` configuration (api_key, base_url) via the same
+    pattern as the legacy ``DeepSeekClient``.
+  - ``model_kwargs: {"response_format": {"type": "json_object"}}`` is used for
+    ``chat`` model calls; ``reasoner`` model calls omit this (deepseek-reasoner
+    does not support it).
 
 Raises:
-    httpx.TimeoutException: After 30s with no response (1 retry on network errors).
-    ``GatewayAPIError``: For non-retriable API errors (4xx, auth failure, …).
+    ``GatewayNotConfiguredError``: At call time when no API key is available.
+    ``GatewayAPIError``: After exhausting the retry budget.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Literal, Protocol, runtime_checkable
 
-import httpx
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_deepseek import ChatDeepSeek
 from loguru import logger
+from pydantic import SecretStr
 
 from mindflow.config import get_settings
 
@@ -32,11 +34,12 @@ from mindflow.config import get_settings
 
 
 class GatewayNotConfiguredError(RuntimeError):
-    """Raised when the gateway is constructed without an API key."""
+    """Raised when the gateway is called without an API key being configured."""
 
 
 class GatewayAPIError(RuntimeError):
-    """Raised when the upstream API returns a non-retriable error."""
+    """Raised when the upstream API returns a non-retriable error
+    or the retry budget has been exhausted."""
 
 
 # ── Protocol ───────────────────────────────────────────────────────────────────
@@ -68,8 +71,7 @@ class PanelLLMGateway(Protocol):
 
         Raises:
             GatewayNotConfiguredError: If not configured.
-            httpx.TimeoutException: Request timed out.
-            GatewayAPIError: Non-retriable API error.
+            GatewayAPIError: Non-retriable API error or retries exhausted.
         """
         ...
 
@@ -78,14 +80,14 @@ class PanelLLMGateway(Protocol):
         ...
 
 
-# ── DeepSeek implementation ────────────────────────────────────────────────────
+# ── LangChain implementation ──────────────────────────────────────────────────
 
 _DEFAULT_TIMEOUT_S: int = 30
 _MAX_RETRIES: int = 1
 
 
-class DeepSeekGateway:
-    """Async HTTP client for DeepSeek Chat API (OpenAI-compatible).
+class LangChainGateway:
+    """Async LLM gateway wrapping LangChain's ``ChatDeepSeek``.
 
     Unlike ``DeepSeekClient`` (which binds to ``LLMAttributionResult``), this
     gateway returns raw response text. The caller (orchestrator) handles parsing.
@@ -107,18 +109,44 @@ class DeepSeekGateway:
 
         # Key-less construction is allowed (E2E finding): the app must be able
         # to assemble PanelService/ChatService without a configured key so the
-        # degradation chain (panel→single_expert→rule_engine, chat→safe reply)
+        # degradation chain (panel->single_expert->rule_engine, chat->safe reply)
         # stays reachable. The raise happens at call time in complete().
         self._api_key = api_key or ""
         self._base_url = (base_url or "https://api.deepseek.com").rstrip("/")
-        self._client = httpx.AsyncClient(
-            base_url=self._base_url,
-            timeout=httpx.Timeout(_DEFAULT_TIMEOUT_S),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-        )
+
+        # Lazy-initialised ChatDeepSeek instances (one per model tier).
+        self._chat_model: ChatDeepSeek | None = None
+        self._reasoner_model: ChatDeepSeek | None = None
+
+    def _get_model(self, model_id: str) -> ChatDeepSeek:
+        """Return a cached ``ChatDeepSeek`` instance for *model_id*.
+
+        The ``chat`` tier (``deepseek-chat``) is created with
+        ``response_format: json_object``; the ``reasoner`` tier
+        (``deepseek-reasoner``) does not support this parameter.
+        """
+        if model_id == "deepseek-chat":
+            if self._chat_model is None:
+                self._chat_model = ChatDeepSeek(
+                    model=model_id,
+                    api_key=SecretStr(self._api_key) if self._api_key else None,
+                    base_url=self._base_url,
+                    timeout=_DEFAULT_TIMEOUT_S,
+                    max_retries=0,
+                    model_kwargs={"response_format": {"type": "json_object"}},
+                )
+            return self._chat_model
+
+        # model_id == "deepseek-reasoner" (no response_format)
+        if self._reasoner_model is None:
+            self._reasoner_model = ChatDeepSeek(
+                model=model_id,
+                api_key=SecretStr(self._api_key) if self._api_key else None,
+                base_url=self._base_url,
+                timeout=_DEFAULT_TIMEOUT_S,
+                max_retries=0,
+            )
+        return self._reasoner_model
 
     async def complete(
         self,
@@ -135,16 +163,15 @@ class DeepSeekGateway:
         Args:
             system: System prompt.
             user: User message.
-            model: "chat" → deepseek-chat (with json_object mode),
-                   "reasoner" → deepseek-reasoner (no json_object mode).
+            model: "chat" -> deepseek-chat (with json_object mode),
+                   "reasoner" -> deepseek-reasoner (no json_object mode).
 
         Returns:
             Raw response content string.
 
         Raises:
             GatewayNotConfiguredError: If not configured.
-            httpx.TimeoutException: Request timed out.
-            GatewayAPIError: Non-retriable API error.
+            GatewayAPIError: After exhausting retries.
         """
         model_id = "deepseek-chat" if model == "chat" else "deepseek-reasoner"
 
@@ -154,65 +181,23 @@ class DeepSeekGateway:
                 "or add llm.api_key to the .env file"
             )
 
-        payload: dict[str, object] = {
-            "model": model_id,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        }
-
-        # deepseek-reasoner does not support response_format
-        if model == "chat":
-            payload["response_format"] = {"type": "json_object"}
+        chat = self._get_model(model_id)
+        messages = [SystemMessage(content=system), HumanMessage(content=user)]
 
         last_exc: Exception | None = None
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = await self._client.post(
-                    "/chat/completions",
-                    json=payload,
-                )
-            except httpx.TimeoutException:
-                logger.warning("DeepSeek gateway timeout (attempt {})", attempt + 1)
-                last_exc = httpx.TimeoutException("DeepSeek gateway timed out after 30s")
-                continue
-            except httpx.HTTPError as exc:
-                logger.warning("DeepSeek gateway HTTP error (attempt {}): {}", attempt + 1, exc)
+                result = await chat.ainvoke(messages)
+            except Exception as exc:
+                logger.warning("LangChain gateway error (attempt {}): {}", attempt + 1, exc)
                 last_exc = exc
                 continue
 
-            if response.status_code == 429:
-                logger.warning("DeepSeek gateway rate limited (attempt {})", attempt + 1)
-                last_exc = GatewayAPIError(f"Rate limited: {response.status_code}")
-                continue
-
-            if response.status_code >= 500:
-                logger.warning(
-                    "DeepSeek gateway server error {} (attempt {})",
-                    response.status_code,
-                    attempt + 1,
-                )
-                last_exc = GatewayAPIError(f"Server error: {response.status_code}")
-                continue
-
-            if response.status_code != 200:
-                msg = f"DeepSeek gateway error {response.status_code}: {response.text[:200]}"
-                logger.error(msg)
-                raise GatewayAPIError(msg)
-
-            # Parse response body
-            try:
-                body = response.json()
-            except json.JSONDecodeError as exc:
-                logger.warning("DeepSeek gateway returned non-JSON response: {}", exc)
-                last_exc = exc
-                continue
-
-            content: str = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+            raw_content = result.content
+            content: str = raw_content if isinstance(raw_content, str) else ""
             if not content:
-                logger.warning("DeepSeek gateway returned empty content")
+                logger.warning("LangChain gateway returned empty content")
                 last_exc = GatewayAPIError("Empty content in response")
                 continue
 
@@ -220,9 +205,25 @@ class DeepSeekGateway:
 
         # All retries exhausted
         raise GatewayAPIError(
-            f"DeepSeek gateway failed after {_MAX_RETRIES + 1} attempts"
+            f"LangChain gateway failed after {_MAX_RETRIES + 1} attempts"
         ) from last_exc
 
     async def close(self) -> None:
-        """Close the underlying HTTP client connection pool."""
-        await self._client.aclose()
+        """Release resources held by the underlying ChatDeepSeek instances.
+
+        LangChain manages its own connection lifecycle; this method exists to
+        satisfy the ``PanelLLMGateway`` protocol contract.
+        """
+        # The underlying OpenAI / httpx clients are managed by LangChain
+        # internally and will be cleaned up when the ChatDeepSeek instances
+        # are garbage collected.
+        self._chat_model = None
+        self._reasoner_model = None
+
+
+# ── Backward-compatible alias ─────────────────────────────────────────────────
+# Callers (chat_service, app, eval) import ``DeepSeekGateway`` by name.
+# The rename to ``LangChainGateway`` reflects the new implementation backbone
+# while keeping dependent modules untouched.
+
+DeepSeekGateway = LangChainGateway
