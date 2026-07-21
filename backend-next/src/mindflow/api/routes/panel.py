@@ -1,7 +1,7 @@
 """API route for expert panel operations.
 
 POST /api/v1/panel/today — Trigger daily expert panel, return PanelVerdict JSON.
-GET  /api/v1/panel       — Retrieve the most recent panel result.
+GET  /api/v1/panel       — Read the most recent stored panel result (no LLM run).
 
 Response shape aligns with ``PanelVerdict``::
 
@@ -114,28 +114,32 @@ async def post_panel_today(
 async def get_panel_result(
     panel_service: PanelService = Depends(get_panel_service),  # noqa: B008
 ) -> dict[str, Any]:
-    """Retrieve the most recent panel result.
+    """Retrieve the most recent stored panel result (read-only, idempotent).
 
-    NOTE: In Phase A this returns a fresh panel verdict (no persistent cache).
-    A dedicated panel-results table is deferred to G005.
+    A GET must not trigger the expensive 6-12-call expert panel (review C3 —
+    that would cost money and violate REST idempotency). This reads the last
+    persisted attribution for today (written by ``POST /panel/today`` or the
+    daily cron) and returns it, or 404 if none has been produced yet.
 
     Returns:
-        A ``PanelVerdict`` JSON response matching POST shape.
+        A ``PanelVerdict`` JSON response matching the POST shape, or 404.
     """
     today = date.today()
-    logger.info("GET /panel — triggering fresh panel for user 1 on {}", today)
+    logger.debug("GET /panel — reading stored panel result for user 1 on {}", today)
 
     try:
-        verdict = await panel_service.run_daily_panel(user_id=1, target_date=today)
+        verdict = await panel_service.get_stored_verdict(user_id=1, target_date=today)
     except ProblemDetail:
-        # E2E finding: the degradation chain legitimately raises ProblemDetail
-        # (e.g. 404 no-activity-data from the single-expert fallback) — let the
-        # RFC 9457 handler render it instead of masking it as a 500.
         raise
     except Exception:
-        logger.exception("Panel service failed unexpectedly for user 1 on {}", today)
+        logger.exception("Failed to read stored panel result for user 1 on {}", today)
         from mindflow.api.errors import _internal_error
 
         raise _internal_error() from None
+
+    if verdict is None:
+        from mindflow.api.errors import _not_found
+
+        raise _not_found("今日尚无面板分析结果，请先触发 POST /api/v1/panel/today")
 
     return _verdict_to_dict(verdict)

@@ -209,14 +209,32 @@ class LangChainGateway:
         ) from last_exc
 
     async def close(self) -> None:
-        """Release resources held by the underlying ChatDeepSeek instances.
+        """Release the httpx connection pools held by the ChatDeepSeek models.
 
-        LangChain manages its own connection lifecycle; this method exists to
-        satisfy the ``PanelLLMGateway`` protocol contract.
+        ``ChatDeepSeek`` wraps an ``openai.AsyncOpenAI`` client (exposed as
+        ``root_async_client``) that owns a long-lived httpx pool. Dropping the
+        reference alone does NOT close it promptly — it lingers until GC, which
+        leaks sockets on repeated gateway recreation (tests, eval runs). So we
+        await the client's own ``close()`` (a coroutine that shuts the pool)
+        before releasing references (review C2 connection leak).
         """
-        # The underlying OpenAI / httpx clients are managed by LangChain
-        # internally and will be cleaned up when the ChatDeepSeek instances
-        # are garbage collected.
+        import contextlib
+
+        for model in (self._chat_model, self._reasoner_model):
+            if model is None:
+                continue
+            # root_async_client is the AsyncOpenAI instance; its close() is a
+            # coroutine that releases the underlying httpx AsyncClient pool.
+            async_client = getattr(model, "root_async_client", None)
+            if async_client is not None and hasattr(async_client, "close"):
+                with contextlib.suppress(Exception):
+                    await async_client.close()
+            # The sync root_client (rarely built) holds a separate pool.
+            sync_client = getattr(model, "root_client", None)
+            if sync_client is not None and hasattr(sync_client, "close"):
+                with contextlib.suppress(Exception):
+                    sync_client.close()
+
         self._chat_model = None
         self._reasoner_model = None
 

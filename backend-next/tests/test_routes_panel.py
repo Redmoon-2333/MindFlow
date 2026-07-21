@@ -120,9 +120,9 @@ class TestGetPanel:
     """GET /api/v1/panel endpoint tests."""
 
     def test_get_panel(self) -> None:
-        """200 with panel verdict."""
+        """200 with the stored panel verdict (read-only, no LLM run — C3)."""
         mock_service = AsyncMock()
-        mock_service.run_daily_panel = AsyncMock(return_value=_make_verdict())
+        mock_service.get_stored_verdict = AsyncMock(return_value=_make_verdict())
         app = _make_app(mock_service)
         client = TestClient(app)
 
@@ -132,6 +132,21 @@ class TestGetPanel:
         data = resp.json()
         assert data["types"] == ["impulsivity", "task_aversion"]
         assert data["meta"]["degraded"] is False
+        # A GET must not trigger the expensive panel run (C3 idempotency fix).
+        mock_service.get_stored_verdict.assert_awaited_once()
+        mock_service.run_daily_panel.assert_not_called()
+
+    def test_get_panel_404_when_no_stored_result(self) -> None:
+        """404 when no analysis has been produced for today yet (C3)."""
+        mock_service = AsyncMock()
+        mock_service.get_stored_verdict = AsyncMock(return_value=None)
+        app = _make_app(mock_service)
+        client = TestClient(app)
+
+        resp = client.get("/api/v1/panel")
+
+        assert resp.status_code == 404
+        mock_service.run_daily_panel.assert_not_called()
 
 
 class TestPanelRateLimit:

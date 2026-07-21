@@ -13,7 +13,7 @@ Coverage:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -89,6 +89,43 @@ class TestMockResponse:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Test: model="reasoner" does not set json_object
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestClose:
+    """C2: close() releases the underlying httpx pools, not just drops refs."""
+
+    @pytest.mark.asyncio
+    async def test_close_awaits_root_async_client(self) -> None:
+        """close() awaits root_async_client.close() on each built model."""
+        gateway = LangChainGateway(api_key="test-key", base_url="https://test.api.example.com")
+
+        # Build the chat model so there's a real ChatDeepSeek to close.
+        with patch.object(ChatDeepSeek, "ainvoke", new=AsyncMock()) as mock_ainvoke:
+            mock_ainvoke.return_value = _make_aimessage("{}")
+            await gateway.complete("system", "user", model="chat")
+
+        model = gateway._chat_model
+        assert model is not None
+
+        # Swap the eagerly-built async client for one whose close() we can track.
+        tracker = AsyncMock()
+        model.root_async_client = tracker  # type: ignore[attr-defined]
+        # Neutralise the sync client so its real close() doesn't run.
+        model.root_client = MagicMock()  # type: ignore[attr-defined]
+
+        await gateway.close()
+
+        tracker.close.assert_awaited_once()
+        # References are dropped after closing.
+        assert gateway._chat_model is None
+        assert gateway._reasoner_model is None
+
+    @pytest.mark.asyncio
+    async def test_close_with_no_models_is_safe(self) -> None:
+        """close() before any model was built is a no-op."""
+        gateway = LangChainGateway(api_key="test-key", base_url="https://test.api.example.com")
+        assert gateway._chat_model is None
+        await gateway.close()  # must not raise
 
 
 class TestReasonerNoJsonObject:

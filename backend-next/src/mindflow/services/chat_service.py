@@ -178,6 +178,11 @@ class ChatService:
                 max_tokens=2048,
             )
 
+        # Keep a reference so aclose() can release this model's httpx pool.
+        # create_agent does not expose the model back to us, and dropping the
+        # reference alone leaks the pool until GC (review C2 connection leak).
+        self._agent_model = llm
+
         # ── Build agent ─────────────────────────────────────────────────────
         self._agent = create_agent(
             model=llm if llm is not None else "deepseek-chat",  # type: ignore[arg-type]
@@ -187,14 +192,29 @@ class ChatService:
         )
 
     async def aclose(self) -> None:
-        """Close the underlying LLM gateway HTTP client.
+        """Close the LLM HTTP clients held by this service.
 
-        Cleanup hook for application shutdown (review P2 connection leak).
+        Cleanup hook for application shutdown (review C2 connection leak).
+        Closes both the injected gateway and the standalone ``ChatDeepSeek``
+        built for the agent (its ``root_async_client`` owns a separate httpx
+        pool that would otherwise linger until GC).
         """
         import contextlib
 
         with contextlib.suppress(Exception):
             await self._llm_gateway.close()
+
+        model = self._agent_model
+        if model is not None:
+            async_client = getattr(model, "root_async_client", None)
+            if async_client is not None and hasattr(async_client, "close"):
+                with contextlib.suppress(Exception):
+                    await async_client.close()
+            sync_client = getattr(model, "root_client", None)
+            if sync_client is not None and hasattr(sync_client, "close"):
+                with contextlib.suppress(Exception):
+                    sync_client.close()
+            self._agent_model = None
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API

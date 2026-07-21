@@ -39,7 +39,6 @@ from mindflow.infrastructure.security.crisis_detector import CrisisDetector, Cri
 
 SourceType = Literal["deepseek", "ollama", "rule_engine"]
 
-
 @dataclass(frozen=True)
 class AttributionOutcome:
     """Result of the attribution pipeline with source and cache tracking.
@@ -99,6 +98,20 @@ class LLMService:
         self._crisis_detector = crisis_detector or CrisisDetector()
         self._ollama_base_url = ollama_base_url
         self._ollama_model = ollama_model
+
+    async def aclose(self) -> None:
+        """Close the L1 DeepSeek client's HTTP connection pool.
+
+        Cleanup hook for application shutdown (review C1 connection leak):
+        the DeepSeekClient owns a long-lived ``httpx.AsyncClient`` whose pool
+        is never released otherwise. L2 (Ollama) opens per-call clients that
+        close on their own; L3 (RuleEngine) holds no resources.
+        """
+        if self._deepseek_client is not None:
+            import contextlib
+
+            with contextlib.suppress(Exception):
+                await self._deepseek_client.close()
 
     # ── Public API ────────────────────────────────────────────────────
 

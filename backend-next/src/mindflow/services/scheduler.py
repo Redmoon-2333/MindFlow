@@ -22,6 +22,7 @@ the service skips recomputation.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -54,10 +55,36 @@ _AUTO_INTERVENTION_MIN_CONFIDENCE: float = 0.5
 # precise intervention (see G005 three-tier routing).
 _AUTO_INTERVENTION_PANEL_CONFIDENCE: float = 0.75
 
-# Track which dates the daily panel has already been triggered by
-# the auto-intervention check (date string → True).  This prevents
-# redundant panel calls within the same calendar day.
+# Track which dates the daily panel has already been triggered (either by the
+# 23:30 cron or the 30-min auto-intervention check).  Guarded by
+# ``_DAILY_PANEL_LOCK`` and claimed BEFORE awaiting the panel so the two jobs
+# cannot both observe "not run yet" and double-fire the expensive panel
+# (review C4 — shared-mutable race).  The set + module scope are kept so a run
+# is deduped for the whole calendar day across both callers.
 _DAILY_PANEL_RUN_DATES: set[str] = set()
+_DAILY_PANEL_LOCK = asyncio.Lock()
+
+
+async def _claim_daily_panel_run(date_str: str) -> bool:
+    """Atomically claim the daily-panel run for *date_str*.
+
+    Returns True if the caller won the claim (must run the panel), False if it
+    was already claimed today.  The claim is recorded BEFORE the panel runs so
+    a concurrent tick sees it immediately; callers must release via
+    ``_release_daily_panel_run`` if the run then fails, so a later attempt can
+    retry.
+    """
+    async with _DAILY_PANEL_LOCK:
+        if date_str in _DAILY_PANEL_RUN_DATES:
+            return False
+        _DAILY_PANEL_RUN_DATES.add(date_str)
+        return True
+
+
+async def _release_daily_panel_run(date_str: str) -> None:
+    """Release a previously-claimed daily-panel run (on failure) so it can retry."""
+    async with _DAILY_PANEL_LOCK:
+        _DAILY_PANEL_RUN_DATES.discard(date_str)
 
 
 async def _auto_intervention_check(
@@ -176,7 +203,11 @@ async def _auto_intervention_check(
 
     if top_confidence >= _AUTO_INTERVENTION_PANEL_CONFIDENCE and panel_service is not None:
         today_str = now.strftime("%Y-%m-%d")
-        if today_str not in _DAILY_PANEL_RUN_DATES:
+        # Claim the run BEFORE awaiting so a concurrent daily-panel cron tick
+        # cannot also fire the panel (review C4 race). If we lose the claim,
+        # another caller already ran (or is running) today's panel — skip.
+        claimed = await _claim_daily_panel_run(today_str)
+        if claimed:
             logger.info(
                 "Auto-intervention: confidence {:.2f} >= {:.2f}, "
                 "escalating to expert panel",
@@ -191,7 +222,6 @@ async def _auto_intervention_check(
                     user_id=user_id,
                     target_date=_date.today(),
                 )
-                _DAILY_PANEL_RUN_DATES.add(today_str)
 
                 # Convert PanelVerdict → ProcrastinationAssessment for
                 # downstream intervention dispatch (more precise attribution).
@@ -214,9 +244,12 @@ async def _auto_intervention_check(
                     "Panel escalation failed ({}), falling back to rule engine",
                     exc,
                 )
+                # Release the claim so a later tick can retry today's panel.
+                await _release_daily_panel_run(today_str)
                 # Fall through: keep assessment_for_dispatch = assessment
             except Exception as exc:
                 logger.error("Panel escalation unexpected error: {}", exc)
+                await _release_daily_panel_run(today_str)
 
     if panel_attempted and assessment_for_dispatch is assessment:
         logger.info(
@@ -295,7 +328,19 @@ def build_scheduler(
                 ):
                     logger.debug("Daily panel: autonomy disabled, skipping")
                     return
-                await panel_service.run_daily_panel(user_id=1, target_date=_date.today())
+                # Claim today's run so the concurrent auto-intervention check
+                # cannot also fire the panel (review C4 race). If already
+                # claimed, the panel ran today — skip.
+                today_str = _date.today().strftime("%Y-%m-%d")
+                if not await _claim_daily_panel_run(today_str):
+                    logger.debug("Daily panel: already run today ({}), skipping", today_str)
+                    return
+                try:
+                    await panel_service.run_daily_panel(user_id=1, target_date=_date.today())
+                except Exception:
+                    # Release so a retry (e.g. the 30-min check) can run today.
+                    await _release_daily_panel_run(today_str)
+                    raise
             except Exception:
                 logger.exception("Daily panel job failed")
 

@@ -300,6 +300,38 @@ class TestAttributionOutcome:
         assert outcome.source == "rule_engine"
 
 
+class TestAttributionClose:
+    """C1: LLMService.aclose() releases the DeepSeek client's httpx pool."""
+
+    @pytest.mark.asyncio
+    async def test_aclose_closes_deepseek_client(self) -> None:
+        """aclose() awaits the DeepSeek client's close()."""
+        client = MagicMock()
+        client.close = AsyncMock()
+        service = _make_service(deepseek=client)
+
+        await service.aclose()
+
+        client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_aclose_without_client_is_safe(self) -> None:
+        """aclose() with no DeepSeek client (L1 disabled) is a no-op."""
+        service = _make_service(deepseek=None)
+        await service.aclose()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_aclose_suppresses_close_errors(self) -> None:
+        """A failure closing the client must not propagate out of shutdown."""
+        client = MagicMock()
+        client.close = AsyncMock(side_effect=RuntimeError("boom"))
+        service = _make_service(deepseek=client)
+
+        await service.aclose()  # suppressed — must not raise
+
+        client.close.assert_awaited_once()
+
+
 class TestIntendedTaskRedaction:
     """Review P3: path-looking manual tags must not reach the LLM payload."""
 

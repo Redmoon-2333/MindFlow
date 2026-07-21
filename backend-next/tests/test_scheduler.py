@@ -435,3 +435,125 @@ class TestAutoInterventionCheckThreeTier:
             mock_repo.query_range.assert_not_called()
             mock_panel.run_daily_panel.assert_not_called()
             mock_svc.maybe_intervene.assert_not_called()
+
+
+class TestDailyPanelRunClaim:
+    """C4: the daily-panel run is claimed atomically before the await, so the
+    23:30 cron and the 30-min check cannot both fire the panel on the same day.
+    """
+
+    @staticmethod
+    def _events() -> list[object]:
+        from mindflow.domain.events import make_event
+
+        base = datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC)
+        return [
+            make_event(
+                user_id=1,
+                timestamp_utc=base,
+                duration_s=10.0,
+                process_name="Code.exe",
+                app_name="Code.exe",
+            ),
+        ]
+
+    async def test_concurrent_checks_trigger_panel_once(self) -> None:
+        """Two concurrent high-confidence checks → panel runs exactly once."""
+        import asyncio
+
+        from mindflow.agents.types import PanelVerdict
+        from mindflow.services.scheduler import _DAILY_PANEL_RUN_DATES
+
+        _DAILY_PANEL_RUN_DATES.discard("2026-07-17")
+
+        verdict = PanelVerdict(
+            types=(ProcrastinationType.IMPULSIVITY,),
+            confidence={ProcrastinationType.IMPULSIVITY: 0.85},
+            recommended_technique=CBTTechnique.STIMULUS_CONTROL,
+            rationale="并发测试裁决",
+            dissent=(),
+            transcript=(),
+            escalated=False,
+            call_count=1,
+            source="panel",
+        )
+
+        # Panel blocks until released, forcing the two tasks to interleave so
+        # the second one reaches the claim while the first is still "running".
+        gate = asyncio.Event()
+        call_count = {"n": 0}
+
+        async def _blocking_panel(**_: object) -> PanelVerdict:
+            call_count["n"] += 1
+            await gate.wait()
+            return verdict
+
+        mock_panel = MagicMock()
+        mock_panel.run_daily_panel = AsyncMock(side_effect=_blocking_panel)
+
+        mock_engine = MagicMock()
+        mock_engine.assess.return_value = _make_assessment(confidence=0.85)
+
+        def _make_check() -> object:
+            mock_repo = AsyncMock()
+            mock_repo.query_range = AsyncMock(return_value=self._events())
+            mock_result = MagicMock()
+            mock_result.skipped = False
+            mock_svc = MagicMock()
+            mock_svc.maybe_intervene = AsyncMock(return_value=mock_result)
+            return _auto_intervention_check(
+                mock_repo,
+                mock_svc,
+                rule_engine=mock_engine,
+                panel_service=mock_panel,  # type: ignore[arg-type]
+            )
+
+        with patch("mindflow.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC)
+            mock_dt.UTC = UTC
+            mock_dt.timedelta = __import__("datetime").timedelta
+
+            t1 = asyncio.create_task(_make_check())
+            t2 = asyncio.create_task(_make_check())
+            # Let both tasks reach the claim/await point, then release the panel.
+            await asyncio.sleep(0)
+            gate.set()
+            await asyncio.gather(t1, t2)
+
+        # Only one task won the claim, so the panel ran exactly once.
+        assert call_count["n"] == 1
+        _DAILY_PANEL_RUN_DATES.discard("2026-07-17")
+
+    async def test_failed_panel_releases_claim_for_retry(self) -> None:
+        """When the panel fails, the claim is released so a later tick can retry."""
+        from mindflow.agents.types import PanelUnavailableError
+        from mindflow.services.scheduler import _DAILY_PANEL_RUN_DATES
+
+        _DAILY_PANEL_RUN_DATES.discard("2026-07-17")
+
+        mock_panel = MagicMock()
+        mock_panel.run_daily_panel = AsyncMock(
+            side_effect=PanelUnavailableError(reason="down")
+        )
+        mock_engine = MagicMock()
+        mock_engine.assess.return_value = _make_assessment(confidence=0.85)
+
+        mock_repo = AsyncMock()
+        mock_repo.query_range = AsyncMock(return_value=self._events())
+        mock_svc = MagicMock()
+        mock_svc.maybe_intervene = AsyncMock(return_value=MagicMock(skipped=False))
+
+        with patch("mindflow.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC)
+            mock_dt.UTC = UTC
+            mock_dt.timedelta = __import__("datetime").timedelta
+
+            await _auto_intervention_check(
+                mock_repo,
+                mock_svc,
+                rule_engine=mock_engine,
+                panel_service=mock_panel,  # type: ignore[arg-type]
+            )
+
+        # Claim released → date is NOT stuck as "already run".
+        assert "2026-07-17" not in _DAILY_PANEL_RUN_DATES

@@ -349,6 +349,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await chat_service.aclose()
         except Exception as exc:
             logger.warning("ChatService gateway close error: {}", exc)
+    if llm_service is not None:
+        try:
+            await llm_service.aclose()
+        except Exception as exc:
+            logger.warning("LLMService client close error: {}", exc)
 
     # 2. Close WebSocket connections
     try:

@@ -11,6 +11,7 @@ Degradation chain (07-agent-upgrade-design.md §5):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -33,6 +34,17 @@ from mindflow.infrastructure.repositories.intervention import (
 from mindflow.services.effectiveness_service import EffectivenessService
 from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.llm_service import LLMService
+
+
+@dataclass(frozen=True)
+class _StoredOutcome:
+    """Minimal adapter wrapping a stored analysis dict for ``_outcome_to_verdict``.
+
+    ``_outcome_to_verdict`` only reads ``.assessment``; the persisted analysis
+    dict already matches that shape, so this avoids duplicating the mapping.
+    """
+
+    assessment: dict[str, Any]
 
 
 class PanelService:
@@ -117,6 +129,33 @@ class PanelService:
             force=True,
         )
 
+        return self._outcome_to_verdict(outcome)
+
+    async def get_stored_verdict(self, user_id: int, target_date: date) -> PanelVerdict | None:
+        """Return the most recent stored analysis as a verdict, or None.
+
+        Read-only: unlike ``run_daily_panel`` this triggers NO LLM calls. It
+        serves the last persisted attribution (written by ``run_daily_panel``'s
+        fallback path or the daily cron) so a GET stays idempotent and free
+        (review C3 — a GET must not run the 6-12-call panel).
+
+        Args:
+            user_id: The user to look up.
+            target_date: The date to look up.
+
+        Returns:
+            A ``PanelVerdict`` reconstructed from the stored analysis, or
+            None if nothing has been analysed for that date yet.
+        """
+        cached = await self._llm_service._analysis_repo.get_by_date(  # noqa: SLF001
+            user_id, target_date
+        )
+        if cached is None:
+            return None
+
+        # Reuse the outcome→verdict mapping; wrap the stored dict in the minimal
+        # shape _outcome_to_verdict expects (an object with an ``assessment``).
+        outcome = _StoredOutcome(assessment=cached)
         return self._outcome_to_verdict(outcome)
 
     async def aclose(self) -> None:
