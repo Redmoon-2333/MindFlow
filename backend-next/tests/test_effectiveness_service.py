@@ -84,7 +84,7 @@ class TestEffectivenessService:
         activity_repo, intervention_repo = seeded_repos
 
         # Seed intervention
-        log = await intervention_repo.log_triggered(
+        await intervention_repo.log_triggered(
             user_id=1,
             intervention_type="nudge",
             triggered_at=_TS,
@@ -110,7 +110,7 @@ class TestEffectivenessService:
         """Insufficient data returns empty report."""
         _, intervention_repo = seeded_repos
 
-        log = await intervention_repo.log_triggered(
+        await intervention_repo.log_triggered(
             user_id=1,
             intervention_type="nudge",
             triggered_at=_TS,

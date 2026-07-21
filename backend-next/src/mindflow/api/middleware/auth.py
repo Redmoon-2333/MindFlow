@@ -28,6 +28,15 @@ _EXEMPT_PATHS: frozenset[str] = frozenset({
     "/redoc",
 })
 
+# Prefix-based exemption check (audit M3): single prefix-based check instead
+# of mixed exact-match + prefix.
+_EXEMPT_PREFIXES: tuple[str, ...] = (
+    "/api/v1/health",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+)
+
 
 def _auth_required_response(path: str) -> Response:
     """Build a 401 response in RFC 9457 format."""
@@ -59,14 +68,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         path = request.scope["path"]
 
-        # Exempt health, docs, and OpenAPI schema endpoints — single
-        # prefix-based check instead of mixed exact-match + prefix (audit M3).
-        _EXEMPT_PREFIXES: tuple[str, ...] = (
-            "/api/v1/health",
-            "/docs",
-            "/openapi.json",
-            "/redoc",
-        )
+        # Exempt health, docs, and OpenAPI schema endpoints.
         if any(path.startswith(prefix) for prefix in _EXEMPT_PREFIXES):
             return await call_next(request)
 

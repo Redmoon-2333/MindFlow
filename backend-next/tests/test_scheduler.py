@@ -20,7 +20,9 @@ from mindflow.services.scheduler import (
 )
 
 
-def _make_assessment(confidence: float, top_type: ProcrastinationType = ProcrastinationType.TASK_AVERSION) -> MagicMock:
+def _make_assessment(
+    confidence: float, top_type: ProcrastinationType = ProcrastinationType.TASK_AVERSION
+) -> MagicMock:
     """Create a mock ProcrastinationAssessment with a specific confidence."""
     a = MagicMock()
     a.types = (top_type,)

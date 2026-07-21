@@ -26,6 +26,16 @@ from mindflow.agents.llm_gateway import GatewayNotConfiguredError, LangChainGate
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+@pytest.fixture(autouse=True)
+def _no_ssl_cert_file_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset ``SSL_CERT_FILE`` so real ``ChatDeepSeek`` construction
+
+    (which eagerly builds an httpx client + SSL context via ``trust_env``)
+    never fails on a machine where the variable points to an invalid path.
+    """
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+
+
 def _make_aimessage(content: str = "{}") -> AIMessage:
     """Build a fake ``AIMessage`` with the given *content*."""
     return AIMessage(content=content)

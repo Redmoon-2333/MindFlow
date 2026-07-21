@@ -12,7 +12,7 @@ Uses mocked dependencies for isolation.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -45,7 +45,8 @@ class TestDeepWorkGuard:
         for i in range(85):
             events.append(make_event(
                 user_id=1,
-                timestamp_utc=datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC) + __import__("datetime").timedelta(seconds=i * 10),
+                timestamp_utc=datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC)
+                + timedelta(seconds=i * 10),
                 duration_s=10.0,
                 process_name="Code.exe",
             ))
@@ -57,7 +58,8 @@ class TestDeepWorkGuard:
         for i in range(30):
             events.append(make_event(
                 user_id=1,
-                timestamp_utc=datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC) + __import__("datetime").timedelta(seconds=i * 30),
+                timestamp_utc=datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC)
+                + timedelta(seconds=i * 30),
                 duration_s=5.0,
                 process_name=f"App_{i % 3}.exe",
             ))
@@ -150,7 +152,9 @@ class TestInterventionService:
     def mock_repo(self) -> AsyncMock:
         repo = AsyncMock()
         repo.log_triggered = AsyncMock(return_value={"id": "mock-id"})
-        repo.update_response = AsyncMock(return_value={"id": "mock-id", "user_response": "accepted"})
+        repo.update_response = AsyncMock(
+            return_value={"id": "mock-id", "user_response": "accepted"}
+        )
         repo.query_range = AsyncMock(return_value=[])
         return repo
 
@@ -171,7 +175,9 @@ class TestInterventionService:
         return AsyncMock(return_value=1)
 
     @pytest.fixture
-    def service(self, mock_repo, mock_throttle, mock_notifier, mock_broadcast) -> InterventionService:
+    def service(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> InterventionService:
         return InterventionService(
             intervention_repo=mock_repo,
             throttle=mock_throttle,
@@ -199,7 +205,8 @@ class TestInterventionService:
         for i in range(85):
             events.append(make_event(
                 user_id=1,
-                timestamp_utc=datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC) + __import__("datetime").timedelta(seconds=i * 10),
+                timestamp_utc=datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC)
+                + timedelta(seconds=i * 10),
                 duration_s=10.0,
                 process_name="Code.exe",
             ))

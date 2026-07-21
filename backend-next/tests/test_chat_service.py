@@ -190,8 +190,20 @@ class TestHistoryCompression:
         # Create 22 messages (11 rounds) to trigger compression
         msgs: list[dict[str, Any]] = []
         for i in range(11):
-            msgs.append({"role": "user", "content": f"用户消息{i}", "created_at": f"2026-01-01T00:{i:02d}:00Z"})
-            msgs.append({"role": "assistant", "content": f"助手回复{i}", "created_at": f"2026-01-01T00:{i:02d}:01Z"})
+            msgs.append(
+                {
+                    "role": "user",
+                    "content": f"用户消息{i}",
+                    "created_at": f"2026-01-01T00:{i:02d}:00Z",
+                }
+            )
+            msgs.append(
+                {
+                    "role": "assistant",
+                    "content": f"助手回复{i}",
+                    "created_at": f"2026-01-01T00:{i:02d}:01Z",
+                }
+            )
 
         chat_service._chat_repo.recent.return_value = msgs
 

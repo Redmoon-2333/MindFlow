@@ -153,7 +153,15 @@ def _social_item(ratio: float, baseline: float = 0.20) -> EvidenceItem:
 
 
 def _delay_item(delay_min: float, baseline: float = 10.0) -> EvidenceItem:
-    sev = "severe" if delay_min >= 60 else "moderate" if delay_min >= 30 else "mild" if delay_min >= 15 else "info"
+    sev = (
+        "severe"
+        if delay_min >= 60
+        else "moderate"
+        if delay_min >= 30
+        else "mild"
+        if delay_min >= 15
+        else "info"
+    )
     return _item(
         metric="start_delay_min",
         value=delay_min,
@@ -167,7 +175,15 @@ def _delay_item(delay_min: float, baseline: float = 10.0) -> EvidenceItem:
 
 def _deviation_item(deviation: float) -> EvidenceItem:
     abs_d = abs(deviation)
-    sev = "severe" if abs_d >= 1.5 else "moderate" if abs_d >= 1.0 else "mild" if abs_d >= 0.5 else "info"
+    sev = (
+        "severe"
+        if abs_d >= 1.5
+        else "moderate"
+        if abs_d >= 1.0
+        else "mild"
+        if abs_d >= 0.5
+        else "info"
+    )
     return _item(
         metric="behavior_deviation",
         value=deviation,
@@ -738,7 +754,11 @@ _SCENARIOS.append(EvalScenario(
         start_delay_min=35.0,
         keyword_flags=frozenset({"self_criticism"}),
     ),
-    expected_types=(ProcrastinationType.DECISIONAL, ProcrastinationType.PERFECTIONISM, ProcrastinationType.IMPULSIVITY),
+    expected_types=(
+        ProcrastinationType.DECISIONAL,
+        ProcrastinationType.PERFECTIONISM,
+        ProcrastinationType.IMPULSIVITY,
+    ),
     expected_technique=CBTTechnique.GOAL_SETTING,
 ))
 

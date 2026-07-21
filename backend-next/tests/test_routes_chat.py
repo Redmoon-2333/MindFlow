@@ -202,8 +202,18 @@ class TestGetMessages:
         mock_repo = AsyncMock()
         mock_repo.recent = AsyncMock(
             return_value=[
-                {"id": "m1", "role": "user", "content": "你好", "created_at": "2026-07-18T10:00:00Z"},
-                {"id": "m2", "role": "assistant", "content": "你好！", "created_at": "2026-07-18T10:00:05Z"},
+                {
+                    "id": "m1",
+                    "role": "user",
+                    "content": "你好",
+                    "created_at": "2026-07-18T10:00:00Z",
+                },
+                {
+                    "id": "m2",
+                    "role": "assistant",
+                    "content": "你好！",
+                    "created_at": "2026-07-18T10:00:05Z",
+                },
             ],
         )
         mock_service = AsyncMock()

@@ -24,6 +24,16 @@ from mindflow.config import LLMSettings
 from mindflow.infrastructure.llm.client import DeepSeekClient, LLMAPIError, LLMNotConfiguredError
 
 
+@pytest.fixture(autouse=True)
+def _no_ssl_cert_file_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset ``SSL_CERT_FILE`` so real ``httpx.AsyncClient`` construction
+
+    (which eagerly builds an SSL context via ``trust_env``) never fails on a
+    machine where the variable points to a path invalid for this interpreter.
+    """
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+
+
 def _make_settings(api_key: str = "test-key") -> LLMSettings:
     return LLMSettings(api_key=api_key, base_url="https://test.api.example.com", model="test-model")
 

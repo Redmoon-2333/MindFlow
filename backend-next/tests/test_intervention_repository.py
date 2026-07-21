@@ -176,9 +176,13 @@ class TestInterventionLogRepository:
     async def test_query_range(self, repo) -> None:
         """Query within time range returns matching logs."""
         now = datetime.now(UTC)
-        await repo.log_triggered(user_id=1, intervention_type="nudge", triggered_at=now - timedelta(hours=2))
+        await repo.log_triggered(
+            user_id=1, intervention_type="nudge", triggered_at=now - timedelta(hours=2)
+        )
         await repo.log_triggered(user_id=1, intervention_type="task_breakdown", triggered_at=now)
-        await repo.log_triggered(user_id=1, intervention_type="nudge", triggered_at=now + timedelta(hours=2))
+        await repo.log_triggered(
+            user_id=1, intervention_type="nudge", triggered_at=now + timedelta(hours=2)
+        )
 
         results = await repo.query_range(
             user_id=1,
@@ -190,7 +194,7 @@ class TestInterventionLogRepository:
 
     async def test_get_by_id_found(self, repo) -> None:
         """Lookup by existing ID returns the log."""
-        log = await repo.log_triggered(
+        await repo.log_triggered(
             user_id=1,
             intervention_type="nudge",
             intervention_id="find-me-001",
