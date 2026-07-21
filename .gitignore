@@ -14,11 +14,7 @@ htmlcov/
 venv/
 
 # 数据与模型 (本地隐私数据不入库)
-backend-next/data/*.db
-backend-next/data/*.db-wal
-backend-next/data/*.db-shm
-backend-next/data/logs/
-backend-next/data/models/
+backend-next/data/
 data/mindflow.db*
 data/logs/
 data/backups/
