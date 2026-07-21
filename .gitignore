@@ -24,9 +24,9 @@ data/mindflow.db*
 data/logs/
 data/backups/
 
-# 数据集太大不入库 (保留 README 说明来源)
-backend/data/datasets/manictime/*.csv
-backend/data/datasets/awt-labelled/*.csv
+# 数据集太大不入库 (保留 README 说明来源，实际数据走 Git LFS)
+data/datasets/manictime/**/*.csv
+data/datasets/awt-labelled/**/*.csv
 
 # 前端
 node_modules/
