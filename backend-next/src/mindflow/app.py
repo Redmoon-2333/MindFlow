@@ -4,7 +4,9 @@ Wires together:
   - Lifespan: migration → integrity check → token loading → CollectorService
     → Wave 5 services (analysis, report, maintenance) → Wave 6 LLM service
     → scheduler
-  - Middleware: logging → host → auth → rate-limit (per §3.5 order)
+  - Middleware: logging → host → rate-limit → auth (per §3.5 addition
+    order; actual request-processing order is the reverse, so auth gates
+    before rate-limit meters — see create_app for the full LIFO rationale)
   - Routes: health, collector, activities, preferences, Wave 5+6 endpoints
   - WebSocket: /api/v1/ws
   - Exception handlers: RFC 9457 ProblemDetail (8 error codes)
@@ -432,7 +434,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ── Exception handlers (wraps everything) ─────────────────────────
     register_exception_handlers(app)
 
-    # ── Middleware (order per §3.5, outermost first) ──────────────────
+    # ── Middleware (§3.5) ────────────────────────────────────────────────
+    # Starlette's add_middleware is LIFO: the LAST middleware added becomes
+    # the OUTERMOST layer and therefore runs FIRST on each request. The list
+    # below is in ADDITION order; actual request-processing order is the
+    # reverse (CORS → RateLimit → Auth → Host → Logging → route).
+    #
+    # F2 fix: Auth is added AFTER RateLimit (so Auth processes the request
+    # BEFORE RateLimit does). Previously Auth was added before RateLimit,
+    # which made RateLimit the outer/first-run layer — an unauthenticated
+    # request would consume rate-limit budget before ever being rejected by
+    # Auth, letting a token-less local process exhaust the global bucket (and
+    # tiny per-endpoint daily caps, e.g. panel's daily_hard_limit=3) and lock
+    # out the legitimate authenticated client. Auth must gate before
+    # metering: an unauthenticated request should get a cheap 401 without
+    # touching any bucket.
 
     # 1. StructuredLoggingMiddleware (request_id + timing)
     app.add_middleware(StructuredLoggingMiddleware)
@@ -440,13 +456,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 2. HostValidationMiddleware (localhost only)
     app.add_middleware(HostValidationMiddleware)
 
-    # 3. AuthMiddleware (token check, exempt /health and /docs)
+    # 3. RateLimitMiddleware (token bucket) — added before Auth so Auth
+    # ends up outer and runs first (see LIFO note above).
+    app.add_middleware(RateLimitMiddleware)
+
+    # 4. AuthMiddleware (token check, exempt /health and /docs)
     # Token is read from app.state.system_token at request time,
     # so it doesn't need to be set during construction.
     app.add_middleware(AuthMiddleware)
-
-    # 4. RateLimitMiddleware (token bucket)
-    app.add_middleware(RateLimitMiddleware)
 
     # 5. CORSMiddleware (localhost origins only)
     app.add_middleware(

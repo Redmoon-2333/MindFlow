@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections import deque
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
@@ -46,6 +47,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
+from mindflow.api.middleware.host import _TRUSTED_HOST_LOWERCASE, _parse_host
 from mindflow.infrastructure.security.token_manager import verify_token
 
 router = APIRouter(tags=["websocket"])
@@ -57,6 +59,20 @@ _active_connections: dict[str, WebSocket] = {}
 
 _connection_lock = asyncio.Lock()
 """Protects _active_connections from concurrent modification."""
+
+_MAX_CONNECTIONS = 10
+"""Cap on concurrent WS connections. Single-user desktop app — a handful of
+tabs/clients is plenty; an unbounded dict is a resource-exhaustion vector for
+any local process that can reach the port (F3)."""
+
+_MSG_WINDOW_S = 1.0
+_MSG_MAX_PER_WINDOW = 20
+"""Per-connection message-flood guard (F3): BaseHTTPMiddleware-based
+RateLimitMiddleware never runs for websocket-scoped ASGI connections, so
+this endpoint has no cap of its own otherwise. Deliberately simple (a
+timestamp deque, not the full token-bucket machinery in
+api/middleware/ratelimit.py) — this only needs to catch a misbehaving/hostile
+client hammering the socket, not implement fair global metering."""
 
 
 async def broadcast(message: dict[str, Any]) -> int:
@@ -148,13 +164,37 @@ async def websocket_handler(websocket: WebSocket) -> None:
 
     The client should send a ``ping`` message every 30 seconds to keep
     the connection alive. The server responds with ``pong``.
+
+    F3 hardening: BaseHTTPMiddleware-based middleware (Host validation, rate
+    limiting, …) only runs for ``http``-scoped ASGI connections, never for
+    ``websocket``-scoped ones — so this handler duplicates the Host check
+    and adds its own connection cap / message-rate guard, since it cannot
+    rely on the HTTP middleware stack at all.
     """
+    # ── Host validation (defense-in-depth against DNS rebinding) ──
+    # Mirrors HostValidationMiddleware.dispatch exactly, including its
+    # "missing Host header passes through" behavior — reuses the same
+    # trusted-host set/parser instead of duplicating the logic (F3).
+    host_header = websocket.headers.get("host", "")
+    if host_header:
+        hostname, _port = _parse_host(host_header)
+        if hostname.lower() not in _TRUSTED_HOST_LOWERCASE:
+            await websocket.close(code=1008, reason="Forbidden host")
+            return
+
     # ── Authentication via query parameter ──
     token = websocket.query_params.get("token", "")
     expected_token = getattr(websocket.app.state, "system_token", "")
 
     if not token or not verify_token(token, expected_token):
         await websocket.close(code=4001, reason="Authentication required")
+        return
+
+    # ── Connection cap (F3) ──
+    async with _connection_lock:
+        over_limit = len(_active_connections) >= _MAX_CONNECTIONS
+    if over_limit:
+        await websocket.close(code=1008, reason="Too many connections")
         return
 
     # ── Accept the connection ──
@@ -183,8 +223,27 @@ async def _handle_messages(websocket: WebSocket, client_id: str) -> None:
     Handles:
       - ``ping`` messages → responds with ``pong``
       - All other messages → ignored (future extension)
+
+    F3: enforces a simple per-connection message-rate guard (a timestamp
+    deque, not the full token-bucket machinery) since no HTTP middleware
+    runs for this websocket-scoped connection at all.
     """
+    recent_msg_times: deque[float] = deque(maxlen=_MSG_MAX_PER_WINDOW)
+
     async for raw in websocket.iter_text():
+        now = time.monotonic()
+        recent_msg_times.append(now)
+        if (
+            len(recent_msg_times) == _MSG_MAX_PER_WINDOW
+            and now - recent_msg_times[0] < _MSG_WINDOW_S
+        ):
+            logger.warning(
+                "WebSocket client {} exceeded message rate limit, disconnecting",
+                client_id,
+            )
+            await websocket.close(code=1008, reason="Message rate limit exceeded")
+            return
+
         try:
             data = json.loads(raw)
             msg_type = data.get("type", "")

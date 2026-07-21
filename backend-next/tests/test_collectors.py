@@ -20,6 +20,7 @@ from mindflow.infrastructure.collectors.base import (
     CollectorUnavailableError,
     EventCollector,
     create_collector,
+    truncate_text_field,
 )
 
 
@@ -123,6 +124,52 @@ class TestWin32DegradedSnapshot:
         with patch.object(collector, "_idle_seconds_sync", side_effect=Exception("fail")):
             idle = await collector.idle_seconds()
             assert idle == 0.0
+
+
+class TestTruncateTextField:
+    """F4: verify the collector-layer length guard on untrusted text fields."""
+
+    def test_short_string_unchanged(self):
+        assert truncate_text_field("normal title") == "normal title"
+
+    def test_exact_boundary_unchanged(self):
+        value = "x" * 512
+        assert truncate_text_field(value, max_len=512) == value
+
+    def test_oversized_string_truncated(self):
+        value = "x" * 1000
+        result = truncate_text_field(value, max_len=512)
+        assert len(result) == 512
+        assert result == "x" * 512
+
+    def test_default_max_len_is_512(self):
+        value = "y" * 600
+        result = truncate_text_field(value)
+        assert len(result) == 512
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only test")
+class TestWin32CollectorTitleTruncation:
+    """F4: an oversized window title must be truncated at ingest, not stored verbatim."""
+
+    async def test_oversized_window_title_is_truncated(self):
+        """A malicious/misbehaving app setting a huge window title gets clipped."""
+        from mindflow.infrastructure.collectors.win32 import Win32Collector
+
+        collector = Win32Collector()
+        huge_title = "A" * 5000
+
+        with (
+            patch("win32gui.GetForegroundWindow", return_value=123),
+            patch("win32gui.GetWindowText", return_value=huge_title),
+            patch("win32process.GetWindowThreadProcessId", return_value=(0, 999)),
+            patch("psutil.Process") as mock_process_cls,
+        ):
+            mock_process_cls.return_value.name.return_value = "notepad.exe"
+            snap = await collector.snapshot()
+
+        assert len(snap.window_title) == 512
+        assert snap.window_title == "A" * 512
 
 
 class TestWin32Collector:

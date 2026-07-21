@@ -1,8 +1,10 @@
 """Central model management with versioned persistence.
 
-F-phase note: the ``joblib.load`` calls below are intentionally left exactly
-as they were in the original ``train/models.py`` — model-signing / HMAC
-verification is a separate (F-phase) concern and must NOT be added here.
+F-phase: every saved ``.pkl`` is HMAC-signed (see ``train/serialization.py``)
+and every load verifies the signature first. ``models_dir`` is a
+``platformdirs`` user-writable directory — without this, a malicious local
+process could drop a crafted pickle there and achieve code execution the
+next time the app calls ``joblib.load``.
 """
 
 from __future__ import annotations
@@ -16,12 +18,30 @@ from typing import Any
 import joblib
 import numpy as np
 import numpy.typing as npt
+from loguru import logger
 from sklearn.model_selection import train_test_split
 
 from mindflow.train.models.classifier import FocusClassifier
 from mindflow.train.models.clustering import BehaviorClustering
 from mindflow.train.models.hmm import BehaviorHMM
 from mindflow.train.models.types import TrainingSummary
+from mindflow.train.serialization import (
+    _load_or_create_signing_key,
+    sign_model_file,
+    verify_model_file,
+)
+
+
+class ModelSignatureError(Exception):
+    """Raised when a model file's HMAC signature is missing or invalid.
+
+    Deliberately not routed through ``mindflow.errors.MindFlowError``:
+    ``train/`` is an offline CLI, not wired into the running app (see
+    ``pyproject.toml`` — ``train`` module docstring), so there is no API
+    boundary handler that needs to catch this by a shared root. Keeping it
+    a plain ``Exception`` subclass avoids implying a relationship that
+    does not exist.
+    """
 
 
 class ModelManager:
@@ -194,8 +214,12 @@ class ModelManager:
             "hmm": f"hmm-{tag}.pkl",
         }
 
-        joblib.dump(self.clustering.to_dict(), str(self.models_dir / names["clustering"]))
-        joblib.dump(self.classifier.to_dict(), str(self.models_dir / names["classifier"]))
+        clustering_path = self.models_dir / names["clustering"]
+        classifier_path = self.models_dir / names["classifier"]
+        hmm_path = self.models_dir / names["hmm"]
+
+        joblib.dump(self.clustering.to_dict(), str(clustering_path))
+        joblib.dump(self.classifier.to_dict(), str(classifier_path))
 
         hmm_data: dict[str, Any] = {
             "transition_matrix": (
@@ -207,7 +231,13 @@ class ModelManager:
             "n_states": self.hmm.n_states,
             "is_fitted": self.hmm._is_fitted,
         }
-        joblib.dump(hmm_data, str(self.models_dir / names["hmm"]))
+        joblib.dump(hmm_data, str(hmm_path))
+
+        # Sign every artifact so _load_versions can detect tampering/planted
+        # pickles before ever calling joblib.load on them.
+        signing_key = _load_or_create_signing_key(self.models_dir)
+        for path in (clustering_path, classifier_path, hmm_path):
+            sign_model_file(path, signing_key)
 
         # Write / update latest pointer
         self._write_latest(names)
@@ -304,7 +334,17 @@ class ModelManager:
         return True
 
     def _load_versions(self, name_map: dict[str, str]) -> bool:
-        """Load models from explicit filenames."""
+        """Load models from explicit filenames.
+
+        Verifies each file's HMAC signature before calling ``joblib.load``.
+        Refuses (raises ``ModelSignatureError``) rather than silently
+        skipping when a signature is missing or mismatched: this is
+        pre-1.0 (``train/`` is an offline CLI, not wired into the running
+        app — see module docs), so there are no legacy unsigned installs
+        to stay backward-compatible with, and a mismatch means tampering,
+        not "just missing". Silently falling back to loading anyway would
+        defeat the entire point of signing.
+        """
         try:
             clustering_path = self.models_dir / name_map["clustering"]
             classifier_path = self.models_dir / name_map["classifier"]
@@ -312,6 +352,16 @@ class ModelManager:
 
             if not all(p.exists() for p in [clustering_path, classifier_path, hmm_path]):
                 return False
+
+            signing_key = _load_or_create_signing_key(self.models_dir)
+            for path in (clustering_path, classifier_path, hmm_path):
+                if not verify_model_file(path, signing_key):
+                    logger.critical(
+                        "Model file {} failed HMAC verification — refusing to load "
+                        "(missing or tampered .hmac sibling)",
+                        path,
+                    )
+                    raise ModelSignatureError(f"Signature verification failed for {path}")
 
             self.clustering = BehaviorClustering.from_dict(
                 joblib.load(str(clustering_path))

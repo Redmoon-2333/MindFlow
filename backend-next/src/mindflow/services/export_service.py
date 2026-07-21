@@ -88,6 +88,25 @@ _REPORTS_CSV_HEADERS: list[str] = [
 ]
 
 
+def _csv_safe(value: str) -> str:
+    """Neutralise CSV/DDE formula injection for a single field value.
+
+    Excel/LibreOffice execute a cell as a formula when it starts with
+    ``=``, ``+``, ``-``, ``@``, or a tab/CR — a malicious/misbehaving app
+    naming itself e.g. ``=cmd|'/c calc'!A1`` would run when the exported
+    CSV is opened. Prefixing with a single quote makes affected spreadsheet
+    apps treat the cell as literal text instead (the standard mitigation;
+    OWASP calls this "CSV Injection"). Only apply to collector/user
+    -influenceable strings (app_name, process_name, dominant_app,
+    pattern_summary) — NOT to fields we fully control (ids, dates, numeric
+    aggregates, the fixed session_type enum), since those can never carry
+    attacker-chosen content.
+    """
+    if value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
 # ── Public API ───────────────────────────────────────────────────────────
 
 
@@ -183,8 +202,8 @@ class ExportService:
                 ev.timestamp_utc.isoformat(),
                 ev.duration_s,
                 ev.event_type,
-                ev.data.app_name,
-                ev.data.process_name,
+                _csv_safe(ev.data.app_name),
+                _csv_safe(ev.data.process_name),
                 "1" if ev.data.is_idle else "0",
             ])
 
@@ -200,7 +219,7 @@ class ExportService:
                 session.get("start_time", ""),
                 session.get("end_time", ""),
                 session.get("session_type", ""),
-                session.get("dominant_app", ""),
+                _csv_safe(session.get("dominant_app") or ""),
                 session.get("focus_score", ""),
                 session.get("switch_count", ""),
             ])
@@ -218,7 +237,7 @@ class ExportService:
                 report.get("total_distraction_min", ""),
                 report.get("focus_score", ""),
                 report.get("switch_frequency", ""),
-                report.get("pattern_summary", ""),
+                _csv_safe(report.get("pattern_summary") or ""),
             ])
 
         return output.getvalue()

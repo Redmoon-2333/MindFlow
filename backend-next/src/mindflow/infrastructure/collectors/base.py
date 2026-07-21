@@ -75,6 +75,32 @@ def degraded_snapshot() -> WindowSnapshot:
     )
 
 
+_MAX_TITLE_LEN = 512
+"""Length cap for collector-sourced text fields (F4 security hardening).
+
+A malicious/misbehaving app can set an arbitrarily long window title; with
+no bound it is stored verbatim, growing unboundedly and expanding the PII
+surface with every snapshot. Truncated here — the ingestion boundary where
+raw platform data first becomes a WindowSnapshot — rather than in
+WindowSnapshot itself: the domain type stays a plain ``str`` with no
+constraint (it is a dataclass, not Pydantic, so there is no
+``Field(max_length=...)`` convention to lean on), and truncation is a
+data-hygiene concern about untrusted platform input, not a type invariant.
+"""
+
+
+def truncate_text_field(value: str, max_len: int = _MAX_TITLE_LEN) -> str:
+    """Truncate collector-sourced text (window title, app name) to *max_len*.
+
+    Every platform-specific ``snapshot()`` implementation should pass raw
+    ``window_title``/``app_name`` strings through this before constructing
+    a ``WindowSnapshot`` (F4) — centralised here instead of duplicated in
+    each of win32/darwin/x11/wayland_fallback so a future 5th collector
+    cannot forget it.
+    """
+    return value[:max_len] if len(value) > max_len else value
+
+
 def create_collector(platform: str | None = None) -> EventCollector:
     """Factory: return the appropriate EventCollector for *platform*.
 

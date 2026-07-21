@@ -17,7 +17,11 @@ from datetime import UTC, datetime
 from loguru import logger
 
 from mindflow.domain.events import WindowSnapshot
-from mindflow.infrastructure.collectors.base import CollectorUnavailableError, degraded_snapshot
+from mindflow.infrastructure.collectors.base import (
+    CollectorUnavailableError,
+    degraded_snapshot,
+    truncate_text_field,
+)
 
 
 class DarwinCollector:
@@ -75,8 +79,8 @@ class DarwinCollector:
                 break
 
         return WindowSnapshot(
-            app_name=app_name,
-            window_title=window_title,
+            app_name=truncate_text_field(app_name),
+            window_title=truncate_text_field(window_title),
             process_name=process_name,
             is_idle=False,
             timestamp_utc=datetime.now(UTC),

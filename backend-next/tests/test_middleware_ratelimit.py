@@ -7,6 +7,8 @@ Covers:
   - 429 response with RFC 9457 format
   - X-RateLimit-Remaining and X-RateLimit-Reset headers
   - Edge cases: daily hard limit, bucket exhaustion
+  - F2: Auth-before-RateLimit ordering (unauth'd + over-limit request must
+    get 401, not 429 — see app.py's create_app middleware ordering note)
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from mindflow.api.errors import register_exception_handlers
+from mindflow.api.middleware.auth import AuthMiddleware
 from mindflow.api.middleware.ratelimit import RateLimitMiddleware, TokenBucket
 
 
@@ -159,3 +163,66 @@ def test_rate_limit_global_exhaustion():
     data = resp.json()
     assert data["type"] == "https://mindflow.app/errors/rate-limited"
     assert data["status"] == 429
+
+
+class TestAuthBeforeRateLimit:
+    """F2: reproduces app.py's create_app middleware stack ordering.
+
+    add_middleware is LIFO, so to make Auth run BEFORE RateLimit, Auth must
+    be added AFTER RateLimit — exactly mirroring create_app's corrected
+    order. An unauthenticated request that also happens to be over the rate
+    limit must be rejected with 401 (auth), not 429 (rate limit): metering
+    an unauthenticated request at all is the bug this fix closes.
+    """
+
+    def _make_app(self, expected_token: str = "secret-token") -> FastAPI:
+        app = FastAPI()
+
+        @app.get("/api/v1/test")
+        async def test_endpoint():
+            return {"ok": True}
+
+        app.state.system_token = expected_token
+        register_exception_handlers(app)
+
+        # Same addition order as create_app: RateLimit first (inner),
+        # Auth second (outer, runs first).
+        app.add_middleware(
+            RateLimitMiddleware, global_capacity=1, global_refill_rate=0.001
+        )
+        app.add_middleware(AuthMiddleware)
+        return app
+
+    def test_unauthenticated_and_over_limit_gets_401_not_429(self) -> None:
+        """Auth must reject before RateLimit ever sees the request."""
+        app = self._make_app()
+        client = TestClient(app)
+
+        # Exhaust the 1-token global bucket with an authenticated request
+        # first, so the *next* request is both unauthenticated AND over
+        # the rate limit.
+        resp = client.get(
+            "/api/v1/test", headers={"Authorization": "Bearer secret-token"}
+        )
+        assert resp.status_code == 200
+
+        resp = client.get("/api/v1/test")  # no Authorization header
+        assert resp.status_code == 401, (
+            "unauthenticated request must be rejected by Auth before "
+            "RateLimit gets a chance to return 429"
+        )
+        assert resp.json()["type"] == "https://mindflow.app/errors/auth-required"
+
+    def test_authenticated_and_over_limit_still_gets_429(self) -> None:
+        """A properly authenticated request is still subject to rate limiting."""
+        app = self._make_app()
+        client = TestClient(app)
+        headers = {"Authorization": "Bearer secret-token"}
+
+        resp = client.get("/api/v1/test", headers=headers)
+        assert resp.status_code == 200
+
+        resp = client.get("/api/v1/test", headers=headers)
+        assert resp.status_code == 429
+        assert resp.json()["type"] == "https://mindflow.app/errors/rate-limited"
+

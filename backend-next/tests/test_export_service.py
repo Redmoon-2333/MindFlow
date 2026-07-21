@@ -6,6 +6,7 @@ Covers:
   - Empty date range: returns empty sections (not an error)
   - Boundary dates: inclusive range filtering
   - Format validation
+  - F4: CSV formula-injection escaping for collector-sourced text fields
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mindflow.domain.events import make_event
-from mindflow.services.export_service import ExportResult, ExportService
+from mindflow.services.export_service import ExportResult, ExportService, _csv_safe
 
 
 class TestExportService:
@@ -285,3 +286,156 @@ class TestExportService:
         mock_activity_repo.query_range.assert_awaited_once_with(1, start, end)
         mock_focus_repo.query_range.assert_awaited_once_with(1, start.date(), end.date())
         mock_report_repo.query_range.assert_awaited_once_with(1, start.date(), end.date())
+
+
+class TestCsvSafe:
+    """F4: unit tests for the CSV formula-injection escape helper."""
+
+    @pytest.mark.parametrize(
+        "dangerous",
+        [
+            "=1+1",
+            "=cmd|'/c calc'!A1",
+            "+1+1",
+            "-1+1",
+            "@SUM(A1:A9)",
+            "\tstarts with tab",
+            "\rstarts with CR",
+        ],
+    )
+    def test_dangerous_prefix_gets_quoted(self, dangerous: str) -> None:
+        """Values starting with =, +, -, @, tab, or CR get a leading single quote."""
+        assert _csv_safe(dangerous) == "'" + dangerous
+
+    @pytest.mark.parametrize(
+        "safe",
+        ["Code.exe", "chrome", "文档编辑器", "", "notepad-plus-plus"],
+    )
+    def test_safe_value_unchanged(self, safe: str) -> None:
+        """Ordinary values (including empty string) pass through untouched."""
+        assert _csv_safe(safe) == safe
+
+    def test_dash_in_middle_not_escaped(self) -> None:
+        """A dash that isn't the first character must not trigger escaping."""
+        assert _csv_safe("notepad-plus-plus") == "notepad-plus-plus"
+
+
+class TestCsvInjectionInExport:
+    """F4: end-to-end — a malicious app_name/dominant_app/pattern_summary
+    must come out prefixed with a quote in the actual CSV output, not just
+    in the _csv_safe unit tests above."""
+
+    @pytest.fixture
+    def malicious_events(self) -> list[Any]:
+        base = datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC)
+        return [
+            make_event(
+                user_id=1,
+                timestamp_utc=base,
+                duration_s=10.0,
+                app_name="=cmd|'/c calc'!A1",
+                process_name="+2+3",
+            )
+        ]
+
+    @pytest.fixture
+    def malicious_focus_sessions(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "fs-1",
+                "user_id": 1,
+                "date": "2026-07-17",
+                "start_time": "2026-07-17T08:00:00+00:00",
+                "end_time": "2026-07-17T08:30:00+00:00",
+                "session_type": "focus",
+                "dominant_app": "=1+1",
+                "focus_score": 85.0,
+                "switch_count": 5,
+            },
+        ]
+
+    @pytest.fixture
+    def malicious_daily_reports(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "dr-1",
+                "user_id": 1,
+                "date": "2026-07-17",
+                "total_focus_min": 120.0,
+                "total_distraction_min": 30.0,
+                "focus_score": 78.5,
+                "switch_frequency": 12.0,
+                "pattern_summary": "@SUM(1,2)",
+            },
+        ]
+
+    @pytest.fixture
+    def malicious_service(
+        self,
+        malicious_events: list[Any],
+        malicious_focus_sessions: list[dict[str, Any]],
+        malicious_daily_reports: list[dict[str, Any]],
+    ) -> ExportService:
+        activity_repo = AsyncMock()
+        activity_repo.query_range = AsyncMock(return_value=malicious_events)
+        focus_repo = AsyncMock()
+        focus_repo.query_range = AsyncMock(return_value=malicious_focus_sessions)
+        report_repo = AsyncMock()
+        report_repo.query_range = AsyncMock(return_value=malicious_daily_reports)
+        return ExportService(
+            activity_repo=activity_repo,
+            focus_repo=focus_repo,
+            report_repo=report_repo,
+        )
+
+    async def test_malicious_app_name_escaped_in_csv(
+        self, malicious_service: ExportService
+    ) -> None:
+        """A formula-shaped app_name must appear quote-prefixed in the CSV, not raw."""
+        start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
+        result: ExportResult = await malicious_service.export_events(start, end, fmt="csv")
+        body = result.content.decode("utf-8-sig")
+
+        # The raw (unescaped) field must not appear right after a comma —
+        # note the escaped form "'=cmd..." legitimately *contains* the raw
+        # substring, so this must check the delimiter boundary, not just
+        # substring presence.
+        assert ",=cmd|'/c calc'!A1," not in body
+        assert "'=cmd|'/c calc'!A1" in body
+        assert "'+2+3" in body
+
+    async def test_malicious_dominant_app_escaped_in_csv(
+        self, malicious_service: ExportService
+    ) -> None:
+        """A formula-shaped dominant_app must be escaped in the Focus Sessions section."""
+        start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
+        result: ExportResult = await malicious_service.export_events(start, end, fmt="csv")
+        body = result.content.decode("utf-8-sig")
+
+        assert "'=1+1" in body
+
+    async def test_malicious_pattern_summary_escaped_in_csv(
+        self, malicious_service: ExportService
+    ) -> None:
+        """A formula-shaped pattern_summary must be escaped in the Daily Reports section."""
+        start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
+        result: ExportResult = await malicious_service.export_events(start, end, fmt="csv")
+        body = result.content.decode("utf-8-sig")
+
+        assert "'@SUM(1,2)" in body
+
+    async def test_json_export_leaves_raw_value_untouched(
+        self, malicious_service: ExportService
+    ) -> None:
+        """JSON export is not spreadsheet-rendered, so no escaping is applied there."""
+        import json
+
+        start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
+        result: ExportResult = await malicious_service.export_events(start, end, fmt="json")
+        data = json.loads(result.content.decode("utf-8"))
+
+        assert data["events"][0]["data"]["app_name"] == "=cmd|'/c calc'!A1"

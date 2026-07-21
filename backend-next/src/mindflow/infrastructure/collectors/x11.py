@@ -17,7 +17,11 @@ from datetime import UTC, datetime
 from loguru import logger
 
 from mindflow.domain.events import WindowSnapshot
-from mindflow.infrastructure.collectors.base import CollectorUnavailableError, degraded_snapshot
+from mindflow.infrastructure.collectors.base import (
+    CollectorUnavailableError,
+    degraded_snapshot,
+    truncate_text_field,
+)
 
 
 class X11Collector:
@@ -82,8 +86,8 @@ class X11Collector:
                     logger.warning("X11 process name resolution failed", exc_info=True)
 
             return WindowSnapshot(
-                app_name=process_name,
-                window_title=name,
+                app_name=truncate_text_field(process_name),
+                window_title=truncate_text_field(name),
                 process_name=process_name,
                 is_idle=False,
                 timestamp_utc=datetime.now(UTC),
