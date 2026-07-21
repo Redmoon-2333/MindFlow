@@ -36,6 +36,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from mindflow.errors import NoActivityDataError
+
 _PROBLEM_BASE_URI: str = "https://mindflow.app/errors"
 """Base URI for error types. Per §4.2, not a resolvable URL — just an identifier."""
 
@@ -207,6 +209,20 @@ def _validation_handler(request: Request, exc: RequestValidationError) -> JSONRe
     )
 
 
+def _no_activity_handler(request: Request, exc: NoActivityDataError) -> JSONResponse:
+    """Map the service-layer ``NoActivityDataError`` to an RFC 9457 404.
+
+    Lets services signal "nothing to analyse" without importing the HTTP
+    layer — the dependency points api → services, not the reverse (E4).
+    """
+    err = _not_found(exc.resource)
+    return JSONResponse(
+        status_code=err.status,
+        content=err.to_dict(instance=str(request.scope["path"])),
+        headers={"Content-Type": "application/problem+json"},
+    )
+
+
 def _generic_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catch-all handler for unhandled exceptions.
 
@@ -241,6 +257,11 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     app.add_exception_handler(ProblemDetail, cast(handler_t, _problem_handler))
     app.add_exception_handler(RequestValidationError, cast(handler_t, _validation_handler))
+
+    # Service-layer domain error → 404. Registered before the Exception
+    # catch-all so Starlette's MRO lookup prefers this more-specific handler
+    # (E4: services raise this instead of importing api.errors).
+    app.add_exception_handler(NoActivityDataError, cast(handler_t, _no_activity_handler))
 
     # Register for both Exception and RuntimeError to handle exact type matching
     # in Starlette's wrap_app_handling_exceptions (which uses exact type lookup)

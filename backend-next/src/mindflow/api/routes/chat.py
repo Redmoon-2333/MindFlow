@@ -86,7 +86,7 @@ async def get_sessions(
     user_id = 1
 
     try:
-        sessions = await chat_service._chat_repo.list_sessions(user_id=user_id, limit=10)
+        sessions = await chat_service.list_sessions(user_id=user_id, limit=10)
     except Exception:
         logger.exception("Failed to list chat sessions")
         from mindflow.api.errors import _internal_error
@@ -103,7 +103,7 @@ async def get_session_messages(
 ) -> list[dict[str, Any]]:
     """Get all messages for a specific chat session."""
     try:
-        messages = await chat_service._chat_repo.recent(session_id=session_id)
+        messages = await chat_service.get_messages(session_id=session_id)
     except Exception:
         logger.exception("Failed to list chat messages for session {}", session_id)
         from mindflow.api.errors import _internal_error

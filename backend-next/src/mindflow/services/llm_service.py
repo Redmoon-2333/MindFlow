@@ -28,6 +28,7 @@ from loguru import logger
 
 from mindflow.domain.events import ActivityEvent
 from mindflow.domain.procrastination import BehaviorSummary, ProcrastinationAssessment, RuleEngine
+from mindflow.errors import NoActivityDataError
 from mindflow.infrastructure.llm.client import DeepSeekClient, LLMAPIError, LLMNotConfiguredError
 from mindflow.infrastructure.llm.schemas import LLMAttributionResult
 from mindflow.infrastructure.llm.summary import build_behavior_summary, serialize_summary
@@ -164,9 +165,9 @@ class LLMService:
 
         events = await self._activity_repo.query_range(user_id, start_dt, end_dt)
         if not events:
-            from mindflow.api.errors import _not_found
-
-            raise _not_found("暂无活动数据，请先开始采集")
+            # Raise a domain error, not an HTTP one — the API boundary maps
+            # NoActivityDataError → 404 (E4: no upward dependency on api.errors).
+            raise NoActivityDataError("暂无活动数据，请先开始采集")
 
         # ── 3. Crisis detection ───────────────────────────────────────
         crisis_texts = self._collect_crisis_texts(events)

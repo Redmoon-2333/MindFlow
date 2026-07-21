@@ -26,18 +26,13 @@ import httpx
 from loguru import logger
 
 from mindflow.config import LLMSettings
+
+# Canonical LLM exceptions now live in ``mindflow.errors`` (unified taxonomy);
+# re-exported here (``... as ...`` marks the intentional re-export for mypy)
+# so ``from mindflow.infrastructure.llm.client import LLMAPIError`` keeps working.
+from mindflow.errors import LLMAPIError as LLMAPIError
+from mindflow.errors import LLMNotConfiguredError as LLMNotConfiguredError
 from mindflow.infrastructure.llm.schemas import LLMAttributionResult
-
-# ── Custom exceptions ──────────────────────────────────────────────────────────
-
-
-class LLMNotConfiguredError(RuntimeError):
-    """Raised when the LLM client is constructed without an API key."""
-
-
-class LLMAPIError(RuntimeError):
-    """Raised when the upstream API returns a non-retriable error."""
-
 
 # ── System prompt ──────────────────────────────────────────────────────────────
 

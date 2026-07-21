@@ -121,7 +121,8 @@ class ChatService:
     and persistence.
 
     Args:
-        session_factory: SQLAlchemy session factory for the chat repository.
+        session_factory: SQLAlchemy session factory (used to construct a
+            default ``ChatRepository`` when one is not injected).
         crisis_detector: Pre-LLM crisis keyword scanner.
         llm_gateway: LLM gateway for generating responses (kept for backward
             compat; the LangChain agent uses ``ChatDeepSeek`` instead).
@@ -129,6 +130,10 @@ class ChatService:
         panel_service: Expert panel service (None if unavailable).
         intervention_repo: Intervention history repository.
         evidence_builder: Evidence bundle builder for behavioral data.
+        chat_repo: Chat message repository. Defaults to a ``ChatRepository``
+            built from *session_factory* (kept optional so existing call
+            sites need no change), matching how other services receive
+            their repos injected.
     """
 
     def __init__(
@@ -140,8 +145,9 @@ class ChatService:
         panel_service: PanelService | None,
         intervention_repo: InterventionLogRepository,
         evidence_builder: EvidenceBundleBuilder,
+        chat_repo: ChatRepository | None = None,
     ) -> None:
-        self._chat_repo = ChatRepository(session_factory=session_factory)
+        self._chat_repo = chat_repo or ChatRepository(session_factory=session_factory)
         self._crisis_detector = crisis_detector
         self._analysis_repo = analysis_repo
         self._panel_service = panel_service
@@ -359,6 +365,30 @@ class ChatService:
             evidence_cited=evidence_cited,
             degraded=degraded,
         )
+
+    async def list_sessions(
+        self,
+        user_id: int,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """List the user's most recent chat sessions.
+
+        Public entry point so routes don't reach into the private
+        ``_chat_repo`` (encapsulation — E5). Delegates to the repository.
+        """
+        return await self._chat_repo.list_sessions(user_id=user_id, limit=limit)
+
+    async def get_messages(
+        self,
+        session_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return the messages for a session, oldest-first.
+
+        Public entry point so routes don't reach into the private
+        ``_chat_repo`` (encapsulation — E5). Delegates to the repository.
+        """
+        return await self._chat_repo.recent(session_id, limit=limit)
 
     # ══════════════════════════════════════════════════════════════════════
     # Agent output helpers

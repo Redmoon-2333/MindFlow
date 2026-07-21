@@ -276,15 +276,21 @@ class TestCaching:
 
     @pytest.mark.asyncio
     async def test_empty_events_raises_not_found(self, mock_analysis_repo) -> None:
-        """No events for the date should raise not-found."""
-        from mindflow.api.errors import ProblemDetail
+        """No events for the date should raise the no-activity domain error.
+
+        The service raises ``NoActivityDataError`` (not an HTTP ``ProblemDetail``)
+        — the API boundary maps it to a 404 (E4: services don't depend on the
+        api layer). The route-level 404 mapping is covered in
+        ``test_routes_attribution.py`` / ``test_routes_panel.py``.
+        """
+        from mindflow.errors import NoActivityDataError
 
         activity_repo = MagicMock()
         activity_repo.query_range = AsyncMock(return_value=[])
 
         service = _make_service(activity_repo=activity_repo, analysis_repo=mock_analysis_repo)
 
-        with pytest.raises(ProblemDetail, match="暂无活动数据"):
+        with pytest.raises(NoActivityDataError, match="暂无活动数据"):
             await service.analyze(1, date(2026, 7, 17))
 
 

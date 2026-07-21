@@ -54,6 +54,12 @@ from mindflow.infrastructure.repositories.activity import (
 from mindflow.infrastructure.repositories.analysis import (
     SQLAlchemyProcrastinationAnalysisRepository,
 )
+from mindflow.infrastructure.repositories.baseline import (
+    BaselineRepository,
+)
+from mindflow.infrastructure.repositories.chat import (
+    ChatRepository,
+)
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
@@ -148,6 +154,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         session_factory=session_factory,
     )
     analysis_repository = SQLAlchemyProcrastinationAnalysisRepository(
+        session_factory=session_factory,
+    )
+    baseline_repository = BaselineRepository(
+        session_factory=session_factory,
+    )
+    chat_repository = ChatRepository(
         session_factory=session_factory,
     )
 
@@ -269,6 +281,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             intervention_repo=intervention_repository,
             session_factory=session_factory,
             effectiveness_service=effectiveness_service,
+            baseline_repo=baseline_repository,
         )
         chat_service = ChatService(
             session_factory=session_factory,
@@ -278,6 +291,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             panel_service=panel_service,
             intervention_repo=intervention_repository,
             evidence_builder=evidence_builder,
+            chat_repo=chat_repository,
         )
         logger.info("ChatService created for G004 conversational assistant")
     except Exception as exc:

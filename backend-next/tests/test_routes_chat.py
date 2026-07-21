@@ -158,15 +158,13 @@ class TestGetSessions:
 
     def test_get_sessions_success(self) -> None:
         """200 with list of sessions."""
-        mock_repo = AsyncMock()
-        mock_repo.list_sessions = AsyncMock(
+        mock_service = AsyncMock()
+        mock_service.list_sessions = AsyncMock(
             return_value=[
                 {"session_id": "s1", "last_message_at": "2026-07-18T10:00:00Z"},
                 {"session_id": "s2", "last_message_at": "2026-07-17T10:00:00Z"},
             ],
         )
-        mock_service = AsyncMock()
-        mock_service._chat_repo = mock_repo
         app = _make_app(mock_service)
         client = TestClient(app)
 
@@ -180,10 +178,8 @@ class TestGetSessions:
 
     def test_get_sessions_empty(self) -> None:
         """200 with empty list when no sessions exist."""
-        mock_repo = AsyncMock()
-        mock_repo.list_sessions = AsyncMock(return_value=[])
         mock_service = AsyncMock()
-        mock_service._chat_repo = mock_repo
+        mock_service.list_sessions = AsyncMock(return_value=[])
         app = _make_app(mock_service)
         client = TestClient(app)
 
@@ -199,8 +195,8 @@ class TestGetMessages:
 
     def test_get_messages_success(self) -> None:
         """200 with list of messages for a session."""
-        mock_repo = AsyncMock()
-        mock_repo.recent = AsyncMock(
+        mock_service = AsyncMock()
+        mock_service.get_messages = AsyncMock(
             return_value=[
                 {
                     "id": "m1",
@@ -216,8 +212,6 @@ class TestGetMessages:
                 },
             ],
         )
-        mock_service = AsyncMock()
-        mock_service._chat_repo = mock_repo
         app = _make_app(mock_service)
         client = TestClient(app)
 
@@ -232,10 +226,8 @@ class TestGetMessages:
 
     def test_get_messages_empty(self) -> None:
         """200 with empty list for a session with no messages."""
-        mock_repo = AsyncMock()
-        mock_repo.recent = AsyncMock(return_value=[])
         mock_service = AsyncMock()
-        mock_service._chat_repo = mock_repo
+        mock_service.get_messages = AsyncMock(return_value=[])
         app = _make_app(mock_service)
         client = TestClient(app)
 

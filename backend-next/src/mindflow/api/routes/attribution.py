@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from mindflow.api.deps import get_llm_service
 from mindflow.api.errors import ProblemDetail
+from mindflow.errors import NoActivityDataError
 from mindflow.services.llm_service import LLMService
 
 router = APIRouter(tags=["analytics"])
@@ -69,7 +70,10 @@ async def post_attribution(
             target_date=target_date,
             force=req.force,
         )
-    except ProblemDetail:
+    except (ProblemDetail, NoActivityDataError):
+        # Let RFC 9457 errors and the no-activity domain error propagate to
+        # their registered handlers (NoActivityDataError → 404). Only truly
+        # unexpected failures collapse to a generic 500 below.
         raise
     except Exception:
         from mindflow.api.errors import _internal_error

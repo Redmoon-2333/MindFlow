@@ -29,15 +29,22 @@ from loguru import logger
 from pydantic import SecretStr
 
 from mindflow.config import get_settings
+from mindflow.errors import LLMAPIError, LLMNotConfiguredError
 
 # ── Custom exceptions ──────────────────────────────────────────────────────────
+#
+# Historically the gateway defined its own ``Gateway*`` errors that were
+# near-identical to the legacy ``DeepSeekClient``'s ``LLM*`` errors. They are
+# now reconciled: the gateway names are thin subclasses of the canonical LLM
+# exceptions (mindflow.errors). This keeps ``except GatewayAPIError`` and
+# ``except LLMAPIError`` both working, and both catch the same failures.
 
 
-class GatewayNotConfiguredError(RuntimeError):
+class GatewayNotConfiguredError(LLMNotConfiguredError):
     """Raised when the gateway is called without an API key being configured."""
 
 
-class GatewayAPIError(RuntimeError):
+class GatewayAPIError(LLMAPIError):
     """Raised when the upstream API returns a non-retriable error
     or the retry budget has been exhausted."""
 

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
+from mindflow.errors import PanelError
 
 # ── Forbidden words (NF-S7) — reused from infrastructure/llm/schemas.py ────────
 
@@ -123,7 +124,7 @@ class PanelVerdict:
 # ── Exception types (degradation chain) ────────────────────────────────────────
 
 
-class PanelBudgetExceededError(RuntimeError):
+class PanelBudgetExceededError(PanelError):
     """Raised when the panel would exceed the maximum allowed LLM calls (12).
 
     This is a hard safety guard (07-agent-upgrade-design.md §4):
@@ -137,7 +138,7 @@ class PanelBudgetExceededError(RuntimeError):
         self.call_count = call_count
 
 
-class PanelUnavailableError(RuntimeError):
+class PanelUnavailableError(PanelError):
     """Raised when the expert panel cannot produce a verdict.
 
     This signals the caller (G003 wiring layer) to fall through to the next

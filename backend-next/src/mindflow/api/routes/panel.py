@@ -32,6 +32,7 @@ from loguru import logger
 
 from mindflow.api.deps import get_panel_service
 from mindflow.api.errors import ProblemDetail
+from mindflow.errors import NoActivityDataError
 from mindflow.services.panel_service import PanelService
 
 router = APIRouter(tags=["panel"])
@@ -99,7 +100,10 @@ async def post_panel_today(
 
     try:
         verdict = await panel_service.run_daily_panel(user_id=1, target_date=today)
-    except ProblemDetail:
+    except (ProblemDetail, NoActivityDataError):
+        # The single-expert fallback (llm_service.analyze) raises
+        # NoActivityDataError when no events exist — let it reach the
+        # registered 404 handler instead of collapsing to a 500 (E4).
         raise
     except Exception:
         logger.exception("Panel service failed unexpectedly for user 1 on {}", today)

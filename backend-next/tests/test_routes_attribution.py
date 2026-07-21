@@ -147,6 +147,24 @@ class TestAttributionRoute:
         data = resp.json()
         assert "not-found" in data["type"]
 
+    def test_no_activity_domain_error_maps_to_404(self) -> None:
+        """A service-raised NoActivityDataError is mapped to 404 by the handler (E4)."""
+        from mindflow.errors import NoActivityDataError
+
+        mock_service = MagicMock()
+        mock_service.analyze = AsyncMock(
+            side_effect=NoActivityDataError("暂无活动数据，请先开始采集")
+        )
+        app = _make_app(mock_service)
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/analytics/attribution", json={"date": "2026-07-17"})
+
+        assert resp.status_code == 404
+        data = resp.json()
+        assert "not-found" in data["type"]
+        assert "暂无活动数据" in data["detail"]
+
     def test_force_bypasses_cache(self) -> None:
         """force=True should reach the service."""
         mock_service = MagicMock()

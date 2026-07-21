@@ -19,9 +19,10 @@ from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from mindflow.domain.events import WindowSnapshot
+from mindflow.errors import CollectorError
 
 
-class CollectorUnavailableError(RuntimeError):
+class CollectorUnavailableError(CollectorError):
     """Raised when a platform-specific collector cannot be instantiated.
 
     Reasons include:

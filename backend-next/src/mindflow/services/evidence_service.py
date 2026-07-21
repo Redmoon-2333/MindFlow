@@ -17,11 +17,9 @@ stateless — a single instance is safe to share across requests.
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timedelta
 from typing import Any
 
-import sqlalchemy as sa
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -46,6 +44,14 @@ from mindflow.infrastructure.llm.summary import build_behavior_summary
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
+from mindflow.infrastructure.repositories.baseline import BaselineRepository
+
+# Backward-compat re-exports: the ``baseline_models`` table now lives in
+# ``infrastructure/repositories/baseline.py`` (single source of truth).
+# Existing importers (e.g. tests that create/insert rows) keep working.
+from mindflow.infrastructure.repositories.baseline import (
+    baseline_models as baseline_models,
+)
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
 )
@@ -53,6 +59,11 @@ from mindflow.services.effectiveness_service import (
     EffectivenessReport,
     EffectivenessService,
 )
+
+# Backward-compat alias: ``baseline_models.metadata`` is the MetaData the table
+# was registered on. Kept so ``baseline_models_metadata.create_all`` importers
+# (test fixtures) keep working after the table moved to the baseline repo.
+baseline_models_metadata = baseline_models.metadata
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Constants
@@ -105,24 +116,6 @@ _INTERVENTION_LOOKBACK_DAYS: int = 7
 
 # How many top apps to consider for novelty detection
 _NOVELTY_TOP_N: int = 5
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# baseline_models table (read-only reference)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-baseline_models_metadata = sa.MetaData()
-
-baseline_models = sa.Table(
-    "baseline_models",
-    baseline_models_metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("model_json", sa.Text(), nullable=False),
-    sa.Column("training_events_count", sa.Integer(), nullable=False),
-    sa.Column("created_at", sa.Text(), nullable=False),
-    sa.Column("updated_at", sa.Text(), nullable=False),
-)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -239,9 +232,13 @@ class EvidenceBundleBuilder:
     Args:
         activity_repo: Repository for activity event data.
         intervention_repo: Repository for intervention history.
-        session_factory: SQLAlchemy session factory for baseline_models query.
+        session_factory: SQLAlchemy session factory (used to construct a
+            default ``BaselineRepository`` when one is not injected).
         effectiveness_service: Optional effectiveness service for enriching
             intervention records with outcome data (G005 learning loop).
+        baseline_repo: Repository for reading the user's personal baseline.
+            Defaults to a ``BaselineRepository`` built from *session_factory*
+            (kept optional so existing call sites need no change).
     """
 
     def __init__(
@@ -250,11 +247,15 @@ class EvidenceBundleBuilder:
         intervention_repo: InterventionLogRepository,
         session_factory: async_sessionmaker[AsyncSession],
         effectiveness_service: EffectivenessService | None = None,
+        baseline_repo: BaselineRepository | None = None,
     ) -> None:
         self._activity_repo = activity_repo
         self._intervention_repo = intervention_repo
         self._session_factory = session_factory
         self._effectiveness_service = effectiveness_service
+        self._baseline_repo = baseline_repo or BaselineRepository(
+            session_factory=session_factory
+        )
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API
@@ -512,31 +513,14 @@ class EvidenceBundleBuilder:
         ]
 
     async def _load_baseline(self, user_id: int) -> BaselineModel | None:
-        """Load the user's ``BaselineModel`` from the database.
+        """Load the user's ``BaselineModel`` via the baseline repository.
 
         Returns None if no baseline has been built yet for this user.
+        Delegates fetching + JSON parsing to ``BaselineRepository`` so no raw
+        SQL lives in the services layer (the "latest wins" ordering that
+        guards against stale models — review H1 — is owned by the repo).
         """
-        # Latest baseline wins — the table has no user_id uniqueness, so a
-        # retrained user may own several rows (review H1: unordered fetchone
-        # could load a stale model).
-        stmt = (
-            sa.select(baseline_models.c.model_json)
-            .where(baseline_models.c.user_id == user_id)
-            .order_by(sa.desc(baseline_models.c.updated_at))
-        )
-        async with self._session_factory() as session:
-            result = await session.execute(stmt)
-            row = result.fetchone()
-
-        if row is None:
-            return None
-
-        try:
-            data: dict[str, Any] = json.loads(row.model_json)
-        except (json.JSONDecodeError, TypeError):
-            return None
-
-        return BaselineModel.from_dict(data)
+        return await self._baseline_repo.get_latest(user_id)
 
     # ══════════════════════════════════════════════════════════════════════
     # Intervention history
