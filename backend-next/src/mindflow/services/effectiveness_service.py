@@ -21,6 +21,7 @@ Design constraints:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -98,6 +99,27 @@ class EffectivenessService:
         if log is None:
             return self._empty_report(intervention_id)
 
+        return await self._compare_windows_from_log(log, window_minutes)
+
+    async def _compare_windows_from_log(
+        self,
+        log: dict[str, Any],
+        window_minutes: float = _WINDOW_MINUTES,
+    ) -> EffectivenessReport:
+        """Compare before/after metrics given an already-fetched log row.
+
+        Shared by ``compare_windows`` (single-ID public API) and
+        ``weekly_effectiveness`` (batch caller that already holds the log
+        dict), so the batch path skips the redundant ``get_by_id`` refetch.
+
+        Args:
+            log: An intervention log dict (as returned by the repository).
+            window_minutes: Size of each window in minutes (default 30).
+
+        Returns:
+            An ``EffectivenessReport`` with before/after metrics and deltas.
+        """
+        intervention_id = log.get("id", "")
         user_id = log["user_id"]
         triggered_at_str = log.get("triggered_at", "")
         try:
@@ -118,8 +140,11 @@ class EffectivenessService:
         after_end = triggered_at + window
 
         try:
-            before_events = await self._activity_repo.query_range(user_id, before_start, before_end)
-            after_events = await self._activity_repo.query_range(user_id, after_start, after_end)
+            # before/after windows are independent reads — fetch concurrently.
+            before_events, after_events = await asyncio.gather(
+                self._activity_repo.query_range(user_id, before_start, before_end),
+                self._activity_repo.query_range(user_id, after_start, after_end),
+            )
 
             before_metrics = self._compute_metrics(before_events)
             after_metrics = self._compute_metrics(after_events)
@@ -177,14 +202,21 @@ class EffectivenessService:
         accepted = [log for log in responded if log.get("user_response") == "accepted"]
         acceptance_rate = len(accepted) / len(responded) if responded else 0.0
 
-        # Compute deltas for each intervention
+        # Compute deltas for each intervention. Each entry is independent
+        # (no result feeds into another), so fetch concurrently instead of
+        # 20 sequential awaits. We already hold the log dict from the query
+        # above, so use the shared helper directly and skip the redundant
+        # get_by_id refetch that the public compare_windows() would do.
         focus_deltas: list[float] = []
         switch_deltas: list[float] = []
         distraction_deltas: list[float] = []
 
-        for log_entry in logs[-20:]:  # Limit to 20 most recent for performance
-            lid = log_entry.get("id", "")
-            report = await self.compare_windows(lid)
+        recent_logs = logs[-20:]  # Limit to 20 most recent for performance
+        reports = await asyncio.gather(
+            *(self._compare_windows_from_log(log_entry) for log_entry in recent_logs)
+        )
+
+        for report in reports:
             if report.has_data:
                 focus_deltas.append(report.deltas.get("focus_score", 0.0))
                 switch_deltas.append(report.deltas.get("switch_rate", 0.0))

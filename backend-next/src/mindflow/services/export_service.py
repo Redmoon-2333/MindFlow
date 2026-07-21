@@ -15,6 +15,7 @@ Design:
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 from dataclasses import dataclass
@@ -131,12 +132,12 @@ class ExportService:
             An ``ExportResult`` with content, filename, and media type.
             Empty ranges produce an empty archive (not an error).
         """
-        events = await self._activity_repo.query_range(self._user_id, start, end)
-        focus_sessions = await self._focus_repo.query_range(
-            self._user_id, start.date(), end.date()
-        )
-        daily_reports = await self._report_repo.query_range(
-            self._user_id, start.date(), end.date()
+        # These three reads are independent (no data dependency) — fetch
+        # them concurrently instead of three sequential round-trips.
+        events, focus_sessions, daily_reports = await asyncio.gather(
+            self._activity_repo.query_range(self._user_id, start, end),
+            self._focus_repo.query_range(self._user_id, start.date(), end.date()),
+            self._report_repo.query_range(self._user_id, start.date(), end.date()),
         )
 
         date_suffix = f"{start.date().isoformat()}_{end.date().isoformat()}"

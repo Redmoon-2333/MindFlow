@@ -4,7 +4,9 @@ Implements heartbeat merge (ADR-002, ADR-007):
   When a new window_snapshot event arrives for the same user with the
   same app_name as the preceding window_snapshot, and the timestamp
   difference is within ``pulsetime_s``, the existing row's duration_s
-  is atomically extended rather than inserting a new row.
+  is atomically extended rather than inserting a new row. The same
+  merge applies to consecutive idle_change events (overnight idle would
+  otherwise insert one row per collector tick, inflating the table).
 
 Table schema matches the Alembic migration (0001_create_core_tables).
 All timestamps are stored as ISO8601 text (timezone-aware UTC).
@@ -22,6 +24,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.config import get_settings
 from mindflow.domain.events import ActivityEvent, WindowSnapshot
+
+# Event types eligible for heartbeat merge (manual_tag never merges).
+_MERGEABLE_EVENT_TYPES: frozenset[str] = frozenset({"window_snapshot", "idle_change"})
+
+# Keyset page size for query_range — bounds the per-round-trip DB buffer
+# on large ranges (e.g. multi-week exports) without changing the return value.
+_QUERY_PAGE_SIZE: int = 5000
 
 # ── Table definition (matches migration 0001_create_core_tables) ─────
 
@@ -83,14 +92,18 @@ class SQLAlchemyActivityRepository:
     async def append_event(self, event: ActivityEvent) -> None:
         """Persist an activity event with heartbeat merge.
 
-        If the last window_snapshot for this user shares the same
-        app_name and falls within ``pulsetime_s``, the existing row's
-        duration_s is extended atomically. Otherwise a new row is inserted.
+        If the last mergeable event of the same ``event_type`` for this
+        user shares the same app_name and falls within ``pulsetime_s``,
+        the existing row's duration_s is extended atomically. Otherwise
+        a new row is inserted. Both window_snapshot and idle_change events
+        merge (against their own kind); manual_tag never merges.
 
         The entire operation runs inside a single transaction.
         """
         async with self._session_factory() as session, session.begin():
-            last = await self._last_window_snapshot(session, event.user_id)
+            last = await self._last_mergeable_event(
+                session, event.user_id, event.event_type
+            )
 
             if last is not None and self._should_merge(last, event):
                 await session.execute(
@@ -121,6 +134,14 @@ class SQLAlchemyActivityRepository:
     ) -> list[ActivityEvent]:
         """Return events for *user_id* in [*start*, *end*], ordered by time.
 
+        Fetched internally in keyset-paginated chunks of ``_QUERY_PAGE_SIZE``
+        rows so a single large range (e.g. a 30-day export) never buffers the
+        whole result set in one round-trip. The full list is still assembled
+        and returned — this only bounds the per-round-trip DB buffer, not the
+        final in-memory size. Ordering is ``(timestamp, id)`` ascending; ``id``
+        (UUIDv7) breaks timestamp ties so paging is deterministic (no skipped
+        or duplicated rows across page boundaries).
+
         Args:
             user_id: User identifier.
             start: Inclusive start of the time range (timezone-aware UTC).
@@ -129,19 +150,46 @@ class SQLAlchemyActivityRepository:
         Returns:
             A list of ActivityEvents sorted by timestamp ascending.
         """
-        stmt = (
-            sa.select(activity_events)
-            .where(
-                activity_events.c.user_id == user_id,
-                activity_events.c.timestamp >= start.isoformat(),
-                activity_events.c.timestamp <= end.isoformat(),
-            )
-            .order_by(activity_events.c.timestamp.asc())
-        )
+        start_iso = start.isoformat()
+        end_iso = end.isoformat()
+
+        events: list[ActivityEvent] = []
+        cursor_ts: str | None = None
+        cursor_id: str | None = None
 
         async with self._session_factory() as session:
-            result = await session.execute(stmt)
-            return [_row_to_event(row) for row in result.fetchall()]
+            while True:
+                stmt = sa.select(activity_events).where(
+                    activity_events.c.user_id == user_id,
+                    activity_events.c.timestamp >= start_iso,
+                    activity_events.c.timestamp <= end_iso,
+                )
+                if cursor_ts is not None:
+                    # Keyset predicate: (timestamp, id) > (cursor_ts, cursor_id).
+                    stmt = stmt.where(
+                        sa.tuple_(
+                            activity_events.c.timestamp, activity_events.c.id
+                        )
+                        > sa.tuple_(cursor_ts, cursor_id)
+                    )
+                stmt = stmt.order_by(
+                    activity_events.c.timestamp.asc(),
+                    activity_events.c.id.asc(),
+                ).limit(_QUERY_PAGE_SIZE)
+
+                result = await session.execute(stmt)
+                rows = result.fetchall()
+                if not rows:
+                    break
+
+                events.extend(_row_to_event(row) for row in rows)
+
+                if len(rows) < _QUERY_PAGE_SIZE:
+                    break
+                cursor_ts = rows[-1].timestamp
+                cursor_id = rows[-1].id
+
+        return events
 
     async def last_event(self, user_id: int) -> ActivityEvent | None:
         """Return the most recent event for *user_id*, or None.
@@ -167,25 +215,31 @@ class SQLAlchemyActivityRepository:
 
     # ── Internal helpers ──────────────────────────────────────────────
 
-    async def _last_window_snapshot(
+    async def _last_mergeable_event(
         self,
         session: AsyncSession,
         user_id: int,
+        event_type: str,
     ) -> sa.Row[Any] | None:
-        """Find the most recent window_snapshot for *user_id*.
+        """Find the most recent event of *event_type* for *user_id*.
+
+        Merge candidates are looked up per event_type so that, e.g., an
+        idle_change between two window_snapshots does not become the merge
+        target for the next window_snapshot (and vice versa).
 
         Args:
             session: Active SQLAlchemy session.
             user_id: User identifier.
+            event_type: The incoming event's type (window_snapshot / idle_change).
 
         Returns:
-            The latest window_snapshot row, or None if none exist.
+            The latest row of that event_type, or None if none exist.
         """
         stmt = (
             sa.select(activity_events)
             .where(
                 activity_events.c.user_id == user_id,
-                activity_events.c.event_type == "window_snapshot",
+                activity_events.c.event_type == event_type,
             )
             .order_by(activity_events.c.timestamp.desc())
             .limit(1)
@@ -197,11 +251,16 @@ class SQLAlchemyActivityRepository:
         """Determine whether *event* should merge into *last_row*.
 
         Merge conditions (all must hold):
-          1. New event is ``window_snapshot`` type (idle/manual don't merge).
-          2. Same ``app_name`` in the snapshot data.
-          3. Timestamp difference < ``pulsetime_s``.
+          1. New event is a mergeable type (window_snapshot or idle_change;
+             manual_tag never merges).
+          2. Same ``event_type`` as ``last_row`` (window/idle don't cross-merge).
+          3. Same ``app_name`` in the snapshot data.
+          4. Timestamp difference < ``pulsetime_s``.
         """
-        if event.event_type != "window_snapshot":
+        if event.event_type not in _MERGEABLE_EVENT_TYPES:
+            return False
+
+        if last_row.event_type != event.event_type:
             return False
 
         try:

@@ -286,6 +286,96 @@ class TestHeartbeatMerge:
             )
             assert row[1] == 50.0, "Total duration should be 50.0"
 
+    async def test_consecutive_idle_events_within_pulsetime_merge(self, repo, engine):
+        """Two idle_change events within pulsetime merge into one row.
+
+        Overnight idle emits one idle_change per collector tick; without
+        merging this inflates the table 5-10x. Consecutive idle_change
+        events (same user, same app, within pulsetime) extend duration.
+        """
+        await repo.append_event(
+            _event(
+                app_name="Code",
+                duration_s=5.0,
+                ts=_BASE_TS,
+                is_idle=True,
+                event_type="idle_change",
+            )
+        )
+        await repo.append_event(
+            _event(
+                app_name="Code",
+                duration_s=5.0,
+                ts=_BASE_TS + timedelta(seconds=4),
+                is_idle=True,
+                event_type="idle_change",
+            )
+        )
+
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT count(*), sum(duration_s) FROM activity_events")
+            )
+            row = result.fetchone()
+            assert row[0] == 1, "Expected 1 row (idle events merged)"
+            assert row[1] == 10.0, "Expected combined idle duration of 10.0"
+
+    async def test_idle_events_outside_pulsetime_insert(self, repo, engine):
+        """Idle events beyond pulsetime insert separate rows (like snapshots)."""
+        await repo.append_event(
+            _event(
+                app_name="Code",
+                duration_s=5.0,
+                ts=_BASE_TS,
+                is_idle=True,
+                event_type="idle_change",
+            )
+        )
+        await repo.append_event(
+            _event(
+                app_name="Code",
+                duration_s=5.0,
+                ts=_BASE_TS + timedelta(seconds=11),
+                is_idle=True,
+                event_type="idle_change",
+            )
+        )
+
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT count(*) FROM activity_events")
+            )
+            assert result.scalar() == 2
+
+    async def test_idle_and_window_events_do_not_cross_merge(self, repo, engine):
+        """A window_snapshot never merges into a preceding idle_change (and vice versa)."""
+        # idle_change first, then a same-app window_snapshot within pulsetime.
+        await repo.append_event(
+            _event(
+                app_name="Code",
+                duration_s=5.0,
+                ts=_BASE_TS,
+                is_idle=True,
+                event_type="idle_change",
+            )
+        )
+        await repo.append_event(
+            _event(
+                app_name="Code",
+                duration_s=5.0,
+                ts=_BASE_TS + timedelta(seconds=4),
+                event_type="window_snapshot",
+            )
+        )
+
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT count(*), event_type FROM activity_events GROUP BY event_type")
+            )
+            rows = {r.event_type: r[0] for r in result.fetchall()}
+            # One idle_change row + one window_snapshot row — no cross-merge.
+            assert rows == {"idle_change": 1, "window_snapshot": 1}
+
 
 # ── Test: query_range ─────────────────────────────────────────────────
 

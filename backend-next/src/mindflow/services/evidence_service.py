@@ -16,6 +16,7 @@ stateless — a single instance is safe to share across requests.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta
 from typing import Any
@@ -275,25 +276,26 @@ class EvidenceBundleBuilder:
         Returns:
             A fully populated ``EvidenceBundle``.
         """
-        # 1. Query raw activity events
-        events = await self._activity_repo.query_range(user_id, window_start, window_end)
+        # 1-3, 6. Independent DB reads — fetch concurrently. The events query,
+        # baseline load, and intervention history have no data dependency on
+        # each other (each opens its own session and uses only user_id / the
+        # window bounds), so gather them instead of three sequential awaits.
+        events, baseline, interventions = await asyncio.gather(
+            self._activity_repo.query_range(user_id, window_start, window_end),
+            self._load_baseline(user_id),
+            self._build_intervention_history(user_id, window_end),
+        )
         # Note: events may be empty — all downstream functions handle this gracefully.
 
         # 2. Compute features and build evidence items
         items: list[EvidenceItem] = []
         items.extend(self._build_feature_items(events))
 
-        # 3. Load baseline (single DB call, shared by deviation + novelty)
-        baseline = await self._load_baseline(user_id)
-
         # 4. Run deviation detection
         items.extend(self._build_deviation_items(baseline, events, window_start))
 
         # 5. Build behavior summary
         behavior_summary = build_behavior_summary(events) if events else self._empty_summary()
-
-        # 6. Query intervention history (last 7 days)
-        interventions = await self._build_intervention_history(user_id, window_end)
 
         # 7. Detect novelty flags
         novelty_flags = self._detect_novelty(events, baseline)
@@ -556,21 +558,25 @@ class EvidenceBundleBuilder:
 
         # ── Pre-fetch effectiveness data for last 5 interventions ──────
         # Bounded at 5 to prevent N+1 across all logs (G005 learning loop).
+        # Each compare_windows(lid) is independent, so gather the ≤5 calls
+        # concurrently instead of awaiting them one at a time.
         effect_data: dict[str, str] = {}
         if self._effectiveness_service is not None and logs:
-            recent_logs = logs[-5:]
-            for log_entry in recent_logs:
-                lid: str = log_entry.get("id", "")
-                if not lid:
-                    continue
-                try:
-                    report = await self._effectiveness_service.compare_windows(lid)
+            recent_lids = [lid for log_entry in logs[-5:] if (lid := log_entry.get("id", ""))]
+            if recent_lids:
+                svc = self._effectiveness_service
+                results = await asyncio.gather(
+                    *(svc.compare_windows(lid) for lid in recent_lids),
+                    return_exceptions=True,
+                )
+                for lid, report in zip(recent_lids, results, strict=True):
+                    if isinstance(report, BaseException):
+                        logger.debug("No effectiveness data for intervention {}", lid)
+                        continue
                     if report.has_data:
                         summary = self._format_effectiveness_summary(report)
                         if summary:
                             effect_data[lid] = summary
-                except Exception:
-                    logger.debug("No effectiveness data for intervention {}", lid)
 
         records: list[InterventionRecord] = []
         for log in logs:

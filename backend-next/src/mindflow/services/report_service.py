@@ -15,6 +15,7 @@ Weekly reports aggregate 7 daily reports and compute week-over-week deltas.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -99,8 +100,16 @@ class ReportService:
             logger.info("Daily report already exists for {} user {}", target_date, user_id)
             return existing
 
-        # Ensure sessions exist
-        sessions = await self._focus_repo.get_by_date(user_id, target_date)
+        # Sessions and same-day events are independent reads (no data
+        # dependency) — fetch concurrently. Both run only after the
+        # idempotency check above short-circuits.
+        start_dt = datetime(target_date.year, target_date.month, target_date.day, tzinfo=UTC)
+        end_dt = start_dt + timedelta(days=1) - timedelta(seconds=1)
+
+        sessions, events = await asyncio.gather(
+            self._focus_repo.get_by_date(user_id, target_date),
+            self._activity_repo.query_range(user_id, start_dt, end_dt),
+        )
 
         # Aggregate session-based metrics
         total_focus_min = 0.0
@@ -119,10 +128,6 @@ class ReportService:
                 total_distraction_min += duration_min
 
         # Compute event-based metrics via domain features
-        start_dt = datetime(target_date.year, target_date.month, target_date.day, tzinfo=UTC)
-        end_dt = start_dt + timedelta(days=1) - timedelta(seconds=1)
-
-        events = await self._activity_repo.query_range(user_id, start_dt, end_dt)
         score = compute_focus_score(events)
         switch_freq = switch_rate_per_hour(events)
         usage = app_usage_ranking(events)
