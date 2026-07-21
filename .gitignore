@@ -14,19 +14,18 @@ htmlcov/
 venv/
 
 # 数据与模型 (本地隐私数据不入库)
-backend/data/*.db
-backend/data/*.db-wal
-backend/data/*.db-shm
-backend/data/logs/
-backend/data/models/
-backend-next/data/
+backend-next/data/*.db
+backend-next/data/*.db-wal
+backend-next/data/*.db-shm
+backend-next/data/logs/
+backend-next/data/models/
 data/mindflow.db*
 data/logs/
 data/backups/
 
-# 数据集太大不入库 (保留 README 说明来源，实际数据走 Git LFS)
-data/datasets/manictime/**/*.csv
-data/datasets/awt-labelled/**/*.csv
+# 数据集走 Git LFS（.gitattributes 追踪，此处不忽略 — LFS 指针入库，大对象存 LFS）
+# 注意：manictime/awt 的 *.csv 由 .gitattributes 显式 LFS 跟踪，
+# 不要在这里 ignore，否则 git add 会被跳过。
 
 # 前端
 node_modules/
