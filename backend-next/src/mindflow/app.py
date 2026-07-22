@@ -198,6 +198,28 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         intervention_repo=intervention_repository,
     )
 
+    # ── 7-ext. ML models (scikit-learn behaviour analysis) ─────────────
+    # Three-tier degradation chain mirrors LLM's DeepSeek -> Ollama -> RuleEngine:
+    #   Tier 1: Trained ML models available  -> ML + rule engine enrichment
+    #   Tier 2: Models not found / load fail -> rule engine only (current)
+    #   Tier 3: ML inference fails at runtime -> log warning, rule-only fallback
+    from mindflow.train.models.manager import ModelManager  # noqa: PLC0415
+
+    model_manager: ModelManager | None = None
+    try:
+        _model_manager = ModelManager()
+        if _model_manager.load_latest():
+            model_manager = _model_manager
+            logger.info(
+                "ML models loaded (version: {})", model_manager.current_version_tag
+            )
+        else:
+            logger.warning(
+                "ML models not found — running in rule-engine-only mode"
+            )
+    except Exception as exc:
+        logger.warning("Failed to load ML models: {}", exc)
+
     # ── 7a. Wave 5 Services ────────────────────────────────────────────
     analysis_service = AnalysisService(
         activity_repo=activity_repository,
@@ -226,6 +248,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             analysis_repo=analysis_repository,
             deepseek_client=deepseek,
             ollama_base_url=settings.llm.ollama_base_url if settings.llm.ollama_enabled else None,
+            ollama_model=settings.llm.ollama_model,
         )
         logger.info(
             "LLMService created (L1: {}, L2: {})",
@@ -238,6 +261,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── 7c. Wave 7: Intervention service ───────────────────────────────
     intervention_throttle = InterventionThrottle(
         repo=intervention_repository,
+        daily_limit=settings.throttle_daily_limit,
+        type_limit=settings.throttle_type_limit,
+        cooldown_h=settings.throttle_cooldown_hours,
+        ignore_rate_threshold=settings.throttle_ignore_rate_threshold,
+        fatigue_daily_limit=settings.throttle_fatigue_daily_limit,
+        annoying_threshold=settings.throttle_annoying_threshold,
     )
     intervention_service = InterventionService(
         intervention_repo=intervention_repository,
@@ -254,6 +283,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             gateway = DeepSeekGateway(
                 api_key=settings.llm.api_key,
                 base_url=settings.llm.base_url,
+                timeout_s=settings.llm.timeout_s,
+                max_retries=settings.llm.max_retries,
             )
             orchestrator = PanelOrchestrator(gateway=gateway)
             panel_service = PanelService(
@@ -277,6 +308,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         chat_gateway = DeepSeekGateway(
             api_key=settings.llm.api_key,
             base_url=settings.llm.base_url,
+            timeout_s=settings.llm.timeout_s,
+            max_retries=settings.llm.max_retries,
         )
         evidence_builder = EvidenceBundleBuilder(
             activity_repo=activity_repository,
@@ -284,6 +317,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             session_factory=session_factory,
             effectiveness_service=effectiveness_service,
             baseline_repo=baseline_repository,
+            model_manager=model_manager,
         )
         chat_service = ChatService(
             session_factory=session_factory,
@@ -294,6 +328,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             intervention_repo=intervention_repository,
             evidence_builder=evidence_builder,
             chat_repo=chat_repository,
+            max_history_rounds=settings.max_history_rounds,
         )
         logger.info("ChatService created for G004 conversational assistant")
     except Exception as exc:
@@ -309,6 +344,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         panel_service=panel_service,
         autonomy_service=autonomy_service,
         event_retention_days=settings.event_retention_days,
+        min_confidence=settings.auto_intervention_min_confidence,
+        panel_confidence=settings.auto_intervention_panel_confidence,
     )
     scheduler.start()
     logger.info(
@@ -328,6 +365,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.focus_repository = focus_repository
     app.state.report_repository = report_repository
     app.state.analysis_repository = analysis_repository
+    app.state.baseline_repository = baseline_repository
     app.state.analysis_service = analysis_service
     app.state.report_service = report_service
     app.state.maintenance_service = maintenance_service
@@ -337,6 +375,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.intervention_repository = intervention_repository
     app.state.intervention_service = intervention_service
     app.state.effectiveness_service = effectiveness_service
+    app.state.model_manager = model_manager
     app.state.chat_service = chat_service
     app.state.autonomy_service = autonomy_service
 

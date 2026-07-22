@@ -131,28 +131,91 @@ class SQLAlchemyActivityRepository:
         user_id: int,
         start: datetime,
         end: datetime,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+        descending: bool = False,
     ) -> list[ActivityEvent]:
         """Return events for *user_id* in [*start*, *end*], ordered by time.
 
-        Fetched internally in keyset-paginated chunks of ``_QUERY_PAGE_SIZE``
-        rows so a single large range (e.g. a 30-day export) never buffers the
-        whole result set in one round-trip. The full list is still assembled
-        and returned — this only bounds the per-round-trip DB buffer, not the
-        final in-memory size. Ordering is ``(timestamp, id)`` ascending; ``id``
-        (UUIDv7) breaks timestamp ties so paging is deterministic (no skipped
-        or duplicated rows across page boundaries).
+        When *limit* or *offset* is provided, performs a single SQL query with
+        OFFSET/LIMIT (most efficient for small page fetches). Otherwise,
+        fetches internally in keyset-paginated chunks of ``_QUERY_PAGE_SIZE``
+        rows so a single large range never buffers the whole result set in one
+        round-trip — useful for bulk exports.
+
+        Ordering is ``(timestamp, id)`` ascending by default; ``id`` (UUIDv7)
+        breaks timestamp ties so paging is deterministic. When *descending* is
+        True the order is reversed (most recent first).
 
         Args:
             user_id: User identifier.
             start: Inclusive start of the time range (timezone-aware UTC).
             end: Inclusive end of the time range (timezone-aware UTC).
+            limit: Maximum number of events to return (SQL LIMIT).
+            offset: Number of events to skip (SQL OFFSET).
+            descending: If True, order by timestamp descending.
 
         Returns:
-            A list of ActivityEvents sorted by timestamp ascending.
+            A list of ActivityEvents sorted by the requested order.
         """
         start_iso = start.isoformat()
         end_iso = end.isoformat()
 
+        # Fast path: SQL-level OFFSET/LIMIT (used by paginated API endpoints).
+        if limit is not None or offset is not None:
+            return await self._query_range_paginated(
+                user_id, start_iso, end_iso,
+                limit=limit, offset=offset, descending=descending,
+            )
+
+        # Bulk path: keyset pagination (used by exports / full-range reads).
+        return await self._query_range_keyset(user_id, start_iso, end_iso)
+
+    async def _query_range_paginated(
+        self,
+        user_id: int,
+        start_iso: str,
+        end_iso: str,
+        *,
+        limit: int | None,
+        offset: int | None,
+        descending: bool,
+    ) -> list[ActivityEvent]:
+        """Single-query OFFSET/LIMIT fetch for paginated reads."""
+        order = (
+            activity_events.c.timestamp.desc(),
+            activity_events.c.id.desc(),
+        ) if descending else (
+            activity_events.c.timestamp.asc(),
+            activity_events.c.id.asc(),
+        )
+
+        stmt = (
+            sa.select(activity_events)
+            .where(
+                activity_events.c.user_id == user_id,
+                activity_events.c.timestamp >= start_iso,
+                activity_events.c.timestamp <= end_iso,
+            )
+            .order_by(*order)
+        )
+        if offset is not None:
+            stmt = stmt.offset(offset)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return [_row_to_event(row) for row in result.fetchall()]
+
+    async def _query_range_keyset(
+        self,
+        user_id: int,
+        start_iso: str,
+        end_iso: str,
+    ) -> list[ActivityEvent]:
+        """Keyset-paginated fetch for full-range reads (exports)."""
         events: list[ActivityEvent] = []
         cursor_ts: str | None = None
         cursor_id: str | None = None
@@ -165,7 +228,6 @@ class SQLAlchemyActivityRepository:
                     activity_events.c.timestamp <= end_iso,
                 )
                 if cursor_ts is not None:
-                    # Keyset predicate: (timestamp, id) > (cursor_ts, cursor_id).
                     stmt = stmt.where(
                         sa.tuple_(
                             activity_events.c.timestamp, activity_events.c.id
@@ -190,6 +252,35 @@ class SQLAlchemyActivityRepository:
                 cursor_id = rows[-1].id
 
         return events
+
+    async def count_range(
+        self,
+        user_id: int,
+        start: datetime,
+        end: datetime,
+    ) -> int:
+        """Return the total number of events for *user_id* in [*start*, *end*].
+
+        Args:
+            user_id: User identifier.
+            start: Inclusive start of the time range (timezone-aware UTC).
+            end: Inclusive end of the time range (timezone-aware UTC).
+
+        Returns:
+            The count of matching events.
+        """
+        start_iso = start.isoformat()
+        end_iso = end.isoformat()
+
+        stmt = sa.select(sa.func.count()).select_from(activity_events).where(
+            activity_events.c.user_id == user_id,
+            activity_events.c.timestamp >= start_iso,
+            activity_events.c.timestamp <= end_iso,
+        )
+
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return result.scalar_one()
 
     async def last_event(self, user_id: int) -> ActivityEvent | None:
         """Return the most recent event for *user_id*, or None.

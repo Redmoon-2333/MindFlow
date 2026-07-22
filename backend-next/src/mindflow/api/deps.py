@@ -25,6 +25,7 @@ from mindflow.infrastructure.notification import (  # noqa: F401
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
+from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
@@ -45,6 +46,7 @@ from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
+from mindflow.train.models.manager import ModelManager
 
 
 def get_collector_service(request: Request) -> CollectorService | None:
@@ -148,3 +150,13 @@ def get_chat_service(request: Request) -> ChatService:
 def get_autonomy_service(request: Request) -> AutonomyService:
     """Return the AutonomyService from app.state."""
     return cast(AutonomyService, request.app.state.autonomy_service)
+
+
+def get_baseline_repo(request: Request) -> BaselineRepository:
+    """Return the BaselineRepository from app.state."""
+    return cast(BaselineRepository, request.app.state.baseline_repository)
+
+
+def get_model_manager(request: Request) -> ModelManager | None:
+    """Return the ModelManager from app.state (None if models not loaded)."""
+    return cast(ModelManager | None, getattr(request.app.state, "model_manager", None))

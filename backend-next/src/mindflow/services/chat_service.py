@@ -37,6 +37,7 @@ from mindflow.agents.langchain_tools import (
 )
 from mindflow.agents.llm_gateway import DeepSeekGateway
 from mindflow.agents.types import FORBIDDEN_WORDS
+from mindflow.config import get_settings
 from mindflow.infrastructure.repositories.analysis import (
     SQLAlchemyProcrastinationAnalysisRepository,
 )
@@ -146,8 +147,15 @@ class ChatService:
         intervention_repo: InterventionLogRepository,
         evidence_builder: EvidenceBundleBuilder,
         chat_repo: ChatRepository | None = None,
+        max_history_rounds: int | None = None,
     ) -> None:
         self._chat_repo = chat_repo or ChatRepository(session_factory=session_factory)
+        settings = get_settings()
+        self._max_history_rounds = (
+            max_history_rounds
+            if max_history_rounds is not None
+            else settings.max_history_rounds
+        )
         self._crisis_detector = crisis_detector
         self._analysis_repo = analysis_repo
         self._panel_service = panel_service
@@ -266,10 +274,11 @@ class ChatService:
         )
 
         # ── 3. Load and prepare history ─────────────────────────────────
+        max_rounds = getattr(self, "_max_history_rounds", _MAX_HISTORY_ROUNDS)
         history = await self._chat_repo.recent(
-            session_id, limit=_MAX_HISTORY_ROUNDS * 2 + 2,
+            session_id, limit=max_rounds * 2 + 2,
         )
-        system_summary = self._compress_history(history)
+        system_summary = self._compress_history(history, max_rounds)
 
         # ── 4. LangChain agent invocation ───────────────────────────────
         degraded = False
@@ -419,20 +428,22 @@ class ChatService:
     @staticmethod
     def _compress_history(
         history: list[dict[str, Any]],
+        max_history_rounds: int = _MAX_HISTORY_ROUNDS,
     ) -> str | None:
         """Compress oldest conversation rounds into a text summary.
 
-        When the history exceeds ``_MAX_HISTORY_ROUNDS`` rounds (20 messages),
+        When the history exceeds *max_history_rounds* rounds (20 messages),
         the earliest messages are summarized. The summary also passes through
         the forbidden-word check.
 
         Args:
             history: Full message list from the repository (oldest-first).
+            max_history_rounds: Max rounds to keep verbatim (default from config).
 
         Returns:
             A summary string, or None if no compression is needed.
         """
-        max_messages = _MAX_HISTORY_ROUNDS * 2
+        max_messages = max_history_rounds * 2
         if len(history) <= max_messages:
             return None
 

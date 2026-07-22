@@ -305,3 +305,85 @@ class TestThrottleRules:
         decision = await throttle.can_intervene(1, "task_breakdown")
         assert not decision.allowed
         assert decision.reason == ThrottleReason.COOLDOWN
+
+    # ── Annoying feedback ──────────────────────────────────────────
+
+    async def test_annoying_feedback_reduces_type_limit(self, throttle, clock, repo) -> None:
+        """3+ annoying ratings in 7 days reduces type daily limit to 1."""
+        # Create 3 interventions of type "nudge" with "annoying" feedback (past days only)
+        for i in range(1, 4):
+            log = await repo.log_triggered(
+                user_id=1,
+                intervention_type="nudge",
+                triggered_at=clock.now() - timedelta(days=i),
+            )
+            await repo.update_feedback(log["id"], "annoying")
+
+        # First nudge today should be allowed
+        await repo.log_triggered(
+            user_id=1,
+            intervention_type="nudge",
+            triggered_at=clock.now(),
+        )
+        clock.advance(hours=3)
+
+        # Second nudge today should be blocked (limit reduced to 1)
+        decision = await throttle.can_intervene(1, "nudge")
+        assert not decision.allowed
+        assert decision.reason == ThrottleReason.ANNOYING
+
+    async def test_below_annoying_threshold_allows_normal_type_limit(
+        self, throttle, clock, repo
+    ) -> None:
+        """2 annoying ratings (< threshold of 3) keeps normal type limit of 2."""
+        # Create 2 interventions with "annoying" feedback (past days only)
+        for i in range(1, 3):
+            log = await repo.log_triggered(
+                user_id=1,
+                intervention_type="nudge",
+                triggered_at=clock.now() - timedelta(days=i),
+            )
+            await repo.update_feedback(log["id"], "annoying")
+
+        # First nudge today
+        await repo.log_triggered(
+            user_id=1,
+            intervention_type="nudge",
+            triggered_at=clock.now(),
+        )
+        clock.advance(hours=3)
+
+        # Second nudge today should still be allowed (normal limit = 2)
+        decision = await throttle.can_intervene(1, "nudge")
+        assert decision.allowed, f"Expected OK, got {decision.reason}: {decision.detail}"
+
+    async def test_helpful_feedback_does_not_affect_limit(
+        self, throttle, clock, repo
+    ) -> None:
+        """5+ helpful ratings keep normal limits (no reduction)."""
+        for i in range(1, 6):
+            log = await repo.log_triggered(
+                user_id=1,
+                intervention_type="nudge",
+                triggered_at=clock.now() - timedelta(days=i),
+            )
+            await repo.update_feedback(log["id"], "helpful")
+
+        # Normal type limit of 2 still applies
+        await repo.log_triggered(
+            user_id=1,
+            intervention_type="nudge",
+            triggered_at=clock.now(),
+        )
+        clock.advance(hours=3)
+        await repo.log_triggered(
+            user_id=1,
+            intervention_type="nudge",
+            triggered_at=clock.now(),
+        )
+        clock.advance(hours=3)
+
+        # Third nudge blocked by normal type cap, not ANNOYING
+        decision = await throttle.can_intervene(1, "nudge")
+        assert not decision.allowed
+        assert decision.reason == ThrottleReason.TYPE_CAP

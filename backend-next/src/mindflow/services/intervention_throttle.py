@@ -45,6 +45,7 @@ class ThrottleReason(StrEnum):
     COOLDOWN = "cooldown"
     TYPE_CAP = "type_cap"
     FATIGUE = "fatigue"
+    ANNOYING = "annoying"
 
 
 # ── Configuration defaults ──────────────────────────────────────────────
@@ -54,6 +55,7 @@ _DEFAULT_TYPE_LIMIT: int = 2
 _DEFAULT_COOLDOWN_H: float = 2.0
 _DEFAULT_IGNORE_RATE_THRESHOLD: float = 0.6
 _DEFAULT_FATIGUE_DAILY_LIMIT: int = 1
+_DEFAULT_ANNOYING_THRESHOLD: int = 3
 
 
 class ThrottleDecision:
@@ -108,6 +110,7 @@ class InterventionThrottle:
         cooldown_h: float = _DEFAULT_COOLDOWN_H,
         ignore_rate_threshold: float = _DEFAULT_IGNORE_RATE_THRESHOLD,
         fatigue_daily_limit: int = _DEFAULT_FATIGUE_DAILY_LIMIT,
+        annoying_threshold: int = _DEFAULT_ANNOYING_THRESHOLD,
     ) -> None:
         self._repo = repo
         self._clock = clock or UTCCLock()
@@ -116,6 +119,7 @@ class InterventionThrottle:
         self._cooldown_h = cooldown_h
         self._ignore_rate_threshold = ignore_rate_threshold
         self._fatigue_daily_limit = fatigue_daily_limit
+        self._annoying_threshold = annoying_threshold
 
     async def can_intervene(
         self,
@@ -173,13 +177,28 @@ class InterventionThrottle:
             except (ValueError, TypeError):
                 pass  # Parse error — allow through (defensive)
 
-        # ── 4. Type cap ────────────────────────────────────────────────
+        # ── 4. Type cap (adjusted for annoying feedback) ────────────────
+        # If 3+ "annoying" ratings in 7 days for this type, reduce daily limit to 1
+        annoying_count = await self._repo.annoying_count_7d_by_type(user_id, intervention_type)
+        effective_type_limit = 1 if annoying_count >= self._annoying_threshold else self._type_limit
+
         type_count = await self._repo.count_today_by_type(user_id, intervention_type)
-        if type_count >= self._type_limit:
+        if type_count >= effective_type_limit:
+            reason = (
+                ThrottleReason.ANNOYING
+                if annoying_count >= self._annoying_threshold
+                else ThrottleReason.TYPE_CAP
+            )
             return ThrottleDecision(
-                reason=ThrottleReason.TYPE_CAP,
+                reason=reason,
                 detail=(
-                    f"今日 {intervention_type} 类型干预已达上限 ({type_count}/{self._type_limit})"
+                    f"今日 {intervention_type} 类型干预已达上限 "
+                    f"({type_count}/{effective_type_limit})"
+                    + (
+                        f"（近7日 {annoying_count} 条负面反馈）"
+                        if annoying_count >= self._annoying_threshold
+                        else ""
+                    )
                 ),
             )
 

@@ -31,6 +31,7 @@ def _make_mock_service() -> MagicMock:
     svc = MagicMock(spec=InterventionService)
     svc.maybe_intervene = AsyncMock()
     svc.record_response = AsyncMock()
+    svc.record_feedback = AsyncMock()
     svc.get_history = AsyncMock()
     return svc
 
@@ -199,6 +200,101 @@ class TestRespondToIntervention:
         # latency_s is passed as the third positional arg
         assert len(call_args.args) >= 3
         assert call_args.args[2] == 12.0
+
+
+class TestFeedbackOnIntervention:
+    """POST /api/v1/intervention/{id}/feedback."""
+
+    @pytest.fixture
+    def app(self) -> FastAPI:
+        app = FastAPI()
+        register_exception_handlers(app)
+        app.include_router(intervention_router, prefix="/api/v1")
+        return app
+
+    def test_feedback_helpful(self, app) -> None:
+        """Helpful feedback returns ok."""
+        mock_svc = _make_mock_service()
+        mock_svc.record_feedback.return_value = {
+            "id": "fb-001",
+            "feedback_rating": "helpful",
+        }
+        app.state.intervention_service = mock_svc
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/intervention/fb-001/feedback",
+            json={"rating": "helpful", "comment": "很有帮助"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["feedback_rating"] == "helpful"
+
+    def test_feedback_annoying(self, app) -> None:
+        """Annoying feedback returns ok."""
+        mock_svc = _make_mock_service()
+        mock_svc.record_feedback.return_value = {
+            "id": "fb-002",
+            "feedback_rating": "annoying",
+        }
+        app.state.intervention_service = mock_svc
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/intervention/fb-002/feedback",
+            json={"rating": "annoying"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["feedback_rating"] == "annoying"
+
+    def test_feedback_not_found(self, app) -> None:
+        """Non-existent intervention returns 404."""
+        mock_svc = _make_mock_service()
+        mock_svc.record_feedback.return_value = None
+        app.state.intervention_service = mock_svc
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/intervention/ghost/feedback",
+            json={"rating": "helpful"},
+        )
+        assert resp.status_code == 404
+
+    def test_feedback_invalid_rating(self, app) -> None:
+        """Invalid rating returns error, not 404."""
+        mock_svc = _make_mock_service()
+        app.state.intervention_service = mock_svc
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/intervention/some-id/feedback",
+            json={"rating": "maybe"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data
+
+    def test_feedback_without_comment(self, app) -> None:
+        """Comment is optional."""
+        mock_svc = _make_mock_service()
+        mock_svc.record_feedback.return_value = {
+            "id": "fb-003",
+            "feedback_rating": "neutral",
+        }
+        app.state.intervention_service = mock_svc
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/intervention/fb-003/feedback",
+            json={"rating": "neutral"},
+        )
+        assert resp.status_code == 200
+
+        call_args = mock_svc.record_feedback.await_args
+        assert call_args.args[1] == "neutral"
+        assert call_args.args[2] is None
 
 
 class TestInterventionHistory:

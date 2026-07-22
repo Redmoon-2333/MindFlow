@@ -76,19 +76,24 @@ async def list_activities(
             detail="开始日期必须早于结束日期",
         )
 
-    events = await activity_repo.query_range(user_id=1, start=start, end=end)
-
-    # Reverse to show most recent first, then paginate
-    events.reverse()
     offset = (page - 1) * page_size
-    page_events = events[offset : offset + page_size]
+    total = await activity_repo.count_range(user_id=1, start=start, end=end)
+
+    # Fetch page_size + 1 rows to determine has_more without a second query
+    events = await activity_repo.query_range(
+        user_id=1, start=start, end=end,
+        limit=page_size + 1, offset=offset, descending=True,
+    )
+
+    has_more = len(events) > page_size
+    page_events = events[:page_size]
 
     return {
         "items": [_event_to_dict(e) for e in page_events],
         "page": page,
         "page_size": page_size,
-        "total": len(events),
-        "has_more": (offset + page_size) < len(events),
+        "total": total,
+        "has_more": has_more,
     }
 
 

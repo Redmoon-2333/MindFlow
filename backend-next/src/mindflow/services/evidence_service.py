@@ -59,6 +59,8 @@ from mindflow.services.effectiveness_service import (
     EffectivenessReport,
     EffectivenessService,
 )
+from mindflow.train.features import BehaviorFeatureExtractor
+from mindflow.train.models.manager import ModelManager
 
 # Backward-compat alias: ``baseline_models.metadata`` is the MetaData the table
 # was registered on. Kept so ``baseline_models_metadata.create_all`` importers
@@ -116,6 +118,25 @@ _INTERVENTION_LOOKBACK_DAYS: int = 7
 
 # How many top apps to consider for novelty detection
 _NOVELTY_TOP_N: int = 5
+
+# ML classifier focus probability thresholds (higher = better focus).
+#   >= 0.70: info     — Model confident this is focus.
+#   [0.50, 0.70): mild — Somewhat focus, borderline.
+#   [0.30, 0.50): moderate — More likely distraction.
+#   < 0.30:   severe  — Model confident this is distraction.
+_ML_FOCUS_INFO: float = 0.70
+_ML_FOCUS_MILD: float = 0.50
+_ML_FOCUS_MODERATE: float = 0.30
+
+# Human-readable labels for behavior clusters
+_CLUSTER_READABLE: dict[str, str] = {
+    "deep_focus": "深度专注",
+    "shallow_work": "浅层工作",
+    "browsing": "浏览浏览",
+    "procrastination": "拖延状态",
+    "idle": "空闲",
+    "noise": "未分类",
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -218,6 +239,28 @@ def _response_to_effect_note(user_response: str | None) -> str:
     return mapping.get(user_response, "尚未回应")
 
 
+def _ml_focus_severity(focus_proba: float) -> Severity:
+    """Severity for ML classifier focus probability (higher = better focus)."""
+    return _score_severity(
+        focus_proba,
+        _ML_FOCUS_INFO,
+        _ML_FOCUS_MILD,
+        _ML_FOCUS_MODERATE,
+        higher_is_better=True,
+    )
+
+
+def _format_ml_focus_readable(focus_proba: float, severity: Severity) -> str:
+    """Chinese human-readable for ML focus probability."""
+    label = {
+        "info": "专注",
+        "mild": "一般",
+        "moderate": "分心倾向",
+        "severe": "明显分心",
+    }.get(severity, "未知")
+    return f"ML专注概率 {focus_proba:.0%}，{label}"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Builder
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -248,6 +291,7 @@ class EvidenceBundleBuilder:
         session_factory: async_sessionmaker[AsyncSession],
         effectiveness_service: EffectivenessService | None = None,
         baseline_repo: BaselineRepository | None = None,
+        model_manager: ModelManager | None = None,
     ) -> None:
         self._activity_repo = activity_repo
         self._intervention_repo = intervention_repo
@@ -256,6 +300,8 @@ class EvidenceBundleBuilder:
         self._baseline_repo = baseline_repo or BaselineRepository(
             session_factory=session_factory
         )
+        self._model_manager = model_manager
+        self._feature_extractor = BehaviorFeatureExtractor()
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API
@@ -314,11 +360,18 @@ class EvidenceBundleBuilder:
     # Feature-based evidence items
     # ══════════════════════════════════════════════════════════════════════
 
-    @staticmethod
-    def _build_feature_items(events: list[ActivityEvent]) -> list[EvidenceItem]:
+    def _build_feature_items(self, events: list[ActivityEvent]) -> list[EvidenceItem]:
         """Generate EvidenceItems from raw feature computations.
 
-        Produces up to 4 items: focus_score, switch_rate, longest_block, top_apps.
+        Produces up to 4 rule-based items: focus_score, switch_rate,
+        longest_block, top_apps.  When a ``ModelManager`` is available,
+        ML-derived items (classifier prediction, cluster assignment) are
+        appended alongside — they never replace the rule-based items.
+
+        Degradation chain (mirrors LLM three-tier):
+          1. ML models loaded  -> rule-based + ML enrichment
+          2. ML models missing -> rule-only (current behaviour)
+          3. ML inference fails -> log warning, rule-only fallback
         """
         items: list[EvidenceItem] = []
 
@@ -397,7 +450,100 @@ class EvidenceBundleBuilder:
                 )
             )
 
+        # --- ML enrichment (degradation tier 1) ---
+        if self._model_manager is not None:
+            items.extend(self._build_ml_items(events))
+
         return items
+
+    def _build_ml_items(self, events: list[ActivityEvent]) -> list[EvidenceItem]:
+        """Run ML inference and return enrichment EvidenceItems.
+
+        Extracts the 14-feature matrix via ``BehaviorFeatureExtractor``,
+        then queries the classifier (focus probability) and clustering
+        (behavior cluster assignment).  Returns 0-2 items depending on
+        what the models can produce.
+
+        All exceptions are caught and logged — ML failure must never
+        break the evidence pipeline (degradation tier 3).
+        """
+        try:
+            feature_rows = self._feature_extractor.extract_session_features(events)
+            if not feature_rows:
+                return []
+
+            # Build (n_samples, 14) numpy array in FEATURE_NAMES order
+            import numpy as np
+
+            feature_names = self._feature_extractor.get_feature_names()
+            matrix = np.array(
+                [[row[name] for name in feature_names] for row in feature_rows],
+                dtype=np.float64,
+            )
+            if matrix.ndim != 2 or matrix.shape[1] != 14:
+                logger.debug("ML feature matrix shape mismatch: {}", matrix.shape)
+                return []
+
+            items: list[EvidenceItem] = []
+
+            # --- Classifier: focus probability ---
+            try:
+                proba = self._model_manager.classifier.predict_proba(matrix)  # type: ignore[union-attr]
+                # proba shape: (n_samples, 2) — columns [distraction, focus]
+                # Average across all windows in this analysis period
+                focus_proba = float(np.mean(proba[:, 1]))
+                ml_focus_sev = _ml_focus_severity(focus_proba)
+                items.append(
+                    EvidenceItem(
+                        metric="ml_focus_probability",
+                        value=round(focus_proba, 4),
+                        baseline=None,
+                        severity=ml_focus_sev,
+                        confidence=round(
+                            focus_proba if focus_proba >= 0.5 else 1.0 - focus_proba, 3
+                        ),
+                        source="rf_classifier",
+                        human_readable=_format_ml_focus_readable(focus_proba, ml_focus_sev),
+                    )
+                )
+            except Exception:
+                logger.debug("ML classifier inference failed, skipping")
+
+            # --- Clustering: behavior cluster assignment ---
+            try:
+                cluster_labels = self._model_manager.clustering.predict(matrix)  # type: ignore[union-attr]
+                # Map cluster IDs to human-readable names
+                from mindflow.train.models.clustering import BehaviorClustering
+
+                label_map = BehaviorClustering.CLUSTER_LABEL_MAP
+                cluster_names = [label_map.get(int(c), f"cluster_{c}") for c in cluster_labels]
+                # Majority vote across windows
+                from collections import Counter
+
+                most_common_name, most_common_count = Counter(cluster_names).most_common(1)[0]
+                confidence = round(most_common_count / len(cluster_names), 3)
+                items.append(
+                    EvidenceItem(
+                        metric="ml_behavior_cluster",
+                        value=most_common_name,
+                        baseline=None,
+                        severity="info",
+                        confidence=confidence,
+                        source="dbscan_clustering",
+                        human_readable=(
+                            f"ML行为聚类: "
+                            f"{_CLUSTER_READABLE.get(most_common_name, most_common_name)}"
+                        ),
+                    )
+                )
+            except Exception:
+                logger.debug("ML clustering inference failed, skipping")
+
+            return items
+
+        except Exception:
+            logger.warning("ML inference failed, falling back to rule engine")
+            return []
 
     # ══════════════════════════════════════════════════════════════════════
     # Baseline / deviation items

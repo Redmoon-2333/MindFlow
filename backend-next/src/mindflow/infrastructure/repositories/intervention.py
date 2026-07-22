@@ -3,7 +3,7 @@
 Stores and queries intervention history for throttle decisions and
 effectiveness analysis (Wave 7).
 
-Table schema matches the Alembic migration (0001_create_core_tables):
+Table schema matches the Alembic migrations (0001-0005):
 
   intervention_logs:
     id                  TEXT PK (UUIDv7)
@@ -14,6 +14,8 @@ Table schema matches the Alembic migration (0001_create_core_tables):
     context_json        TEXT (nullable, JSON blob)
     user_response       TEXT (nullable: "accepted"|"ignored"|"dismissed")
     response_latency_s  REAL (nullable)
+    feedback_rating     TEXT (nullable: "helpful"|"neutral"|"annoying")
+    feedback_comment    TEXT (nullable)
     created_at          TEXT NOT NULL (ISO8601 UTC)
 
 All timestamps are stored as ISO8601 text (timezone-aware UTC).
@@ -59,6 +61,8 @@ intervention_logs = sa.Table(
     sa.Column("context_json", sa.Text(), nullable=True),
     sa.Column("user_response", sa.Text(), nullable=True),
     sa.Column("response_latency_s", sa.Float(), nullable=True),
+    sa.Column("feedback_rating", sa.Text(), nullable=True),
+    sa.Column("feedback_comment", sa.Text(), nullable=True),
     sa.Column(
         "created_at",
         sa.Text(),
@@ -68,6 +72,7 @@ intervention_logs = sa.Table(
 )
 
 ResponseType = Literal["accepted", "ignored", "dismissed"]
+FeedbackRating = Literal["helpful", "neutral", "annoying"]
 
 
 class InterventionLogRepository:
@@ -274,6 +279,60 @@ class InterventionLogRepository:
             result = await session.execute(stmt)
             return [_row_to_dict(row) for row in result.fetchall()]
 
+    async def update_feedback(
+        self,
+        intervention_id: str,
+        rating: FeedbackRating,
+        comment: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Update the user's feedback on an intervention.
+
+        Args:
+            intervention_id: The intervention's UUIDv7 string.
+            rating: One of "helpful", "neutral", "annoying".
+            comment: Optional free-text comment.
+
+        Returns:
+            The updated row dict, or None if the intervention wasn't found.
+        """
+        stmt = (
+            sa.update(intervention_logs)
+            .where(intervention_logs.c.id == intervention_id)
+            .values(feedback_rating=rating, feedback_comment=comment)
+        )
+
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(stmt)
+            if result.rowcount == 0:
+                return None
+
+            select_stmt = sa.select(intervention_logs).where(
+                intervention_logs.c.id == intervention_id
+            )
+            fetch = await session.execute(select_stmt)
+            row = fetch.fetchone()
+
+        return _row_to_dict(row) if row is not None else None
+
+    async def annoying_count_7d_by_type(self, user_id: int, intervention_type: str) -> int:
+        """Count "annoying" feedback ratings for a type in the last 7 days.
+
+        Used by the throttle to reduce frequency for disliked intervention types.
+        """
+        cutoff = self._clock.now() - timedelta(days=7)
+
+        stmt = sa.select(sa.func.count()).select_from(intervention_logs).where(
+            intervention_logs.c.user_id == user_id,
+            intervention_logs.c.intervention_type == intervention_type,
+            intervention_logs.c.feedback_rating == "annoying",
+            intervention_logs.c.triggered_at >= cutoff.isoformat(),
+        )
+
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            count: int = result.scalar() or 0
+            return count
+
     async def get_by_id(self, intervention_id: str) -> dict[str, Any] | None:
         """Return a single intervention log by ID, or None."""
         stmt = sa.select(intervention_logs).where(intervention_logs.c.id == intervention_id)
@@ -333,5 +392,7 @@ def _row_to_dict(row: sa.Row[Any]) -> dict[str, Any]:
         "context_json": context,
         "user_response": row.user_response,
         "response_latency_s": row.response_latency_s,
+        "feedback_rating": row.feedback_rating,
+        "feedback_comment": row.feedback_comment,
         "created_at": row.created_at,
     }

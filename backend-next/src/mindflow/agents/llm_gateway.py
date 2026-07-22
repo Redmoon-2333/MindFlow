@@ -108,11 +108,15 @@ class LangChainGateway:
         self,
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout_s: int | None = None,
+        max_retries: int | None = None,
     ) -> None:
+        settings = get_settings()
         if api_key is None:
-            settings = get_settings()
             api_key = settings.llm.api_key
             base_url = base_url or settings.llm.base_url
+        self._timeout_s = timeout_s if timeout_s is not None else settings.llm.timeout_s
+        self._max_retries = max_retries if max_retries is not None else settings.llm.max_retries
 
         # Key-less construction is allowed (E2E finding): the app must be able
         # to assemble PanelService/ChatService without a configured key so the
@@ -138,7 +142,7 @@ class LangChainGateway:
                     model=model_id,
                     api_key=SecretStr(self._api_key) if self._api_key else None,
                     base_url=self._base_url,
-                    timeout=_DEFAULT_TIMEOUT_S,
+                    timeout=self._timeout_s,
                     max_retries=0,
                     model_kwargs={"response_format": {"type": "json_object"}},
                 )
@@ -150,7 +154,7 @@ class LangChainGateway:
                 model=model_id,
                 api_key=SecretStr(self._api_key) if self._api_key else None,
                 base_url=self._base_url,
-                timeout=_DEFAULT_TIMEOUT_S,
+                timeout=self._timeout_s,
                 max_retries=0,
             )
         return self._reasoner_model
@@ -193,7 +197,7 @@ class LangChainGateway:
 
         last_exc: Exception | None = None
 
-        for attempt in range(_MAX_RETRIES + 1):
+        for attempt in range(self._max_retries + 1):
             try:
                 result = await chat.ainvoke(messages)
             except Exception as exc:
@@ -212,7 +216,7 @@ class LangChainGateway:
 
         # All retries exhausted
         raise GatewayAPIError(
-            f"LangChain gateway failed after {_MAX_RETRIES + 1} attempts"
+            f"LangChain gateway failed after {self._max_retries + 1} attempts"
         ) from last_exc
 
     async def close(self) -> None:

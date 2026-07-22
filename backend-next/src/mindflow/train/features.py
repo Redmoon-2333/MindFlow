@@ -25,41 +25,18 @@ from datetime import timedelta
 from typing import Any
 
 from mindflow.domain.events import ActivityEvent
+from mindflow.domain.features import title_features as _domain_title_features
 
 
 class TitleAnalyzer:
-    """Objective window title analysis — no app classification dependency.
+    """Window title analysis delegating to domain.features.title_features().
 
-    Extracts signal ratios from window titles by detecting:
-      - Code file extensions (.py, .js, .tsx, …) and IDE patterns
-      - Document extensions (.md, .pdf, .docx, …)
-      - Browser URL patterns (http, www, .com …)
-      - Meeting platform keywords (zoom, teams, meet …)
-      - Entertainment keywords (bilibili, youtube, netflix …)
+    Single source of truth for title-based signal extraction.  The domain
+    function handles URL detection, file-extension matching, meeting-keyword
+    detection, and entertainment-pattern matching.  This wrapper converts the
+    boolean ``TitleFeatures`` result to the 0.0/1.0 float dict that the
+    training pipeline expects.
     """
-
-    CODE_EXTENSIONS = frozenset({
-        ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".cpp", ".c", ".h",
-        ".rs", ".go", ".rb", ".php", ".swift", ".kt", ".scala", ".sql",
-        ".sh", ".bash", ".yaml", ".yml", ".toml", ".json", ".xml", ".md",
-        ".rst", ".ipynb",
-    })
-    CODE_KEYWORDS = frozenset({
-        "vscode", "pycharm", "intellij", "vim", "nvim", "emacs",
-        "terminal", "debug", "compile", "merge", "pull request",
-    })
-    DOC_EXTENSIONS = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".pptx", ".tex"})
-    DOC_KEYWORDS = frozenset({"obsidian", "notion", "evernote", "onenote", "typora"})
-    BROWSER_KEYWORDS = frozenset({
-        "http://", "https://", "www.", ".com", ".org", ".cn", ".io",
-    })
-    MEETING_KEYWORDS = frozenset({
-        "zoom", "teams", "meet", "webex", "tencent meeting", "dingtalk",
-    })
-    ENTERTAINMENT_KEYWORDS = frozenset({
-        "bilibili", "youtube", "netflix", "douyin", "tiktok", "anime",
-        "steam", "spotify", "iqiyi", "youku",
-    })
 
     FEATURE_KEYS = [
         "title_code_ratio",
@@ -75,33 +52,14 @@ class TitleAnalyzer:
         Returns a dict with keys: is_code_editor, is_document, is_browser,
         is_meeting, is_likely_entertainment — each 0.0 or 1.0.
         """
-        lower = title.lower().strip()
+        tf = _domain_title_features(title)
         return {
-            "is_code_editor": 1.0 if self._is_code(lower) else 0.0,
-            "is_document": 1.0 if self._is_document(lower) else 0.0,
-            "is_browser": 1.0 if self._is_browser(lower) else 0.0,
-            "is_meeting": 1.0 if self._is_meeting(lower) else 0.0,
-            "is_likely_entertainment": 1.0 if self._is_entertainment(lower) else 0.0,
+            "is_code_editor": 1.0 if tf.is_code_editor else 0.0,
+            "is_document": 1.0 if tf.is_document else 0.0,
+            "is_browser": 1.0 if tf.is_browser else 0.0,
+            "is_meeting": 1.0 if tf.is_meeting else 0.0,
+            "is_likely_entertainment": 1.0 if tf.is_likely_entertainment else 0.0,
         }
-
-    def _is_code(self, title: str) -> bool:
-        if any(ext in title for ext in self.CODE_EXTENSIONS):
-            return True
-        return any(kw in title for kw in self.CODE_KEYWORDS)
-
-    def _is_document(self, title: str) -> bool:
-        if any(ext in title for ext in self.DOC_EXTENSIONS):
-            return True
-        return any(kw in title for kw in self.DOC_KEYWORDS)
-
-    def _is_browser(self, title: str) -> bool:
-        return any(kw in title for kw in self.BROWSER_KEYWORDS)
-
-    def _is_meeting(self, title: str) -> bool:
-        return any(kw in title for kw in self.MEETING_KEYWORDS)
-
-    def _is_entertainment(self, title: str) -> bool:
-        return any(kw in title for kw in self.ENTERTAINMENT_KEYWORDS)
 
 
 class AppClassifier:
@@ -315,6 +273,12 @@ class BehaviorFeatureExtractor:
 
             unique_apps = len({r["process_name"] for r in window_rows})
 
+            # NOTE: We do NOT delegate to domain.features.switch_rate_per_hour
+            # here because the semantics differ: the domain function filters
+            # idle events and divides by actual time span, while the training
+            # pipeline counts all process switches (including idle) and divides
+            # by fixed window duration.  Consolidating would change feature
+            # distributions and break trained models.
             process_list = [r["process_name"] for r in window_rows]
             switches = sum(
                 1 for j in range(1, len(process_list))

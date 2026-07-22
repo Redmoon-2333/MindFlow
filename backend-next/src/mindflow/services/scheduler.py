@@ -95,6 +95,8 @@ async def _auto_intervention_check(
     autonomy_service: AutonomyService | None = None,
     user_id: int = 1,
     window_min: int = 30,
+    min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
+    panel_confidence: float = _AUTO_INTERVENTION_PANEL_CONFIDENCE,
 ) -> None:
     """Assess recent behavior and intervene if significant procrastination detected.
 
@@ -182,11 +184,11 @@ async def _auto_intervention_check(
 
     top_type = assessment.types[0]
     top_confidence = assessment.confidence.get(top_type, 0.0)
-    if top_confidence < _AUTO_INTERVENTION_MIN_CONFIDENCE:
+    if top_confidence < min_confidence:
         logger.debug(
             "Auto-intervention: confidence {:.2f} < {:.2f}, skipping",
             top_confidence,
-            _AUTO_INTERVENTION_MIN_CONFIDENCE,
+            min_confidence,
         )
         return
 
@@ -201,7 +203,7 @@ async def _auto_intervention_check(
     assessment_for_dispatch = assessment
     panel_attempted = False
 
-    if top_confidence >= _AUTO_INTERVENTION_PANEL_CONFIDENCE and panel_service is not None:
+    if top_confidence >= panel_confidence and panel_service is not None:
         today_str = now.strftime("%Y-%m-%d")
         # Claim the run BEFORE awaiting so a concurrent daily-panel cron tick
         # cannot also fire the panel (review C4 race). If we lose the claim,
@@ -212,7 +214,7 @@ async def _auto_intervention_check(
                 "Auto-intervention: confidence {:.2f} >= {:.2f}, "
                 "escalating to expert panel",
                 top_confidence,
-                _AUTO_INTERVENTION_PANEL_CONFIDENCE,
+                panel_confidence,
             )
             panel_attempted = True
             try:
@@ -288,6 +290,8 @@ def build_scheduler(
     panel_service: Any | None = None,
     autonomy_service: AutonomyService | None = None,
     event_retention_days: int = 30,
+    min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
+    panel_confidence: float = _AUTO_INTERVENTION_PANEL_CONFIDENCE,
 ) -> AsyncIOScheduler:
     """Create and configure an ``AsyncIOScheduler`` with cron + interval jobs.
 
@@ -308,6 +312,10 @@ def build_scheduler(
             (optional — gates both daily_panel and auto_intervention_check).
         event_retention_days: Retention period for raw events in days.
             Passed to the cleanup job.
+        min_confidence: Minimum confidence to trigger auto-intervention
+            (default 0.5).
+        panel_confidence: Confidence threshold for panel escalation
+            (default 0.75).
 
     Returns:
         A configured ``AsyncIOScheduler`` instance.  Caller is responsible
@@ -432,6 +440,8 @@ def build_scheduler(
                 "intervention_service": intervention_service,
                 "panel_service": panel_service,
                 "autonomy_service": autonomy_service,
+                "min_confidence": min_confidence,
+                "panel_confidence": panel_confidence,
             },
         )
         logger.debug("Scheduler: registered auto_intervention_check (interval=30min)")

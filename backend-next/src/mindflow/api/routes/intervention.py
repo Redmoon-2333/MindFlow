@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Path, Query  # noqa: B008
 from loguru import logger
+from pydantic import BaseModel
 
 from mindflow.api.deps import get_intervention_service
 from mindflow.api.errors import _not_found
@@ -27,6 +28,13 @@ from mindflow.domain.procrastination import (
 from mindflow.services.intervention_service import InterventionService
 
 router = APIRouter(tags=["intervention"])
+
+
+class FeedbackRequest(BaseModel):
+    """Request body for intervention feedback."""
+
+    rating: str
+    comment: str | None = None
 
 _DEFAULT_INTENSITY = InterventionIntensity.STANDARD
 
@@ -147,6 +155,42 @@ async def respond_to_intervention(
         "status": "ok",
         "intervention_id": intervention_id,
         "user_response": response,
+    }
+
+
+@router.post("/intervention/{intervention_id}/feedback")
+async def feedback_on_intervention(
+    intervention_id: str = Path(..., description="Intervention UUID"),  # noqa: B008
+    body: FeedbackRequest = ...,  # noqa: B008
+    intervention_svc: InterventionService = Depends(get_intervention_service),  # noqa: B008
+) -> dict[str, Any]:
+    """Record user feedback on an intervention's helpfulness.
+
+    Args:
+        intervention_id: The intervention's UUID.
+        body: Feedback with rating ("helpful"|"neutral"|"annoying") and optional comment.
+
+    Returns:
+        A confirmation dict, or 404 if the intervention isn't found.
+    """
+    valid_ratings = {"helpful", "neutral", "annoying"}
+    if body.rating not in valid_ratings:
+        return {"error": f"无效的评分值。可用值: {', '.join(sorted(valid_ratings))}"}
+
+    result = await intervention_svc.record_feedback(intervention_id, body.rating, body.comment)
+    if result is None:
+        raise _not_found(f"干预记录 {intervention_id}")
+
+    logger.debug(
+        "Intervention {} feedback: rating={}, comment={}",
+        intervention_id,
+        body.rating,
+        body.comment,
+    )
+    return {
+        "status": "ok",
+        "intervention_id": intervention_id,
+        "feedback_rating": body.rating,
     }
 
 

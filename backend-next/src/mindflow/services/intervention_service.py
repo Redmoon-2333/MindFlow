@@ -361,6 +361,37 @@ class InterventionService:
             logger.error("Failed to record intervention response: {}", exc)
             return None
 
+    async def record_feedback(
+        self,
+        intervention_id: str,
+        rating: str,
+        comment: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Record user feedback on intervention helpfulness.
+
+        Args:
+            intervention_id: The intervention's UUID.
+            rating: One of "helpful", "neutral", "annoying".
+            comment: Optional free-text comment.
+
+        Returns:
+            The updated log dict, or None if the intervention wasn't found.
+        """
+        from mindflow.infrastructure.repositories.intervention import FeedbackRating
+
+        try:
+            result = await self._repo.update_feedback(
+                intervention_id,
+                cast("FeedbackRating", rating),
+                comment,
+            )
+            if result is None:
+                logger.warning("Intervention {} not found for feedback", intervention_id)
+            return result
+        except Exception as exc:
+            logger.error("Failed to record intervention feedback: {}", exc)
+            return None
+
     async def get_history(
         self,
         user_id: int,

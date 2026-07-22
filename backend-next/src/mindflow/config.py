@@ -36,6 +36,8 @@ class LLMSettings(BaseSettings):
       L3: RuleEngine (always available, zero config)
     """
 
+    timeout_s: int = Field(default=30, ge=1, le=300, description="LLM request timeout in seconds")
+    max_retries: int = Field(default=1, ge=0, le=10, description="LLM retry budget")
     api_key: str | None = Field(default=None, description="LLM API key (e.g. DeepSeek)")
     base_url: str | None = Field(default=None, description="LLM API base URL")
     model: str | None = Field(default=None, description="LLM model identifier")
@@ -101,6 +103,39 @@ class Settings(BaseSettings):
 
     # --- Logging ---
     log: LogSettings = Field(default_factory=LogSettings)
+
+    # --- Chat ---
+    max_history_rounds: int = Field(
+        default=10, ge=1, le=100, description="Max conversation rounds kept verbatim in chat"
+    )
+
+    # --- Auto-intervention ---
+    auto_intervention_min_confidence: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="Min confidence to trigger auto-intervention"
+    )
+    auto_intervention_panel_confidence: float = Field(
+        default=0.75, ge=0.0, le=1.0, description="Confidence threshold for panel escalation"
+    )
+
+    # --- Intervention throttle ---
+    throttle_daily_limit: int = Field(
+        default=3, ge=1, le=20, description="Max interventions per user per day"
+    )
+    throttle_type_limit: int = Field(
+        default=2, ge=1, le=10, description="Max interventions of same type per day"
+    )
+    throttle_cooldown_hours: float = Field(
+        default=2.0, ge=0.5, le=24.0, description="Min hours between interventions"
+    )
+    throttle_ignore_rate_threshold: float = Field(
+        default=0.6, ge=0.0, le=1.0, description="Ignore rate above which fatigue kicks in"
+    )
+    throttle_fatigue_daily_limit: int = Field(
+        default=1, ge=1, le=10, description="Reduced daily cap when fatigued"
+    )
+    throttle_annoying_threshold: int = Field(
+        default=3, ge=1, le=20, description="Annoying feedback count that reduces type limit"
+    )
 
     # --- LLM placeholder ---
     llm: LLMSettings = Field(default_factory=LLMSettings)

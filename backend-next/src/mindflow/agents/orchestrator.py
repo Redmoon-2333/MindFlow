@@ -534,6 +534,7 @@ class PanelState(TypedDict):  # noqa: UP035 — TypedDict with `from __future__ 
     """
 
     bundle_json: str
+    valid_metrics: frozenset[str]
     analyst_opinion: ExpertOpinion | None
     attribution_opinions: list[ExpertOpinion]
     conflict_report: ConflictReport | None
@@ -569,6 +570,7 @@ class PanelOrchestrator:
         self._transcript: list[TranscriptEntry] = []
         # Serializes budget check-and-increment across parallel batches (P2).
         self._budget_lock = asyncio.Lock()
+        self._compiled_graph = None
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -604,19 +606,21 @@ class PanelOrchestrator:
 
     # ── LangGraph orchestration ───────────────────────────────────────────
 
-    async def _run_graph(self, bundle: EvidenceBundle) -> PanelVerdict:
-        """Build, compile and run a LangGraph StateGraph for this session."""
-        bundle_json = to_prompt_json(bundle)
-        valid_metrics = metric_names(bundle)
+    def _build_compiled_graph(self):  # noqa: ANN202 — return type is langgraph CompiledStateGraph
+        """Build and compile the LangGraph StateGraph once.
 
+        The graph structure (nodes + edges) is static across all invocations.
+        Node closures capture only ``self`` (the orchestrator instance); all
+        per-call data (``bundle_json``, ``valid_metrics``) is read from state
+        so the compiled graph can be reused safely.
+        """
         graph = StateGraph(PanelState)
 
         # ── Node: analyst_node ──────────────────────────────────────────
         async def analyst_node(state: PanelState) -> dict[str, Any]:
             """Round 0: call the data analyst."""
-            _ = state  # state unused — first node, no dependencies
             logger.info("Panel round 0: Analyst")
-            raw = await self._call_with_budget(ANALYST, bundle_json)
+            raw = await self._call_with_budget(ANALYST, state["bundle_json"])
             analyst = _parse_analyst_opinion(raw, ANALYST)
             entry = TranscriptEntry(role=ANALYST.role, content=_opinion_summary(analyst), round=0)
             self._transcript.append(entry)
@@ -629,14 +633,13 @@ class PanelOrchestrator:
         # ── Node: attribution_node ──────────────────────────────────────
         async def attribution_node(state: PanelState) -> dict[str, Any]:
             """Round 1: call all three attribution experts in parallel."""
-            _ = state
             logger.info("Panel round 1: Attribution experts (parallel)")
             responses = await asyncio.gather(*[
-                self._safe_call_with_budget(exp, bundle_json)
+                self._safe_call_with_budget(exp, state["bundle_json"])
                 for exp in ATTRIBUTION_EXPERTS
             ])
             opinions = [
-                _parse_expert_opinion(raw, exp, valid_metrics=valid_metrics)
+                _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
                 for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True)
             ]
             for op in opinions:
@@ -675,14 +678,14 @@ class PanelOrchestrator:
             logger.info("Panel round 2a: Attribution rebuttal (parallel)")
             opinions = state["attribution_opinions"]
             prompts = [
-                (ATTRIBUTION_EXPERTS[i], _build_rebuttal_prompt(bundle_json, opinions, i))
+                (ATTRIBUTION_EXPERTS[i], _build_rebuttal_prompt(state["bundle_json"], opinions, i))
                 for i in range(len(ATTRIBUTION_EXPERTS))
             ]
             responses = await asyncio.gather(*[
                 self._safe_call_with_budget(exp, msg) for exp, msg in prompts
             ])
             new_opinions = [
-                _parse_expert_opinion(raw, exp, valid_metrics=valid_metrics)
+                _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
                 for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True)
             ]
             for op in new_opinions:
@@ -719,7 +722,7 @@ class PanelOrchestrator:
             if is_redo:
                 round_num = 4
                 prompt = _build_moderator_redo_prompt(
-                    bundle_json,
+                    state["bundle_json"],
                     analyst,
                     state["attribution_opinions"],
                     conflict,
@@ -728,7 +731,7 @@ class PanelOrchestrator:
             else:
                 round_num = 2 if not state["escalated"] else 3
                 prompt = _build_moderator_user_prompt(
-                    bundle_json,
+                    state["bundle_json"],
                     analyst,
                     state["attribution_opinions"],
                     conflict,
@@ -784,10 +787,10 @@ class PanelOrchestrator:
                 *state["attribution_opinions"],
             ]
             prompt = _build_critic_user_prompt(
-                bundle_json,
+                state["bundle_json"],
                 pending_verdict,
                 all_opinions,
-                valid_metrics,
+                state["valid_metrics"],
             )
             raw = await self._call_with_budget(CRITIC, prompt)
             result = _parse_critic(raw)
@@ -846,10 +849,24 @@ class PanelOrchestrator:
             },
         )
 
-        compiled = graph.compile()
+        return graph.compile()
+
+    def _get_compiled_graph(self):  # noqa: ANN202 — return type is langgraph CompiledStateGraph
+        """Return the compiled graph, building it on first access (lazy)."""
+        if self._compiled_graph is None:
+            self._compiled_graph = self._build_compiled_graph()
+        return self._compiled_graph
+
+    async def _run_graph(self, bundle: EvidenceBundle) -> PanelVerdict:
+        """Run the compiled LangGraph StateGraph for this session."""
+        bundle_json = to_prompt_json(bundle)
+        valid_metrics = metric_names(bundle)
+
+        compiled = self._get_compiled_graph()
 
         initial: PanelState = {
             "bundle_json": bundle_json,
+            "valid_metrics": valid_metrics,
             "analyst_opinion": None,
             "attribution_opinions": [],
             "conflict_report": None,

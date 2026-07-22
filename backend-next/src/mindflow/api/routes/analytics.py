@@ -12,9 +12,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query  # noqa: B008
 
-from mindflow.api.deps import get_analysis_service
+from mindflow.api.deps import get_analysis_service, get_baseline_repo, get_model_manager
 from mindflow.api.errors import _not_found
+from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.services.analysis_service import AnalysisService
+from mindflow.train.models.manager import ModelManager
 
 router = APIRouter(tags=["analytics"])
 
@@ -37,14 +39,22 @@ async def get_patterns(
 
 
 @router.get("/analytics/baseline")
-async def get_baseline() -> dict[str, Any]:
-    """Return baseline information (placeholder, Wave 6)."""
-    # Baseline Analysis will be powered by domain/baseline.py in Wave 6.
-    # For now, return a stub that describes when baseline is ready.
+async def get_baseline(
+    baseline_repo: BaselineRepository = Depends(get_baseline_repo),  # noqa: B008
+) -> dict[str, Any]:
+    """Return the current user's personal behavior baseline."""
+    baseline = await baseline_repo.get_latest(user_id=1)
+
+    if baseline is None:
+        raise _not_found("基线模型（暂无训练数据）")
+
     return {
-        "status": "pending",
-        "message": "基线模型将在收集足够数据后自动建立（最近约50个事件）",
-        "note": "Wave 6 will integrate BaselineModel from domain/baseline.py",
+        "user_id": baseline.user_id,
+        "created_at": baseline.created_at.isoformat(),
+        "updated_at": baseline.updated_at.isoformat(),
+        "total_days": baseline.total_days,
+        "total_samples": baseline.total_samples(),
+        "features": baseline.FEATURE_COLS,
     }
 
 
@@ -67,3 +77,29 @@ async def get_profile(
         raise _not_found("行为画像数据（暂无活动事件）")
 
     return profile
+
+
+@router.get("/analytics/model-status")
+async def get_model_status(
+    model_manager: ModelManager | None = Depends(get_model_manager),  # noqa: B008
+) -> dict[str, Any]:
+    """Return ML model loading status and version information.
+
+    Reports whether scikit-learn models (classifier, clustering, HMM) are
+    loaded and available for runtime inference.  When models are loaded,
+    includes the version tag and available versions for rollback.
+    """
+    if model_manager is None:
+        return {
+            "loaded": False,
+            "mode": "rule_engine_only",
+            "message": "ML models not available, running with rule engine only",
+        }
+
+    return {
+        "loaded": True,
+        "mode": "ml_enriched",
+        "version": model_manager.current_version_tag,
+        "available_versions": model_manager.list_versions(),
+        "message": "ML models loaded, behaviour analysis enriched with predictions",
+    }

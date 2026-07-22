@@ -155,6 +155,9 @@ class TestInterventionService:
         repo.update_response = AsyncMock(
             return_value={"id": "mock-id", "user_response": "accepted"}
         )
+        repo.update_feedback = AsyncMock(
+            return_value={"id": "mock-id", "feedback_rating": "helpful"}
+        )
         repo.query_range = AsyncMock(return_value=[])
         return repo
 
@@ -319,3 +322,27 @@ class TestInterventionService:
         history = await service.get_history(user_id=1, days=3)
         assert len(history) == 2
         mock_repo.query_range.assert_awaited_once()
+
+    # ── Record feedback ─────────────────────────────────────────────
+
+    async def test_record_feedback(self, service, mock_repo) -> None:
+        """record_feedback delegates to repo.update_feedback."""
+        result = await service.record_feedback("some-id", "helpful", "很有帮助")
+        assert result is not None
+        mock_repo.update_feedback.assert_awaited_once_with(
+            "some-id", "helpful", "很有帮助"
+        )
+
+    async def test_record_feedback_not_found(self, mock_repo, service) -> None:
+        """Non-existent ID returns None."""
+        mock_repo.update_feedback = AsyncMock(return_value=None)
+        result = await service.record_feedback("ghost-id", "annoying")
+        assert result is None
+
+    async def test_record_feedback_without_comment(self, service, mock_repo) -> None:
+        """Comment is optional."""
+        result = await service.record_feedback("some-id", "neutral")
+        assert result is not None
+        mock_repo.update_feedback.assert_awaited_once_with(
+            "some-id", "neutral", None
+        )

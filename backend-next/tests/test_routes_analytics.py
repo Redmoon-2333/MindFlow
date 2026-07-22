@@ -21,6 +21,10 @@ from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
     activity_events,
 )
+from mindflow.infrastructure.repositories.baseline import (
+    BaselineRepository,
+    baseline_models,
+)
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
     focus_sessions,
@@ -41,6 +45,7 @@ async def seeded_app(engine, session_factory) -> FastAPI:
     async with engine.begin() as conn:
         await conn.run_sync(activity_events.metadata.create_all)
         await conn.run_sync(focus_sessions.metadata.create_all)
+        await conn.run_sync(baseline_models.metadata.create_all)
 
     app = FastAPI()
     register_exception_handlers(app)
@@ -80,6 +85,7 @@ async def seeded_app(engine, session_factory) -> FastAPI:
     app.state.activity_repository = activity_repo
     app.state.analysis_service = analysis_svc
     app.state.focus_repository = focus_repo
+    app.state.baseline_repository = BaselineRepository(session_factory=session_factory)
     return app
 
 
@@ -89,6 +95,7 @@ async def empty_app(engine, session_factory) -> FastAPI:
     async with engine.begin() as conn:
         await conn.run_sync(focus_sessions.metadata.create_all)
         await conn.run_sync(activity_events.metadata.create_all)
+        await conn.run_sync(baseline_models.metadata.create_all)
 
     app = FastAPI()
     register_exception_handlers(app)
@@ -105,6 +112,7 @@ async def empty_app(engine, session_factory) -> FastAPI:
     app.state.activity_repository = activity_repo
     app.state.analysis_service = analysis_svc
     app.state.focus_repository = focus_repo
+    app.state.baseline_repository = BaselineRepository(session_factory=session_factory)
     return app
 
 
@@ -134,30 +142,21 @@ class TestPatterns:
 class TestBaseline:
     """Baseline endpoint tests."""
 
-    def test_baseline_returns_stub(self, seeded_app):
-        """GET /analytics/baseline should return a placeholder."""
+    def test_baseline_not_found_no_data(self, seeded_app):
+        """GET /analytics/baseline with no baseline data should return 404."""
         client = TestClient(seeded_app)
         resp = client.get("/api/v1/analytics/baseline")
-        assert resp.status_code == 200
+        assert resp.status_code == 404
         data = resp.json()
-        assert data["status"] == "pending"
-        assert "message" in data
+        assert "not-found" in data["type"]
 
-    def test_baseline_not_found(self, empty_app):
-        """No baseline should return the stub contract (200 with status pending).
-
-        NOTE: The /analytics/baseline endpoint is a Wave 6 placeholder that
-        always returns a stub dict (status='pending'), never 404.  Once Wave 6
-        integrates BaselineModel, this test should be updated to assert a 404
-        or empty structure depending on the new behaviour.
-        """
+    def test_baseline_not_found_empty(self, empty_app):
+        """GET /analytics/baseline with no data should return 404."""
         client = TestClient(empty_app)
         resp = client.get("/api/v1/analytics/baseline")
-        assert resp.status_code == 200
+        assert resp.status_code == 404
         data = resp.json()
-        assert data["status"] == "pending"
-        assert "message" in data
-        assert "note" in data
+        assert "not-found" in data["type"]
 
 
 class TestProfile:
