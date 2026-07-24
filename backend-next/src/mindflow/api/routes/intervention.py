@@ -161,7 +161,7 @@ async def respond_to_intervention(
 @router.post("/intervention/{intervention_id}/feedback")
 async def feedback_on_intervention(
     intervention_id: str = Path(..., description="Intervention UUID"),  # noqa: B008
-    body: FeedbackRequest = ...,  # noqa: B008
+    body: FeedbackRequest = ...,  # type: ignore[assignment]  # noqa: B008
     intervention_svc: InterventionService = Depends(get_intervention_service),  # noqa: B008
 ) -> dict[str, Any]:
     """Record user feedback on an intervention's helpfulness.

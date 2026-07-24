@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from mindflow.train.models.classifier import FocusClassifier
 from mindflow.train.models.clustering import BehaviorClustering
+from mindflow.train.models.ensemble import EnsembleClassifier
 from mindflow.train.models.hmm import BehaviorHMM
 from mindflow.train.models.manager import ModelManager
 from mindflow.train.models.types import BehaviorCluster, TrainingSummary
@@ -31,6 +32,7 @@ __all__ = [
     "BehaviorCluster",
     "BehaviorClustering",
     "BehaviorHMM",
+    "EnsembleClassifier",
     "FocusClassifier",
     "ModelManager",
     "TrainingSummary",

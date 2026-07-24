@@ -25,6 +25,9 @@ from mindflow.infrastructure.notification import (  # noqa: F401
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
+from mindflow.infrastructure.repositories.app_classification import (
+    AppClassificationRulesRepository,
+)
 from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
@@ -77,6 +80,14 @@ def get_activity_repo(request: Request) -> SQLAlchemyActivityRepository:
 def get_preferences_repo(request: Request) -> PreferencesRepository:
     """Return the PreferencesRepository from app.state."""
     return cast(PreferencesRepository, request.app.state.preferences_repository)
+
+
+def get_classification_rules_repo(request: Request) -> AppClassificationRulesRepository:
+    """Return the AppClassificationRulesRepository from app.state."""
+    return cast(
+        AppClassificationRulesRepository,
+        request.app.state.classification_rules_repository,
+    )
 
 
 def get_system_token(request: Request) -> str:

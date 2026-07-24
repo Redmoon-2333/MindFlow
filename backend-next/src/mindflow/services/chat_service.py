@@ -15,14 +15,15 @@ factories and wired into the agent during ``__init__``.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.tools import BaseTool
 from langchain_deepseek import ChatDeepSeek
 from loguru import logger
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.agents.langchain_tools import (
@@ -166,7 +167,7 @@ class ChatService:
         self._llm_gateway = llm_gateway
 
         # ── Build LangChain tools ───────────────────────────────────────────
-        tools: list[Callable[..., Awaitable[str]]] = [
+        tools: list[BaseTool] = [
             make_query_evidence(evidence_builder),
             make_get_latest_analysis(analysis_repo),
             make_run_panel(panel_service),
@@ -186,7 +187,7 @@ class ChatService:
         if api_key:
             llm = ChatDeepSeek(
                 model="deepseek-chat",
-                api_key=api_key,
+                api_key=SecretStr(api_key),
                 base_url=base_url,
                 temperature=0.7,
                 max_tokens=2048,
@@ -199,7 +200,7 @@ class ChatService:
 
         # ── Build agent ─────────────────────────────────────────────────────
         self._agent = create_agent(
-            model=llm if llm is not None else "deepseek-chat",  # type: ignore[arg-type]
+            model=llm if llm is not None else "deepseek-chat",
             tools=tools,
             system_prompt=CHAT_SYSTEM_PROMPT,
             name="mindflow_chat_agent",
@@ -291,7 +292,7 @@ class ChatService:
         _tools_user_id.set(user_id)
 
         # Build LangChain message list
-        messages: list = []
+        messages: list[BaseMessage] = []
         if system_summary:
             messages.append(SystemMessage(content=system_summary))
 
@@ -312,7 +313,7 @@ class ChatService:
             messages.append(HumanMessage(content=message))
 
         try:
-            result = await self._agent.ainvoke({"messages": messages})
+            result = await self._agent.ainvoke({"messages": messages})  # type: ignore[call-overload]
             final_answer = self._extract_answer(result)
 
             # Extract tool names from message history
@@ -349,7 +350,7 @@ class ChatService:
                 )
                 try:
                     retry_result = await self._agent.ainvoke(
-                        {"messages": retry_messages}
+                        {"messages": retry_messages}  # type: ignore[call-overload]
                     )
                     retry_answer = self._extract_answer(retry_result)
                     if self._check_forbidden(retry_answer) is None:

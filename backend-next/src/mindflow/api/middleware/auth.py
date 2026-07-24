@@ -32,6 +32,7 @@ _EXEMPT_PATHS: frozenset[str] = frozenset({
 # of mixed exact-match + prefix.
 _EXEMPT_PREFIXES: tuple[str, ...] = (
     "/api/v1/health",
+    "/api/v1/auth",
     "/docs",
     "/openapi.json",
     "/redoc",

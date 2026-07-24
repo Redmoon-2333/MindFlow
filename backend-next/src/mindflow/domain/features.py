@@ -73,6 +73,7 @@ class TitleFeatures:
     is_document: bool = False
     is_meeting: bool = False
     is_likely_entertainment: bool = False
+    is_likely_productive_learning: bool = False
     file_extension: str | None = None
 
 
@@ -163,6 +164,25 @@ _ENTERTAINMENT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"短视频|short\s*video",
         r"steam\s*(library|store|community)",
         r"游戏|game\s*(play|store|library)",
+    ]
+)
+
+_PRODUCTIVE_LEARNING_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        # Chinese course/lecture detection
+        r"第\d+[讲课节章]",            # 第3讲, 第5课
+        r"高等数学|线性代数|概率论|离散数学|数据结构|操作系统|计算机网络",
+        r"考研|四六级|托福|雅思|GRE|考公|考编",
+        r"\b(课程|教程|入门|实战|进阶|精通)\b",
+        r"慕课|mooc|公开课|网课|在线课程",
+        r"笔记|讲义|课件|习题|作业|考试",
+        r"[Bb][Vv]1[A-Za-z0-9]{9}",     # bilibili BV video ID
+        r"大学物理|大学英语|复变函数|数理方程|模拟电子|数字电路",
+        # English learning keywords
+        r"\b(lecture|tutorial|course|lesson|workshop|seminar)\b",
+        r"\b(learn|learning|study|practice|exercise)\b",
+        r"\b(algorithm|programming|coding|computer science)\b",
     ]
 )
 
@@ -378,5 +398,10 @@ def title_features(title: str) -> TitleFeatures:
     # Entertainment patterns
     if any(p.search(raw) for p in _ENTERTAINMENT_PATTERNS):
         vals["is_likely_entertainment"] = True
+
+    # Productive learning patterns (can coexist with entertainment patterns
+    # — e.g., bilibili lecture matches both)
+    if any(p.search(raw) for p in _PRODUCTIVE_LEARNING_PATTERNS):
+        vals["is_likely_productive_learning"] = True
 
     return TitleFeatures(**vals)  # type: ignore[arg-type]

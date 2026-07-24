@@ -25,7 +25,7 @@ from mindflow.infrastructure.repositories.intervention import (
 )
 from mindflow.services.effectiveness_service import EffectivenessService
 
-_TS = datetime(2026, 7, 17, 10, 0, 0, tzinfo=UTC)
+_TS = datetime.now(UTC).replace(hour=10, minute=0, second=0, microsecond=0) - timedelta(days=1)
 
 
 class TestEffectivenessService:

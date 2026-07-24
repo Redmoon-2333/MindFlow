@@ -17,12 +17,11 @@ Context:
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 
 from mindflow.domain.evidence import to_prompt_json
 from mindflow.infrastructure.repositories.analysis import (
@@ -59,7 +58,7 @@ agent invocation.  Read by tools that need session-level state (e.g. panel cap).
 
 def make_query_evidence(
     evidence_builder: EvidenceBundleBuilder,
-) -> Callable[..., Awaitable[str]]:
+) -> BaseTool:
     """Return a ``query_evidence`` tool bound to *evidence_builder*.
 
     The tool signature exposed to the LLM::
@@ -100,7 +99,7 @@ def make_query_evidence(
 
 def make_get_latest_analysis(
     analysis_repo: SQLAlchemyProcrastinationAnalysisRepository,
-) -> Callable[..., Awaitable[str]]:
+) -> BaseTool:
     """Return a ``get_latest_analysis`` tool bound to *analysis_repo*.
 
     The tool signature exposed to the LLM::
@@ -142,7 +141,7 @@ def make_get_latest_analysis(
 
 def make_run_panel(
     panel_service: PanelService | None,
-) -> Callable[..., Awaitable[str]]:
+) -> BaseTool:
     """Return a ``run_panel`` tool bound to *panel_service*.
 
     The tool signature exposed to the LLM::
@@ -205,7 +204,7 @@ def make_run_panel(
 
 def make_query_interventions(
     intervention_repo: InterventionLogRepository,
-) -> Callable[..., Awaitable[str]]:
+) -> BaseTool:
     """Return a ``query_interventions`` tool bound to *intervention_repo*.
 
     The tool signature exposed to the LLM::

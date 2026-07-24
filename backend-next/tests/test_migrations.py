@@ -59,7 +59,7 @@ class TestMigrations:
         assert result is True, "Migration should succeed"
 
     async def test_all_core_tables_exist(self, async_db_url: str, sync_db_url: str):
-        """All 7 core tables exist after migration."""
+        """All core tables exist after migration."""
         await run_migrations(async_db_url)
         tables = _get_table_names(sync_db_url)
         expected = {
@@ -70,9 +70,36 @@ class TestMigrations:
             "intervention_logs",
             "baseline_models",
             "user_preferences",
+            "app_classification_rules",
         }
         for table in expected:
             assert table in tables, f"Table {table} not found after migration"
+
+    async def test_app_classification_rules_table_exists(
+        self, async_db_url: str, sync_db_url: str
+    ):
+        """app_classification_rules table exists and has correct columns."""
+        await run_migrations(async_db_url)
+        tables = _get_table_names(sync_db_url)
+        assert "app_classification_rules" in tables
+
+        sync_path = sync_db_url.replace("sqlite://", "")
+        import sqlite3
+
+        conn = sqlite3.connect(sync_path)
+        cursor = conn.execute("PRAGMA table_info(app_classification_rules)")
+        columns = {row[1]: row[2] for row in cursor.fetchall()}  # name -> type
+        conn.close()
+
+        assert columns["id"] == "TEXT"
+        assert columns["user_id"] == "INTEGER"
+        assert columns["process_name"] == "TEXT"
+        assert columns["category"] == "TEXT"
+        assert columns["priority"] == "INTEGER"
+        assert columns["created_at"] == "TEXT"
+        assert columns["updated_at"] == "TEXT"
+        # window_title_pattern is nullable
+        assert "window_title_pattern" in columns
 
     async def test_alembic_version_table_exists(self, async_db_url: str, sync_db_url: str):
         """Alembic version tracking table is created."""
@@ -141,6 +168,7 @@ class TestMigrations:
             "intervention_logs",
             "baseline_models",
             "user_preferences",
+            "app_classification_rules",
         }
         assert not (core & tables), f"Core tables still present after downgrade: {core & tables}"
 

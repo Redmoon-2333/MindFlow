@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import signal
 import time
+from collections.abc import Awaitable, Callable
 
 from loguru import logger
 from uvicorn import Config, Server
@@ -43,12 +44,18 @@ class Watchdog:
         port: int = 8765,
         max_restarts: int = _MAX_RESTARTS_PER_HOUR,
         window_s: float = 3600.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._host = host
         self._port = port
         self._max_restarts = max_restarts
         self._window_s = window_s
+        self._clock = clock
+        self._sleep = sleep
         self._crash_times: list[float] = []
+        self._server: Server | None = None
+        self._is_stopping = False
 
     async def run_forever(self) -> None:
         """Run the server with watchdog supervision."""
@@ -57,42 +64,56 @@ class Watchdog:
             self._max_restarts,
         )
 
-        while True:
-            app = create_app(get_settings())
-            config = Config(
-                app=app,
-                host=self._host,
-                port=self._port,
-                log_level="info",
-                # WS auth uses ?token= query param; uvicorn access logs would
-                # record the full request line including the token (review P1-2).
-                access_log=False,
-            )
-            server = Server(config)
-
-            logger.info("uvicorn server starting on {}:{}", self._host, self._port)
-
+        while not self._is_stopping:
+            did_crash = False
             try:
-                await server.serve()
+                app = create_app(get_settings())
+                config = Config(
+                    app=app,
+                    host=self._host,
+                    port=self._port,
+                    log_level="info",
+                    # WS auth uses ?token= query param; uvicorn access logs would
+                    # record the full request line including the token (review P1-2).
+                    access_log=False,
+                )
+                self._server = Server(config)
+
+                logger.info("uvicorn server starting on {}:{}", self._host, self._port)
+                await self._server.serve()
             except Exception as exc:
+                did_crash = True
                 logger.opt(exception=True).error("Server crashed: {}", exc)
             else:
                 logger.info("Server stopped cleanly")
+            finally:
+                self._server = None
+
+            if not did_crash or self._is_stopping:
+                break
 
             if not self._should_restart():
-                logger.info("Max restarts reached or manual exit — watchdog stopping")
+                logger.info("Maximum restart count reached - watchdog stopping")
                 break
 
             wait = self._backoff_delay()
             logger.info("Restarting in {:.0f}s (attempt #{})", wait, len(self._crash_times))
-            await asyncio.sleep(wait)
+            await self._sleep(wait)
+
+    def stop(self) -> None:
+        """Request a graceful stop of the active server and watchdog loop."""
+        self._is_stopping = True
+        if self._server is not None:
+            self._server.should_exit = True
 
     def _should_restart(self) -> bool:
-        """Check if the server should be restarted (crash-loop detection)."""
-        now = time.time()
+        """Register a restart unless the rolling-window limit is exhausted."""
+        now = self._clock()
         self._crash_times = [t for t in self._crash_times if now - t < self._window_s]
-
-        return not len(self._crash_times) >= self._max_restarts
+        if len(self._crash_times) >= self._max_restarts:
+            return False
+        self._crash_times.append(now)
+        return True
 
     def _backoff_delay(self) -> float:
         """Return a delay before restart, with linear backoff."""
@@ -119,19 +140,25 @@ async def main() -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(NotImplementedError):
+        with contextlib.suppress(NotImplementedError, AttributeError):
             loop.add_signal_handler(sig, _signal_handler)
 
     watchdog_task = asyncio.create_task(watchdog.run_forever())
+    stop_task = asyncio.create_task(stop_event.wait())
 
-    await asyncio.wait(
-        {watchdog_task, asyncio.create_task(stop_event.wait())},
+    done, _pending = await asyncio.wait(
+        {watchdog_task, stop_task},
         return_when=asyncio.FIRST_COMPLETED,
     )
 
-    watchdog_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
+    if stop_task in done and not watchdog_task.done():
+        watchdog.stop()
         await watchdog_task
+
+    if not stop_task.done():
+        stop_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await stop_task
 
     logger.info("MindFlow stopped")
 

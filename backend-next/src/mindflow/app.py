@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import platformdirs
@@ -55,6 +56,9 @@ from mindflow.infrastructure.repositories.activity import (
 )
 from mindflow.infrastructure.repositories.analysis import (
     SQLAlchemyProcrastinationAnalysisRepository,
+)
+from mindflow.infrastructure.repositories.app_classification import (
+    AppClassificationRulesRepository,
 )
 from mindflow.infrastructure.repositories.baseline import (
     BaselineRepository,
@@ -94,6 +98,7 @@ from mindflow.services.scheduler import build_scheduler
 # ── Lifespan ────────────────────────────────────────────────────────────────
 
 
+@asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: startup initialisation, shutdown cleanup.
 
@@ -147,6 +152,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         pulsetime_s=settings.heartbeat_pulsetime_s,
     )
     preferences_repository = PreferencesRepository(
+        session_factory=session_factory,
+    )
+    classification_rules_repository = AppClassificationRulesRepository(
         session_factory=session_factory,
     )
     focus_repository = SQLAlchemyFocusSessionRepository(
@@ -348,16 +356,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         panel_confidence=settings.auto_intervention_panel_confidence,
     )
     scheduler.start()
-    logger.info(
-        "Wave 5+8b scheduler started (cron: daily_panel, identify, report, cleanup, backup; "
-        "interval: auto_intervention)"
-    )
+    logger.info("Scheduler started")
 
     # ── Inject into app.state ─────────────────────────────────────────
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.state.activity_repository = activity_repository
     app.state.preferences_repository = preferences_repository
+    app.state.classification_rules_repository = classification_rules_repository
     app.state.collector_service = collector_service
     app.state.system_token = system_token
     app.state.migration_applied = migration_applied
@@ -387,11 +393,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Shutting down MindFlow...")
 
     # 1. Stop scheduler (Wave 5 cron jobs)
-    try:
-        scheduler.shutdown(wait=False)
-        logger.debug("Scheduler shut down")
-    except Exception as exc:
-        logger.warning("Scheduler shutdown error: {}", exc)
+    if scheduler is not None:
+        try:
+            scheduler.shutdown(wait=False)
+            logger.debug("Scheduler shut down")
+        except Exception as exc:
+            logger.warning("Scheduler shutdown error: {}", exc)
 
     # 1b. Close LLM gateway connections (review P2 — connection leak)
     if panel_service is not None:
@@ -461,7 +468,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="MindFlow API",
         description="Local-first intelligent focus assistant",
         version=__version__,
-        lifespan=_lifespan,  # type: ignore[arg-type]
+        lifespan=_lifespan,
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",

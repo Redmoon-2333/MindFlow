@@ -1,7 +1,7 @@
 """Tests for BehaviorFeatureExtractor and TitleAnalyzer.
 
 Focuses on:
-  - 14 feature dimensions in each output window
+  - 17 feature dimensions in each output window
   - Window boundary correctness
   - Empty / single-event edge cases
   - AppClassifier categorization
@@ -149,8 +149,8 @@ class TestBehaviorFeatureExtractor:
         """Empty event list should return empty feature list."""
         assert extractor.extract_session_features([]) == []
 
-    def test_fourteen_features(self, extractor: BehaviorFeatureExtractor) -> None:
-        """Each output dict should have all 14 feature columns plus window_start."""
+    def test_seventeen_features(self, extractor: BehaviorFeatureExtractor) -> None:
+        """Each output dict should have all 17 feature columns plus window_start."""
         now = datetime.now(UTC)
         events = []
         # 8 events / 5-min spacing = 35 min — enough to cross one 30-min window
@@ -235,7 +235,7 @@ class TestBehaviorFeatureExtractor:
         """get_feature_names() should return the standard feature list."""
         names = extractor.get_feature_names()
         assert names == BehaviorFeatureExtractor.FEATURE_NAMES
-        assert len(names) == 14
+        assert len(names) == 17
 
     def test_feature_names_after_extraction(self, extractor: BehaviorFeatureExtractor) -> None:
         """After extracting features, get_feature_names() should still work."""
@@ -246,7 +246,7 @@ class TestBehaviorFeatureExtractor:
         ]
         extractor.extract_session_features(events)
         names = extractor.get_feature_names()
-        assert len(names) == 14
+        assert len(names) == 17
 
     def test_switch_frequency_nonzero(self, extractor: BehaviorFeatureExtractor) -> None:
         """Multiple apps should produce nonzero switch frequency."""
@@ -261,3 +261,112 @@ class TestBehaviorFeatureExtractor:
         features = extractor.extract_session_features(events)
         if features:
             assert features[0]["switch_frequency"] >= 0
+
+    # ── New behavioral features (IEEE 2026) ──────────────────────────────
+
+    def test_activity_entropy_single_category(self, extractor: BehaviorFeatureExtractor) -> None:
+        """Single app category yields entropy=0 (no diversity)."""
+        now = datetime.now(UTC)
+        events = [
+            _event(ts=now + timedelta(minutes=5 * i), process="vscode")
+            for i in range(8)
+        ]
+        features = extractor.extract_session_features(events)
+        assert len(features) >= 1
+        assert features[0]["activity_entropy"] == 0.0
+
+    def test_activity_entropy_mixed_categories(self, extractor: BehaviorFeatureExtractor) -> None:
+        """Mixed categories yield entropy > 0."""
+        now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        events = [
+            _event(ts=now + timedelta(minutes=5 * i),
+                   process=["vscode", "bilibili", "weibo", "vscode", "notion", "chrome"][i % 6])
+            for i in range(12)
+        ]
+        features = extractor.extract_session_features(events)
+        if features:
+            entropy = features[0]["activity_entropy"]
+            assert 0.0 <= entropy <= 1.0
+            assert entropy > 0.0  # mixed categories
+
+    def test_activity_entropy_in_range(self, extractor: BehaviorFeatureExtractor) -> None:
+        """activity_entropy is always clamped to [0.0, 1.0]."""
+        now = datetime.now(UTC)
+        events = [
+            _event(ts=now + timedelta(minutes=5 * i), duration=300.0)
+            for i in range(8)
+        ]
+        features = extractor.extract_session_features(events)
+        if features:
+            entropy = features[0]["activity_entropy"]
+            assert 0.0 <= entropy <= 1.0
+
+    def test_context_switch_cost_no_switches(self, extractor: BehaviorFeatureExtractor) -> None:
+        """Same app throughout yields zero switch cost."""
+        now = datetime.now(UTC)
+        events = [
+            _event(ts=now + timedelta(minutes=5 * i), process="vscode")
+            for i in range(8)
+        ]
+        features = extractor.extract_session_features(events)
+        if features:
+            assert features[0]["context_switch_cost"] == 0.0
+
+    def test_context_switch_cost_cross_category(self, extractor: BehaviorFeatureExtractor) -> None:
+        """Code→entertainment switch has higher cost than intra-category."""
+        now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        # Two events: vscode then bilibili — distance = |5-0|/6 = 5/6
+        events = [
+            _event(ts=now + timedelta(minutes=0), process="vscode", duration=300.0),
+            _event(ts=now + timedelta(minutes=5), process="bilibili", duration=300.0),
+            _event(ts=now + timedelta(minutes=10), process="vscode", duration=300.0),
+            _event(ts=now + timedelta(minutes=15), process="bilibili", duration=300.0),
+            _event(ts=now + timedelta(minutes=20), process="vscode", duration=300.0),
+            _event(ts=now + timedelta(minutes=25), process="bilibili", duration=300.0),
+        ]
+        features = extractor.extract_session_features(events)
+        if features:
+            assert features[0]["context_switch_cost"] > 0.0
+
+    def test_temporal_decay_weight_uniform(self, extractor: BehaviorFeatureExtractor) -> None:
+        """Equally-spaced events yield moderate temporal_decay_weight."""
+        now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        events = [
+            _event(ts=now + timedelta(minutes=5 * i), duration=300.0)
+            for i in range(8)
+        ]
+        features = extractor.extract_session_features(events)
+        if features:
+            tw = features[0]["temporal_decay_weight"]
+            # Uniformly distributed events → weight > 0 but < 0.7
+            assert 0.0 < tw < 1.0
+
+    def test_temporal_decay_weight_clustered_end(self, extractor: BehaviorFeatureExtractor) -> None:
+        """Events clustered at window end → high temporal_decay_weight (>0.8)."""
+        now = datetime.now(UTC)
+        # Place most events near the end of the window span
+        events = [
+            _event(ts=now + timedelta(minutes=m), duration=60.0)
+            for m in [0, 22, 24, 25, 26, 27, 28, 29]
+        ]
+        features = extractor.extract_session_features(events)
+        if features:
+            tw = features[0]["temporal_decay_weight"]
+            assert tw > 0.5  # recency bias present
+
+    def test_new_features_rounded(self, extractor: BehaviorFeatureExtractor) -> None:
+        """New feature values should have reasonable precision (4 decimal places)."""
+        now = datetime.now(UTC)
+        events = [
+            _event(ts=now + timedelta(minutes=5 * i),
+                   process=["vscode", "chrome", "bilibili", "weibo", "notion", "terminal"][i])
+            for i in range(6)
+        ]
+        features = extractor.extract_session_features(events)
+        if features:
+            first = features[0]
+            for key in ("activity_entropy", "context_switch_cost", "temporal_decay_weight"):
+                assert key in first
+                val = first[key]
+                # Check rounding: value should have at most 4 decimal places
+                assert round(val, 4) == val

@@ -3,37 +3,58 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.test_runs/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
 .coverage
+coverage.xml
 htmlcov/
 
-# 环境
-.env
+# Environments and secrets
+.env*
+!.env.example
 .venv/
 venv/
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
 
-# 数据与模型 (本地隐私数据不入库)
+# Local private data and runtime state
+data/
 backend-next/data/
-data/mindflow.db*
-data/logs/
-data/backups/
+.uploads/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+*.pid
 
-# 数据集走 Git LFS（.gitattributes 追踪，此处不忽略 — LFS 指针入库，大对象存 LFS）
-# 注意：manictime/awt 的 *.csv 由 .gitattributes 显式 LFS 跟踪，
-# 不要在这里 ignore，否则 git add 会被跳过。
-
-# 前端
+# Frontend
 node_modules/
 dist/
 
-# 打包
+# Build and packaging
 build/
 *.spec.bak
 
-# IDE
+# Local diagnostics and generated prototypes
+backend-next/.smoke_backend/
+backend-next/_diag_*.py
+backend-next/_minimal_test.py
+mindflow-frontend-design/
+
+# IDE and OS
 .idea/
 .vscode/
+.DS_Store
+Thumbs.db
 
-# OMC 运行时状态
+# Agent runtime state
 .omc/
+.omo/
+.codegraph/
+.playwright-mcp/

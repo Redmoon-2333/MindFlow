@@ -341,10 +341,10 @@ class TestFeatureExtractorDelegatesToDomain:
         assert all(v == 0.0 for v in result.values())
 
     def test_feature_extractor_get_feature_names(self):
-        """BehaviorFeatureExtractor exposes 14 feature names."""
+        """BehaviorFeatureExtractor exposes 17 feature names."""
         extractor = BehaviorFeatureExtractor()
         names = extractor.get_feature_names()
-        assert len(names) == 14
+        assert len(names) == 17
         assert "unique_app_count" in names
         assert "title_code_ratio" in names
 
@@ -367,6 +367,6 @@ class TestFeatureExtractorDelegatesToDomain:
         rows = extractor.extract_session_features(events)
         # Should produce at least one feature row
         assert len(rows) >= 1
-        # Each row should have the 14 feature keys
+        # Each row should have the 17 feature keys
         for name in BehaviorFeatureExtractor.FEATURE_NAMES:
             assert name in rows[0]

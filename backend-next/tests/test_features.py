@@ -593,3 +593,41 @@ class TestTitleFeatures:
     def test_no_features_for_unknown_title(self):
         result = title_features("Untitled - Notepad")
         assert result == TitleFeatures()
+
+
+# ── productive_learning_patterns ─────────────────────────────────────────────
+
+
+class TestProductiveLearningPatterns:
+    """Productive learning pattern detection in window titles."""
+
+    def test_lecture_detected(self):
+        """bilibili with math lecture -> is_likely_productive_learning=True."""
+        result = title_features("bilibili - 高等数学第3讲")
+        assert result.is_likely_productive_learning is True
+
+    def test_anime_not_productive(self):
+        """bilibili anime recommendation -> is_likely_productive_learning=False."""
+        result = title_features("bilibili - 番剧推荐")
+        assert result.is_likely_productive_learning is False
+
+    def test_bv_id_detected(self):
+        """bilibili BV video ID -> is_likely_productive_learning=True."""
+        result = title_features("BV1xx411c7mD")
+        assert result.is_likely_productive_learning is True
+
+    def test_both_can_match(self):
+        """Title matching both entertainment and learning patterns sets both."""
+        result = title_features("bilibili - 第1集 考研数学")
+        assert result.is_likely_entertainment is True
+        assert result.is_likely_productive_learning is True
+
+    def test_english_lecture(self):
+        """English lecture title -> is_likely_productive_learning=True."""
+        result = title_features("python tutorial for beginners")
+        assert result.is_likely_productive_learning is True
+
+    def test_kaoyan_detected(self):
+        """Kaoyan (考研) math explanation -> is_likely_productive_learning=True."""
+        result = title_features("考研数学真题讲解")
+        assert result.is_likely_productive_learning is True

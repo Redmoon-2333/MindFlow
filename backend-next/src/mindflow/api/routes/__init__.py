@@ -9,7 +9,9 @@ from fastapi import FastAPI
 
 from mindflow.api.routes.activities import router as activities_router
 from mindflow.api.routes.analytics import router as analytics_router
+from mindflow.api.routes.app_classification import router as app_classification_router
 from mindflow.api.routes.attribution import router as attribution_router
+from mindflow.api.routes.auth import router as auth_router
 from mindflow.api.routes.autonomy import router as autonomy_router
 from mindflow.api.routes.chat import router as chat_router
 from mindflow.api.routes.collector import router as collector_router
@@ -29,11 +31,13 @@ def register_routes(app: FastAPI) -> None:
         app: The FastAPI application instance.
     """
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(auth_router, prefix="/api/v1")
     app.include_router(autonomy_router, prefix="/api/v1")
     app.include_router(collector_router, prefix="/api/v1")
     app.include_router(activities_router, prefix="/api/v1")
     app.include_router(export_router, prefix="/api/v1")
     app.include_router(preferences_router, prefix="/api/v1")
+    app.include_router(app_classification_router, prefix="/api/v1")
     app.include_router(focus_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(analytics_router, prefix="/api/v1")

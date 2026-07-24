@@ -459,7 +459,7 @@ class EvidenceBundleBuilder:
     def _build_ml_items(self, events: list[ActivityEvent]) -> list[EvidenceItem]:
         """Run ML inference and return enrichment EvidenceItems.
 
-        Extracts the 14-feature matrix via ``BehaviorFeatureExtractor``,
+        Extracts the feature matrix via ``BehaviorFeatureExtractor``,
         then queries the classifier (focus probability) and clustering
         (behavior cluster assignment).  Returns 0-2 items depending on
         what the models can produce.
@@ -470,18 +470,36 @@ class EvidenceBundleBuilder:
         try:
             feature_rows = self._feature_extractor.extract_session_features(events)
             if not feature_rows:
+                # Events may span less than one 30-min window boundary
+                # (floor-to-hour), so no complete window can be formed.
+                # This is normal for short observation windows. When the
+                # analysis window is >= 60 minutes this is almost always
+                # a data quality issue (sparse/empty events) rather than
+                # a code bug — check upstream event collection first.
+                if events and len(events) >= 5:
+                    span = events[-1].timestamp_utc - events[0].timestamp_utc
+                    logger.debug(
+                        "ML enrichment skipped: {} events spanning {} "
+                        "produced 0 feature windows (need at least {} min span)",
+                        len(events), span,
+                        self._feature_extractor.window_minutes,
+                    )
                 return []
 
-            # Build (n_samples, 14) numpy array in FEATURE_NAMES order
+            # Build (n_samples, n_features) numpy array in FEATURE_NAMES order
             import numpy as np
 
             feature_names = self._feature_extractor.get_feature_names()
+            expected_count = len(feature_names)
             matrix = np.array(
                 [[row[name] for name in feature_names] for row in feature_rows],
                 dtype=np.float64,
             )
-            if matrix.ndim != 2 or matrix.shape[1] != 14:
-                logger.debug("ML feature matrix shape mismatch: {}", matrix.shape)
+            if matrix.ndim != 2 or matrix.shape[1] != expected_count:
+                logger.debug(
+                    "ML feature matrix shape mismatch: {} (expected {} features)",
+                    matrix.shape, expected_count,
+                )
                 return []
 
             items: list[EvidenceItem] = []

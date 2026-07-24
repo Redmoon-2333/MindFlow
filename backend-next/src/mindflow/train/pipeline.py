@@ -63,7 +63,10 @@ def run_training(
     days: int = 14,
     samples_per_hour: int = 12,
     seed: int = 42,
-    min_confidence: float = 0.5,
+    num_users: int = 1,
+    include_procrastination: bool = False,
+    user_profiles: list[str] | None = None,
+    min_confidence: float = 0.2,
     min_baseline_samples: int = 30,
 ) -> TrainingReport:
     """Run the full training pipeline.
@@ -105,6 +108,9 @@ def run_training(
             days=days,
             samples_per_hour=samples_per_hour,
             seed=seed,
+            num_users=num_users,
+            include_procrastination=include_procrastination,
+            user_profiles=user_profiles,
         )
         report.total_records = len(raw_rows)
         print(f"       Generated {len(raw_rows):,} activity records")

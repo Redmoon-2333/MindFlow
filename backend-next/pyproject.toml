@@ -8,7 +8,7 @@ version = "2.0.0-alpha"
 description = "Local-first intelligent focus assistant"
 requires-python = ">=3.11"
 authors = [
-    {name = "RedMoon", email = "3071187226@qq.com"},
+    {name = "RedMoon"},
 ]
 license = {text = "MIT"}
 dependencies = [
@@ -41,6 +41,8 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "pandas-stubs>=2.0",
+    "xgboost>=2.0",
+    "shap>=0.44",
 ]
 ml = [
     "hmmlearn>=0.3",
@@ -48,6 +50,8 @@ ml = [
     "scikit-learn>=1.4",
     "joblib>=1.3",
     "pandas>=2.0",
+    "xgboost>=2.0",
+    "shap>=0.44",
 ]
 
 [tool.setuptools.packages.find]
@@ -66,6 +70,8 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
 "src/mindflow/train/models/*.py" = ["N803", "N806"]
 "src/mindflow/train/pipeline.py" = ["N806"]
 "src/mindflow/train/features.py" = ["N806"]
+"src/mindflow/train/explain.py" = ["N803", "N806"]
+"tests/test_explain.py" = ["N802", "N803", "N806"]
 # E501: Chinese text in system prompts, eval output formatting, and
 # test fixtures naturally exceeds 100 chars
 "src/mindflow/agents/experts.py" = ["E501"]
@@ -110,6 +116,10 @@ module = [
     "hmmlearn",
     "hmmlearn.*",
     "pandas",
+    "shap",
+    "shap.*",
+    "xgboost",
+    "xgboost.*",
 ]
 ignore_missing_imports = true
 
@@ -122,4 +132,5 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]

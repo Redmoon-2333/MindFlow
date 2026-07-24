@@ -9,16 +9,19 @@ Key differences vs. the original:
   - The ``AppClassifier`` and ``TitleAnalyzer`` are kept as pure dict-based
     classifiers with no external dependencies.
 
-Feature columns (14 total per 30-minute window):
+Feature columns (17 total per 30-minute window):
   - ``unique_app_count``, ``switch_frequency``, ``productivity_ratio``,
     ``entertainment_ratio``, ``social_ratio``, ``max_app_duration``,
     ``idle_ratio``, ``hour_of_day``, ``day_of_week``
   - ``title_code_ratio``, ``title_doc_ratio``, ``title_url_ratio``,
     ``title_meeting_ratio``, ``title_entertainment_ratio``
+  - ``activity_entropy``, ``context_switch_cost``,
+    ``temporal_decay_weight``
 """
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import timedelta
@@ -71,30 +74,238 @@ class AppClassifier:
 
     PRODUCTIVITY_APPS: dict[str, list[str]] = {
         "code": [
-            "code", "vscode", "pycharm", "intellij", "eclipse", "sublime",
-            "nvim", "vim", "android studio", "visual studio", "cursor",
-            "claude", "terminal", "powershell", "cmd", "warp", "alacritty",
-            "xcode", "rstudio", "spyder", "datagrip",
+            # IDEs & code editors
+            "code", "vscode", "vscodium", "codium", "pycharm", "intellij",
+            "eclipse", "sublime", "nvim", "vim", "gvim", "emacs",
+            "android studio", "androidstudio", "visual studio", "cursor",
+            "claude", "xcode", "rstudio", "spyder", "datagrip",
+            "webstorm", "goland", "clion", "rider", "phpstorm", "rubymine",
+            "fleet", "studio64", "netbeans", "atom", "notepad++",
+            "helix", "zed", "windsurf", "trae", "brackets", "komodo",
+            "bluej", "codeblocks", "devcpp", "qtcreator", "geany",
+            "jupyter", "jupyter-lab", "thonny", "notepad2", "notepad3",
+            "textpad", "pspad", "akelpad", "editplus", "ultraedit",
+            "scite", "textadept", "lapce", "devenv",
+            # Debuggers & disassemblers
+            "windbg", "x64dbg", "ilspy", "dnspy", "dotpeek",
+            # Specialized dev tools
+            "wechatdevtools", "devecostudio64",
+            # AI coding assistants
+            "lingma", "comate", "marscode", "tabnine",
+            # Terminals & shells
+            "terminal", "powershell", "cmd", "warp", "alacritty",
+            "windows-terminal", "wt", "conemu", "cmder", "tabby", "hyper",
+            "mobaxterm", "putty", "termius", "xshell", "finalshell",
+            "windterm", "fluentterminal", "mintty", "securecrt", "royalts",
+            "ttermpro", "zoc", "powershell_ise", "pwsh", "bash", "wsl",
+            "nushell",
+            # Version control
+            "github", "gitkraken", "sourcetree", "fork", "gitextensions",
+            "smartgit", "tortoisegit", "tortoisesvn", "tower", "gitahead",
+            "git-cola", "gitup", "sublime_merge", "git", "git-lfs",
+            "git-credential-manager", "gh", "glab",
+            # Database tools
+            "dbeaver", "dbeaver-cli", "navicat", "tableplus", "pgadmin",
+            "mysql-workbench", "mysqlworkbench", "mongodb-compass", "compass",
+            "robo3t", "studio-3t", "ssms", "azuredatastudio", "sqlitebrowser",
+            "heidisql", "beekeeper-studio", "sqlectron", "postbird",
+            "sqlyog", "dbvis", "plsqldev", "sqldeveloper", "dataspell",
+            "aqua", "mysql", "mysqld", "postgresql", "mongod", "redis-server",
+            "redis-cli", "sqlite3",
+            # API testing & HTTP clients
+            "postman", "insomnia", "bruno", "soapui", "swagger",
+            "charles", "charles-proxy", "fiddler", "wireshark",
+            "burpsuite", "burp", "httpie", "curl", "apifox", "apipost",
+            "eolinker", "http-toolkit", "jmeter", "k6", "newman",
+            "artillery",
+            # DevOps & containers
+            "docker", "docker-desktop", "dockerd", "rancher-desktop",
+            "podman", "podman-desktop", "lens", "kubectl", "minikube",
+            "kind", "helm", "k9s", "terraform", "packer", "vagrant",
+            "vault", "consul", "nomad", "pulumi", "ngrok", "cloudflared",
+            "ansible", "jenkins", "gitlab-runner", "teamcity", "octopus",
+            # Math, science & engineering
+            "matlab", "mathematica", "maple", "geogebra", "mathcad",
+            "mathcadprime", "octave", "scilab", "wxmaxima", "spss", "stata",
+            "sas", "jmp", "minitab", "rgui", "julia", "jamovi", "jasp",
+            "eviews", "gretl", "autodesk", "autocad", "acad", "solidworks",
+            "sldworks", "inventor", "fusion360", "revit", "sketchup",
+            "catia", "freecad", "kicad", "eagle", "ltspice", "pspice",
+            "altium", "dxp", "proteus", "isis", "keil", "uv4", "quartus",
+            "vivado", "labview", "multisim", "ansys", "ansyswbu", "comsol",
+            "fluent", "cfd", "origin", "originpro", "prism", "graphpad",
+            "sigmaplot", "pscad", "tableau", "powerbi", "pbi", "qlik",
+            "qlikview", "knime", "rapidminer", "alteryx", "talend", "pentaho",
+            "grafana",
+            # Cloud CLIs
+            "aws", "az", "gcloud", "doctl", "heroku", "vercel", "netlify",
+            "wrangler", "firebase", "supabase",
         ],
         "document": [
-            "word", "excel", "powerpoint", "wps", "notion", "obsidian",
-            "typora", "pdf", "evernote", "onenote", "outlook",
+            # Office suites
+            "word", "winword", "excel", "powerpoint", "powerpnt",
+            "wps", "wpp", "et", "msaccess", "mspub", "publisher", "visio",
+            "project", "libreoffice", "soffice", "openoffice", "onlyoffice",
+            "polari", "softmaker", "freeoffice", "hancom", "zoho",
+            "google-docs", "pages", "keynote", "numbers",
+            # Note-taking & knowledge management
+            "notion", "obsidian", "typora", "pdf", "evernote", "onenote",
+            "joplin", "logseq", "roam", "bear", "simplenote", "milanote",
+            "heptabase", "yuque", "yinxiang", "youdaonote", "wiznote",
+            "mubu", "siyuan", "wolai", "flowus", "anytype", "goodnotes",
+            "notability", "scrivener", "liquidtext", "marginnote",
+            # Reference managers
+            "zotero", "mendeley", "endnote", "citavi", "paperpile",
+            "readcube", "noteexpress", "qiqqa", "jabref", "bibdesk",
+            "calibre",
+            # Flashcard & study apps
+            "anki", "quizlet", "memrise", "remnote", "supermemo",
+            "mnemosyne", "brainscape", "studyblue", "cram",
+            # Email clients
+            "outlook", "thunderbird", "spark-mail", "sparkmail", "mailbird",
+            "emclient", "postbox", "foxmail", "mailmaster", "thebat",
+            "inky", "mailspring", "canarymail", "edisonmail", "airmail",
+            "claws-mail", "pegasusmail",
+            # Calendar & task management
+            "google-calendar", "fantastical", "sunrise", "any-do",
+            "todoist", "ticktick",
         ],
         "browser_work": [
-            "github", "stackoverflow", "docs", "jupyter", "colab", "arxiv",
-            "scholar", "gitlab", "bitbucket",
+            # Dev & research platforms
+            "github", "stackoverflow", "gitlab", "bitbucket",
+            "docs", "jupyter", "colab", "arxiv", "scholar",
+            # Learning & course platforms
+            "coursera", "edx", "udemy", "udacity", "khanacademy",
+            "skillshare", "pluralsight", "linkedin-learning", "codecademy",
+            "datacamp", "brilliant", "futurelearn", "masterclass",
+            # Chinese learning platforms
+            "chaoxing", "cxexam", "netease-cloud-class", "xuetangx",
+            "zhihuishu", "xueersi", "yuanfudao", "zuoyebang", "gaotu",
+            "txclass", "koolearn", "kaochong", "fenbi", "offcn", "huatu",
+            # Language learning
+            "duolingo", "rosettastone", "babbel", "busuu", "eudic",
+            "youdaodict", "iciba", "deepl", "linguee", "translate",
+            # Cloud storage
+            "onedrive", "googledrive", "dropbox", "mega", "megasync",
+            "pcloud", "box", "icloud", "baidunetdisk", "aliyundrive",
+            "ecloud", "115", "quark", "jianguoyun", "nextcloud",
+            "syncthing", "resiliosync", "owncloud", "weiyun", "hcyun",
+            # Download managers
+            "idman", "jdownloader", "fdm", "motrix", "aria2", "eagleget",
+            "xdm", "qbittorrent", "utorrent", "bittorrent", "transmission",
+            "deluge", "tixati", "thunder", "bitcomet", "bitspirit", "emule",
+            # System utilities
+            "ccleaner", "everything", "ditto", "sharex", "greenshot",
+            "lightshot", "snagit", "powertoys", "listary", "wox",
+            "flow-launcher", "utools", "quicker", "autohotkey", "launchy",
+            "geek", "revo", "hwmonitor", "speccy", "cpuz", "gpuz", "hwinfo",
+            "7zip", "winrar", "bandizip", "snipaste", "devtoys",
+            # Font managers
+            "fontbase", "suitcase", "rightfont", "fontcreator", "fontlab",
+            # Password managers
+            "bitwarden", "1password", "lastpass", "dashlane", "keepass",
+            "keepassxc", "roboform", "enpass", "nordpass",
+            # Photo management
+            "lightroom", "captureone", "darktable", "rawtherapee", "luminar",
+            "acdsee", "faststone", "xnview", "irfanview", "digikam",
+            "photoscape", "zoner",
         ],
         "communication": [
-            "teams", "slack", "dingtalk", "feishu", "wechat", "qq",
-            "discord", "telegram", "zoom", "meet",
+            # Messaging apps
+            "teams", "ms-teams", "slack", "dingtalk", "feishu", "lark",
+            "wechat", "weixin", "wxwork", "tim", "qq", "telegram",
+            "discord", "whatsapp", "signal", "messenger", "line", "viber",
+            "kakaotalk", "skype", "wire", "threema", "element", "zulip",
+            "mattermost", "rocket-chat", "flock", "chanty", "twist",
+            "aliwangwang", "qianniu",
+            # Video conferencing
+            "zoom", "meet", "google-meet", "cisco-webex", "webex",
+            "gotomeeting", "bluejeans", "whereby", "jitsi-meet",
+            "ringcentral", "wemeet", "tencent-meeting", "huawei-meeting",
+            "xiaoyu-yilian", "xiaoyu",
+            # Remote desktop
+            "mstsc", "teamviewer", "anydesk", "parsec", "rustdesk",
+            "splashtop", "vncviewer", "tightvnc", "realvnc", "ultravnc",
+            "chrome-remote-desktop", "anyviewer", "awesun", "supremo",
+            "nomachine",
+            # Project management & collaboration
+            "trello", "clickup", "asana", "monday", "linear", "airtable",
+            "miro", "figma", "mural", "basecamp", "wrike", "smartsheet",
+            "confluence", "meistertask",
         ],
         "entertainment": [
-            "bilibili", "youtube", "netflix", "douyin", "tiktok", "game",
-            "steam", "epic", "iqiyi", "youku", "spotify",
+            # Video streaming
+            "bilibili", "youtube", "netflix", "iqiyi", "youku",
+            "disney", "disneyplus", "hbomax", "hulu", "amazon-video",
+            "primevideo", "crunchyroll", "twitch", "qqlive", "mgtv",
+            "sohuvideo", "xigua", "funshion", "pptv", "cbox", "miguvideo",
+            "douyu", "huya", "cclive", "acfun", "letv",
+            # Music streaming
+            "spotify", "qqmusic", "cloudmusic", "kugou", "kuwo",
+            "itunes", "applemusic", "tidal", "deezer", "pandora",
+            "soundcloud", "bandcamp",
+            # Game launchers & platforms
+            "game", "steam", "epic", "epicgames", "galaxy", "gog",
+            "uplay", "ubisoft", "ubisoftconnect", "ea", "origin",
+            "battle-net", "battle.net", "riot", "riotclient", "xbox",
+            "xboxapp", "rockstar", "rockstargames", "wegame", "tenprotect",
+            "360game", "4399",
+            # Android emulators
+            "bluestacks", "ldplayer", "nox", "mumu", "memu", "koplayer",
+            "gameloop",
+            # PC games
+            "leagueoflegends", "leagueclient", "valorant", "cs2", "csgo",
+            "dota2", "r5apex", "apex", "fortnite", "fortniteclient",
+            "pubg", "tslgame", "gta5", "minecraft", "javaw", "roblox",
+            "robloxplayer", "overwatch", "wow", "ffxiv", "ffxiv_dx11",
+            "genshinimpact", "yuanshen", "starrail", "wuthering",
+            "wutheringwaves", "eldenring", "bg3", "bg3_dx11", "cyberpunk2077",
+            "warthunder", "pathofexile", "diablo", "diablo4", "hearthstone",
+            "lostark", "blackdesert", "blackdesert64", "maplestory", "dnf",
+            "crossfire", "naraka", "shooter", "factorio", "stardew",
+            "terraria", "rimworld", "sims", "ts4", "starcraft", "sc2",
+            "rocketleague", "rainbowsix", "deadbydaylight", "warframe",
+            "destiny2", "cod", "dota", "tf2", "overwatch2",
+            "mygame", "myserver", "nsh", "wyx", "jx3", "jx3client",
+            # Emulators
+            "retroarch", "dolphin", "pcsx2", "rpcs3", "cemu", "yuzu",
+            "ryujinx", "citra", "ppsspp", "mame", "xenia", "xemu",
+            "duckstation", "melonds", "desmume", "visualboyadvance",
+            "mgba", "snes9x", "zsnes", "project64", "epsxe", "flycast",
+            "redream", "nulldc", "mednafen",
+            # Media players
+            "vlc", "potplayer", "potplayermini64", "mpc-hc", "mpc-be",
+            "kmplayer", "gom", "smplayer", "plex", "jellyfin", "emby",
+            "kodi", "5kplayer", "qqplayer", "stormplayer", "baofeng",
+            "xlplayer", "qvodplayer",
+            # Audio/DAW
+            "audacity", "flstudio", "fl64", "ableton", "abletonlive",
+            "cubase", "reaper", "studio-one", "studioone", "lmms",
+            "bitwig", "reason", "cakewalk", "wavelab", "izotope",
+            # Novel & reading platforms
+            "qidian", "ireader", "migureader", "kuaikanmanhua", "kindle",
+            "audible", "wattpad", "webnovel", "webtoon", "ximalaya",
+            "qingting", "dedao",
+            # Short video & short drama
+            "douyin", "tiktok", "kwai", "weishi", "huoshan", "zuiyou",
+            "pipixia", "meipai", "miaopai", "yangshipin", "likee",
+            "triller", "haokan", "hongguo",
         ],
         "social": [
-            "weibo", "twitter", "zhihu", "reddit", "douban", "xiaohongshu",
-            "facebook", "instagram",
+            # Chinese social
+            "weibo", "tieba", "maimai", "jike", "hupu", "xueqiu",
+            "zsxq", "soul", "momo", "tantan", "jimubox",
+            "csdn", "juejin", "segmentfault", "oschina", "sspai",
+            "nga", "stage1st", "chiphell", "tgfc", "52pojie",
+            # International social
+            "twitter", "twitterx", "facebook", "instagram", "threads",
+            "mastodon", "bluesky", "tumblr", "pinterest", "snapchat",
+            "linkedin", "quora", "hackernews", "producthunt", "devto",
+            "medium", "substack", "bereal", "nextdoor", "v2ex",
+            # Forums & communities
+            "zhihu", "reddit", "stackoverflow", "douban", "xiaohongshu",
+            # Live streaming (social aspect)
+            "douyu", "huya", "chushou", "longzhu", "quanmin",
         ],
     }
 
@@ -177,6 +388,9 @@ class BehaviorFeatureExtractor:
         "title_url_ratio",
         "title_meeting_ratio",
         "title_entertainment_ratio",
+        "activity_entropy",
+        "context_switch_cost",
+        "temporal_decay_weight",
     ]
 
     def __init__(self, window_minutes: int = 30) -> None:
@@ -306,6 +520,62 @@ class BehaviorFeatureExtractor:
                 sum(tf["is_likely_entertainment"] for tf in title_features) / n_titles
             )
 
+            # ── Novel behavioral features (IEEE 2026 Ensemble ML + HMM paper) ─
+
+            # activity_entropy: Shannon entropy of app category distribution
+            # H = -sum(p_i * log2(p_i)), clamped to [0,1] via / log2(7)
+            category_times: dict[str, float] = defaultdict(float)
+            for r in window_rows:
+                cat = r.get("app_category", "other")
+                category_times[cat] += r["duration_seconds"]
+            raw_entropy = 0.0
+            for cat_time in category_times.values():
+                p = cat_time / active_seconds
+                if p > 0:
+                    raw_entropy -= p * math.log2(p)
+            activity_entropy = (
+                raw_entropy / math.log2(7) if raw_entropy > 0 else 0.0
+            )
+
+            # context_switch_cost: weighted switch count by category distance
+            # Transitions between distant categories (e.g. code→entertainment)
+            # cost more than nearby ones. Normalized per minute of active time.
+            _CATEGORY_ORDER: dict[str, int] = {
+                "code": 0,
+                "document": 1,
+                "browser_work": 2,
+                "communication": 3,
+                "other": 4,
+                "entertainment": 5,
+                "social": 6,
+            }
+            switch_cost_total = 0.0
+            for j in range(1, len(window_rows)):
+                prev_cat = window_rows[j - 1].get("app_category", "other")
+                curr_cat = window_rows[j].get("app_category", "other")
+                if prev_cat != curr_cat:
+                    prev_int = _CATEGORY_ORDER.get(prev_cat, 4)
+                    curr_int = _CATEGORY_ORDER.get(curr_cat, 4)
+                    switch_cost_total += abs(curr_int - prev_int) / 6.0
+            context_switch_cost = (
+                switch_cost_total / (active_seconds / 60.0)
+                if active_seconds > 0
+                else 0.0
+            )
+
+            # temporal_decay_weight: exponential decay weighting for recency bias
+            # Higher value = events clustered toward the end of the window.
+            window_seconds = (w_end - w_start).total_seconds()
+            if window_seconds > 0 and len(window_rows) > 0:
+                t_max_ts = max(r["timestamp"] for r in window_rows)
+                weights: list[float] = []
+                for r in window_rows:
+                    delta = (t_max_ts - r["timestamp"]).total_seconds()
+                    weights.append(math.exp(-delta / window_seconds))
+                temporal_decay_weight = sum(weights) / len(weights)
+            else:
+                temporal_decay_weight = 0.0
+
             records.append({
                 "window_start": w_start.isoformat(),
                 "unique_app_count": unique_apps,
@@ -326,6 +596,9 @@ class BehaviorFeatureExtractor:
                 "title_url_ratio": round(url_ratio, 4),
                 "title_meeting_ratio": round(meeting_ratio, 4),
                 "title_entertainment_ratio": round(entertainment_title_ratio, 4),
+                "activity_entropy": round(activity_entropy, 4),
+                "context_switch_cost": round(context_switch_cost, 4),
+                "temporal_decay_weight": round(temporal_decay_weight, 4),
             })
 
         if records:

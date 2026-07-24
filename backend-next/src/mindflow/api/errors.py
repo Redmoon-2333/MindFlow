@@ -189,11 +189,11 @@ def _validation_handler(request: Request, exc: RequestValidationError) -> JSONRe
     """Convert Pydantic/FastAPI validation errors to RFC 9457 format."""
     errors = exc.errors()
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content={
             "type": f"{_PROBLEM_BASE_URI}/validation-error",
             "title": "Validation Error",
-            "status": status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "status": status.HTTP_422_UNPROCESSABLE_CONTENT,
             "detail": "请求参数验证失败",
             "instance": str(request.scope["path"]),
             "validation_errors": [

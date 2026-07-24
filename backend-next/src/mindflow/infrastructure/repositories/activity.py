@@ -228,11 +228,14 @@ class SQLAlchemyActivityRepository:
                     activity_events.c.timestamp <= end_iso,
                 )
                 if cursor_ts is not None:
+                    # SQLAlchemy tuple comparison for keyset pagination.
+                    # cursor_ts/cursor_id are plain strings (ISO timestamp / UUID),
+                    # not column elements — mypy ignores are expected.
+                    ts_col = activity_events.c.timestamp
+                    id_col = activity_events.c.id
                     stmt = stmt.where(
-                        sa.tuple_(
-                            activity_events.c.timestamp, activity_events.c.id
-                        )
-                        > sa.tuple_(cursor_ts, cursor_id)
+                        sa.tuple_(ts_col, id_col)
+                        > sa.tuple_(cursor_ts, cursor_id)  # type: ignore[arg-type]
                     )
                 stmt = stmt.order_by(
                     activity_events.c.timestamp.asc(),

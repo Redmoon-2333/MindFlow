@@ -9,6 +9,15 @@ from mindflow.train.features import BehaviorFeatureExtractor
 from mindflow.train.models import BehaviorClustering, BehaviorHMM, ModelManager
 from mindflow.train.pipeline import TrainingReport, run_training
 from mindflow.train.synthetic_data import generate_synthetic_data
+from mindflow.train.user_profiles import (
+    EPISODES,
+    PROFILES,
+    ProcrastinationEpisode,
+    StudentArchetype,
+    get_archetype,
+    get_episode,
+    list_archetype_ids,
+)
 
 __all__ = [
     "generate_synthetic_data",
@@ -18,4 +27,12 @@ __all__ = [
     "ModelManager",
     "TrainingReport",
     "run_training",
+    # User profiles
+    "PROFILES",
+    "EPISODES",
+    "StudentArchetype",
+    "ProcrastinationEpisode",
+    "get_archetype",
+    "get_episode",
+    "list_archetype_ids",
 ]

@@ -8,7 +8,7 @@ model and the manager can import them without a circular dependency.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy.typing as npt
@@ -32,3 +32,4 @@ class TrainingSummary:
     clustering: dict[str, Any]
     classifier: dict[str, Any]
     hmm: dict[str, Any]
+    explanation: dict[str, Any] = field(default_factory=dict)

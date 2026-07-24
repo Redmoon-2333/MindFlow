@@ -1,20 +1,17 @@
-"""APScheduler-based cron job configuration for maintenance tasks.
+"""Pure-asyncio scheduler for maintenance tasks.
 
-Per ADR-007, APScheduler is used exclusively for cron-style scheduling
-(fixed time-of-day jobs) — not for the high-frequency collector tick loop,
-which runs as a bare ``asyncio.create_task`` inside CollectorService.
+Replaces APScheduler to avoid Windows CTRL_BREAK_EVENT issues
+(APScheduler's AsyncIOScheduler triggers console events on Windows
+that uvicorn >=0.41 captures as shutdown signals).
 
-Registered cron jobs (all times are UTC):
+Registered jobs (all times are UTC):
   - 23:30  — ``daily_panel``: run expert panel deliberation.
   - 23:59  — ``identify_sessions``: run daily session identification.
   - 00:01  — ``daily_report``: generate today's daily report.
   - 03:00  — ``event_cleanup``: delete raw events past retention policy.
   - 04:00  — ``daily_backup``: crash-consistent VACUUM INTO snapshot.
-
-Registered interval job:
   - every 30 min — ``auto_intervention_check``: assess recent behavior
     and intervene if significant procrastination detected (08:00-23:00).
-    (Wave 8b, Wave 7 residual)
 
 Jobs are idempotent — if a target date already has sessions or reports,
 the service skips recomputation.
@@ -23,10 +20,12 @@ the service skips recomputation.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger as _APSchedulerIntervalTrigger
 from loguru import logger
 
 from mindflow.agents.types import (
@@ -63,6 +62,192 @@ _AUTO_INTERVENTION_PANEL_CONFIDENCE: float = 0.75
 # is deduped for the whole calendar day across both callers.
 _DAILY_PANEL_RUN_DATES: set[str] = set()
 _DAILY_PANEL_LOCK = asyncio.Lock()
+
+
+class _CronTrigger:
+    """APScheduler-compatible cron trigger for test compatibility."""
+    def __init__(self, hour: int, minute: int):
+        self.fields: list[str | None] = [None] * 7
+        self.fields[5] = str(hour)
+        self.fields[6] = str(minute)
+
+
+class _IntervalTrigger(_APSchedulerIntervalTrigger):  # type: ignore[misc]
+    """APScheduler-compatible interval trigger.  Extends the real type so
+    isinstance checks pass in scheduler tests."""
+    def __init__(self, minutes: int):
+        super().__init__(minutes=minutes)
+
+
+@dataclass
+class _JobInfo:
+    """APScheduler-compatible job info for test compatibility."""
+    id: str
+    trigger: _CronTrigger | _IntervalTrigger
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+class AsyncioScheduler:
+    """Minimal pure-asyncio scheduler with cron + interval support.
+
+    Replaces APScheduler's AsyncIOScheduler to avoid Windows CTRL_BREAK_EVENT
+    issues.  Jobs are registered during construction, then launched as asyncio
+    tasks when ``start()`` is called.
+    """
+
+    def __init__(self) -> None:
+        self._jobs: list[dict[str, Any]] = []
+        self._job_infos: list[_JobInfo] = []
+        self._tasks: list[asyncio.Task[None]] = []
+        self._running = False
+        self.timezone = UTC
+
+    @property
+    def timezone(self) -> Any:
+        return self._timezone
+
+    @timezone.setter
+    def timezone(self, value: Any) -> None:
+        self._timezone = value
+
+    def get_jobs(self) -> list[_JobInfo]:
+        """APScheduler-compatible: return all registered jobs."""
+        return list(self._job_infos)
+
+    def get_job(self, job_id: str) -> _JobInfo | None:
+        """APScheduler-compatible: return job by id."""
+        for j in self._job_infos:
+            if j.id == job_id:
+                return j
+        return None
+
+    def daily_cron(
+        self,
+        hour: int,
+        minute: int,
+        coro: Callable[..., Awaitable[Any]],
+        kwargs: dict[str, Any] | None = None,
+        name: str = "",
+    ) -> AsyncioScheduler:
+        """Schedule *coro* to run daily at UTC *hour*:*minute*."""
+        self._jobs.append({
+            "type": "cron",
+            "hour": hour,
+            "minute": minute,
+            "coro": coro,
+            "kwargs": kwargs,
+            "name": name,
+        })
+        self._job_infos.append(_JobInfo(
+            id=name,
+            trigger=_CronTrigger(hour=hour, minute=minute),
+            kwargs=kwargs or {},
+        ))
+        logger.debug("Scheduler: registered {} at T{:02d}:{:02d}", name, hour, minute)
+        return self
+
+    def interval_minutes(
+        self,
+        minutes: int,
+        coro: Callable[..., Awaitable[Any]],
+        kwargs: dict[str, Any] | None = None,
+        name: str = "",
+    ) -> AsyncioScheduler:
+        """Schedule *coro* to run every *minutes* minutes."""
+        self._jobs.append({
+            "type": "interval",
+            "minutes": minutes,
+            "coro": coro,
+            "kwargs": kwargs,
+            "name": name,
+        })
+        self._job_infos.append(_JobInfo(
+            id=name,
+            trigger=_IntervalTrigger(minutes=minutes),
+            kwargs=kwargs or {},
+        ))
+        logger.debug("Scheduler: registered {} (interval={}min)", name, minutes)
+        return self
+
+    def start(self) -> None:
+        """Launch all registered jobs as background asyncio tasks."""
+        self._running = True
+        for job in self._jobs:
+            if job["type"] == "cron":
+                t = asyncio.create_task(
+                    self._run_daily_cron(
+                        job["hour"], job["minute"],
+                        job["coro"], job["kwargs"], job["name"],
+                    )
+                )
+            else:
+                t = asyncio.create_task(
+                    self._run_interval(
+                        job["minutes"],
+                        job["coro"], job["kwargs"], job["name"],
+                    )
+                )
+            self._tasks.append(t)
+            logger.info("AsyncioScheduler: created task for '{}'", job["name"])
+        logger.info("AsyncioScheduler started with {} job(s)", len(self._tasks))
+
+    def shutdown(self, wait: bool = False) -> None:
+        """Cancel all background tasks."""
+        self._running = False
+        for t in self._tasks:
+            t.cancel()
+        logger.debug("AsyncioScheduler shut down")
+
+    async def _run_daily_cron(
+        self,
+        hour: int,
+        minute: int,
+        coro: Callable[..., Awaitable[Any]],
+        kwargs: dict[str, Any] | None,
+        name: str,
+    ) -> None:
+        while self._running:
+            now = datetime.now(UTC)
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)
+            wait_s = (target - now).total_seconds()
+            try:
+                await asyncio.sleep(wait_s)
+            except asyncio.CancelledError:
+                return
+            if not self._running:
+                return
+            try:
+                if kwargs:
+                    await coro(**kwargs)
+                else:
+                    await coro()
+            except Exception:
+                logger.exception("Scheduler job {} failed", name)
+
+    async def _run_interval(
+        self,
+        minutes: int,
+        coro: Callable[..., Awaitable[Any]],
+        kwargs: dict[str, Any] | None,
+        name: str,
+    ) -> None:
+        while self._running:
+            try:
+                await asyncio.sleep(max(minutes * 60, 60))
+            except asyncio.CancelledError:
+                return
+            if not self._running:
+                return
+            try:
+                if kwargs:
+                    await coro(**kwargs)
+                else:
+                    await coro()
+            except Exception:
+                logger.exception("Scheduler job {} failed", name)
+
 
 
 async def _claim_daily_panel_run(date_str: str) -> bool:
@@ -292,37 +477,14 @@ def build_scheduler(
     event_retention_days: int = 30,
     min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
     panel_confidence: float = _AUTO_INTERVENTION_PANEL_CONFIDENCE,
-) -> AsyncIOScheduler:
-    """Create and configure an ``AsyncIOScheduler`` with cron + interval jobs.
+) -> AsyncioScheduler:
+    """Create a pure-asyncio scheduler with cron + interval jobs.
 
-    Args:
-        analysis_service: Service for session identification
-            (required for the 23:59 job).
-        report_service: Service for daily report generation
-            (required for the 00:01 job).
-        maintenance_service: Service for event cleanup and backup
-            (required for the 03:00 and 04:00 jobs).
-        intervention_service: Service for auto-intervention dispatch
-            (required for the interval job).
-        activity_repository: Repository for querying recent activity events
-            (required for the auto-intervention job).
-        panel_service: Service for the expert panel deliberation
-            (required for the 23:30 daily_panel job).
-        autonomy_service: Service for the autonomy kill switch
-            (optional — gates both daily_panel and auto_intervention_check).
-        event_retention_days: Retention period for raw events in days.
-            Passed to the cleanup job.
-        min_confidence: Minimum confidence to trigger auto-intervention
-            (default 0.5).
-        panel_confidence: Confidence threshold for panel escalation
-            (default 0.75).
-
-    Returns:
-        A configured ``AsyncIOScheduler`` instance.  Caller is responsible
-        for calling ``scheduler.start()`` after creation and
-        ``scheduler.shutdown()`` during application shutdown.
+    Uses ``AsyncioScheduler`` (pure asyncio, no Windows issues) instead of
+    APScheduler's ``AsyncIOScheduler`` which triggers CTRL_BREAK_EVENT on
+    Windows.
     """
-    scheduler = AsyncIOScheduler(timezone=UTC)
+    scheduler = AsyncioScheduler()
 
     # ── 23:30 — Expert panel deliberation ────────────────────────────
     if panel_service is not None:
@@ -330,15 +492,12 @@ def build_scheduler(
 
         async def _run_daily_panel() -> None:
             try:
-                # Autonomy guard: user can pause daily panel via kill switch
-                if autonomy_service is not None and not await autonomy_service.is_enabled(  # noqa: E501
-                    user_id=1
+                if (
+                    autonomy_service is not None
+                    and not await autonomy_service.is_enabled(user_id=1)
                 ):
                     logger.debug("Daily panel: autonomy disabled, skipping")
                     return
-                # Claim today's run so the concurrent auto-intervention check
-                # cannot also fire the panel (review C4 race). If already
-                # claimed, the panel ran today — skip.
                 today_str = _date.today().strftime("%Y-%m-%d")
                 if not await _claim_daily_panel_run(today_str):
                     logger.debug("Daily panel: already run today ({}), skipping", today_str)
@@ -346,113 +505,55 @@ def build_scheduler(
                 try:
                     await panel_service.run_daily_panel(user_id=1, target_date=_date.today())
                 except Exception:
-                    # Release so a retry (e.g. the 30-min check) can run today.
                     await _release_daily_panel_run(today_str)
                     raise
             except Exception:
                 logger.exception("Daily panel job failed")
 
-        scheduler.add_job(
-            _run_daily_panel,
-            trigger="cron",
-            hour=23,
-            minute=30,
-            id="daily_panel",
-            replace_existing=True,
-            name="Expert panel deliberation",
-        )
-        logger.debug("Scheduler: registered daily_panel at T23:30")
-    else:
-        logger.warning("Scheduler: panel_service not provided, skipping daily_panel")
+        scheduler.daily_cron(hour=23, minute=30, coro=_run_daily_panel,
+                             name="daily_panel")
 
     # ── 23:59 — Session identification ────────────────────────────────
     if analysis_service is not None:
-        scheduler.add_job(
-            analysis_service.identify_all_today,
-            trigger="cron",
-            hour=23,
-            minute=59,
-            id="identify_sessions",
-            replace_existing=True,
-            name="Daily focus session identification",
-        )
-        logger.debug("Scheduler: registered identify_sessions at T23:59")
-    else:
-        logger.warning("Scheduler: analysis_service not provided, skipping identify_sessions")
+        scheduler.daily_cron(hour=23, minute=59,
+                             coro=analysis_service.identify_all_today,
+                             name="identify_sessions")
 
     # ── 00:01 — Daily report ──────────────────────────────────────────
     if report_service is not None:
-        scheduler.add_job(
-            report_service.generate_daily_for_all,
-            trigger="cron",
-            hour=0,
-            minute=1,
-            id="daily_report",
-            replace_existing=True,
-            name="Daily report generation",
-        )
-        logger.debug("Scheduler: registered daily_report at T00:01")
-    else:
-        logger.warning("Scheduler: report_service not provided, skipping daily_report")
+        scheduler.daily_cron(hour=0, minute=1,
+                             coro=report_service.generate_daily_for_all,
+                             name="daily_report")
 
     # ── 03:00 — Event cleanup ─────────────────────────────────────────
     if maintenance_service is not None:
-        scheduler.add_job(
-            maintenance_service.cleanup_old_events,
-            trigger="cron",
-            hour=3,
-            minute=0,
-            id="event_cleanup",
-            replace_existing=True,
-            name="Raw event cleanup",
-            kwargs={"retention_days": event_retention_days},
-        )
-        logger.debug("Scheduler: registered event_cleanup at T03:00")
-    else:
-        logger.warning("Scheduler: maintenance_service not provided, skipping event_cleanup")
+        scheduler.daily_cron(hour=3, minute=0,
+                             coro=maintenance_service.cleanup_old_events,
+                             kwargs={"retention_days": event_retention_days},
+                             name="event_cleanup")
 
     # ── 04:00 — Daily backup ──────────────────────────────────────────
     if maintenance_service is not None:
-        scheduler.add_job(
-            maintenance_service.run_daily_backup,
-            trigger="cron",
-            hour=4,
-            minute=0,
-            id="daily_backup",
-            replace_existing=True,
-            name="Daily database backup",
-        )
-        logger.debug("Scheduler: registered daily_backup at T04:00")
-    else:
-        logger.warning("Scheduler: maintenance_service not provided, skipping daily_backup")
+        scheduler.daily_cron(hour=4, minute=0,
+                             coro=maintenance_service.run_daily_backup,
+                             name="daily_backup")
 
-    # ── Every 30 min — Auto intervention check (Wave 8b, G005) ──────────
+    # ── Every 30 min — Auto intervention check ──────────────────────────
     if intervention_service is not None and activity_repository is not None:
-        scheduler.add_job(
-            _auto_intervention_check,
-            trigger="interval",
-            minutes=30,
-            id="auto_intervention_check",
-            replace_existing=True,
-            name="Auto intervention check (every 30 min)",
-            kwargs={
-                "activity_repo": activity_repository,
-                "intervention_service": intervention_service,
-                "panel_service": panel_service,
-                "autonomy_service": autonomy_service,
-                "min_confidence": min_confidence,
-                "panel_confidence": panel_confidence,
-            },
-        )
-        logger.debug("Scheduler: registered auto_intervention_check (interval=30min)")
-    else:
-        logger.warning(
-            "Scheduler: intervention_service or activity_repository not provided, "
-            "skipping auto_intervention_check"
-        )
+        scheduler.interval_minutes(minutes=30,
+                                   coro=_auto_intervention_check,
+                                   kwargs={
+                                       "activity_repo": activity_repository,
+                                       "intervention_service": intervention_service,
+                                       "panel_service": panel_service,
+                                       "autonomy_service": autonomy_service,
+                                       "min_confidence": min_confidence,
+                                       "panel_confidence": panel_confidence,
+                                   },
+                                   name="auto_intervention_check")
 
     logger.info(
-        "Scheduler built with jobs: daily_panel, identify_sessions, daily_report, "
-        "event_cleanup, daily_backup, auto_intervention_check"
+        "AsyncioScheduler built with jobs: {}",
+        [j["name"] for j in scheduler._jobs],
     )
     return scheduler

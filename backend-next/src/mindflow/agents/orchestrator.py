@@ -22,9 +22,15 @@ from collections.abc import Sequence
 from typing import Any, TypedDict, cast
 
 from langgraph.graph import END, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from loguru import logger
 
 from mindflow.agents.conflict import ConflictReport, detect_conflict
+from mindflow.agents.disagreement import (
+    DisagreementSummary,
+    analyze_disagreement,
+    compute_rebuttal_delta,
+)
 from mindflow.agents.experts import (
     ANALYST,
     ATTRIBUTION_EXPERTS,
@@ -544,6 +550,8 @@ class PanelState(TypedDict):  # noqa: UP035 — TypedDict with `from __future__ 
     critic_retries: int
     call_count: int
     transcript: list[TranscriptEntry]
+    disagreement_summary: DisagreementSummary | None
+    rebuttal_delta: object | None  # RebuttalDelta — lazy import to avoid circular
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -570,7 +578,7 @@ class PanelOrchestrator:
         self._transcript: list[TranscriptEntry] = []
         # Serializes budget check-and-increment across parallel batches (P2).
         self._budget_lock = asyncio.Lock()
-        self._compiled_graph = None
+        self._compiled_graph: CompiledStateGraph[Any, Any, Any, Any] | None = None
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -606,7 +614,9 @@ class PanelOrchestrator:
 
     # ── LangGraph orchestration ───────────────────────────────────────────
 
-    def _build_compiled_graph(self):  # noqa: ANN202 — return type is langgraph CompiledStateGraph
+    def _build_compiled_graph(
+        self,
+    ) -> CompiledStateGraph[Any, Any, Any, Any]:
         """Build and compile the LangGraph StateGraph once.
 
         The graph structure (nodes + edges) is static across all invocations.
@@ -662,7 +672,7 @@ class PanelOrchestrator:
 
         # ── Node: conflict_detection_node ───────────────────────────────
         async def conflict_detection_node(state: PanelState) -> dict[str, Any]:
-            """Pure-function conflict detection — no LLM call."""
+            """Pure-function conflict detection + disagreement analytics — no LLM call."""
             logger.info("Conflict detection")
             conflict = detect_conflict(state["attribution_opinions"])
             escalated = conflict.has_conflict
@@ -670,7 +680,25 @@ class PanelOrchestrator:
                 logger.info("Conflict detected: {}", conflict.details)
             else:
                 logger.info("No conflict among attribution experts")
-            return {"conflict_report": conflict, "escalated": escalated}
+
+            # Compute structured disagreement analytics
+            ds = analyze_disagreement(
+                state["attribution_opinions"],
+                conflict.details,
+                conflict.max_confidence_gap,
+                rebuttal_delta=None,
+            )
+            logger.info(
+                "Disagreement analytics: agreement={:.3f}, stability={}",
+                ds.agreement_strength,
+                ds.stability,
+            )
+
+            return {
+                "conflict_report": conflict,
+                "escalated": escalated,
+                "disagreement_summary": ds,
+            }
 
         # ── Node: rebuttal_node ─────────────────────────────────────────
         async def rebuttal_node(state: PanelState) -> dict[str, Any]:
@@ -700,10 +728,21 @@ class PanelOrchestrator:
                     call_count=self._call_count,
                 )
 
+            # Compute rebuttal delta: pre-debate vs post-debate convergence
+            delta = compute_rebuttal_delta(opinions, new_opinions)
+            logger.info(
+                "Rebuttal delta: agreement {:.3f}→{:.3f}, delta={:+.3f}, converged={}",
+                delta.before_agreement,
+                delta.after_agreement,
+                delta.agreement_delta,
+                delta.converged,
+            )
+
             return {
                 "attribution_opinions": new_opinions,
                 "transcript": list(self._transcript),
                 "call_count": self._call_count,
+                "rebuttal_delta": delta,
             }
 
         # ── Node: moderator_node ────────────────────────────────────────
@@ -851,7 +890,7 @@ class PanelOrchestrator:
 
         return graph.compile()
 
-    def _get_compiled_graph(self):  # noqa: ANN202 — return type is langgraph CompiledStateGraph
+    def _get_compiled_graph(self) -> CompiledStateGraph[Any, Any, Any, Any]:
         """Return the compiled graph, building it on first access (lazy)."""
         if self._compiled_graph is None:
             self._compiled_graph = self._build_compiled_graph()
@@ -876,6 +915,8 @@ class PanelOrchestrator:
             "critic_retries": 0,
             "call_count": 0,
             "transcript": [],
+            "disagreement_summary": None,
+            "rebuttal_delta": None,
         }
 
         final = await compiled.ainvoke(initial)

@@ -67,6 +67,27 @@ def main() -> None:
         help="Random seed for synthetic data (default: 42)",
     )
     parser.add_argument(
+        "--num-users",
+        type=int,
+        default=1,
+        dest="num_users",
+        help="Number of virtual users to generate (default: 1)",
+    )
+    parser.add_argument(
+        "--include-procrastination",
+        action="store_true",
+        dest="include_procrastination",
+        help="Include realistic procrastination patterns in synthetic data",
+    )
+    parser.add_argument(
+        "--user-profiles",
+        type=str,
+        default="",
+        dest="user_profiles",
+        help="Comma-separated profile IDs (e.g. junior_cs,senior_business,grad_medical). "
+             "Use 'all' for all 30 archetypes.",
+    )
+    parser.add_argument(
         "--data-dir",
         type=str,
         default="",
@@ -138,6 +159,15 @@ def main() -> None:
     print(title)
     print("=" * 60)
 
+    # Parse profiles
+    profiles_arg: list[str] | None = None
+    if args.user_profiles:
+        if args.user_profiles.lower() == "all":
+            from mindflow.train.user_profiles import list_archetype_ids
+            profiles_arg = list_archetype_ids()
+        else:
+            profiles_arg = [p.strip() for p in args.user_profiles.split(",") if p.strip()]
+
     report = run_training(
         source=args.source,
         data_dir=data_dir,
@@ -145,6 +175,9 @@ def main() -> None:
         days=args.days,
         samples_per_hour=args.samples_per_hour,
         seed=args.seed,
+        num_users=args.num_users if not profiles_arg else len(profiles_arg),
+        include_procrastination=args.include_procrastination,
+        user_profiles=profiles_arg,
     )
 
     if report.total_records == 0:

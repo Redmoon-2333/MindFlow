@@ -13,7 +13,7 @@ import json
 from contextlib import suppress
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import joblib
 import numpy as np
@@ -23,6 +23,7 @@ from sklearn.model_selection import train_test_split
 
 from mindflow.train.models.classifier import FocusClassifier
 from mindflow.train.models.clustering import BehaviorClustering
+from mindflow.train.models.ensemble import _XGB_CLASS_MARKER, EnsembleClassifier
 from mindflow.train.models.hmm import BehaviorHMM
 from mindflow.train.models.types import TrainingSummary
 from mindflow.train.serialization import (
@@ -44,6 +45,52 @@ class ModelSignatureError(Exception):
     """
 
 
+def _safe_split(
+    X: npt.NDArray[Any],
+    y: npt.NDArray[Any],
+    sw: npt.NDArray[Any],
+    test_size: float,
+    random_state: int,
+) -> tuple[
+    npt.NDArray[Any],
+    npt.NDArray[Any],
+    npt.NDArray[Any],
+    npt.NDArray[Any],
+    npt.NDArray[Any],
+    npt.NDArray[Any],
+]:
+    """Train/test split with graceful fallback when stratification fails."""
+    try:
+        return cast(
+            tuple[
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+            ],
+            train_test_split(
+                X, y, sw, test_size=test_size, random_state=random_state, stratify=y
+            ),
+        )
+    except ValueError:
+        logger.warning("Stratified split failed — falling back to non-stratified split")
+        return cast(
+            tuple[
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+                npt.NDArray[Any],
+            ],
+            train_test_split(
+                X, y, sw, test_size=test_size, random_state=random_state
+            ),
+        )
+
+
 class ModelManager:
     """Central model management with versioned persistence.
 
@@ -61,13 +108,33 @@ class ModelManager:
         +- hmm-20260717.pkl
     """
 
-    def __init__(self, models_dir: str | Path = Path("data/models")) -> None:
+    def __init__(
+        self,
+        models_dir: str | Path = Path("data/models"),
+        use_ensemble: bool = True,
+    ) -> None:
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.latest_path = self.models_dir / "latest.json"
         self.clustering = BehaviorClustering()
-        self.classifier = FocusClassifier()
         self.hmm = BehaviorHMM()
+
+        self._use_ensemble: bool = False
+        self.classifier: FocusClassifier | EnsembleClassifier = FocusClassifier()
+
+        if use_ensemble:
+            try:
+                from xgboost import XGBClassifier  # noqa: F401 — probe availability
+
+                self.classifier = EnsembleClassifier()
+                self._use_ensemble = True
+            except ImportError:
+                logger.warning(
+                    "use_ensemble=True but xgboost not installed; "
+                    "falling back to RF-only FocusClassifier"
+                )
+                self.classifier = FocusClassifier()
+                self._use_ensemble = False
 
     @property
     def _today_tag(self) -> str:
@@ -82,6 +149,7 @@ class ModelManager:
         labels: npt.NDArray[Any],
         sample_weight: npt.NDArray[Any] | None = None,
         min_confidence: float = 0.0,
+        use_explainer: bool = False,
     ) -> TrainingSummary:
         """Train all models and return summary.
 
@@ -136,13 +204,8 @@ class ModelManager:
                 if sw_high is not None
                 else np.ones(len(X_high))
             )
-            X_train, X_test, y_train, y_test, sw_train, _ = train_test_split(
-                X_high,
-                y_high,
-                svw,
-                test_size=0.2,
-                random_state=42,
-                stratify=y_high,
+            X_train, X_test, y_train, y_test, sw_train, _ = _safe_split(
+                X_high, y_high, svw, test_size=0.2, random_state=42
             )
             self.classifier.fit(
                 X_train,
@@ -186,10 +249,24 @@ class ModelManager:
         else:
             summary_hmm = {"error": "No valid state sequences for HMM training"}
 
+        # ── Explanation ──
+        explanation: dict[str, Any] = {}
+        if use_explainer and self.classifier._is_fitted and len(X_high) > 0:
+            try:
+                from mindflow.train.explain import ModelExplainer
+
+                expl = ModelExplainer(self.classifier, feature_names)
+                explanation = expl.explain(X_high)
+            except Exception:
+                logger.warning(
+                    "Model explanation failed, continuing without it"
+                )
+
         return TrainingSummary(
             clustering=summary_clustering,
             classifier=summary_classifier,
             hmm=summary_hmm,
+            explanation=explanation,
         )
 
     def _build_state_sequences(self) -> list[npt.NDArray[Any]]:
@@ -366,9 +443,12 @@ class ModelManager:
             self.clustering = BehaviorClustering.from_dict(
                 joblib.load(str(clustering_path))
             )
-            self.classifier = FocusClassifier.from_dict(
-                joblib.load(str(classifier_path))
-            )
+
+            classifier_data: dict[str, Any] = joblib.load(str(classifier_path))
+            if classifier_data.get("__class__") == _XGB_CLASS_MARKER:
+                self.classifier = EnsembleClassifier.from_dict(classifier_data)
+            else:
+                self.classifier = FocusClassifier.from_dict(classifier_data)
 
             hmm_data: dict[str, Any] = joblib.load(str(hmm_path))
             self.hmm = BehaviorHMM(n_states=int(hmm_data.get("n_states", 5)))

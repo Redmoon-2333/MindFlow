@@ -85,7 +85,7 @@ Frontend (React/TS) ←→ Backend (FastAPI :8765) ←→ Collector (跨平台�
 
 ## Dataset Context
 
-`data/datasets/` 下两套外部数据集（经 Git LFS 管理，不入 git 常规存储）：
+`data/datasets/` 下的外部数据集仅供本地训练使用，不纳入 Git：
 - `manictime/`：44 个真实用户活动记录 CSV（ManicTime 导出，含 PII）
 - `awt-labelled/`：Academic Work Tracker 标注数据 + 预处理 notebook
 

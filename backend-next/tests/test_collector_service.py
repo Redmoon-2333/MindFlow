@@ -282,9 +282,10 @@ class TestTickTimeout:
 
     async def test_hanging_tick_triggers_timeout(self, mock_collector, mock_repository):
         """A tick that hangs longer than interval_s*2 triggers TimeoutError."""
-        mock_collector.snapshot = AsyncMock(
-            side_effect=lambda: asyncio.sleep(3600)  # Never finishes
-        )
+        async def hanging_snapshot():
+            await asyncio.sleep(3600)
+
+        mock_collector.snapshot = AsyncMock(side_effect=hanging_snapshot)
 
         service = CollectorService(
             collector=mock_collector,

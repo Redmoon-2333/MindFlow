@@ -39,7 +39,7 @@ class TrayApp:
     def __init__(self, host: str = "127.0.0.1", port: int = 8765) -> None:
         self._host = host
         self._port = port
-        self._process: subprocess.Popen[str] | None = None  # type: ignore[type-arg]
+        self._process: subprocess.Popen[str] | None = None
         self._icon: pystray.Icon | None = None
 
     # ------------------------------------------------------------------
@@ -54,12 +54,13 @@ class TrayApp:
 
         cmd = [sys.executable, "-m", "mindflow.main"]
         logger.info("Starting backend: {}", " ".join(cmd))
-        self._process = subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        logger.info("Backend started (pid {})", self._process.pid)
+        logger.info("Backend started (pid {})", proc.pid)
+        self._process = proc  # type: ignore[assignment]
 
     def _stop_backend(self) -> None:
         """Gracefully stop the backend subprocess (SIGTERM then wait)."""
