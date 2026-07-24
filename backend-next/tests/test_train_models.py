@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import tempfile
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pytest
+from sklearn.exceptions import InconsistentVersionWarning
 
 from mindflow.train.models import (
     BehaviorClustering,
@@ -336,3 +338,43 @@ class TestModelManager:
         assert "clustering" in pointer
         assert "classifier" in pointer
         assert "hmm" in pointer
+
+
+def test_save_all_without_activation_preserves_latest(
+    sample_features: np.ndarray, model_dir: Path
+) -> None:
+    manager = ModelManager(models_dir=model_dir)
+    feature_names = [f"f{i}" for i in range(14)]
+    labels = np.array([1 if index < 25 else 0 for index in range(50)], dtype=np.int32)
+
+    manager.train_all(sample_features, feature_names, labels, np.ones(50))
+    saved = manager.save_all(activate=False)
+
+    assert saved
+    assert not (model_dir / "latest.json").exists()
+    assert all((model_dir / filename).exists() for filename in saved.values())
+
+
+def test_load_latest_rejects_incompatible_sklearn_artifacts(
+    sample_features: np.ndarray,
+    model_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = ModelManager(models_dir=model_dir, use_ensemble=False)
+    labels = np.array([0, 1] * (len(sample_features) // 2), dtype=np.int32)
+    manager.train_all(sample_features, [f"f{i}" for i in range(sample_features.shape[1])], labels)
+    manager.save_all()
+
+    def incompatible_load(_path):
+        warnings.warn(
+            InconsistentVersionWarning(
+                estimator_name="RandomForestClassifier",
+                current_sklearn_version="1.9.0",
+                original_sklearn_version="1.6.1",
+            ),
+            stacklevel=2,
+        )
+
+    monkeypatch.setattr("mindflow.train.models.manager.joblib.load", incompatible_load)
+
+    assert ModelManager(models_dir=model_dir, use_ensemble=False).load_latest() is False

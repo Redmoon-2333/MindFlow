@@ -32,6 +32,7 @@ from mindflow.infrastructure.repositories.activity import (
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
+from mindflow.time_utils import utc_today
 
 # ── Default session thresholds (preserved from old config) ────────────
 
@@ -173,7 +174,7 @@ class AnalysisService:
 
     async def identify_all_today(self, user_id: int = 1) -> list[dict[str, Any]]:
         """Convenience wrapper for scheduled job — identifies sessions for today."""
-        return await self.identify_focus_sessions(user_id, date.today())
+        return await self.identify_focus_sessions(user_id, utc_today())
 
     # ── Pattern detection ─────────────────────────────────────────────
 
@@ -198,7 +199,7 @@ class AnalysisService:
               - ``total_sessions``: total session count analysed.
               - ``distraction_ratio``: fraction of sessions that are distraction.
         """
-        today = date.today()
+        today = utc_today()
         start = today - timedelta(days=days - 1)
 
         sessions = await self._focus_repo.query_range(user_id, start, today)
@@ -282,7 +283,7 @@ class AnalysisService:
               - ``total_events_analysed``: raw event count in the window.
               - ``profile_date``: ISO date of computation.
         """
-        today = date.today()
+        today = utc_today()
         start = today - timedelta(days=days - 1)
         start_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
         end_dt = datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=1)

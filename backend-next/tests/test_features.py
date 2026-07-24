@@ -631,3 +631,45 @@ class TestProductiveLearningPatterns:
         """Kaoyan (考研) math explanation -> is_likely_productive_learning=True."""
         result = title_features("考研数学真题讲解")
         assert result.is_likely_productive_learning is True
+
+
+def test_switch_rate_ignores_disconnected_sessions() -> None:
+    events = [
+        make_event(
+            user_id=1,
+            timestamp_utc=_ts(0),
+            duration_s=5.0,
+            process_name="code.exe",
+            is_idle=False,
+        ),
+        make_event(
+            user_id=1,
+            timestamp_utc=_ts(720),
+            duration_s=5.0,
+            process_name="chrome.exe",
+            is_idle=False,
+        ),
+    ]
+
+    assert switch_rate_per_hour(events) == 0.0
+
+
+def test_focus_block_breaks_across_collection_gap() -> None:
+    events = [
+        make_event(
+            user_id=1,
+            timestamp_utc=_ts(0),
+            duration_s=30.0,
+            process_name="code.exe",
+            is_idle=False,
+        ),
+        make_event(
+            user_id=1,
+            timestamp_utc=_ts(720),
+            duration_s=30.0,
+            process_name="code.exe",
+            is_idle=False,
+        ),
+    ]
+
+    assert longest_focus_block_s(events) == 30.0

@@ -460,6 +460,7 @@ class BehaviorFeatureExtractor:
                 continue
 
             idle_ratio = idle_seconds / max(total_seconds, 0.01)
+            active_rows = [row for row in window_rows if not row["is_idle"]]
 
             # Classify apps
             for r in window_rows:
@@ -470,22 +471,22 @@ class BehaviorFeatureExtractor:
                 r["app_category"] = category
 
             productivity_seconds = sum(
-                r["duration_seconds"]
-                for r in window_rows
-                if r.get("app_category") in ("code", "document", "browser_work")
+                row["duration_seconds"]
+                for row in active_rows
+                if row.get("app_category") in ("code", "document", "browser_work")
             )
             entertainment_seconds = sum(
-                r["duration_seconds"]
-                for r in window_rows
-                if r.get("app_category") == "entertainment"
+                row["duration_seconds"]
+                for row in active_rows
+                if row.get("app_category") == "entertainment"
             )
             social_seconds = sum(
-                r["duration_seconds"]
-                for r in window_rows
-                if r.get("app_category") == "social"
+                row["duration_seconds"]
+                for row in active_rows
+                if row.get("app_category") == "social"
             )
 
-            unique_apps = len({r["process_name"] for r in window_rows})
+            unique_apps = len({row["process_name"] for row in active_rows})
 
             # NOTE: We do NOT delegate to domain.features.switch_rate_per_hour
             # here because the semantics differ: the domain function filters
@@ -493,7 +494,7 @@ class BehaviorFeatureExtractor:
             # pipeline counts all process switches (including idle) and divides
             # by fixed window duration.  Consolidating would change feature
             # distributions and break trained models.
-            process_list = [r["process_name"] for r in window_rows]
+            process_list = [row["process_name"] for row in active_rows]
             switches = sum(
                 1 for j in range(1, len(process_list))
                 if process_list[j] != process_list[j - 1]
@@ -502,14 +503,14 @@ class BehaviorFeatureExtractor:
             switch_freq = switches / hours_in_window if hours_in_window > 0 else 0.0
 
             app_durations: dict[str, float] = defaultdict(float)
-            for r in window_rows:
-                app_durations[r["process_name"]] += r["duration_seconds"]
+            for row in active_rows:
+                app_durations[row["process_name"]] += row["duration_seconds"]
             max_app_duration = max(app_durations.values()) if app_durations else 0.0
 
             # Title-based features (no app classification dependency)
             title_features = [
-                self.title_analyzer.analyze(str(r.get("window_title", "")))
-                for r in window_rows
+                self.title_analyzer.analyze(str(row.get("window_title", "")))
+                for row in active_rows
             ]
             n_titles = max(len(title_features), 1)
             code_ratio = sum(tf["is_code_editor"] for tf in title_features) / n_titles
@@ -525,9 +526,9 @@ class BehaviorFeatureExtractor:
             # activity_entropy: Shannon entropy of app category distribution
             # H = -sum(p_i * log2(p_i)), clamped to [0,1] via / log2(7)
             category_times: dict[str, float] = defaultdict(float)
-            for r in window_rows:
-                cat = r.get("app_category", "other")
-                category_times[cat] += r["duration_seconds"]
+            for row in active_rows:
+                category = row.get("app_category", "other")
+                category_times[category] += row["duration_seconds"]
             raw_entropy = 0.0
             for cat_time in category_times.values():
                 p = cat_time / active_seconds
@@ -550,9 +551,9 @@ class BehaviorFeatureExtractor:
                 "social": 6,
             }
             switch_cost_total = 0.0
-            for j in range(1, len(window_rows)):
-                prev_cat = window_rows[j - 1].get("app_category", "other")
-                curr_cat = window_rows[j].get("app_category", "other")
+            for j in range(1, len(active_rows)):
+                prev_cat = active_rows[j - 1].get("app_category", "other")
+                curr_cat = active_rows[j].get("app_category", "other")
                 if prev_cat != curr_cat:
                     prev_int = _CATEGORY_ORDER.get(prev_cat, 4)
                     curr_int = _CATEGORY_ORDER.get(curr_cat, 4)
@@ -566,11 +567,11 @@ class BehaviorFeatureExtractor:
             # temporal_decay_weight: exponential decay weighting for recency bias
             # Higher value = events clustered toward the end of the window.
             window_seconds = (w_end - w_start).total_seconds()
-            if window_seconds > 0 and len(window_rows) > 0:
-                t_max_ts = max(r["timestamp"] for r in window_rows)
+            if window_seconds > 0 and active_rows:
+                t_max_ts = max(row["timestamp"] for row in active_rows)
                 weights: list[float] = []
-                for r in window_rows:
-                    delta = (t_max_ts - r["timestamp"]).total_seconds()
+                for row in active_rows:
+                    delta = (t_max_ts - row["timestamp"]).total_seconds()
                     weights.append(math.exp(-delta / window_seconds))
                 temporal_decay_weight = sum(weights) / len(weights)
             else:
@@ -581,14 +582,16 @@ class BehaviorFeatureExtractor:
                 "unique_app_count": unique_apps,
                 "switch_frequency": round(switch_freq, 4),
                 "productivity_ratio": round(
-                    productivity_seconds / active_seconds, 4
+                    min(max(productivity_seconds / active_seconds, 0.0), 1.0), 4
                 ),
                 "entertainment_ratio": round(
-                    entertainment_seconds / active_seconds, 4
+                    min(max(entertainment_seconds / active_seconds, 0.0), 1.0), 4
                 ),
-                "social_ratio": round(social_seconds / active_seconds, 4),
+                "social_ratio": round(
+                    min(max(social_seconds / active_seconds, 0.0), 1.0), 4
+                ),
                 "max_app_duration": round(max_app_duration, 2),
-                "idle_ratio": round(idle_ratio, 4),
+                "idle_ratio": round(min(max(idle_ratio, 0.0), 1.0), 4),
                 "hour_of_day": int(w_start.hour),
                 "day_of_week": int(w_start.weekday()),
                 "title_code_ratio": round(code_ratio, 4),
@@ -596,7 +599,7 @@ class BehaviorFeatureExtractor:
                 "title_url_ratio": round(url_ratio, 4),
                 "title_meeting_ratio": round(meeting_ratio, 4),
                 "title_entertainment_ratio": round(entertainment_title_ratio, 4),
-                "activity_entropy": round(activity_entropy, 4),
+                "activity_entropy": round(min(max(activity_entropy, 0.0), 1.0), 4),
                 "context_switch_cost": round(context_switch_cost, 4),
                 "temporal_decay_weight": round(temporal_decay_weight, 4),
             })

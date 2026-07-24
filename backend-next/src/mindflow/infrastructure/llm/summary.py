@@ -120,21 +120,16 @@ def build_behavior_summary(
     switches_per_hour = switch_rate_per_hour(sorted_events)
     longest_block_s = longest_focus_block_s(sorted_events)
 
-    # Total duration
-    first_ts = sorted_events[0].timestamp_utc
-    last_ts = sorted_events[-1].timestamp_utc
-    total_duration_s = (last_ts - first_ts).total_seconds()
+    total_duration_s = sum(max(0.0, event.duration_s) for event in sorted_events)
     total_duration_min = total_duration_s / 60.0 if total_duration_s > 0 else 1.0
 
-    # Social media / entertainment ratio
-    entertainment_duration_s = _entertainment_duration(sorted_events)
+    non_idle_events = [event for event in sorted_events if not event.data.is_idle]
+    total_non_idle_s = sum(max(0.0, event.duration_s) for event in non_idle_events)
+    entertainment_duration_s = _entertainment_duration(non_idle_events)
     social_media_ratio = (
-        entertainment_duration_s / total_duration_s if total_duration_s > 0 else 0.0
+        entertainment_duration_s / total_non_idle_s if total_non_idle_s > 0 else 0.0
     )
 
-    # Focus duration estimation
-    non_idle_events = [e for e in sorted_events if not e.data.is_idle]
-    total_non_idle_s = sum(e.duration_s for e in non_idle_events)
     actual_focus_min = _estimate_focus_minutes(non_idle_events, total_non_idle_s)
 
     # Keyword flags from window titles

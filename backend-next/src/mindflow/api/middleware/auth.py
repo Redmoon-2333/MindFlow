@@ -26,6 +26,8 @@ _EXEMPT_PATHS: frozenset[str] = frozenset({
     "/docs",
     "/openapi.json",
     "/redoc",
+    "/api/v1/telemetry/browser/pair",
+    "/api/v1/telemetry/browser/heartbeat",
 })
 
 # Prefix-based exemption check (audit M3): single prefix-based check instead
@@ -70,7 +72,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.scope["path"]
 
         # Exempt health, docs, and OpenAPI schema endpoints.
-        if any(path.startswith(prefix) for prefix in _EXEMPT_PREFIXES):
+        if path in _EXEMPT_PATHS or any(
+            path.startswith(prefix) for prefix in _EXEMPT_PREFIXES
+        ):
             return await call_next(request)
 
         expected_token: str = getattr(request.app.state, "system_token", "")

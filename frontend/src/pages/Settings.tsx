@@ -15,8 +15,12 @@ import {
   getPreferences,
   putPreferences,
   patchPreferences,
+  getTelemetryStatus,
+  patchTelemetryPreferences,
+  createBrowserPairingCode,
+  clearTelemetryData,
 } from "../api";
-import type { HealthData } from "../api";
+import type { HealthData, TelemetryPreferences, TelemetryStatus } from "../api";
 
 interface ClassRule {
   id?: number;
@@ -27,6 +31,18 @@ interface ClassRule {
 }
 
 const CATEGORY_OPTIONS = ["productive", "neutral", "distracting", "unknown"];
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 ** 2).toFixed(2)} MB`;
+}
+
+function formatTelemetryTime(value: string | null): string {
+  if (!value) return "暂无";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
+}
 
 export default function Settings() {
   const [loading, setLoading] = useState(true);
@@ -58,23 +74,30 @@ export default function Settings() {
   const [exporting, setExporting] = useState(false);
 
   const [prefLoading, setPrefLoading] = useState(false);
+  const isCollectorRunning = collector?.running === true || collector?.status === "running";
+  const [telemetry, setTelemetry] = useState<TelemetryStatus | null>(null);
+  const [telemetryLoading, setTelemetryLoading] = useState(false);
+  const [pairingCode, setPairingCode] = useState<{ code: string; expires_at: string } | null>(null);
+  const [telemetryMessage, setTelemetryMessage] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [h, cs, au, cls, prefs] = await Promise.all([
+      const [h, cs, au, cls, prefs, telemetryStatus] = await Promise.all([
         getHealth(),
         getCollectorStatus(),
         getAutonomy(),
         getClassifications(),
         getPreferences(),
+        getTelemetryStatus(),
       ]);
       setHealth(h);
       setCollector(cs);
       setAutonomy(au);
       setClassifications(Array.isArray(cls) ? cls : []);
       setPreferences(JSON.stringify(prefs, null, 2));
+      setTelemetry(telemetryStatus);
     } catch (e: any) {
       setError(e.message ?? "加载失败");
     } finally {
@@ -89,7 +112,7 @@ export default function Settings() {
   const handleCollectorToggle = async () => {
     setCollectorLoading(true);
     try {
-      const next = collector?.running ? await stopCollector() : await startCollector();
+      const next = isCollectorRunning ? await stopCollector() : await startCollector();
       setCollector(next);
     } catch (e: any) {
       setError(e.message ?? "操作失败");
@@ -196,6 +219,51 @@ export default function Settings() {
     }
   };
 
+  const updateTelemetryPreferences = async (updates: Partial<TelemetryPreferences>) => {
+    setTelemetryLoading(true);
+    setTelemetryMessage(null);
+    try {
+      await patchTelemetryPreferences(updates);
+      setTelemetry(await getTelemetryStatus());
+      setTelemetryMessage("隐私采集设置已更新");
+    } catch (e: any) {
+      setError(e.message ?? "遥测设置更新失败");
+    } finally {
+      setTelemetryLoading(false);
+    }
+  };
+
+  const handleCreatePairingCode = async () => {
+    setTelemetryLoading(true);
+    setTelemetryMessage(null);
+    try {
+      const result = await createBrowserPairingCode();
+      setPairingCode(result);
+      setTelemetry(await getTelemetryStatus());
+    } catch (e: any) {
+      setError(e.message ?? "生成配对码失败");
+    } finally {
+      setTelemetryLoading(false);
+    }
+  };
+
+  const handleClearTelemetry = async (scope: "interaction" | "browser" | "feedback" | "all") => {
+    const labels = { interaction: "输入行为", browser: "浏览器", feedback: "反馈", all: "全部行为" };
+    if (!window.confirm(`确定清除${labels[scope]}数据吗？此操作无法撤销。`)) return;
+    setTelemetryLoading(true);
+    setTelemetryMessage(null);
+    try {
+      const result = await clearTelemetryData(scope);
+      setTelemetry(await getTelemetryStatus());
+      setTelemetryMessage(`已删除 ${result.deleted} 条记录`);
+      if (scope === "browser" || scope === "all") setPairingCode(null);
+    } catch (e: any) {
+      setError(e.message ?? "清除失败");
+    } finally {
+      setTelemetryLoading(false);
+    }
+  };
+
   const handlePatchPrefs = async () => {
     setPrefLoading(true);
     try {
@@ -273,12 +341,56 @@ export default function Settings() {
         </div>
       </div>
 
+      <div className="card mb24">
+        <div className="flex flex-between" style={{ alignItems: "flex-start" }}>
+          <div>
+            <h3 style={{ marginBottom: 6 }}>隐私行为采集</h3>
+            <p style={{ color: "var(--color-text-secondary)", fontSize: 13, margin: 0 }}>
+              只保存 30 秒聚合计数和浏览器域名，不记录按键内容、鼠标坐标或完整网址。
+            </p>
+          </div>
+          <span className={`badge ${telemetry?.input_watcher_status === "running" ? "badge-success" : "badge-warning"}`}>
+            输入 watcher：{telemetry?.input_watcher_status ?? "未知"}
+          </span>
+        </div>
+        {telemetryMessage && <div className="success-box mt16">{telemetryMessage}</div>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginTop: 20 }}>
+          <label className="flex flex-between" style={{ padding: 14, border: "1px solid var(--color-border)", borderRadius: 10 }}>
+            <span><strong style={{ display: "block", fontSize: 14 }}>鼠标与键盘聚合统计</strong><span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>点击、滚动、移动距离和输入活跃秒数</span></span>
+            <input type="checkbox" checked={telemetry?.preferences.input_telemetry_enabled ?? false} disabled={telemetryLoading} onChange={(event) => updateTelemetryPreferences({ input_telemetry_enabled: event.target.checked })} />
+          </label>
+          <label className="flex flex-between" style={{ padding: 14, border: "1px solid var(--color-border)", borderRadius: 10 }}>
+            <span><strong style={{ display: "block", fontSize: 14 }}>浏览器域名统计</strong><span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>仅 Edge / Chrome 活动标签页域名</span></span>
+            <input type="checkbox" checked={telemetry?.preferences.browser_tracking_enabled ?? false} disabled={telemetryLoading} onChange={(event) => updateTelemetryPreferences({ browser_tracking_enabled: event.target.checked })} />
+          </label>
+        </div>
+        <div className="form-row mt16" style={{ alignItems: "end" }}>
+          <div className="form-group"><label>输入桶保留天数</label><select value={telemetry?.preferences.interaction_retention_days ?? 7} disabled={telemetryLoading} onChange={(event) => updateTelemetryPreferences({ interaction_retention_days: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
+          <div className="form-group"><label>活动与浏览器片段保留天数</label><select value={telemetry?.preferences.activity_retention_days ?? 30} disabled={telemetryLoading} onChange={(event) => updateTelemetryPreferences({ activity_retention_days: Number(event.target.value) })}>{[7, 14, 30, 60, 90].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
+          <button className="btn btn-primary" disabled={telemetryLoading} onClick={handleCreatePairingCode}>生成浏览器配对码</button>
+        </div>
+        {pairingCode && <div style={{ marginTop: 16, padding: 16, borderRadius: 10, background: "var(--color-bg-secondary)" }}><div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>在扩展设置页输入，5 分钟内有效</div><div style={{ fontSize: 30, fontWeight: 700, letterSpacing: 8, marginTop: 6 }}>{pairingCode.code}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>到期：{formatTelemetryTime(pairingCode.expires_at)}</div></div>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginTop: 18 }}>
+          <div><span className="text-muted">数据库占用</span><strong style={{ display: "block" }}>{formatBytes(telemetry?.database_size_bytes ?? 0)}</strong></div>
+          <div><span className="text-muted">今日输入桶</span><strong style={{ display: "block" }}>{telemetry?.interaction_bucket_count ?? 0}</strong></div>
+          <div><span className="text-muted">今日浏览器片段</span><strong style={{ display: "block" }}>{telemetry?.browser_segment_count ?? 0}</strong></div>
+          <div><span className="text-muted">最后输入采集</span><strong style={{ display: "block", fontSize: 12 }}>{formatTelemetryTime(telemetry?.last_interaction_at ?? null)}</strong></div>
+          <div><span className="text-muted">最后浏览器采集</span><strong style={{ display: "block", fontSize: 12 }}>{formatTelemetryTime(telemetry?.last_browser_at ?? null)}</strong></div>
+        </div>
+        <div className="flex gap8 mt16" style={{ flexWrap: "wrap" }}>
+          <button className="btn btn-ghost btn-sm" disabled={telemetryLoading} onClick={() => handleClearTelemetry("interaction")}>清除输入数据</button>
+          <button className="btn btn-ghost btn-sm" disabled={telemetryLoading} onClick={() => handleClearTelemetry("browser")}>清除浏览器数据</button>
+          <button className="btn btn-ghost btn-sm" disabled={telemetryLoading} onClick={() => handleClearTelemetry("feedback")}>清除反馈数据</button>
+          <button className="btn btn-danger btn-sm" disabled={telemetryLoading} onClick={() => handleClearTelemetry("all")}>清除全部行为数据</button>
+        </div>
+      </div>
+
       {/* 2. Data Collection */}
       <div className="card mb24">
         <div className="flex-between mb16">
           <h3 style={{ marginBottom: 0 }}>数据采集</h3>
-          <span className={`badge ${collector?.running ? "badge-success" : "badge-warning"}`}>
-            {collector?.running ? "运行中" : "已停止"}
+          <span className={`badge ${isCollectorRunning ? "badge-success" : "badge-warning"}`}>
+            {isCollectorRunning ? "运行中" : "已停止"}
           </span>
         </div>
         {collector?.status && (
@@ -287,11 +399,11 @@ export default function Settings() {
           </div>
         )}
         <button
-          className={`btn btn-sm ${collector?.running ? "btn-danger" : ""}`}
+          className={`btn btn-sm ${isCollectorRunning ? "btn-danger" : ""}`}
           onClick={handleCollectorToggle}
           disabled={collectorLoading}
         >
-          {collectorLoading ? "处理中..." : collector?.running ? "停止采集" : "启动采集"}
+          {collectorLoading ? "处理中..." : isCollectorRunning ? "停止采集" : "启动采集"}
         </button>
       </div>
 

@@ -35,6 +35,18 @@ def _make_app(expected_token: str = "test-token-123") -> FastAPI:
     async def docs():
         return {"docs": True}
 
+    @app.post("/api/v1/telemetry/browser/pair")
+    async def browser_pair():
+        return {"paired": True}
+
+    @app.post("/api/v1/telemetry/browser/heartbeat")
+    async def browser_heartbeat():
+        return {"accepted": True}
+
+    @app.post("/api/v1/telemetry/browser/pairing-code")
+    async def browser_pairing_code():
+        return {"code": "123456"}
+
     app.state.system_token = expected_token
     register_exception_handlers(app)
     app.add_middleware(AuthMiddleware)
@@ -114,3 +126,8 @@ class TestAuthMiddleware:
         """Auth errors should use RFC 9457 format."""
         resp = client.get("/api/v1/protected")
         assert resp.headers.get("content-type") == "application/problem+json"
+
+    def test_browser_pair_and_heartbeat_are_exact_exemptions(self, client):
+        assert client.post("/api/v1/telemetry/browser/pair").status_code == 200
+        assert client.post("/api/v1/telemetry/browser/heartbeat").status_code == 200
+        assert client.post("/api/v1/telemetry/browser/pairing-code").status_code == 401

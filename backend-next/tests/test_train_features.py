@@ -370,3 +370,40 @@ class TestBehaviorFeatureExtractor:
                 val = first[key]
                 # Check rounding: value should have at most 4 decimal places
                 assert round(val, 4) == val
+
+
+def test_ratios_exclude_idle_application_time(extractor: BehaviorFeatureExtractor) -> None:
+    start = datetime(2026, 7, 24, tzinfo=UTC)
+    events = [
+        _event(start, process="code.exe", duration=300.0, is_idle=True),
+        _event(
+            start + timedelta(minutes=5),
+            process="bilibili.exe",
+            title="bilibili",
+            duration=100.0,
+        ),
+        _event(
+            start + timedelta(minutes=29),
+            process="bilibili.exe",
+            title="bilibili",
+            duration=1.0,
+        ),
+        _event(
+            start + timedelta(minutes=31),
+            process="bilibili.exe",
+            title="bilibili",
+            duration=1.0,
+        ),
+    ]
+
+    rows = extractor.extract_session_features(events)
+
+    assert rows[0]["productivity_ratio"] == pytest.approx(0.0)
+    assert rows[0]["entertainment_ratio"] == pytest.approx(1.0)
+    assert all(0.0 <= rows[0][name] <= 1.0 for name in (
+        "productivity_ratio",
+        "entertainment_ratio",
+        "social_ratio",
+        "idle_ratio",
+        "activity_entropy",
+    ))

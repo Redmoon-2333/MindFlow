@@ -1,0 +1,26 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MindFlow 浏览器配对</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 48px auto; padding: 0 20px; }
+    label { display: block; margin: 16px 0 6px; }
+    input, button { box-sizing: border-box; width: 100%; padding: 10px; }
+    button { margin-top: 18px; cursor: pointer; }
+    #status { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>MindFlow 浏览器配对</h1>
+  <p>仅记录当前活动标签页的域名和停留时长，不保存完整网址或隐私窗口。</p>
+  <label for="backend">本地后端地址</label>
+  <input id="backend" value="http://127.0.0.1:8765">
+  <label for="code">六位配对码</label>
+  <input id="code" inputmode="numeric" maxlength="6">
+  <button id="pair">配对</button>
+  <div id="status"></div>
+  <script src="options.js"></script>
+</body>
+</html>

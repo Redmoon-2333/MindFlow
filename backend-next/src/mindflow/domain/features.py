@@ -27,12 +27,16 @@ from mindflow.domain.events import ActivityEvent
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MIN_ACTIVITY_THRESHOLD: int = 10
-"""Minimum number of non-idle events required to compute a meaningful score."""
+"""Legacy heartbeat-count threshold retained for compatibility."""
+
+MIN_ACTIVITY_DURATION_S: float = 50.0
+"""Minimum non-idle duration required to compute a meaningful score."""
 
 MIN_SWITCH_SAMPLES: int = 2
 """Fewer events than this yields a switch rate of 0 (not enough data)."""
 
 MAX_ACCEPTABLE_SWITCHES_PER_HOUR: float = 30.0
+MAX_COLLECTION_GAP_S: float = 60.0
 """Switches beyond this threshold incur maximum penalty."""
 
 DEFAULT_FOCUS_WEIGHTS: Mapping[str, float] = {
@@ -227,7 +231,7 @@ def focus_score(
     switch_weight = w.get("switch_weight", 40.0)
 
     active = _non_idle_events(events)
-    if len(active) < MIN_ACTIVITY_THRESHOLD:
+    if sum(max(0.0, event.duration_s) for event in active) < MIN_ACTIVITY_DURATION_S:
         return 0.0
 
     # App durations
@@ -275,74 +279,56 @@ def app_usage_ranking(
 
 
 def switch_rate_per_hour(events: list[ActivityEvent]) -> float:
-    """Compute how many process-name switches occur per hour.
-
-    Only non-idle events are considered.  Returns 0.0 when there are fewer
-    than ``MIN_SWITCH_SAMPLES`` events.
-
-    Ported from ``calculate_switch_frequency()`` (in-memory version, no DB).
-    """
-    active = _non_idle_events(events)
+    """Compute process-name switches per observed collection hour."""
+    active = _sorted_events(_non_idle_events(events))
     if len(active) < MIN_SWITCH_SAMPLES:
         return 0.0
 
     switches = 0
-    prev_proc = active[0].data.process_name
-    for ev in active[1:]:
-        if ev.data.process_name != prev_proc:
-            switches += 1
-        prev_proc = ev.data.process_name
+    observed_seconds = 0.0
+    previous = active[0]
+    for event in active[1:]:
+        gap_s = (event.timestamp_utc - previous.timestamp_utc).total_seconds()
+        if 0 < gap_s <= MAX_COLLECTION_GAP_S:
+            observed_seconds += gap_s
+            if event.data.process_name != previous.data.process_name:
+                switches += 1
+        previous = event
 
-    first_ts = active[0].timestamp_utc
-    last_ts = active[-1].timestamp_utc
-    total_hours = (last_ts - first_ts).total_seconds() / 3600.0
-    if total_hours <= 0:
+    if observed_seconds <= 0:
         return 0.0
 
-    return switches / total_hours
+    return switches / (observed_seconds / 3600.0)
 
 
 def longest_focus_block_s(events: list[ActivityEvent]) -> float:
-    """Find the longest continuous same-app focus block in seconds.
-
-    A focus block is a sequence of consecutive non-idle events on the same
-    ``process_name``.  The block duration is the sum of ``duration_s`` for
-    those events.  Idle events and process-name changes end the current
-    block.
-
-    Returns 0.0 for empty input or when there are no focus blocks.
-    """
-    sorted_evs = _sorted_events(events)
+    """Return the longest same-app block without idle or collection gaps."""
+    sorted_events = _sorted_events(events)
     longest = 0.0
     current_block = 0.0
     current_app: str | None = None
+    previous_timestamp = None
 
-    for ev in sorted_evs:
-        if ev.data.is_idle:
-            # Idle breaks the block
-            if current_block > longest:
-                longest = current_block
+    for event in sorted_events:
+        has_collection_gap = (
+            previous_timestamp is not None
+            and (event.timestamp_utc - previous_timestamp).total_seconds()
+            > MAX_COLLECTION_GAP_S
+        )
+        if event.data.is_idle or has_collection_gap:
+            longest = max(longest, current_block)
             current_block = 0.0
             current_app = None
-        elif current_app is None:
-            # Start of a new block
-            current_app = ev.data.process_name
-            current_block = ev.duration_s
-        elif ev.data.process_name != current_app:
-            # App switch — finalise old block, start new
-            if current_block > longest:
-                longest = current_block
-            current_app = ev.data.process_name
-            current_block = ev.duration_s
-        else:
-            # Same app, continue block
-            current_block += ev.duration_s
+        if not event.data.is_idle:
+            if current_app is None or event.data.process_name != current_app:
+                longest = max(longest, current_block)
+                current_app = event.data.process_name
+                current_block = max(0.0, event.duration_s)
+            else:
+                current_block += max(0.0, event.duration_s)
+        previous_timestamp = event.timestamp_utc
 
-    # Flush last block
-    if current_block > longest:
-        longest = current_block
-
-    return longest
+    return max(longest, current_block)
 
 
 def title_features(title: str) -> TitleFeatures:

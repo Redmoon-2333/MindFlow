@@ -14,6 +14,7 @@ export default function Activities() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [search, setSearch] = useState("");
+  const [isRawDebugVisible, setIsRawDebugVisible] = useState(false);
 
   const fetchCurrent = useCallback(async () => {
     try {
@@ -32,11 +33,20 @@ export default function Activities() {
         page: String(page),
         page_size: String(PAGE_SIZE),
       };
-      if (startDate) params.start = startDate;
-      if (endDate) params.end = endDate;
+      if (startDate) params.start_date = startDate;
+      if (endDate) params.end_date = endDate;
       if (search) params.q = search;
       const result = await getActivities(params);
-      setItems(result.items ?? []);
+      const activityItems = result.items ?? [];
+      const normalizedSearch = search.trim().toLowerCase();
+      setItems(
+        normalizedSearch
+          ? activityItems.filter((item: any) =>
+              [item.data?.app_name, item.data?.process_name, item.data?.window_title]
+                .some((value) => String(value ?? "").toLowerCase().includes(normalizedSearch)),
+            )
+          : activityItems,
+      );
       setTotal(result.total ?? 0);
     } catch (e: any) {
       setError(e.message ?? "加载失败");
@@ -107,7 +117,7 @@ export default function Activities() {
     <div>
       <div className="header">
         <h1>活动日志</h1>
-        <p>追踪与回放应用使用行为</p>
+        <p>默认展示连续合并后的活动片段与停留时长</p>
       </div>
 
       {error && (
@@ -124,10 +134,10 @@ export default function Activities() {
         <h3>当前活动</h3>
         {currentActivity ? (
           <div className="flex gap8" style={{ alignItems: "center" }}>
-            <span style={{ fontWeight: 600 }}>{currentActivity.app_name ?? "--"}</span>
-            {currentActivity.window_title && (
+            <span style={{ fontWeight: 600 }}>{currentActivity.data?.app_name ?? "--"}</span>
+            {currentActivity.data?.window_title && (
               <span style={{ color: "var(--color-text-secondary)" }}>
-                — {currentActivity.window_title}
+                — {currentActivity.data.window_title}
               </span>
             )}
             {currentActivity.classification && (
@@ -168,6 +178,10 @@ export default function Activities() {
               style={{ width: 160 }}
             />
           </div>
+          <label className="flex gap8" style={{ alignItems: "center", fontSize: 13, paddingBottom: 10 }}>
+            <input type="checkbox" checked={isRawDebugVisible} onChange={(event) => setIsRawDebugVisible(event.target.checked)} />
+            显示保留期内原始字段
+          </label>
           <div style={{ flex: 1, minWidth: 200 }}>
             <label style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginBottom: 4 }}>
               搜索
@@ -202,6 +216,7 @@ export default function Activities() {
                   <th>时长</th>
                   <th>分类</th>
                   <th>状态</th>
+                  {isRawDebugVisible && <th>原始字段</th>}
                 </tr>
               </thead>
               <tbody>
@@ -210,30 +225,23 @@ export default function Activities() {
                     <td style={{ whiteSpace: "nowrap" }}>
                       {formatTime(item.time ?? item.timestamp ?? item.created_at)}
                     </td>
-                    <td style={{ fontWeight: 500 }}>{item.app_name ?? "--"}</td>
+                    <td style={{ fontWeight: 500 }}>{item.data?.app_name ?? "--"}</td>
                     <td style={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {item.window_title ?? "--"}
+                      {item.data?.window_title ?? "--"}
                     </td>
-                    <td>{item.process ?? "--"}</td>
-                    <td>{formatDuration(item.duration_seconds ?? item.duration)}</td>
+                    <td>{item.data?.process_name ?? "--"}</td>
+                    <td>{formatDuration(item.duration_s)}</td>
+                    <td>--</td>
                     <td>
-                      {item.classification ? (
-                        <span className={`badge ${classificationBadge(item.classification)}`}>
-                          {item.classification}
-                        </span>
-                      ) : (
-                        "--"
-                      )}
+                      <span className={`badge ${statusBadge(item.data?.is_idle ? "idle" : "active")}`}>
+                        {item.data?.is_idle ? "idle" : "active"}
+                      </span>
                     </td>
-                    <td>
-                      {item.status ? (
-                        <span className={`badge ${statusBadge(item.status)}`}>
-                          {item.status}
-                        </span>
-                      ) : (
-                        "--"
-                      )}
-                    </td>
+                    {isRawDebugVisible && (
+                      <td style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                        {item.event_type} · {String(item.id).slice(0, 8)}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

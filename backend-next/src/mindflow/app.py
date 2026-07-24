@@ -18,6 +18,7 @@ No global singletons — all shared state lives on ``app.state``.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -78,6 +79,7 @@ from mindflow.infrastructure.repositories.preferences import (
 from mindflow.infrastructure.repositories.report import (
     SQLAlchemyDailyReportRepository,
 )
+from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.infrastructure.security.crisis_detector import CrisisDetector
 from mindflow.infrastructure.security.token_manager import load_or_create_token
 from mindflow.logging_config import setup_logging
@@ -87,6 +89,7 @@ from mindflow.services.chat_service import ChatService
 from mindflow.services.collector_service import CollectorService
 from mindflow.services.effectiveness_service import EffectivenessService
 from mindflow.services.evidence_service import EvidenceBundleBuilder
+from mindflow.services.input_telemetry_service import InputTelemetryService
 from mindflow.services.intervention_service import InterventionService
 from mindflow.services.intervention_throttle import InterventionThrottle
 from mindflow.services.llm_service import LLMService
@@ -94,6 +97,7 @@ from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
 from mindflow.services.scheduler import build_scheduler
+from mindflow.services.telemetry_service import TelemetryService
 
 # ── Lifespan ────────────────────────────────────────────────────────────────
 
@@ -154,6 +158,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     preferences_repository = PreferencesRepository(
         session_factory=session_factory,
     )
+    telemetry_repository = TelemetryRepository(
+        session_factory=session_factory,
+    )
     classification_rules_repository = AppClassificationRulesRepository(
         session_factory=session_factory,
     )
@@ -197,6 +204,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.warning("Failed to create collector: {}", exc)
 
+    input_telemetry_service = InputTelemetryService(
+        telemetry_repository=telemetry_repository,
+        activity_repository=activity_repository,
+    )
+    telemetry_service = TelemetryService(
+        repository=telemetry_repository,
+        preferences_repository=preferences_repository,
+        data_dir=data_dir,
+        activity_repository=activity_repository,
+    )
+    telemetry_service.attach_input_watcher(input_telemetry_service)
+    telemetry_preferences = await telemetry_service.get_preferences()
+    if telemetry_preferences["input_telemetry_enabled"]:
+        await input_telemetry_service.start()
+
     # ── 6. Notifier ───────────────────────────────────────────────────
     notifier = create_notifier()
 
@@ -214,19 +236,48 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from mindflow.train.models.manager import ModelManager  # noqa: PLC0415
 
     model_manager: ModelManager | None = None
+    v2_model_manager: ModelManager | None = None
+    model_training_mode = "rule_engine_only"
+    v2_training_mode = "rule_engine_only"
+    model_base_dir = Path("data/models")
     try:
-        _model_manager = ModelManager()
+        _model_manager = ModelManager(models_dir=model_base_dir)
         if _model_manager.load_latest():
             model_manager = _model_manager
+            model_training_mode = "ready"
             logger.info(
                 "ML models loaded (version: {})", model_manager.current_version_tag
             )
         else:
-            logger.warning(
-                "ML models not found — running in rule-engine-only mode"
-            )
+            logger.warning("ML models not found; running in rule_engine_only mode")
     except Exception as exc:
         logger.warning("Failed to load ML models: {}", exc)
+
+    v2_report_path = model_base_dir / "v2" / "training_report.json"
+    if v2_report_path.exists():
+        try:
+            v2_report = json.loads(v2_report_path.read_text(encoding="utf-8"))
+            if v2_report.get("model_mode") == "shadow":
+                v2_training_mode = "shadow"
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    try:
+        _v2_model_manager = ModelManager(
+            models_dir=model_base_dir / "v2",
+            use_ensemble=False,
+        )
+        if _v2_model_manager.load_latest():
+            v2_model_manager = _v2_model_manager
+            telemetry_service.attach_model_manager(v2_model_manager)
+            model_training_mode = "ready"
+            v2_training_mode = "ready"
+            logger.info(
+                "Feature schema v2 model loaded (version: {})",
+                v2_model_manager.current_version_tag,
+            )
+    except Exception as exc:
+        logger.warning("Failed to load feature schema v2 model: {}", exc)
 
     # ── 7a. Wave 5 Services ────────────────────────────────────────────
     analysis_service = AnalysisService(
@@ -351,6 +402,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         activity_repository=activity_repository,
         panel_service=panel_service,
         autonomy_service=autonomy_service,
+        telemetry_service=telemetry_service,
         event_retention_days=settings.event_retention_days,
         min_confidence=settings.auto_intervention_min_confidence,
         panel_confidence=settings.auto_intervention_panel_confidence,
@@ -363,6 +415,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_factory = session_factory
     app.state.activity_repository = activity_repository
     app.state.preferences_repository = preferences_repository
+    app.state.telemetry_repository = telemetry_repository
+    app.state.telemetry_service = telemetry_service
+    app.state.input_telemetry_service = input_telemetry_service
     app.state.classification_rules_repository = classification_rules_repository
     app.state.collector_service = collector_service
     app.state.system_token = system_token
@@ -382,6 +437,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.intervention_service = intervention_service
     app.state.effectiveness_service = effectiveness_service
     app.state.model_manager = model_manager
+    app.state.v2_model_manager = v2_model_manager
+    app.state.model_training_mode = model_training_mode
+    app.state.v2_training_mode = v2_training_mode
     app.state.chat_service = chat_service
     app.state.autonomy_service = autonomy_service
 
@@ -423,6 +481,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.debug("Closed {} active WebSocket connection(s)", n_closed)
     except Exception as exc:
         logger.warning("WebSocket close error: {}", exc)
+
+    try:
+        await input_telemetry_service.stop()
+    except Exception as exc:
+        logger.warning("Input telemetry stop error: {}", exc)
 
     # 3. Stop collector
     if collector_service is not None:

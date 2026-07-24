@@ -164,7 +164,7 @@ class TestModelExplainer:
         """ModelExplainer should transparently apply FocusClassifier scaler."""
         from mindflow.train.models.classifier import FocusClassifier
 
-        feat_names = [f"f{i}" for i in range(14)]
+        feat_names = [f"f{i}" for i in range(sample_X.shape[1])]
         y = np.array(
             [1 if i < 15 else 0 for i in range(len(sample_X))], dtype=np.int32
         )

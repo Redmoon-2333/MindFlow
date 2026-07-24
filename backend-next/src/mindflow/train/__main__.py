@@ -21,9 +21,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
+import sqlite3
 import sys
+from datetime import UTC, date, datetime
 from pathlib import Path
 
+import platformdirs
+
+from mindflow.domain.events import ActivityEvent
 from mindflow.train.models import ModelManager
 from mindflow.train.pipeline import run_training
 
@@ -35,6 +41,132 @@ def _resolve_project_root() -> Path:
         if (parent / "pyproject.toml").exists():
             return parent
     return cwd
+
+
+def load_database_events(
+    database_path: Path,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    now_utc: datetime | None = None,
+) -> list[ActivityEvent]:
+    if not database_path.exists():
+        return []
+
+    cutoff = now_utc or datetime.now(UTC)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=UTC)
+    connection = sqlite3.connect(f"file:{database_path.as_posix()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute(
+            "SELECT id, user_id, timestamp, duration_s, event_type, data_json "
+            "FROM activity_events ORDER BY timestamp"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    events: list[ActivityEvent] = []
+    for row in rows:
+        try:
+            timestamp = datetime.fromisoformat(str(row["timestamp"]))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            timestamp = timestamp.astimezone(UTC)
+            duration_s = float(row["duration_s"])
+            if timestamp > cutoff or duration_s <= 0:
+                continue
+            if start_date is not None and timestamp.date() < start_date:
+                continue
+            if end_date is not None and timestamp.date() > end_date:
+                continue
+            payload = json.loads(str(row["data_json"]))
+            payload["timestamp_utc"] = timestamp.isoformat()
+            events.append(ActivityEvent.from_dict({
+                "id": row["id"],
+                "user_id": row["user_id"],
+                "timestamp_utc": timestamp,
+                "duration_s": duration_s,
+                "event_type": row["event_type"],
+                "data": payload,
+            }))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return events
+
+
+def load_database_v2_data(
+    database_path: Path,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    user_id: int = 1,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    if not database_path.exists():
+        return [], []
+    connection = sqlite3.connect(f"file:{database_path.as_posix()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        table_names = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        required = {
+            "behavior_feature_windows",
+            "focus_session_feedback",
+            "focus_sessions",
+        }
+        if not required.issubset(table_names):
+            return [], []
+        window_rows = connection.execute(
+            "SELECT window_start_utc, window_end_utc, feature_schema_version, "
+            "features_json, label FROM behavior_feature_windows "
+            "WHERE user_id = ? AND feature_schema_version = 2 "
+            "ORDER BY window_start_utc",
+            (user_id,),
+        ).fetchall()
+        feedback_rows = connection.execute(
+            "SELECT f.session_id, f.label, f.score, f.task_type, f.created_at, "
+            "s.start_time, s.end_time FROM focus_session_feedback AS f "
+            "JOIN focus_sessions AS s ON s.id = f.session_id AND s.user_id = f.user_id "
+            "WHERE f.user_id = ? ORDER BY f.created_at",
+            (user_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    windows: list[dict[str, object]] = []
+    for row in window_rows:
+        try:
+            timestamp = datetime.fromisoformat(str(row["window_start_utc"]).replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            timestamp = timestamp.astimezone(UTC)
+            if start_date is not None and timestamp.date() < start_date:
+                continue
+            if end_date is not None and timestamp.date() > end_date:
+                continue
+            features = json.loads(str(row["features_json"]))
+            if not isinstance(features, dict):
+                continue
+            windows.append({
+                "window_start_utc": row["window_start_utc"],
+                "window_end_utc": row["window_end_utc"],
+                "feature_schema_version": row["feature_schema_version"],
+                "features": features,
+                "label": row["label"],
+            })
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+    feedback = [dict(row) for row in feedback_rows]
+    return windows, feedback
+
+
+def _default_database_path() -> Path:
+    return Path(platformdirs.user_data_dir("mindflow", ensure_exists=True)) / "mindflow.db"
 
 
 def main() -> None:
@@ -100,6 +232,27 @@ def main() -> None:
         default="",
         dest="models_dir",
         help="Models directory (default: <project-root>/data/models)",
+    )
+    parser.add_argument(
+        "--database-path",
+        type=str,
+        default="",
+        dest="database_path",
+        help="SQLite database path for --source db",
+    )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default="",
+        dest="start_date",
+        help="Inclusive UTC start date in YYYY-MM-DD format",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default="",
+        dest="end_date",
+        help="Inclusive UTC end date in YYYY-MM-DD format",
     )
     parser.add_argument(
         "--list-versions",
@@ -168,6 +321,29 @@ def main() -> None:
         else:
             profiles_arg = [p.strip() for p in args.user_profiles.split(",") if p.strip()]
 
+    events: list[ActivityEvent] | None = None
+    feature_windows: list[dict[str, object]] | None = None
+    feedback_sessions: list[dict[str, object]] | None = None
+    if args.source == "db":
+        database_path = Path(args.database_path) if args.database_path else _default_database_path()
+        start_date = date.fromisoformat(args.start_date) if args.start_date else None
+        end_date = date.fromisoformat(args.end_date) if args.end_date else None
+        events = load_database_events(
+            database_path,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        feature_windows, feedback_sessions = load_database_v2_data(
+            database_path,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        print(f"Loaded {len(events)} valid events from {database_path}")
+        print(
+            f"Loaded {len(feature_windows)} v2 feature windows and "
+            f"{len(feedback_sessions)} feedback sessions"
+        )
+
     report = run_training(
         source=args.source,
         data_dir=data_dir,
@@ -178,6 +354,9 @@ def main() -> None:
         num_users=args.num_users if not profiles_arg else len(profiles_arg),
         include_procrastination=args.include_procrastination,
         user_profiles=profiles_arg,
+        events=events,
+        feature_windows=feature_windows,
+        feedback_sessions=feedback_sessions,
     )
 
     if report.total_records == 0:

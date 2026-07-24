@@ -10,8 +10,9 @@ next time the app calls ``joblib.load``.
 from __future__ import annotations
 
 import json
+import warnings
 from contextlib import suppress
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -19,6 +20,7 @@ import joblib
 import numpy as np
 import numpy.typing as npt
 from loguru import logger
+from sklearn.exceptions import InconsistentVersionWarning
 from sklearn.model_selection import train_test_split
 
 from mindflow.train.models.classifier import FocusClassifier
@@ -138,7 +140,7 @@ class ModelManager:
 
     @property
     def _today_tag(self) -> str:
-        return date.today().strftime("%Y%m%d")
+        return datetime.now(UTC).strftime("%Y%m%d")
 
     # ── Training ──────────────────────────────────────────────────────────
 
@@ -277,7 +279,7 @@ class ModelManager:
 
     # ── Versioned persistence ─────────────────────────────────────────────
 
-    def save_all(self) -> dict[str, str]:
+    def save_all(self, *, activate: bool = True) -> dict[str, str]:
         """Save all models with date-stamped filenames and update latest.json.
 
         Returns:
@@ -316,8 +318,8 @@ class ModelManager:
         for path in (clustering_path, classifier_path, hmm_path):
             sign_model_file(path, signing_key)
 
-        # Write / update latest pointer
-        self._write_latest(names)
+        if activate:
+            self._write_latest(names)
 
         return names
 
@@ -331,6 +333,16 @@ class ModelManager:
         self.latest_path.write_text(
             json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+
+    def readiness_status(self) -> dict[str, Any]:
+        reasons: list[str] = []
+        if not bool(getattr(self.classifier, "_is_fitted", False)):
+            reasons.append("classifier_not_fitted")
+        if self.clustering.model is None:
+            reasons.append("clustering_not_fitted")
+        if not bool(getattr(self.hmm, "_is_fitted", False)):
+            reasons.append("hmm_not_fitted")
+        return {"ready": not reasons, "reasons": reasons}
 
     def load_latest(self) -> bool:
         """Load the latest version of all models. Returns True if successful."""
@@ -440,17 +452,18 @@ class ModelManager:
                     )
                     raise ModelSignatureError(f"Signature verification failed for {path}")
 
-            self.clustering = BehaviorClustering.from_dict(
-                joblib.load(str(clustering_path))
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", InconsistentVersionWarning)
+                clustering_data: dict[str, Any] = joblib.load(str(clustering_path))
+                classifier_data: dict[str, Any] = joblib.load(str(classifier_path))
+                hmm_data: dict[str, Any] = joblib.load(str(hmm_path))
 
-            classifier_data: dict[str, Any] = joblib.load(str(classifier_path))
+            self.clustering = BehaviorClustering.from_dict(clustering_data)
             if classifier_data.get("__class__") == _XGB_CLASS_MARKER:
                 self.classifier = EnsembleClassifier.from_dict(classifier_data)
             else:
                 self.classifier = FocusClassifier.from_dict(classifier_data)
 
-            hmm_data: dict[str, Any] = joblib.load(str(hmm_path))
             self.hmm = BehaviorHMM(n_states=int(hmm_data.get("n_states", 5)))
             tm = hmm_data.get("transition_matrix")
             self.hmm.transition_matrix = (
@@ -459,7 +472,10 @@ class ModelManager:
             self.hmm._is_fitted = bool(hmm_data.get("is_fitted", False))
             return True
 
-        except (FileNotFoundError, EOFError, KeyError, ValueError):
+        except InconsistentVersionWarning as exc:
+            logger.error("Model artifact rejected due to sklearn version mismatch: {}", exc)
+            return False
+        except (FileNotFoundError, EOFError, KeyError, TypeError, ValueError):
             return False
 
     @property

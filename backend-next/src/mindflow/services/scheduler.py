@@ -44,6 +44,7 @@ from mindflow.services.intervention_service import InterventionService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
+from mindflow.time_utils import utc_today
 
 # Minimum confidence threshold for auto-intervention trigger.
 # Assessments below this threshold are considered "no significant pattern"
@@ -278,6 +279,7 @@ async def _auto_intervention_check(
     rule_engine: RuleEngine | None = None,
     panel_service: PanelService | None = None,
     autonomy_service: AutonomyService | None = None,
+    telemetry_service: Any | None = None,
     user_id: int = 1,
     window_min: int = 30,
     min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
@@ -403,11 +405,9 @@ async def _auto_intervention_check(
             )
             panel_attempted = True
             try:
-                from datetime import date as _date
-
                 verdict = await panel_service.run_daily_panel(
                     user_id=user_id,
-                    target_date=_date.today(),
+                    target_date=utc_today(),
                 )
 
                 # Convert PanelVerdict → ProcrastinationAssessment for
@@ -474,6 +474,7 @@ def build_scheduler(
     activity_repository: SQLAlchemyActivityRepository | None = None,
     panel_service: Any | None = None,
     autonomy_service: AutonomyService | None = None,
+    telemetry_service: Any | None = None,
     event_retention_days: int = 30,
     min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
     panel_confidence: float = _AUTO_INTERVENTION_PANEL_CONFIDENCE,
@@ -488,8 +489,6 @@ def build_scheduler(
 
     # ── 23:30 — Expert panel deliberation ────────────────────────────
     if panel_service is not None:
-        from datetime import date as _date
-
         async def _run_daily_panel() -> None:
             try:
                 if (
@@ -498,12 +497,12 @@ def build_scheduler(
                 ):
                     logger.debug("Daily panel: autonomy disabled, skipping")
                     return
-                today_str = _date.today().strftime("%Y-%m-%d")
+                today_str = utc_today().strftime("%Y-%m-%d")
                 if not await _claim_daily_panel_run(today_str):
                     logger.debug("Daily panel: already run today ({}), skipping", today_str)
                     return
                 try:
-                    await panel_service.run_daily_panel(user_id=1, target_date=_date.today())
+                    await panel_service.run_daily_panel(user_id=1, target_date=utc_today())
                 except Exception:
                     await _release_daily_panel_run(today_str)
                     raise
@@ -552,8 +551,24 @@ def build_scheduler(
                                    },
                                    name="auto_intervention_check")
 
+    if telemetry_service is not None:
+        async def _rollup_telemetry() -> None:
+            end = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+            start = end - timedelta(days=1)
+            await telemetry_service.rollup_feature_windows(start, end)
+            await telemetry_service.cleanup_retained_data()
+
+        scheduler.daily_cron(
+            hour=2,
+            minute=45,
+            coro=_rollup_telemetry,
+            name="telemetry_rollup",
+        )
+
+
     logger.info(
         "AsyncioScheduler built with jobs: {}",
         [j["name"] for j in scheduler._jobs],
+
     )
     return scheduler

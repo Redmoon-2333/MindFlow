@@ -16,7 +16,8 @@ Data payload (WindowSnapshot) is stored as JSON text in data_json.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta
 from typing import Any
 
 import sqlalchemy as sa
@@ -256,6 +257,41 @@ class SQLAlchemyActivityRepository:
 
         return events
 
+    async def query_overlapping_range(
+        self,
+        user_id: int,
+        start: datetime,
+        end: datetime,
+    ) -> list[ActivityEvent]:
+        events = await self.query_range(user_id, start, end)
+        previous = await self.last_event_before(user_id, start)
+        if previous is not None:
+            previous_end = previous.timestamp_utc + timedelta(
+                seconds=max(0.0, previous.duration_s)
+            )
+            if previous_end > start:
+                events.insert(0, previous)
+
+        clipped: list[ActivityEvent] = []
+        for event in events:
+            event_end = event.timestamp_utc + timedelta(
+                seconds=max(0.0, event.duration_s)
+            )
+            overlap_start = max(event.timestamp_utc, start)
+            overlap_end = min(event_end, end)
+            if overlap_end <= overlap_start:
+                continue
+            clipped_snapshot = replace(event.data, timestamp_utc=overlap_start)
+            clipped.append(
+                replace(
+                    event,
+                    timestamp_utc=overlap_start,
+                    duration_s=(overlap_end - overlap_start).total_seconds(),
+                    data=clipped_snapshot,
+                )
+            )
+        return clipped
+
     async def count_range(
         self,
         user_id: int,
@@ -285,6 +321,25 @@ class SQLAlchemyActivityRepository:
             result = await session.execute(stmt)
             return result.scalar_one()
 
+    async def last_event_before(
+        self,
+        user_id: int,
+        timestamp: datetime,
+    ) -> ActivityEvent | None:
+        stmt = (
+            sa.select(activity_events)
+            .where(
+                activity_events.c.user_id == user_id,
+                activity_events.c.timestamp < timestamp.isoformat(),
+            )
+            .order_by(activity_events.c.timestamp.desc(), activity_events.c.id.desc())
+            .limit(1)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            row = result.fetchone()
+            return _row_to_event(row) if row is not None else None
+
     async def last_event(self, user_id: int) -> ActivityEvent | None:
         """Return the most recent event for *user_id*, or None.
 
@@ -306,6 +361,67 @@ class SQLAlchemyActivityRepository:
             row = result.fetchone()
 
         return _row_to_event(row) if row is not None else None
+    async def compact_history(self, user_id: int = 1) -> dict[str, int]:
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(
+                sa.select(activity_events)
+                .where(activity_events.c.user_id == user_id)
+                .order_by(activity_events.c.timestamp.asc())
+            )
+            rows = result.fetchall()
+            before = len(rows)
+            if before < 2:
+                return {"before": before, "after": before, "removed": 0}
+
+            segments: list[dict[str, Any]] = []
+            for row in rows:
+                data = json.loads(row.data_json)
+                timestamp = datetime.fromisoformat(row.timestamp)
+                duration_s = max(0.0, float(row.duration_s))
+                context = (
+                    row.event_type,
+                    data.get("app_name", ""),
+                    data.get("process_name", ""),
+                    data.get("window_title", ""),
+                    bool(data.get("is_idle", False)),
+                )
+                if segments:
+                    previous = segments[-1]
+                    previous_end = previous["timestamp"] + timedelta(
+                        seconds=previous["duration_s"]
+                    )
+                    gap_s = (timestamp - previous_end).total_seconds()
+                    if (
+                        previous["context"] == context
+                        and -self._pulsetime_s <= gap_s <= self._pulsetime_s
+                    ):
+                        previous["duration_s"] += duration_s
+                        previous["delete_ids"].append(row.id)
+                        continue
+                segments.append({
+                    "id": row.id,
+                    "timestamp": timestamp,
+                    "duration_s": duration_s,
+                    "context": context,
+                    "delete_ids": [],
+                })
+
+            for segment in segments:
+                await session.execute(
+                    sa.update(activity_events)
+                    .where(activity_events.c.id == segment["id"])
+                    .values(duration_s=segment["duration_s"])
+                )
+                if segment["delete_ids"]:
+                    await session.execute(
+                        sa.delete(activity_events).where(
+                            activity_events.c.id.in_(segment["delete_ids"])
+                        )
+                    )
+
+            after = len(segments)
+            return {"before": before, "after": after, "removed": before - after}
+
 
     # ── Internal helpers ──────────────────────────────────────────────
 
@@ -362,18 +478,23 @@ class SQLAlchemyActivityRepository:
         except (json.JSONDecodeError, AttributeError):
             return False
 
-        last_app = last_data.get("app_name", "")
-
-        if last_app != event.data.app_name:
+        context_matches = (
+            last_data.get("app_name", "") == event.data.app_name
+            and last_data.get("process_name", "") == event.data.process_name
+            and last_data.get("window_title", "") == event.data.window_title
+            and bool(last_data.get("is_idle", False)) == event.data.is_idle
+        )
+        if not context_matches:
             return False
 
         try:
             last_ts = datetime.fromisoformat(last_row.timestamp)
-        except (ValueError, AttributeError):
+            last_end = last_ts + timedelta(seconds=max(0.0, float(last_row.duration_s)))
+        except (TypeError, ValueError, AttributeError):
             return False
 
-        diff = (event.timestamp_utc - last_ts).total_seconds()
-        return diff < self._pulsetime_s
+        gap_s = (event.timestamp_utc - last_end).total_seconds()
+        return -self._pulsetime_s <= gap_s <= self._pulsetime_s
 
     def __repr__(self) -> str:
         return f"<SQLAlchemyActivityRepository pulsetime={self._pulsetime_s}s>"

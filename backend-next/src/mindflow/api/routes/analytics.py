@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query  # noqa: B008
+from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 
 from mindflow.api.deps import get_analysis_service, get_baseline_repo, get_model_manager
 from mindflow.api.errors import _not_found
@@ -81,6 +81,7 @@ async def get_profile(
 
 @router.get("/analytics/model-status")
 async def get_model_status(
+    request: Request,
     model_manager: ModelManager | None = Depends(get_model_manager),  # noqa: B008
 ) -> dict[str, Any]:
     """Return ML model loading status and version information.
@@ -89,17 +90,61 @@ async def get_model_status(
     loaded and available for runtime inference.  When models are loaded,
     includes the version tag and available versions for rollback.
     """
-    if model_manager is None:
+    v2_model_manager = getattr(request.app.state, "v2_model_manager", None)
+    v2_training_mode = getattr(
+        request.app.state,
+        "v2_training_mode",
+        "rule_engine_only",
+    )
+    if v2_model_manager is not None:
+        readiness = v2_model_manager.readiness_status()
+        is_ready = bool(readiness["ready"])
         return {
-            "loaded": False,
-            "mode": "rule_engine_only",
-            "message": "ML models not available, running with rule engine only",
+            "loaded": True,
+            "ready": is_ready,
+            "mode": "ready" if is_ready else "rule_engine_only",
+            "feature_schema_version": 2,
+            "v2_mode": "ready" if is_ready else v2_training_mode,
+            "version": v2_model_manager.current_version_tag,
+            "available_versions": v2_model_manager.list_versions(),
+            "reasons": readiness["reasons"],
+            "message": (
+                "Feature schema v2 model loaded and ready for inference"
+                if is_ready
+                else "Feature schema v2 artifacts failed readiness checks"
+            ),
         }
 
+    if model_manager is None:
+        training_mode = getattr(request.app.state, "model_training_mode", "rule_engine_only")
+        is_shadow = training_mode == "shadow"
+        return {
+            "loaded": False,
+            "ready": False,
+            "mode": "shadow" if is_shadow else "rule_engine_only",
+            "v2_mode": v2_training_mode,
+            "reasons": ["model_in_shadow_mode" if is_shadow else "models_not_loaded"],
+            "message": (
+                "ML candidate is running in shadow mode; rule engine remains active"
+                if is_shadow
+                else "ML models not available, running with rule engine only"
+            ),
+        }
+
+    readiness = model_manager.readiness_status()
+    is_ready = bool(readiness["ready"])
     return {
         "loaded": True,
-        "mode": "ml_enriched",
+        "ready": is_ready,
+        "mode": "ready" if is_ready else "rule_engine_only",
+        "v2_mode": v2_training_mode,
+        "feature_schema_version": 1,
         "version": model_manager.current_version_tag,
         "available_versions": model_manager.list_versions(),
-        "message": "ML models loaded, behaviour analysis enriched with predictions",
+        "reasons": readiness["reasons"],
+        "message": (
+            "ML models loaded and ready for inference"
+            if is_ready
+            else "ML artifacts loaded but failed inference readiness checks"
+        ),
     }

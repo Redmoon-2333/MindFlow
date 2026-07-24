@@ -16,6 +16,7 @@ from loguru import logger
 from mindflow.api.deps import get_report_service
 from mindflow.api.errors import _not_found
 from mindflow.services.report_service import ReportService
+from mindflow.time_utils import utc_today
 
 router = APIRouter(tags=["reports"])
 
@@ -28,7 +29,7 @@ async def get_daily_report(
     report_svc: ReportService = Depends(get_report_service),  # noqa: B008
 ) -> dict[str, Any]:
     """Return a daily report for the given date (generates if missing)."""
-    target = report_date or date.today()
+    target = report_date or utc_today()
 
     report = await report_svc.generate_daily_report(1, target)
     if not report:
@@ -52,7 +53,7 @@ async def get_weekly_report(
     if week_start:
         start = week_start
     else:
-        today = date.today()
+        today = utc_today()
         # ISO week start (Monday)
         start = today - timedelta(days=today.weekday())
 

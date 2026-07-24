@@ -30,6 +30,7 @@ from mindflow.infrastructure.repositories.focus import (
     focus_sessions,
 )
 from mindflow.services.analysis_service import AnalysisService
+from mindflow.train.models import ModelManager
 
 
 def _utc(iso: str) -> datetime:
@@ -180,3 +181,54 @@ class TestProfile:
         assert resp.status_code == 404
         data = resp.json()
         assert "not-found" in data["type"]
+
+
+def test_model_status_reports_unready_classifier(tmp_path) -> None:
+    app = FastAPI()
+    app.include_router(analytics_router, prefix="/api/v1")
+    app.state.model_manager = ModelManager(models_dir=tmp_path / "models")
+
+    response = TestClient(app).get("/api/v1/analytics/model-status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["loaded"] is True
+    assert data["ready"] is False
+    assert data["mode"] == "rule_engine_only"
+    assert "classifier_not_fitted" in data["reasons"]
+
+
+def test_model_status_reports_shadow_mode_without_active_model() -> None:
+    app = FastAPI()
+    app.include_router(analytics_router, prefix="/api/v1")
+    app.state.model_manager = None
+    app.state.model_training_mode = "shadow"
+
+    data = TestClient(app).get("/api/v1/analytics/model-status").json()
+
+    assert data["ready"] is False
+    assert data["mode"] == "shadow"
+
+
+def test_model_status_prefers_ready_v2_model() -> None:
+    class ReadyV2Manager:
+        current_version_tag = "20260724"
+
+        @staticmethod
+        def readiness_status():
+            return {"ready": True, "reasons": []}
+
+        @staticmethod
+        def list_versions():
+            return ["20260724"]
+
+    v2_manager = ReadyV2Manager()
+    app = FastAPI()
+    app.include_router(analytics_router, prefix="/api/v1")
+    app.state.model_manager = None
+    app.state.v2_model_manager = v2_manager
+
+    data = TestClient(app).get("/api/v1/analytics/model-status").json()
+
+    assert data["mode"] == "ready"
+    assert data["feature_schema_version"] == 2

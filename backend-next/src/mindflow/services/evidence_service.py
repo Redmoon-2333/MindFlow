@@ -328,7 +328,9 @@ class EvidenceBundleBuilder:
         # each other (each opens its own session and uses only user_id / the
         # window bounds), so gather them instead of three sequential awaits.
         events, baseline, interventions = await asyncio.gather(
-            self._activity_repo.query_range(user_id, window_start, window_end),
+            self._activity_repo.query_overlapping_range(
+                user_id, window_start, window_end
+            ),
             self._load_baseline(user_id),
             self._build_intervention_history(user_id, window_end),
         )

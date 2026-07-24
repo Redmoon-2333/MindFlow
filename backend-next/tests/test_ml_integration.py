@@ -298,10 +298,10 @@ class TestModelStatusEndpoint:
         assert resp_loaded.status_code == 200
         body_loaded = resp_loaded.json()
         assert body_loaded["loaded"] is True
-        assert body_loaded["mode"] == "ml_enriched"
+        assert body_loaded["mode"] == "ready"
         assert body_loaded["version"] == "20260718"
         assert body_loaded["available_versions"] == ["20260718"]
-        assert "enriched" in body_loaded["message"]
+        assert "ready" in body_loaded["message"]
 
 
 class TestFeatureExtractorDelegatesToDomain:

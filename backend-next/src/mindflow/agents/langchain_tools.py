@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from contextvars import ContextVar
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from langchain_core.tools import BaseTool, tool
@@ -32,6 +32,7 @@ from mindflow.infrastructure.repositories.intervention import (
 )
 from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.panel_service import PanelService
+from mindflow.time_utils import utc_today
 
 # ── Session-panel usage tracking ─────────────────────────────────────────
 
@@ -121,7 +122,7 @@ def make_get_latest_analysis(
         if uid == 0:
             return '{"error": "user_id not set"}'
 
-        today = date.today()
+        today = utc_today()
         result: dict[str, Any] | None = await analysis_repo.get_by_date(uid, today)
 
         if result is None:
@@ -177,7 +178,7 @@ def make_run_panel(
         if panel_service is None:
             return "专家会诊服务暂不可用"
 
-        target_date = date.today()
+        target_date = utc_today()
         try:
             verdict = await panel_service.run_daily_panel(uid, target_date)
             if sid is not None:
@@ -230,8 +231,8 @@ def make_query_interventions(
             return '{"error": "user_id not set"}'
 
         capped = min(days_back, 30)
-        start_date = date.today() - timedelta(days=capped)
-        end_date = date.today()
+        start_date = utc_today() - timedelta(days=capped)
+        end_date = utc_today()
 
         logs = await intervention_repo.query_range_by_date(uid, start_date, end_date)
 

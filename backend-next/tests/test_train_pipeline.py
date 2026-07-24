@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from mindflow.domain.events import make_event
 from mindflow.train.pipeline import TrainingReport, run_training
 
 
@@ -191,3 +193,129 @@ class TestRunTraining:
         if "error" not in report.hmm:
             assert "transition_matrix" in report.hmm
             assert "steady_state" in report.hmm
+
+
+def test_real_data_quality_gate_does_not_activate_unready_models(work_dir: Path) -> None:
+    start = datetime(2026, 7, 24, tzinfo=UTC)
+    events = [
+        make_event(
+            user_id=1,
+            timestamp_utc=start + timedelta(minutes=5 * index),
+            duration_s=300.0,
+            app_name="code.exe" if index % 2 == 0 else "bilibili.exe",
+            process_name="code.exe" if index % 2 == 0 else "bilibili.exe",
+            window_title="main.py" if index % 2 == 0 else "bilibili",
+            is_idle=False,
+        )
+        for index in range(20)
+    ]
+
+    report = run_training(
+        source="db",
+        data_dir=work_dir / "data",
+        models_dir=work_dir / "models",
+        events=events,
+    )
+
+    assert report.activated is False
+    assert report.quality_gate["passed"] is False
+    assert not (work_dir / "models" / "latest.json").exists()
+    assert list((work_dir / "models").glob("*.pkl"))
+
+
+def test_v2_training_stays_shadow_when_feedback_gate_fails(work_dir: Path) -> None:
+    start = datetime(2026, 7, 1, 9, tzinfo=UTC)
+    feature_windows = []
+    feedback_sessions = []
+    for index in range(12):
+        session_start = start + timedelta(days=index // 2, hours=(index % 2) * 2)
+        is_focus = index % 2 == 0
+        feature_windows.append({
+            "window_start_utc": session_start.isoformat(),
+            "window_end_utc": (session_start + timedelta(minutes=5)).isoformat(),
+            "feature_schema_version": 2,
+            "features": {
+                "idle_ratio": 0.02 if is_focus else 0.6,
+                "longest_segment_ratio": 0.9 if is_focus else 0.1,
+                "top_app_ratio": 0.9 if is_focus else 0.2,
+                "app_switch_count": 0 if is_focus else 8,
+            },
+        })
+        feedback_sessions.append({
+            "session_id": f"session-{index}",
+            "start_time": session_start.isoformat(),
+            "end_time": (session_start + timedelta(minutes=30)).isoformat(),
+            "label": "focus" if is_focus else "distracted",
+            "score": 5 if is_focus else 1,
+            "task_type": "coding",
+        })
+
+    report = run_training(
+        source="db",
+        data_dir=work_dir / "data",
+        models_dir=work_dir / "models",
+        events=[
+            make_event(
+                user_id=1,
+                timestamp_utc=start,
+                duration_s=300,
+                process_name="code.exe",
+            )
+        ],
+        feature_windows=feature_windows,
+        feedback_sessions=feedback_sessions,
+    )
+
+    assert report.feature_schema_version == 2
+    assert report.model_mode == "shadow"
+    assert report.activated is False
+    assert report.quality_gate["checks"]["minimum_explicit_feedback"] is False
+    assert (work_dir / "models" / "v2" / "training_report.json").exists()
+    assert not (work_dir / "models" / "v2" / "latest.json").exists()
+
+
+def test_v2_training_activates_only_after_all_gates_pass(work_dir: Path) -> None:
+    start = datetime(2026, 7, 1, 8, tzinfo=UTC)
+    feature_windows = []
+    feedback_sessions = []
+    session_index = 0
+    for day_index in range(8):
+        for class_index in range(4):
+            is_focus = class_index < 2
+            session_start = start + timedelta(days=day_index, hours=class_index * 2)
+            feature_windows.append({
+                "window_start_utc": session_start.isoformat(),
+                "window_end_utc": (session_start + timedelta(minutes=5)).isoformat(),
+                "feature_schema_version": 2,
+                "features": {
+                    "idle_ratio": 0.01 if is_focus else 0.7,
+                    "longest_segment_ratio": 0.98 if is_focus else 0.05,
+                    "top_app_ratio": 0.98 if is_focus else 0.1,
+                    "input_active_ratio": 0.7 if is_focus else 0.05,
+                    "app_switch_count": 0 if is_focus else 12,
+                    "domain_switch_count": 0 if is_focus else 8,
+                },
+            })
+            feedback_sessions.append({
+                "session_id": f"session-{session_index}",
+                "start_time": session_start.isoformat(),
+                "end_time": (session_start + timedelta(minutes=30)).isoformat(),
+                "label": "focus" if is_focus else "distracted",
+                "score": 5 if is_focus else 1,
+                "task_type": "coding",
+            })
+            session_index += 1
+
+    report = run_training(
+        source="db",
+        data_dir=work_dir / "data",
+        models_dir=work_dir / "models",
+        events=[make_event(user_id=1, timestamp_utc=start, duration_s=300)],
+        feature_windows=feature_windows,
+        feedback_sessions=feedback_sessions,
+    )
+
+    assert report.quality_gate["passed"] is True
+    assert report.model_mode == "ready"
+    assert report.activated is True
+    assert (work_dir / "models" / "v2" / "latest.json").exists()

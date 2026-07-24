@@ -8,19 +8,23 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query  # noqa: B008
 from loguru import logger
+from pydantic import BaseModel, Field
 
 from mindflow.api.deps import (
     get_analysis_service,
     get_focus_repo,
+    get_telemetry_service,
 )
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
 from mindflow.services.analysis_service import AnalysisService
+from mindflow.services.telemetry_service import TelemetryService
+from mindflow.time_utils import utc_today
 
 router = APIRouter(tags=["focus"])
 
@@ -34,7 +38,7 @@ async def get_today_focus(
     focus_repo: SQLAlchemyFocusSessionRepository = Depends(get_focus_repo),  # noqa: B008
 ) -> dict[str, Any]:
     """Return today's focus sessions (auto-generates if missing)."""
-    target = date_param or date.today()
+    target = date_param or utc_today()
 
     # Ensure sessions exist
     sessions = await focus_repo.get_by_date(1, target)
@@ -66,7 +70,7 @@ async def get_focus_trend(
     focus_repo: SQLAlchemyFocusSessionRepository = Depends(get_focus_repo),  # noqa: B008
 ) -> dict[str, Any]:
     """Return focus session trends over the last *days* days."""
-    today = date.today()
+    today = utc_today()
     start = today - timedelta(days=days - 1)
 
     sessions = await focus_repo.query_range(1, start, today)
@@ -105,3 +109,23 @@ async def get_focus_trend(
         "daily": daily_trend,
         "total_sessions": len(sessions),
     }
+
+
+class FocusFeedbackBody(BaseModel):
+    label: Literal["focus", "distracted", "mixed"]
+    score: int = Field(ge=1, le=5)
+    task_type: str | None = Field(default=None, max_length=64)
+
+
+@router.post("/focus/{session_id}/feedback")
+async def save_focus_feedback(
+    session_id: str,
+    body: FocusFeedbackBody,
+    telemetry_service: TelemetryService = Depends(get_telemetry_service),  # noqa: B008
+) -> dict[str, Any]:
+    return await telemetry_service.save_focus_feedback(
+        session_id=session_id,
+        label=body.label,
+        score=body.score,
+        task_type=body.task_type,
+    )

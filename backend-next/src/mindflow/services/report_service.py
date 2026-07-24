@@ -41,6 +41,7 @@ from mindflow.infrastructure.repositories.report import (
 from mindflow.services.effectiveness_service import (
     EffectivenessService,
 )
+from mindflow.time_utils import utc_today
 
 
 class ReportService:
@@ -284,7 +285,7 @@ class ReportService:
 
     async def generate_daily_for_all(self, user_id: int = 1) -> dict[str, Any]:
         """Convenience wrapper for scheduled job — generates today's report."""
-        return await self.generate_daily_report(user_id, date.today())
+        return await self.generate_daily_report(user_id, utc_today())
 
 
 # ── Internal helpers ──────────────────────────────────────────────────

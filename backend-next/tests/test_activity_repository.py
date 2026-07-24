@@ -171,7 +171,7 @@ class TestHeartbeatMerge:
             _event(
                 app_name="Code",
                 duration_s=5.0,
-                ts=_BASE_TS + timedelta(seconds=11),
+                ts=_BASE_TS + timedelta(seconds=16),
             )
         )
 
@@ -273,7 +273,7 @@ class TestHeartbeatMerge:
         base = _BASE_TS
         for i in range(10):
             await repo.append_event(
-                _event(app_name="Code", duration_s=5.0, ts=base + timedelta(seconds=i * 2))
+                _event(app_name="Code", duration_s=5.0, ts=base + timedelta(seconds=i * 5))
             )
 
         async with engine.connect() as conn:
@@ -281,10 +281,43 @@ class TestHeartbeatMerge:
                 text("SELECT count(*), sum(duration_s) FROM activity_events")
             )
             row = result.fetchone()
-            assert row[0] == 2, (
-                "10 events with 2s spacing span 18s > pulsetime 10s, split into 2 rows"
-            )
+            assert row[0] == 1
             assert row[1] == 50.0, "Total duration should be 50.0"
+
+
+    async def test_context_change_breaks_merge(self, repo, engine):
+        await repo.append_event(
+            _event(window_title="page-a", ts=_BASE_TS, duration_s=5.0)
+        )
+        await repo.append_event(
+            _event(
+                window_title="page-b",
+                ts=_BASE_TS + timedelta(seconds=5),
+                duration_s=5.0,
+            )
+        )
+
+        async with engine.connect() as conn:
+            result = await conn.execute(text("SELECT count(*) FROM activity_events"))
+            assert result.scalar() == 2
+
+    async def test_hour_of_contiguous_heartbeats_merges_to_one_segment(self, repo, engine):
+        for index in range(720):
+            await repo.append_event(
+                _event(
+                    window_title="same-context",
+                    duration_s=5.0,
+                    ts=_BASE_TS + timedelta(seconds=index * 5),
+                )
+            )
+
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT count(*), sum(duration_s) FROM activity_events")
+            )
+            row = result.fetchone()
+            assert row[0] == 1
+            assert row[1] == 3600.0
 
     async def test_consecutive_idle_events_within_pulsetime_merge(self, repo, engine):
         """Two idle_change events within pulsetime merge into one row.
@@ -321,7 +354,7 @@ class TestHeartbeatMerge:
             assert row[1] == 10.0, "Expected combined idle duration of 10.0"
 
     async def test_idle_events_outside_pulsetime_insert(self, repo, engine):
-        """Idle events beyond pulsetime insert separate rows (like snapshots)."""
+        """Idle events with a gap beyond pulsetime insert separate rows."""
         await repo.append_event(
             _event(
                 app_name="Code",
@@ -335,7 +368,7 @@ class TestHeartbeatMerge:
             _event(
                 app_name="Code",
                 duration_s=5.0,
-                ts=_BASE_TS + timedelta(seconds=11),
+                ts=_BASE_TS + timedelta(seconds=16),
                 is_idle=True,
                 event_type="idle_change",
             )
@@ -540,3 +573,39 @@ class TestRoundtrip:
         assert restored.app_name == "Chrome"
         assert restored.window_title == "GitHub - Pull Requests"
         assert restored == ev.data
+
+
+class TestCompaction:
+    async def test_compact_history_merges_contiguous_contexts(self, repo, engine):
+        async with engine.begin() as connection:
+            for index in range(20):
+                event = _event(
+                    window_title="same-context",
+                    duration_s=5.0,
+                    ts=_BASE_TS + timedelta(seconds=index * 5),
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO activity_events "
+                        "(id,user_id,timestamp,duration_s,data_json,event_type,created_at) "
+                        "VALUES (:id,1,:timestamp,5,:data_json,'window_snapshot',:created_at)"
+                    ),
+                    {
+                        "id": event.id,
+                        "timestamp": event.timestamp_utc.isoformat(),
+                        "data_json": json.dumps(event.data.to_dict()),
+                        "created_at": event.timestamp_utc.isoformat(),
+                    },
+                )
+
+        result = await repo.compact_history(1)
+
+        assert result == {"before": 20, "after": 1, "removed": 19}
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text("SELECT count(*), sum(duration_s) FROM activity_events")
+                )
+            ).fetchone()
+            assert row[0] == 1
+            assert row[1] == 100.0

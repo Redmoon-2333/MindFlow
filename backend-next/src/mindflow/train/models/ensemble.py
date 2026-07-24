@@ -160,15 +160,24 @@ class EnsembleClassifier:
         X_scaled = self.scaler.transform(X_test)
         y_pred = self.predict(X_test)
 
-        cv_scores = cross_val_score(self.rf_model, X_scaled, y_test, cv=5)
+        class_counts = np.bincount(np.asarray(y_test, dtype=np.int32), minlength=2)
+        nonzero_counts = class_counts[class_counts > 0]
+        cv_splits = min(5, len(y_test), int(nonzero_counts.min(initial=0)))
+        if cv_splits >= 2:
+            cv_scores = cross_val_score(self.rf_model, X_scaled, y_test, cv=cv_splits)
+            cv_mean = round(float(cv_scores.mean()), 4)
+            cv_std = round(float(cv_scores.std()), 4)
+        else:
+            cv_mean = 0.0
+            cv_std = 0.0
 
         return {
             "accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
             "precision": round(float(precision_score(y_test, y_pred, zero_division=0)), 4),
             "recall": round(float(recall_score(y_test, y_pred, zero_division=0)), 4),
             "f1": round(float(f1_score(y_test, y_pred, zero_division=0)), 4),
-            "cv_mean": round(float(cv_scores.mean()), 4),
-            "cv_std": round(float(cv_scores.std()), 4),
+            "cv_mean": cv_mean,
+            "cv_std": cv_std,
         }
 
     def to_dict(self) -> dict[str, Any]:

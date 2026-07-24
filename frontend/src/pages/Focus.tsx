@@ -1,11 +1,26 @@
 import { useState, useEffect, useCallback } from "react";
-import { getFocusSessions, getFocusTrend } from "../api";
+import { getFocusSessions, getFocusTrend, submitFocusFeedback } from "../api";
+
+interface FeedbackDraft {
+  label: "focus" | "distracted" | "mixed";
+  score: number;
+  taskType: string;
+}
 
 function formatMinutes(m: number): string {
   if (m == null || isNaN(m)) return "—";
   const h = Math.floor(m / 60);
   const min = Math.round(m % 60);
   return h > 0 ? `${h}h ${min}m` : `${min}m`;
+}
+
+function sessionDurationMinutes(session: any): number {
+  if (session.duration_minutes != null) return Number(session.duration_minutes);
+  if (session.duration != null) return Number(session.duration);
+  const start = new Date(session.start_time ?? session.started_at ?? "");
+  const end = new Date(session.end_time ?? session.ended_at ?? "");
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+  return Math.max(0, (end.getTime() - start.getTime()) / 60000);
 }
 
 function todayStr(): string {
@@ -27,6 +42,9 @@ export default function Focus() {
   const [loading, setLoading] = useState(false);
   const [trendLoading, setTrendLoading] = useState(false);
   const [error, setError] = useState("");
+  const [feedbackDrafts, setFeedbackDrafts] = useState<Record<string, FeedbackDraft>>({});
+  const [feedbackSaving, setFeedbackSaving] = useState<string | null>(null);
+  const [feedbackSaved, setFeedbackSaved] = useState<Set<string>>(new Set());
 
   const loadSessions = useCallback(async (d: string) => {
     setLoading(true);
@@ -60,21 +78,39 @@ export default function Focus() {
     loadTrend();
   }, [date, loadSessions, loadTrend]);
 
-  const totalFocus = sessions.reduce((sum: number, s: any) => sum + (s.duration_minutes || s.duration || 0), 0);
+  const totalFocus = sessions.reduce((sum: number, session: any) => sum + sessionDurationMinutes(session), 0);
   const sessionCount = sessions.length;
   const avgScore =
     sessionCount > 0
-      ? sessions.reduce((sum: number, s: any) => sum + (s.score ?? 0), 0) / sessionCount
+      ? sessions.reduce((sum: number, session: any) => sum + Number(session.focus_score ?? session.score ?? 0), 0) / sessionCount
       : 0;
   const longestBlock = sessions.reduce(
-    (max: number, s: any) => Math.max(max, s.duration_minutes || s.duration || 0),
+    (maximum: number, session: any) => Math.max(maximum, sessionDurationMinutes(session)),
     0,
   );
 
-  const trendDays = trend?.days ?? trend?.daily_data ?? [];
-  const maxFocus = Math.max(1, ...trendDays.map((d: any) => d.focus_minutes ?? d.focus ?? 0));
-  const maxDistraction = Math.max(1, ...trendDays.map((d: any) => d.distraction_minutes ?? d.distraction ?? 0));
+  const trendDays = trend?.daily ?? trend?.days ?? trend?.daily_data ?? [];
+  const maxFocus = Math.max(1, ...trendDays.map((day: any) => day.focus_min ?? day.focus_minutes ?? day.focus ?? 0));
+  const maxDistraction = Math.max(1, ...trendDays.map((day: any) => day.distraction_min ?? day.distraction_minutes ?? day.distraction ?? 0));
   const chartMax = Math.max(maxFocus, maxDistraction);
+
+  const saveFeedback = async (sessionId: string) => {
+    const draft = feedbackDrafts[sessionId] ?? { label: "mixed", score: 3, taskType: "" };
+    setFeedbackSaving(sessionId);
+    setError("");
+    try {
+      await submitFocusFeedback(sessionId, {
+        label: draft.label,
+        score: draft.score,
+        task_type: draft.taskType || undefined,
+      });
+      setFeedbackSaved((current) => new Set(current).add(sessionId));
+    } catch (e: any) {
+      setError(e.message || "反馈保存失败");
+    } finally {
+      setFeedbackSaving(null);
+    }
+  };
 
   return (
     <div>
@@ -129,8 +165,8 @@ export default function Focus() {
         {!trendLoading && trendDays.length > 0 && (
           <div style={{ display: "flex", alignItems: "flex-end", gap: 16, height: 200, paddingTop: 8 }}>
             {trendDays.map((d: any, i: number) => {
-              const focusVal = d.focus_minutes ?? d.focus ?? 0;
-              const distVal = d.distraction_minutes ?? d.distraction ?? 0;
+              const focusVal = d.focus_min ?? d.focus_minutes ?? d.focus ?? 0;
+              const distVal = d.distraction_min ?? d.distraction_minutes ?? d.distraction ?? 0;
               const focusPct = Math.round((focusVal / chartMax) * 100);
               const distPct = Math.round((distVal / chartMax) * 100);
               const dateStr = d.date ?? d.day ?? "";
@@ -201,54 +237,47 @@ export default function Focus() {
         )}
         {!loading && sessions.length > 0 && (
           <div className="flex gap16" style={{ flexDirection: "column" }}>
-            {sessions.map((s: any, i: number) => {
-              const sessionDate = s.date ?? s.started_at?.slice(0, 10) ?? "";
-              const duration = s.duration_minutes ?? s.duration ?? 0;
-              const app = s.main_app ?? s.app ?? s.app_name ?? "—";
-              const score = s.score;
-              const switches = s.switch_count ?? s.switches ?? 0;
+            {sessions.map((session: any, index: number) => {
+              const sessionId = String(session.id ?? index);
+              const startTime = session.start_time ?? session.started_at ?? "";
+              const sessionDate = session.date ?? String(startTime).slice(0, 10);
+              const duration = sessionDurationMinutes(session);
+              const app = session.dominant_app ?? session.main_app ?? session.app ?? session.app_name ?? "—";
+              const score = session.focus_score ?? session.score;
+              const switches = session.switch_count ?? session.switches ?? 0;
+              const draft = feedbackDrafts[sessionId] ?? { label: "mixed", score: 3, taskType: "" };
               return (
                 <div
-                  key={s.id ?? i}
-                  className="flex flex-between"
+                  key={sessionId}
                   style={{
-                    padding: "12px 0",
-                    borderBottom: i < sessions.length - 1 ? "1px solid var(--color-border)" : "none",
+                    padding: "14px 0",
+                    borderBottom: index < sessions.length - 1 ? "1px solid var(--color-border)" : "none",
                   }}
                 >
-                  <div className="flex gap16" style={{ alignItems: "center" }}>
-                    <div style={{ minWidth: 80 }}>
-                      <div style={{ fontSize: 13, fontWeight: 500 }}>
-                        {sessionDate ? sessionDate.slice(5) : "—"}
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
-                        {sessionDate ? dayLabel(sessionDate) : ""}
-                      </div>
-                    </div>
-                    <div style={{ minWidth: 80 }}>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>{formatMinutes(duration)}</div>
-                      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>专注时长</div>
-                    </div>
-                    <div>
-                      <span className="badge badge-primary">{app}</span>
-                    </div>
-                  </div>
-                  <div className="flex gap16" style={{ alignItems: "center" }}>
-                    {score != null && (
-                      <div style={{ textAlign: "center" }}>
-                        <div
-                          className={`badge ${
-                            score >= 80 ? "badge-success" : score >= 50 ? "badge-warning" : "badge-danger"
-                          }`}
-                        >
-                          {Math.round(score)}分
+                  <div className="flex flex-between" style={{ gap: 18, flexWrap: "wrap" }}>
+                    <div className="flex gap16" style={{ alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ minWidth: 100 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>{sessionDate ? sessionDate.slice(5) : "—"}</div>
+                        <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                          {sessionDate ? dayLabel(sessionDate) : ""} {startTime ? new Date(startTime).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : ""}
                         </div>
                       </div>
-                    )}
-                    <div style={{ textAlign: "center", minWidth: 60 }}>
-                      <div style={{ fontSize: 13, fontWeight: 500 }}>{switches}</div>
-                      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>切换次数</div>
+                      <div style={{ minWidth: 80 }}><div style={{ fontSize: 14, fontWeight: 600 }}>{formatMinutes(duration)}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>会话时长</div></div>
+                      <span className="badge badge-primary">{app}</span>
                     </div>
+                    <div className="flex gap16" style={{ alignItems: "center" }}>
+                      {score != null && <span className={`badge ${score >= 80 ? "badge-success" : score >= 50 ? "badge-warning" : "badge-danger"}`}>{Math.round(score)}分</span>}
+                      <div style={{ textAlign: "center", minWidth: 60 }}><div style={{ fontSize: 13, fontWeight: 500 }}>{switches}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>切换次数</div></div>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "var(--color-bg-secondary)" }}>
+                    <div className="flex flex-between" style={{ gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+                      <div className="form-group" style={{ margin: 0, minWidth: 150 }}><label>这次状态</label><select value={draft.label} onChange={(event) => setFeedbackDrafts((current) => ({ ...current, [sessionId]: { ...draft, label: event.target.value as FeedbackDraft["label"] } }))}><option value="focus">专注</option><option value="distracted">分心</option><option value="mixed">混合</option></select></div>
+                      <div className="form-group" style={{ margin: 0, minWidth: 150 }}><label>自评分数</label><select value={draft.score} onChange={(event) => setFeedbackDrafts((current) => ({ ...current, [sessionId]: { ...draft, score: Number(event.target.value) } }))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} 分</option>)}</select></div>
+                      <div className="form-group" style={{ margin: 0, minWidth: 180 }}><label>任务类型（可选）</label><select value={draft.taskType} onChange={(event) => setFeedbackDrafts((current) => ({ ...current, [sessionId]: { ...draft, taskType: event.target.value } }))}><option value="">未选择</option><option value="coding">编程</option><option value="writing">写作</option><option value="study">学习</option><option value="meeting">会议</option><option value="admin">事务</option><option value="creative">创作</option><option value="other">其他</option></select></div>
+                      <button className="btn btn-primary btn-sm" disabled={feedbackSaving === sessionId} onClick={() => saveFeedback(sessionId)}>{feedbackSaving === sessionId ? "保存中..." : feedbackSaved.has(sessionId) ? "已保存，可更新" : "保存反馈"}</button>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 8 }}>1–2 分用于分心标签，4–5 分用于专注标签，3 分或混合只用于不确定性评估。</div>
                   </div>
                 </div>
               );

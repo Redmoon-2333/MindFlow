@@ -49,6 +49,7 @@ from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
+from mindflow.services.telemetry_service import TelemetryService
 from mindflow.train.models.manager import ModelManager
 
 
@@ -171,3 +172,7 @@ def get_baseline_repo(request: Request) -> BaselineRepository:
 def get_model_manager(request: Request) -> ModelManager | None:
     """Return the ModelManager from app.state (None if models not loaded)."""
     return cast(ModelManager | None, getattr(request.app.state, "model_manager", None))
+
+
+def get_telemetry_service(request: Request) -> TelemetryService:
+    return cast(TelemetryService, request.app.state.telemetry_service)

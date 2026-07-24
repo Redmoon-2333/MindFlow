@@ -142,14 +142,24 @@ class EffectivenessService:
         try:
             # before/after windows are independent reads — fetch concurrently.
             before_events, after_events = await asyncio.gather(
-                self._activity_repo.query_range(user_id, before_start, before_end),
-                self._activity_repo.query_range(user_id, after_start, after_end),
+                self._activity_repo.query_overlapping_range(
+                    user_id, before_start, before_end
+                ),
+                self._activity_repo.query_overlapping_range(
+                    user_id, after_start, after_end
+                ),
             )
 
             before_metrics = self._compute_metrics(before_events)
             after_metrics = self._compute_metrics(after_events)
 
-            has_data = len(before_events) >= 5 and len(after_events) >= 5
+            minimum_coverage_s = 150.0
+            has_data = (
+                sum(max(0.0, event.duration_s) for event in before_events)
+                >= minimum_coverage_s
+                and sum(max(0.0, event.duration_s) for event in after_events)
+                >= minimum_coverage_s
+            )
 
             deltas = {
                 k: round(after_metrics.get(k, 0.0) - before_metrics.get(k, 0.0), 2)
@@ -246,19 +256,28 @@ class EffectivenessService:
 
         # Simple distraction ratio: fraction of events in apps that are
         # not the top-3 most-used work apps in this window.
-        total = len(events)
-        if total == 0:
+        if not events:
             distraction_ratio = 0.0
         else:
-            # Count events by app, find top-3, everything else is "distraction"
-            app_counts: dict[str, int] = {}
-            for ev in events:
-                app = ev.data.process_name if hasattr(ev.data, "process_name") else ""
-                app_counts[app] = app_counts.get(app, 0) + 1
-            sorted_apps = sorted(app_counts.items(), key=lambda x: x[1], reverse=True)
-            top_3_apps = set(a[0] for a in sorted_apps[:3])
-            distraction_count = sum(c for a, c in sorted_apps if a not in top_3_apps)
-            distraction_ratio = distraction_count / total
+            app_durations: dict[str, float] = {}
+            for event in events:
+                app = event.data.process_name if hasattr(event.data, "process_name") else ""
+                app_durations[app] = app_durations.get(app, 0.0) + max(
+                    0.0, event.duration_s
+                )
+            sorted_apps = sorted(
+                app_durations.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            top_3_apps = {app for app, _ in sorted_apps[:3]}
+            distraction_duration = sum(
+                duration for app, duration in sorted_apps if app not in top_3_apps
+            )
+            total_duration = sum(app_durations.values())
+            distraction_ratio = (
+                distraction_duration / total_duration if total_duration > 0 else 0.0
+            )
 
         return {
             "focus_score": round(score, 1),

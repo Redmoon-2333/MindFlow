@@ -10,6 +10,7 @@ Each step is independently testable.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -27,6 +28,11 @@ from mindflow.domain.labeling import ConsensusLabeler
 from mindflow.train.features import BehaviorFeatureExtractor
 from mindflow.train.models import ModelManager
 from mindflow.train.synthetic_data import generate_synthetic_data
+from mindflow.train.v2 import (
+    evaluate_v2_candidates,
+    evaluate_v2_quality_gate,
+    prepare_v2_training_data,
+)
 
 
 @dataclass
@@ -44,11 +50,17 @@ class TrainingReport:
     n_distract: int = 0
     avg_confidence: float = 0.0
     baseline_updated: int = 0
+    filtered_windows: int = 0
+    quality_gate: dict[str, Any] = field(default_factory=dict)
+    activated: bool = False
     clustering: dict[str, Any] = field(default_factory=dict)
     classifier: dict[str, Any] = field(default_factory=dict)
     hmm: dict[str, Any] = field(default_factory=dict)
     saved_models: dict[str, str] = field(default_factory=dict)
     version_tag: str | None = None
+    feature_schema_version: int = 1
+    model_mode: str = "rule_engine_only"
+    evaluation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -68,6 +80,8 @@ def run_training(
     user_profiles: list[str] | None = None,
     min_confidence: float = 0.2,
     min_baseline_samples: int = 30,
+    feature_windows: list[dict[str, Any]] | None = None,
+    feedback_sessions: list[dict[str, Any]] | None = None,
 ) -> TrainingReport:
     """Run the full training pipeline.
 
@@ -99,6 +113,13 @@ def run_training(
     models_path = Path(models_dir)
 
     report = TrainingReport(source=source)
+    if source == "db" and feature_windows:
+        return _run_v2_training(
+            feature_windows=feature_windows,
+            feedback_sessions=feedback_sessions or [],
+            models_path=models_path,
+            source=source,
+        )
 
     # ── Step 1: Load / generate data ──────────────────────────────────────
     raw_rows: list[dict[str, Any]] = []
@@ -140,11 +161,14 @@ def run_training(
     # ── Step 2: Extract features ──────────────────────────────────────────
     print("[2/6] Extracting behavioral features...")
     extractor = BehaviorFeatureExtractor(window_minutes=30)
-    feature_rows = extractor.extract_session_features(_rows_for_features)
-    report.windows_extracted = len(feature_rows)
-    print(f"       Extracted {len(feature_rows)} session windows")
+    extracted_rows = extractor.extract_session_features(_rows_for_features)
+    report.windows_extracted = len(extracted_rows)
+    feature_rows = [row for row in extracted_rows if _is_trainable_window(row)]
+    report.filtered_windows = len(extracted_rows) - len(feature_rows)
+    print(f"       Extracted {len(extracted_rows)} session windows")
+    print(f"       Trainable windows: {len(feature_rows)}")
     if not feature_rows:
-        print("       ERROR: No features extracted. Exiting.")
+        print("       ERROR: No trainable features extracted. Exiting.")
         return report
 
     # ── Step 3: Weak supervision labeling ─────────────────────────────────
@@ -205,14 +229,17 @@ def run_training(
     # ── Step 6: Save artifacts ────────────────────────────────────────────
     print("[6/6] Saving artifacts...")
 
-    # Baseline
     baseline_path = data_path / f"baseline_user{user_id}.json"
     baseline.save(baseline_path)
 
-    # Models (versioned)
-    saved = manager.save_all()
+    report.quality_gate = _evaluate_quality_gate(report, feature_rows)
+    should_activate = source != "db" or bool(report.quality_gate["passed"])
+    saved = manager.save_all(activate=should_activate)
     report.saved_models = saved
-    report.version_tag = manager.current_version_tag
+    report.activated = should_activate
+    report.model_mode = "ready" if should_activate else "shadow"
+    first_filename = next(iter(saved.values()), "")
+    report.version_tag = first_filename.removesuffix(".pkl").rsplit("-", 1)[-1] or None
 
     # Training report JSON
     report_path = models_path / "training_report.json"
@@ -235,6 +262,131 @@ def run_training(
     print("\nNext: restart the API server to pick up new models.")
 
     return report
+
+
+def _run_v2_training(
+    *,
+    feature_windows: list[dict[str, Any]],
+    feedback_sessions: list[dict[str, Any]],
+    models_path: Path,
+    source: str,
+) -> TrainingReport:
+    report = TrainingReport(
+        source=source,
+        total_records=len(feature_windows),
+        windows_extracted=len(feature_windows),
+        feature_schema_version=2,
+    )
+    training_data = prepare_v2_training_data(feature_windows, feedback_sessions)
+    report.filtered_windows = len(feature_windows) - len(training_data.features)
+    report.n_focus = int(np.sum(training_data.labels == 1))
+    report.n_distract = int(np.sum(training_data.labels == 0))
+    report.avg_confidence = (
+        round(float(np.mean(training_data.sample_weights)), 4)
+        if len(training_data.sample_weights)
+        else 0.0
+    )
+    evaluation = evaluate_v2_candidates(training_data)
+    report.evaluation = evaluation
+    report.quality_gate = evaluate_v2_quality_gate(
+        evaluation,
+        explicit_feedback_count=training_data.explicit_feedback_count,
+        explicit_focus_count=training_data.explicit_focus_count,
+        explicit_distract_count=training_data.explicit_distract_count,
+        distinct_feedback_days=training_data.distinct_feedback_days,
+    )
+    report.model_mode = "rule_engine_only"
+
+    v2_models_path = models_path / "v2"
+    v2_models_path.mkdir(parents=True, exist_ok=True)
+    if len(training_data.features) >= 10 and len(np.unique(training_data.labels)) >= 2:
+        manager = ModelManager(models_dir=v2_models_path, use_ensemble=False)
+        summary = manager.train_all(
+            training_data.features,
+            training_data.feature_names,
+            training_data.labels,
+            sample_weight=training_data.sample_weights,
+            min_confidence=0.0,
+        )
+        manager.classifier.fit(
+            training_data.features,
+            training_data.labels,
+            training_data.feature_names,
+            sample_weight=training_data.sample_weights,
+        )
+        report.clustering = summary.clustering
+        report.classifier = {**summary.classifier, "grouped_evaluation": evaluation}
+        report.hmm = summary.hmm
+        should_activate = bool(report.quality_gate["passed"])
+        saved = manager.save_all(activate=should_activate)
+        report.saved_models = saved
+        report.activated = should_activate
+        report.model_mode = "ready" if should_activate else "shadow"
+        first_filename = next(iter(saved.values()), "")
+        report.version_tag = first_filename.removesuffix(".pkl").rsplit("-", 1)[-1] or None
+
+    report_path = v2_models_path / "training_report.json"
+    report_path.write_text(
+        json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return report
+
+
+def _is_trainable_window(row: Mapping[str, Any]) -> bool:
+    if float(row.get("idle_ratio", 1.0)) >= 0.7:
+        return False
+    ratio_names = (
+        "productivity_ratio",
+        "entertainment_ratio",
+        "social_ratio",
+        "idle_ratio",
+        "activity_entropy",
+    )
+    for name in ratio_names:
+        value = float(row.get(name, 0.0))
+        if not math.isfinite(value) or value < 0.0 or value > 1.0:
+            return False
+    return True
+
+
+def _evaluate_quality_gate(
+    report: TrainingReport,
+    feature_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    distinct_days = {
+        str(row.get("window_start", ""))[:10]
+        for row in feature_rows
+        if row.get("window_start")
+    }
+    noise_samples = sum(
+        int(cluster.get("count", 0))
+        for cluster in report.clustering.get("clusters", [])
+        if cluster.get("id") == -1
+    )
+    steady_state = [float(value) for value in report.hmm.get("steady_state", [])]
+    checks = {
+        "minimum_days": len(distinct_days) >= 7,
+        "minimum_windows": len(feature_rows) >= 30,
+        "minimum_class_samples": report.n_focus >= 10 and report.n_distract >= 10,
+        "minimum_confidence": report.avg_confidence >= 0.5,
+        "classifier_ready": "error" not in report.classifier,
+        "clustering_ready": (
+            int(report.clustering.get("n_clusters", 0)) >= 2
+            and noise_samples < len(feature_rows) * 0.8
+        ),
+        "hmm_ready": (
+            "error" not in report.hmm
+            and bool(steady_state)
+            and max(steady_state) < 0.95
+        ),
+    }
+    return {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "distinct_days": len(distinct_days),
+        "trainable_windows": len(feature_rows),
+    }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

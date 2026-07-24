@@ -1,5 +1,24 @@
 const BASE = "/api/v1";
 
+
+export interface TelemetryPreferences {
+  input_telemetry_enabled: boolean;
+  browser_tracking_enabled: boolean;
+  interaction_retention_days: number;
+  activity_retention_days: number;
+}
+
+export interface TelemetryStatus {
+  preferences: TelemetryPreferences;
+  input_watcher_status: string;
+  database_size_bytes: number;
+  interaction_bucket_count: number;
+  browser_segment_count: number;
+  browser_paired: boolean;
+  last_interaction_at: string | null;
+  last_browser_at: string | null;
+}
+
 export interface HealthData {
   status: string;
   version: string;
@@ -68,6 +87,14 @@ export const getFocusSessions = (date?: string) =>
   request<any>(`/focus${date ? `?date=${date}` : ""}`);
 export const getFocusTrend = (days?: number) =>
   request<any>(`/focus/trend${days ? `?days=${days}` : ""}`);
+export const submitFocusFeedback = (
+  sessionId: string,
+  data: { label: "focus" | "distracted" | "mixed"; score: number; task_type?: string },
+) =>
+  request<any>(`/focus/${encodeURIComponent(sessionId)}/feedback`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 
 // ── Reports ──
 export const getDailyReport = (date?: string) =>
@@ -123,6 +150,20 @@ export const getInterventionHistory = (days?: number) =>
 export const getCollectorStatus = () => request<any>("/collector");
 export const startCollector = () => request<any>("/collector", { method: "POST" });
 export const stopCollector = () => request<any>("/collector/stop", { method: "POST" });
+
+// Privacy telemetry
+export const getTelemetryStatus = () => request<TelemetryStatus>("/telemetry/status");
+export const patchTelemetryPreferences = (data: Partial<TelemetryPreferences>) =>
+  request<TelemetryPreferences>("/telemetry/preferences", {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+export const createBrowserPairingCode = () =>
+  request<{ code: string; expires_at: string }>("/telemetry/browser/pairing-code", {
+    method: "POST",
+  });
+export const clearTelemetryData = (scope: "interaction" | "browser" | "feedback" | "all") =>
+  request<{ deleted: number }>(`/telemetry/data?scope=${scope}`, { method: "DELETE" });
 
 // ── Preferences ──
 export const getPreferences = () => request<Record<string, any>>("/preferences");

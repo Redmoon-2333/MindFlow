@@ -10,7 +10,7 @@ Dates are optional and default to today if omitted.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -21,6 +21,7 @@ from mindflow.domain.events import ActivityEvent
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
+from mindflow.time_utils import utc_today
 
 router = APIRouter(tags=["activities"])
 
@@ -43,7 +44,7 @@ async def list_activities(
 
     Results are ordered by timestamp descending (most recent first).
     """
-    today = date.today()
+    today = utc_today()
 
     try:
         start = (

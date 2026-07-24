@@ -31,6 +31,7 @@ from mindflow.api.deps import get_llm_service
 from mindflow.api.errors import ProblemDetail
 from mindflow.errors import NoActivityDataError
 from mindflow.services.llm_service import LLMService
+from mindflow.time_utils import utc_today
 
 router = APIRouter(tags=["analytics"])
 
@@ -62,7 +63,7 @@ async def post_attribution(
         404 ProblemDetail: No activity events exist for the requested date.
     """
     req = AttributionRequest.model_validate(payload or {})
-    target_date = date.fromisoformat(req.date) if req.date else date.today()
+    target_date = date.fromisoformat(req.date) if req.date else utc_today()
 
     try:
         outcome = await llm_service.analyze(

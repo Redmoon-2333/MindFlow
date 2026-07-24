@@ -467,3 +467,25 @@ class TestConsensusLabeler:
         labeler = ConsensusLabeler()
         signal_types = {type(s).__name__ for s in labeler.signals}
         assert "TitleBasedSignal" in signal_types
+
+
+def test_consensus_high_idle_window_abstains() -> None:
+    labeler = ConsensusLabeler()
+
+    label, confidence = labeler.label_single(
+        _row(
+            productivity_ratio=1.0,
+            switch_frequency=0.0,
+            unique_app_count=1.0,
+            entertainment_ratio=0.0,
+            social_ratio=0.0,
+            idle_ratio=0.95,
+            max_app_duration=1700.0,
+            hour_of_day=10.0,
+            day_of_week=2.0,
+            title_code_ratio=1.0,
+        )
+    )
+
+    assert label == 0
+    assert confidence == 0.0

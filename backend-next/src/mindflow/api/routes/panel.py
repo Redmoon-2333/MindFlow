@@ -24,7 +24,6 @@ When the expert panel is unavailable and falls through to single-expert mode,
 
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends  # noqa: B008
@@ -34,6 +33,7 @@ from mindflow.api.deps import get_panel_service
 from mindflow.api.errors import ProblemDetail
 from mindflow.errors import NoActivityDataError
 from mindflow.services.panel_service import PanelService
+from mindflow.time_utils import utc_today
 
 router = APIRouter(tags=["panel"])
 
@@ -95,7 +95,7 @@ async def post_panel_today(
     Returns:
         A ``PanelVerdict`` JSON response.
     """
-    today = date.today()
+    today = utc_today()
     logger.info("Triggering daily panel for user 1 on {}", today)
 
     try:
@@ -128,7 +128,7 @@ async def get_panel_result(
     Returns:
         A ``PanelVerdict`` JSON response matching the POST shape, or 404.
     """
-    today = date.today()
+    today = utc_today()
     logger.debug("GET /panel — reading stored panel result for user 1 on {}", today)
 
     try:

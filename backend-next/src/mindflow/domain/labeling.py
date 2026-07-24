@@ -189,6 +189,9 @@ class ConsensusLabeler:
             (label, confidence): label is 1 (focus) or 0 (distraction),
             confidence in [0, 1].
         """
+        if float(row.get("idle_ratio", 0.0)) >= 0.7:
+            return 0, 0.0
+
         votes: list[tuple[int, float]] = [s(row) for s in self.signals]
 
         focus_weight = 0.0

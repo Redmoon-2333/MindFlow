@@ -1,0 +1,16 @@
+﻿{
+  "manifest_version": 3,
+  "name": "MindFlow Browser Telemetry",
+  "version": "1.0.0",
+  "description": "Local-only domain dwell tracking for MindFlow",
+  "permissions": ["tabs", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "options_page": "options.html",
+  "incognito": "not_allowed",
+  "action": {
+    "default_title": "MindFlow"
+  }
+}
