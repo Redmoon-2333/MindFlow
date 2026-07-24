@@ -793,17 +793,11 @@ class PanelOrchestrator:
                 ),
             )
 
-            updates: dict[str, Any] = {
+            return {
                 "moderator_verdict": verdict,
                 "transcript": list(self._transcript),
                 "call_count": self._call_count,
             }
-            if is_redo:
-                # Increment critic_retries to track the redo cycle.
-                # The critic_verdict edge uses this to stop after 1 retry.
-                updates["critic_retries"] = state["critic_retries"] + 1
-
-            return updates
 
         # ── Node: critic_node ───────────────────────────────────────────
         async def critic_node(state: PanelState) -> dict[str, Any]:
@@ -837,11 +831,14 @@ class PanelOrchestrator:
                 TranscriptEntry(role=CRITIC.role, content=_critic_summary(result), round=round_num),
             )
 
-            return {
+            updates: dict[str, Any] = {
                 "critic_result": result,
                 "transcript": list(self._transcript),
                 "call_count": self._call_count,
             }
+            if not result.approved:
+                updates["critic_retries"] = state["critic_retries"] + 1
+            return updates
 
         # ── Conditional route helpers ───────────────────────────────────
 

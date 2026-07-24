@@ -16,6 +16,8 @@ to guarantee behaviour parity.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from test_agents_orchestrator import (
     _ANALYST_JSON,
@@ -38,6 +40,22 @@ from test_agents_orchestrator import (
 
 from mindflow.agents.orchestrator import PanelOrchestrator
 from mindflow.agents.types import PanelVerdict
+
+
+class RecordingGateway(MockGateway):
+    def __init__(self, responses: dict[str, list[str]]) -> None:
+        super().__init__(responses=responses)
+        self.moderator_prompts: list[str] = []
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        model: Literal["chat", "reasoner"] = "chat",
+    ) -> str:
+        if FP_MODERATOR in system:
+            self.moderator_prompts.append(user)
+        return await super().complete(system=system, user=user, model=model)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tests — fast path
@@ -121,12 +139,30 @@ class TestLangGraphCriticReject:
             FP_MODERATOR: [_MODERATOR_JSON, _MODERATOR_REDO_JSON],
             FP_CRITIC: [_CRITIC_REJECT, _CRITIC_APPROVE],
         }
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
+        gateway = RecordingGateway(responses=responses)
+        orchestrator = PanelOrchestrator(gateway=gateway)
         verdict = await orchestrator.run(_make_bundle())
 
         assert isinstance(verdict, PanelVerdict)
         assert verdict.source == "panel"
-        # analyst(1) + 3attribution(3) + moderator(1) + critic(1) + redo(1) + critic2(1) = 8
         assert verdict.call_count == 8
-        # Additional transcript entries for redo moderator + second critic
+        assert len(verdict.transcript) == 8
+        assert len(gateway.moderator_prompts) == 2
+        assert "fake_metric" in gateway.moderator_prompts[1]
+
+    @pytest.mark.asyncio
+    async def test_second_critic_rejection_exhausts_retry(self) -> None:
+        responses: dict[str, list[str]] = {
+            FP_ANALYST: [_ANALYST_JSON],
+            FP_CBT: [_ATTRIBUTION_IMPULSIVITY],
+            FP_TMT: [_ATTRIBUTION_IMPULSIVITY],
+            FP_EMOTION: [_ATTRIBUTION_IMPULSIVITY],
+            FP_MODERATOR: [_MODERATOR_JSON, _MODERATOR_REDO_JSON],
+            FP_CRITIC: [_CRITIC_REJECT, _CRITIC_REJECT],
+        }
+        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
+
+        verdict = await orchestrator.run(_make_bundle())
+
+        assert verdict.call_count == 8
         assert len(verdict.transcript) == 8
