@@ -11,68 +11,75 @@ import {
   stopCollector,
   resumeAutonomy,
   pauseAutonomy,
+  getErrorMessage,
 } from "../api";
-import type { HealthData } from "../api";
-
-interface ModelStatusData {
-  loaded: boolean;
-  mode: string;
-  message?: string;
-}
+import type { ActivityItem, AutonomyStatus, CollectorStatus, FocusTrendResponse, HealthData, InterventionHistoryItem, ModelStatus } from "../api";
+import { realtimeClient } from "../realtime";
+import type { RealtimeStatus } from "../realtime";
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [health, setHealth] = useState<HealthData | null>(null);
-  const [modelStatus, setModelStatus] = useState<ModelStatusData | null>(null);
-  const [focusTrend, setFocusTrend] = useState<any>(null);
-  const [currentActivity, setCurrentActivity] = useState<any>(null);
-  const [interventions, setInterventions] = useState<any[]>([]);
-  const [collector, setCollector] = useState<any>(null);
-  const [autonomy, setAutonomy] = useState<any>(null);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [focusTrend, setFocusTrend] = useState<FocusTrendResponse | null>(null);
+  const [currentActivity, setCurrentActivity] = useState<ActivityItem | null>(null);
+  const [interventions, setInterventions] = useState<InterventionHistoryItem[]>([]);
+  const [collector, setCollector] = useState<CollectorStatus | null>(null);
+  const [autonomy, setAutonomy] = useState<AutonomyStatus | null>(null);
 
   const [collectorLoading, setCollectorLoading] = useState(false);
   const [autonomyLoading, setAutonomyLoading] = useState(false);
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("idle");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
-    try {
-      const [h, ms, ft, ca, ih, cs, au] = await Promise.all([
-        getHealth(),
-        getModelStatus(),
-        getFocusTrend(7),
-        getCurrentActivity(),
-        getInterventionHistory(7),
-        getCollectorStatus(),
-        getAutonomy(),
-      ]);
-      setHealth(h);
-      setModelStatus(ms);
-      setFocusTrend(ft);
-      setCurrentActivity(ca);
-      setInterventions(Array.isArray(ih) ? ih : ih?.items ?? []);
-      setCollector(cs);
-      setAutonomy(au);
-    } catch (e: any) {
-      setError(e.message ?? "加载失败");
-    } finally {
-      setLoading(false);
-    }
+    const results = await Promise.allSettled([
+      getHealth(), getModelStatus(), getFocusTrend(7), getCurrentActivity(),
+      getInterventionHistory(7), getCollectorStatus(), getAutonomy(),
+    ]);
+    const [h, ms, ft, ca, ih, cs, au] = results;
+    if (h.status === "fulfilled") setHealth(h.value);
+    if (ms.status === "fulfilled") setModelStatus(ms.value);
+    if (ft.status === "fulfilled") setFocusTrend(ft.value);
+    if (ca.status === "fulfilled") setCurrentActivity(ca.value);
+    if (ih.status === "fulfilled") setInterventions([...ih.value.items].reverse());
+    if (cs.status === "fulfilled") setCollector(cs.value);
+    if (au.status === "fulfilled") setAutonomy(au.value);
+    const failed = results.filter((result) => result.status === "rejected");
+    if (failed.length > 0) setError(`部分数据加载失败（${failed.length} 项），其余内容已显示`);
+    setLoading(false);
   }, []);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
+  useEffect(() => realtimeClient.subscribeStatus(setRealtimeStatus), []);
+  useEffect(() => realtimeClient.subscribe("activity_update", (payload, timestamp) => {
+    setCurrentActivity({
+      id: `realtime-${timestamp}`, user_id: 1, timestamp, duration_s: 0, event_type: "window_change",
+      data: { app_name: payload.app_name, window_title: payload.window_title ?? "", process_name: payload.process_name ?? "", is_idle: payload.is_idle },
+    });
+  }), []);
+  useEffect(() => realtimeClient.subscribe("intervention", (payload, timestamp) => {
+    const item: InterventionHistoryItem = {
+      id: payload.id, user_id: 1, triggered_at: timestamp, intervention_type: payload.intervention_type,
+      cbt_technique: payload.cbt_technique ?? null, context_json: null, user_response: null,
+      response_latency_s: null, feedback_rating: null, feedback_comment: null, created_at: timestamp,
+    };
+    setInterventions((current) => [item, ...current.filter((entry) => entry.id !== item.id)]);
+  }), []);
+
   const handleCollectorToggle = async () => {
     setCollectorLoading(true);
     try {
       const next = collector?.running ? await stopCollector() : await startCollector();
       setCollector(next);
-    } catch (e: any) {
-      setError(e.message ?? "操作失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Operation failed"));
     } finally {
       setCollectorLoading(false);
     }
@@ -83,8 +90,8 @@ export default function Dashboard() {
     try {
       const result = await pauseAutonomy(1);
       setAutonomy(result);
-    } catch (e: any) {
-      setError(e.message ?? "操作失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Operation failed"));
     } finally {
       setAutonomyLoading(false);
     }
@@ -95,8 +102,8 @@ export default function Dashboard() {
     try {
       const result = await resumeAutonomy();
       setAutonomy(result);
-    } catch (e: any) {
-      setError(e.message ?? "操作失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Operation failed"));
     } finally {
       setAutonomyLoading(false);
     }
@@ -207,7 +214,7 @@ export default function Dashboard() {
             </div>
             {collector?.status && (
               <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
-                {collector.status}
+                {collector.status} · 实时连接：{realtimeStatus}
               </div>
             )}
             <button
@@ -252,23 +259,17 @@ export default function Dashboard() {
             {currentActivity ? (
               <div>
                 <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-                  {currentActivity.app_name ?? currentActivity.title ?? currentActivity.name ?? "未知应用"}
+                  {currentActivity.data.app_name || "未知应用"}
                 </div>
                 <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-                  {currentActivity.category && (
-                    <span className="badge badge-primary" style={{ marginRight: 8 }}>
-                      {currentActivity.category}
-                    </span>
-                  )}
-                  {currentActivity.started_at && (
-                    <span>
-                      开始于 {new Date(currentActivity.started_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
-                    </span>
-                  )}
+                  {currentActivity.data.window_title || currentActivity.data.process_name}
+                  <span style={{ marginLeft: 8 }}>
+                    {new Date(currentActivity.timestamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
                 </div>
-                {(currentActivity.duration_seconds != null || currentActivity.elapsed != null) && (
+                {currentActivity.duration_s > 0 && (
                   <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-                    已持续 {Math.round(((currentActivity.duration_seconds ?? currentActivity.elapsed) / 60))} 分钟
+                    持续 {Math.round(currentActivity.duration_s / 60)} 分钟
                   </div>
                 )}
               </div>
@@ -288,7 +289,7 @@ export default function Dashboard() {
               </div>
             ) : (
               <div style={{ maxHeight: 320, overflowY: "auto" }}>
-                {interventions.slice(0, 10).map((item: any, idx: number) => (
+                {interventions.slice(0, 10).map((item, idx) => (
                   <div
                     key={item.id ?? idx}
                     style={{
@@ -298,26 +299,18 @@ export default function Dashboard() {
                   >
                     <div className="flex-between">
                       <span style={{ fontSize: 13, fontWeight: 500 }}>
-                        {item.type ?? item.intensity ?? "干预"}
+                        {item.intervention_type || "干预"}
                       </span>
                       <span
                         className={`badge ${
-                          item.status === "responded" || item.responded
-                            ? "badge-success"
-                            : item.status === "pending"
-                              ? "badge-warning"
-                              : "badge-primary"
+                          item.user_response ? "badge-success" : "badge-warning"
                         }`}
                       >
-                        {item.status === "responded" || item.responded ? "已响应" : item.status ?? "待处理"}
+                        {item.user_response ? "已响应" : "待响应"}
                       </span>
                     </div>
                     <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-                      {item.created_at
-                        ? new Date(item.created_at).toLocaleString("zh-CN")
-                        : item.timestamp
-                          ? new Date(item.timestamp).toLocaleString("zh-CN")
-                          : ""}
+                      {new Date(item.triggered_at || item.created_at).toLocaleString("zh-CN")}
                     </div>
                   </div>
                 ))}

@@ -1,5 +1,29 @@
 import { useState, useEffect, useCallback } from "react";
-import { getFocusSessions, getFocusTrend, submitFocusFeedback } from "../api";
+import { getErrorMessage, getFocusSessions, getFocusTrend, submitFocusFeedback } from "../api";
+import type { FocusSession, FocusTrendDay, FocusTrendResponse } from "../api";
+
+type CompatibleTrendDay = Partial<FocusTrendDay>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCompatibleTrendDay(value: unknown): value is CompatibleTrendDay {
+  if (!isRecord(value)) return false;
+  const numberFields = ["focus_min", "focus_minutes", "focus", "distraction_min", "distraction_minutes", "distraction", "session_count", "avg_score"];
+  return (value.date == null || typeof value.date === "string")
+    && (value.day == null || typeof value.day === "string")
+    && numberFields.every((field) => value[field] == null || typeof value[field] === "number");
+}
+
+function getTrendDays(value: unknown): CompatibleTrendDay[] {
+  if (!isRecord(value)) return [];
+  for (const key of ["daily", "days", "daily_data"]) {
+    const candidate = value[key];
+    if (Array.isArray(candidate)) return candidate.filter(isCompatibleTrendDay);
+  }
+  return [];
+}
 
 interface FeedbackDraft {
   label: "focus" | "distracted" | "mixed";
@@ -7,14 +31,14 @@ interface FeedbackDraft {
   taskType: string;
 }
 
-function formatMinutes(m: number): string {
+function formatMinutes(m: number | null | undefined): string {
   if (m == null || isNaN(m)) return "—";
   const h = Math.floor(m / 60);
   const min = Math.round(m % 60);
   return h > 0 ? `${h}h ${min}m` : `${min}m`;
 }
 
-function sessionDurationMinutes(session: any): number {
+function sessionDurationMinutes(session: FocusSession): number {
   if (session.duration_minutes != null) return Number(session.duration_minutes);
   if (session.duration != null) return Number(session.duration);
   const start = new Date(session.start_time ?? session.started_at ?? "");
@@ -37,8 +61,8 @@ function dayLabel(dateStr: string, short?: boolean): string {
 
 export default function Focus() {
   const [date, setDate] = useState(todayStr());
-  const [sessions, setSessions] = useState<any[]>([]);
-  const [trend, setTrend] = useState<any>(null);
+  const [sessions, setSessions] = useState<FocusSession[]>([]);
+  const [trend, setTrend] = useState<FocusTrendResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [trendLoading, setTrendLoading] = useState(false);
   const [error, setError] = useState("");
@@ -51,10 +75,9 @@ export default function Focus() {
     setError("");
     try {
       const data = await getFocusSessions(d);
-      const list = Array.isArray(data) ? data : data?.sessions ?? data?.items ?? [];
-      setSessions(list);
-    } catch (e: any) {
-      setError(e.message || "加载失败");
+      setSessions(data.sessions);
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "加载失败"));
       setSessions([]);
     } finally {
       setLoading(false);
@@ -78,20 +101,20 @@ export default function Focus() {
     loadTrend();
   }, [date, loadSessions, loadTrend]);
 
-  const totalFocus = sessions.reduce((sum: number, session: any) => sum + sessionDurationMinutes(session), 0);
+  const totalFocus = sessions.reduce((sum, session) => sum + sessionDurationMinutes(session), 0);
   const sessionCount = sessions.length;
   const avgScore =
     sessionCount > 0
-      ? sessions.reduce((sum: number, session: any) => sum + Number(session.focus_score ?? session.score ?? 0), 0) / sessionCount
+      ? sessions.reduce((sum, session) => sum + Number(session.focus_score ?? session.score ?? 0), 0) / sessionCount
       : 0;
   const longestBlock = sessions.reduce(
-    (maximum: number, session: any) => Math.max(maximum, sessionDurationMinutes(session)),
+    (maximum, session) => Math.max(maximum, sessionDurationMinutes(session)),
     0,
   );
 
-  const trendDays = trend?.daily ?? trend?.days ?? trend?.daily_data ?? [];
-  const maxFocus = Math.max(1, ...trendDays.map((day: any) => day.focus_min ?? day.focus_minutes ?? day.focus ?? 0));
-  const maxDistraction = Math.max(1, ...trendDays.map((day: any) => day.distraction_min ?? day.distraction_minutes ?? day.distraction ?? 0));
+  const trendDays = getTrendDays(trend);
+  const maxFocus = Math.max(1, ...trendDays.map((day) => day.focus_min ?? day.focus_minutes ?? day.focus ?? 0));
+  const maxDistraction = Math.max(1, ...trendDays.map((day) => day.distraction_min ?? day.distraction_minutes ?? day.distraction ?? 0));
   const chartMax = Math.max(maxFocus, maxDistraction);
 
   const saveFeedback = async (sessionId: string) => {
@@ -105,8 +128,8 @@ export default function Focus() {
         task_type: draft.taskType || undefined,
       });
       setFeedbackSaved((current) => new Set(current).add(sessionId));
-    } catch (e: any) {
-      setError(e.message || "反馈保存失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "反馈保存失败"));
     } finally {
       setFeedbackSaving(null);
     }
@@ -164,7 +187,7 @@ export default function Focus() {
         )}
         {!trendLoading && trendDays.length > 0 && (
           <div style={{ display: "flex", alignItems: "flex-end", gap: 16, height: 200, paddingTop: 8 }}>
-            {trendDays.map((d: any, i: number) => {
+            {trendDays.map((d, i) => {
               const focusVal = d.focus_min ?? d.focus_minutes ?? d.focus ?? 0;
               const distVal = d.distraction_min ?? d.distraction_minutes ?? d.distraction ?? 0;
               const focusPct = Math.round((focusVal / chartMax) * 100);
@@ -237,7 +260,7 @@ export default function Focus() {
         )}
         {!loading && sessions.length > 0 && (
           <div className="flex gap16" style={{ flexDirection: "column" }}>
-            {sessions.map((session: any, index: number) => {
+            {sessions.map((session, index) => {
               const sessionId = String(session.id ?? index);
               const startTime = session.start_time ?? session.started_at ?? "";
               const sessionDate = session.date ?? String(startTime).slice(0, 10);

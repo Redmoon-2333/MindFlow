@@ -5,20 +5,44 @@ import {
   getProfile,
   getModelStatus,
   runAttribution,
+  getErrorMessage,
+} from "../api";
+import type {
+  AnalyticsPatterns,
+  AttributionResponse,
+  BaselineSummary,
+  BehavioralProfile,
+  ModelStatus,
 } from "../api";
 
 const DAYS_OPTIONS = [7, 14, 30, 90];
 const TABS = ["模式分析", "个人画像", "拖延归因", "模型状态"];
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function profileDetailValue(value: unknown): string | number {
+  const detailValue = isRecord(value) ? value.value : value;
+  if (typeof detailValue === "string" || typeof detailValue === "number") return detailValue;
+  if (typeof detailValue === "boolean") return String(detailValue);
+  return "N/A";
+}
+
+function profileDetailTrend(value: unknown): string {
+  if (!isRecord(value) || typeof value.trend !== "string") return "—";
+  return value.trend;
+}
+
 export default function Analytics() {
   const [days, setDays] = useState(14);
   const [activeTab, setActiveTab] = useState(TABS[0]);
 
-  const [patterns, setPatterns] = useState<any>(null);
-  const [baseline, setBaseline] = useState<any>(null);
-  const [profile, setProfile] = useState<any>(null);
-  const [modelStatus, setModelStatusState] = useState<any>(null);
-  const [attribution, setAttribution] = useState<any>(null);
+  const [patterns, setPatterns] = useState<AnalyticsPatterns | null>(null);
+  const [baseline, setBaseline] = useState<BaselineSummary | null>(null);
+  const [profile, setProfile] = useState<BehavioralProfile | null>(null);
+  const [modelStatus, setModelStatusState] = useState<ModelStatus | null>(null);
+  const [attribution, setAttribution] = useState<AttributionResponse | null>(null);
 
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
@@ -28,8 +52,8 @@ export default function Analytics() {
     try {
       const data = await getAnalyticsPatterns(days);
       setPatterns(data);
-    } catch {
-      setError("模式分析加载失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "模式分析加载失败"));
     } finally {
       setLoading((p) => ({ ...p, patterns: false }));
     }
@@ -40,8 +64,8 @@ export default function Analytics() {
     try {
       const data = await getBaseline();
       setBaseline(data);
-    } catch {
-      setError("基线数据加载失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "基线数据加载失败"));
     } finally {
       setLoading((p) => ({ ...p, baseline: false }));
     }
@@ -52,8 +76,8 @@ export default function Analytics() {
     try {
       const data = await getProfile(days);
       setProfile(data);
-    } catch {
-      setError("个人画像加载失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "个人画像加载失败"));
     } finally {
       setLoading((p) => ({ ...p, profile: false }));
     }
@@ -64,8 +88,8 @@ export default function Analytics() {
     try {
       const data = await getModelStatus();
       setModelStatusState(data);
-    } catch {
-      setError("模型状态加载失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "模型状态加载失败"));
     } finally {
       setLoading((p) => ({ ...p, modelStatus: false }));
     }
@@ -80,8 +104,8 @@ export default function Analytics() {
     try {
       const data = await runAttribution();
       setAttribution(data);
-    } catch {
-      setError("归因分析失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "归因分析失败"));
     } finally {
       setLoading((p) => ({ ...p, attribution: false }));
     }
@@ -92,9 +116,9 @@ export default function Analytics() {
     return null;
   };
 
-  const badgeClass = (v: string) => {
+  const badgeClass = (value: unknown) => {
     const map: Record<string, string> = { high: "badge-danger", medium: "badge-warning", low: "badge-success" };
-    return map[v?.toLowerCase()] || "badge-info";
+    return typeof value === "string" ? map[value.toLowerCase()] || "badge-info" : "badge-info";
   };
 
   return (
@@ -151,7 +175,7 @@ export default function Analytics() {
               {renderLoading("patterns")}
               {patterns?.high_switch_periods?.length > 0 ? (
                 <ul style={{ listStyle: "none", padding: 0 }}>
-                  {patterns.high_switch_periods.map((p: any, i: number) => (
+                  {patterns.high_switch_periods.map((p, i) => (
                     <li
                       key={i}
                       className="flex flex-between"
@@ -180,7 +204,7 @@ export default function Analytics() {
               {renderLoading("patterns")}
               {patterns?.trigger_apps?.length > 0 ? (
                 <ul style={{ listStyle: "none", padding: 0 }}>
-                  {patterns.trigger_apps.map((a: any, i: number) => (
+                  {patterns.trigger_apps.map((a, i) => (
                     <li
                       key={i}
                       className="flex flex-between"
@@ -284,17 +308,20 @@ export default function Analytics() {
                   </thead>
                   <tbody>
                     {profile.details &&
-                      Object.entries(profile.details).map(([key, val]: [string, any]) => (
-                        <tr key={key}>
-                          <td>{key}</td>
-                          <td>{val?.value ?? val ?? "N/A"}</td>
-                          <td>
-                            <span className={`badge ${val?.trend === "up" ? "badge-success" : val?.trend === "down" ? "badge-danger" : "badge-info"}`}>
-                              {val?.trend ?? "—"}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                      Object.entries(profile.details).map(([key, value]) => {
+                        const trend = profileDetailTrend(value);
+                        return (
+                          <tr key={key}>
+                            <td>{key}</td>
+                            <td>{profileDetailValue(value)}</td>
+                            <td>
+                              <span className={`badge ${trend === "up" ? "badge-success" : trend === "down" ? "badge-danger" : "badge-info"}`}>
+                                {trend}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                   </tbody>
                 </table>
               </div>
@@ -319,8 +346,8 @@ export default function Analytics() {
 
           {attribution && !loading.attribution && (
             <div className="flex gap16" style={{ flexDirection: "column" }}>
-              {attribution.results?.length > 0 ? (
-                attribution.results.map((r: any, i: number) => (
+              {attribution.results && attribution.results.length > 0 ? (
+                attribution.results.map((r, i) => (
                   <div className="card" key={i}>
                     <div className="flex flex-between mb16">
                       <h3 style={{ margin: 0 }}>

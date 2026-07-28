@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
-import { getDailyReport, getWeeklyReport } from "../api";
+import { getDailyReport, getErrorMessage, getWeeklyReport } from "../api";
+import type { DailyReport, WeeklyReport } from "../api";
 
 type Tab = "daily" | "weekly";
 
-function formatMinutes(m: number): string {
+function formatMinutes(m: number | null | undefined): string {
   if (m == null || isNaN(m)) return "—";
   const h = Math.floor(m / 60);
   const min = Math.round(m % 60);
@@ -37,13 +38,13 @@ export default function Reports() {
 
   // Daily state
   const [dailyDate, setDailyDate] = useState(todayStr());
-  const [daily, setDaily] = useState<any>(null);
+  const [daily, setDaily] = useState<DailyReport | null>(null);
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyErr, setDailyErr] = useState("");
 
   // Weekly state
   const [weekStart, setWeekStart] = useState(mondayOf(new Date()));
-  const [weekly, setWeekly] = useState<any>(null);
+  const [weekly, setWeekly] = useState<WeeklyReport | null>(null);
   const [weeklyLoading, setWeeklyLoading] = useState(false);
   const [weeklyErr, setWeeklyErr] = useState("");
 
@@ -53,8 +54,8 @@ export default function Reports() {
     try {
       const data = await getDailyReport(date);
       setDaily(data);
-    } catch (e: any) {
-      setDailyErr(e.message || "加载失败");
+    } catch (e: unknown) {
+      setDailyErr(getErrorMessage(e, "加载失败"));
       setDaily(null);
     } finally {
       setDailyLoading(false);
@@ -67,8 +68,8 @@ export default function Reports() {
     try {
       const data = await getWeeklyReport(ws);
       setWeekly(data);
-    } catch (e: any) {
-      setWeeklyErr(e.message || "加载失败");
+    } catch (e: unknown) {
+      setWeeklyErr(getErrorMessage(e, "加载失败"));
       setWeekly(null);
     } finally {
       setWeeklyLoading(false);
@@ -87,7 +88,7 @@ export default function Reports() {
   const maxHourVal = Math.max(1, ...Object.values(hourlyDist).map(Number));
 
   const dailySummary = weekly?.daily_summary || [];
-  const maxDayFocus = Math.max(1, ...dailySummary.map((d: any) => d.focus_minutes || 0));
+  const maxDayFocus = Math.max(1, ...dailySummary.map((d) => d.focus_minutes || 0));
 
   return (
     <div>
@@ -192,7 +193,7 @@ export default function Reports() {
                       </tr>
                     </thead>
                     <tbody>
-                      {daily.app_usage.map((a: any, i: number) => (
+                      {daily.app_usage.map((a, i) => (
                         <tr key={i}>
                           <td>{a.app || a.name || "—"}</td>
                           <td>{formatMinutes(a.duration_minutes)}</td>
@@ -221,7 +222,7 @@ export default function Reports() {
                       </tr>
                     </thead>
                     <tbody>
-                      {daily.distraction_analysis.map((d: any, i: number) => (
+                      {daily.distraction_analysis.map((d, i) => (
                         <tr key={i}>
                           <td>{d.type || d.name || "—"}</td>
                           <td>{d.count ?? "—"}</td>
@@ -287,7 +288,7 @@ export default function Reports() {
               <div className="card mb24">
                 <h3>每日专注时长</h3>
                 <div style={{ display: "flex", alignItems: "flex-end", gap: 12, height: 180, paddingTop: 8 }}>
-                  {dailySummary.map((d: any, i: number) => {
+                  {dailySummary.map((d, i) => {
                     const v = d.focus_minutes || 0;
                     const pct = Math.round((v / maxDayFocus) * 100);
                     return (
@@ -336,7 +337,7 @@ export default function Reports() {
                       </tr>
                     </thead>
                     <tbody>
-                      {dailySummary.map((d: any, i: number) => (
+                      {dailySummary.map((d, i) => (
                         <tr key={i}>
                           <td>{d.date ?? "—"}</td>
                           <td>{dayLabel(d.date)}</td>

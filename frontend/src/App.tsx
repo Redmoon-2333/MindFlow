@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
 import "./theme.css";
-import { getTokenValue } from "./api";
+import { AUTH_REQUIRED_EVENT, hasAuthenticatedSession } from "./api";
+import { realtimeClient } from "./realtime";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Focus from "./pages/Focus";
@@ -59,11 +61,23 @@ function AppRoutes() {
 }
 
 export default function App() {
-  const token = getTokenValue();
+  const [authenticated, setAuthenticated] = useState(hasAuthenticatedSession);
+
+  useEffect(() => {
+    const handleAuthRequired = () => setAuthenticated(false);
+    window.addEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    realtimeClient.connect();
+    return () => realtimeClient.disconnect();
+  }, [authenticated]);
 
   return (
     <BrowserRouter>
-      {!token ? (
+      {!authenticated ? (
         <Login />
       ) : (
         <Layout>
