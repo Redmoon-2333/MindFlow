@@ -66,7 +66,7 @@ class TestTriggerIntervention:
         app.state.intervention_service = mock_svc
 
         client = TestClient(app)
-        resp = client.post("/api/v1/intervention/trigger")
+        resp = client.post("/api/v1/intervention/trigger", json={"intensity": "standard"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["skipped"] is False
@@ -82,7 +82,7 @@ class TestTriggerIntervention:
         app.state.intervention_service = mock_svc
 
         client = TestClient(app)
-        resp = client.post("/api/v1/intervention/trigger?intensity=strict")
+        resp = client.post("/api/v1/intervention/trigger", json={"intensity": "strict"})
         assert resp.status_code == 200
 
         # Verify intensity was passed
@@ -98,10 +98,9 @@ class TestTriggerIntervention:
         app.state.intervention_service = mock_svc
 
         client = TestClient(app)
-        resp = client.post("/api/v1/intervention/trigger?intensity=invalid")
-        assert resp.status_code == 200
-        call_kwargs = mock_svc.maybe_intervene.await_args[1]
-        assert call_kwargs["intensity"] == InterventionIntensity.STANDARD
+        resp = client.post("/api/v1/intervention/trigger", json={"intensity": "invalid"})
+        assert resp.status_code == 422
+        mock_svc.maybe_intervene.assert_not_awaited()
 
     def test_trigger_skipped(self, app) -> None:
         """When service skips, response reflects that."""
@@ -113,7 +112,7 @@ class TestTriggerIntervention:
         app.state.intervention_service = mock_svc
 
         client = TestClient(app)
-        resp = client.post("/api/v1/intervention/trigger")
+        resp = client.post("/api/v1/intervention/trigger", json={"intensity": "standard"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["skipped"] is True
@@ -138,7 +137,8 @@ class TestRespondToIntervention:
 
         client = TestClient(app)
         resp = client.post(
-            "/api/v1/intervention/resp-001/response?response=accepted&latency_s=3.5"
+            "/api/v1/intervention/resp-001/response",
+            json={"response": "accepted", "latency_s": 3.5},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -153,7 +153,8 @@ class TestRespondToIntervention:
 
         client = TestClient(app)
         resp = client.post(
-            "/api/v1/intervention/resp-002/response?response=ignored"
+            "/api/v1/intervention/resp-002/response",
+            json={"response": "ignored"},
         )
         assert resp.status_code == 200
         assert resp.json()["user_response"] == "ignored"
@@ -166,7 +167,8 @@ class TestRespondToIntervention:
 
         client = TestClient(app)
         resp = client.post(
-            "/api/v1/intervention/ghost/response?response=accepted"
+            "/api/v1/intervention/ghost/response",
+            json={"response": "accepted"},
         )
         assert resp.status_code == 404
 
@@ -177,11 +179,11 @@ class TestRespondToIntervention:
 
         client = TestClient(app)
         resp = client.post(
-            "/api/v1/intervention/some-id/response?response=maybe"
+            "/api/v1/intervention/some-id/response",
+            json={"response": "maybe"},
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "error" in data
+        assert resp.status_code == 422
+        mock_svc.record_response.assert_not_awaited()
 
     def test_response_with_latency(self, app) -> None:
         """Latency parameter is passed through."""
@@ -191,7 +193,8 @@ class TestRespondToIntervention:
 
         client = TestClient(app)
         resp = client.post(
-            "/api/v1/intervention/resp-003/response?response=dismissed&latency_s=12.0"
+            "/api/v1/intervention/resp-003/response",
+            json={"response": "dismissed", "latency_s": 12.0},
         )
         assert resp.status_code == 200
 
@@ -272,9 +275,8 @@ class TestFeedbackOnIntervention:
             "/api/v1/intervention/some-id/feedback",
             json={"rating": "maybe"},
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "error" in data
+        assert resp.status_code == 422
+        mock_svc.record_feedback.assert_not_awaited()
 
     def test_feedback_without_comment(self, app) -> None:
         """Comment is optional."""
@@ -321,7 +323,7 @@ class TestInterventionHistory:
         assert resp.status_code == 200
         data = resp.json()
         assert data["count"] == 2
-        assert len(data["interventions"]) == 2
+        assert len(data["items"]) == 2
 
     def test_history_empty(self, app) -> None:
         """Empty history returns zero count."""
@@ -334,7 +336,7 @@ class TestInterventionHistory:
         assert resp.status_code == 200
         data = resp.json()
         assert data["count"] == 0
-        assert data["interventions"] == []
+        assert data["items"] == []
 
     def test_history_invalid_days(self, app) -> None:
         """Invalid days parameter should return 422."""

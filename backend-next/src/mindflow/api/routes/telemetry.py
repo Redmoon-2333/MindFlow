@@ -94,11 +94,15 @@ async def browser_heartbeat(
     x_browser_token: str = Header(default=""),
     service: TelemetryService = Depends(get_telemetry_service),  # noqa: B008
 ) -> dict[str, Any]:
-    if not await service.verify_browser_token(x_browser_token):
+    result = await service.save_authenticated_browser_heartbeat(
+        x_browser_token,
+        **body.model_dump(),
+    )
+    if result is None:
         raise ProblemDetail(
             type_slug="browser-auth-required",
             title="Browser Authentication Required",
             status=401,
-            detail="浏览器扩展令牌无效",
+            detail="浏览器令牌无效或已撤销",
         )
-    return await service.save_browser_heartbeat(**body.model_dump())
+    return result

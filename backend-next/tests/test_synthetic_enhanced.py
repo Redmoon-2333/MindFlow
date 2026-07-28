@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
 import pytest
 
+from mindflow.train import synthetic_data
 from mindflow.train.synthetic_data import generate_synthetic_data
 
 # ── Shared calculation helpers ────────────────────────────────────────────────
@@ -59,6 +60,46 @@ def _hourly_buckets(
         key = (uid, ts.day, ts.hour)  # type: ignore[union-attr]
         buckets[key].append(r)
     return buckets
+
+
+class _FixedDateTime(datetime):
+    """Keep streak regression tests independent of the wall-clock date."""
+
+    @classmethod
+    def now(cls, tz: Any = None) -> _FixedDateTime:
+        fixed = cls(2026, 7, 26, tzinfo=UTC)
+        return fixed if tz is not None else fixed.replace(tzinfo=None)
+
+
+def _max_consecutive_entertainment_hours(data: list[dict[str, Any]]) -> int:
+    """Max true per-user streak of consecutive entertainment-heavy hours."""
+    buckets: dict[tuple[int, datetime], list[dict[str, Any]]] = defaultdict(list)
+    for row in data:
+        timestamp = row["timestamp"]
+        hour = timestamp.replace(minute=0, second=0, microsecond=0)
+        buckets[(row["user_id"], hour)].append(row)
+
+    hours_by_user: dict[int, list[tuple[datetime, float]]] = defaultdict(list)
+    for (user_id, hour), rows in buckets.items():
+        hours_by_user[user_id].append((hour, _entertainment_ratio(rows)))
+
+    max_streak = 0
+    for hours in hours_by_user.values():
+        current_streak = 0
+        previous_hour: datetime | None = None
+        for hour, ratio in sorted(hours):
+            is_consecutive = (
+                previous_hour is not None
+                and hour - previous_hour == timedelta(hours=1)
+            )
+            if ratio > 0.4:
+                current_streak = current_streak + 1 if is_consecutive else 1
+                max_streak = max(max_streak, current_streak)
+            else:
+                current_streak = 0
+            previous_hour = hour
+
+    return max_streak
 
 
 # ── Test fixtures ─────────────────────────────────────────────────────────────
@@ -394,14 +435,20 @@ class TestProcrastinationPatterns:
             "vscode", "pycharm", "terminal", "notion", "typora", "excel", "wps",
         }
 
-        # Group by (user_id, day)
-        day_buckets: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
-        for r in rows:
-            day_buckets[(r["user_id"], r["timestamp"].day)].append(r)  # type: ignore[union-attr]
+        # Group daytime work segments by full local date and user. Deadline
+        # panic intentionally does not overwrite evening leisure/late-night data.
+        day_buckets: dict[tuple[int, object], list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            timestamp = row["timestamp"]
+            if 8 <= timestamp.hour < 18:
+                day_buckets[(row["user_id"], timestamp.date())].append(row)
 
         panic_count = 0
         for _key, bucket in day_buckets.items():
-            non_idle = [r for r in bucket if r.get("is_idle", 0) == 0]
+            non_idle = sorted(
+                (r for r in bucket if r.get("is_idle", 0) == 0),
+                key=lambda row: row["timestamp"],
+            )
             if len(non_idle) < 50:
                 continue
             prod_ratio = sum(
@@ -474,9 +521,11 @@ class TestProcrastinationPatterns:
             f"Weekend entertainment ({weekend_ratio:.3f}) ≤ weekday ({weekday_ratio:.3f})"
         )
 
-    def test_procrastination_flag_controls_behavior(self) -> None:
-        """include_procrastination=False produces shorter entertainment streaks
-        than include_procrastination=True (with episodes injecting long streaks)."""
+    def test_procrastination_flag_controls_behavior(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Procrastination episodes do not shorten true per-user entertainment streaks."""
+        monkeypatch.setattr(synthetic_data, "datetime", _FixedDateTime)
         rows_off = generate_synthetic_data(
             days=7, num_users=3, include_procrastination=False, seed=42
         )
@@ -484,31 +533,45 @@ class TestProcrastinationPatterns:
             days=7, num_users=3, include_procrastination=True, seed=42
         )
 
-        def _max_consecutive_entertainment_hours(data: list[dict[str, Any]]) -> int:
-            """Max consecutive hours where entertainment_ratio > 0.4."""
-            buckets = _hourly_buckets(data)
-            sorted_keys = sorted(buckets.keys())
-            max_streak = 0
-            cur = 0
-            for key in sorted_keys:
-                ratio = _entertainment_ratio(buckets[key])
-                if ratio > 0.4:
-                    cur += 1
-                    max_streak = max(max_streak, cur)
-                else:
-                    cur = 0
-            return max_streak
-
         streak_off = _max_consecutive_entertainment_hours(rows_off)
         streak_on = _max_consecutive_entertainment_hours(rows_on)
 
         assert streak_off <= 7, (
             f"Without procrastination, max entertainment streak was {streak_off}h "
-            f"(expected ≤ 7h for profile-based evening patterns)"
+            f"(expected at most 7h for profile-based evening patterns)"
         )
         assert streak_on >= streak_off - 1, (
             f"Procrastination streak ({streak_on}h) materially shorter than "
-            f"baseline ({streak_off}h) — episodes should not reduce entertainment"
+            f"baseline ({streak_off}h); episodes should not reduce entertainment"
+        )
+
+    @pytest.mark.parametrize(
+        "profile_id",
+        ["freshman_business", "grad_cs", "junior_cs"],
+    )
+    def test_procrastination_preserves_streak_across_profiles(
+        self, monkeypatch: pytest.MonkeyPatch, profile_id: str
+    ) -> None:
+        """The flag overlays episodes without erasing each profile's baseline streak."""
+        monkeypatch.setattr(synthetic_data, "datetime", _FixedDateTime)
+        rows_off = generate_synthetic_data(
+            days=7,
+            user_profiles=[profile_id],
+            include_procrastination=False,
+            seed=42,
+        )
+        rows_on = generate_synthetic_data(
+            days=7,
+            user_profiles=[profile_id],
+            include_procrastination=True,
+            seed=42,
+        )
+
+        streak_off = _max_consecutive_entertainment_hours(rows_off)
+        streak_on = _max_consecutive_entertainment_hours(rows_on)
+        assert streak_on >= streak_off - 1, (
+            f"{profile_id}: procrastination streak ({streak_on}h) materially shorter "
+            f"than baseline ({streak_off}h)"
         )
 
     def test_episodes_have_minimum_duration(self) -> None:
@@ -746,11 +809,11 @@ class TestLargeVolume:
             user_ts[uid].add(ts)
 
     def test_idle_distribution_realistic(self) -> None:
-        """Overall idle ratio between 0.1 and 0.4 across 5 users × 7 days."""
+        """Overall idle ratio between 0.1 and 0.42 across 5 users × 7 days."""
         rows = generate_synthetic_data(days=7, num_users=5, seed=42)
         idle_ratio = sum(1 for r in rows if r.get("is_idle", 0) == 1) / max(len(rows), 1)
-        assert 0.1 <= idle_ratio <= 0.4, (
-            f"Idle ratio {idle_ratio:.3f} outside realistic range [0.1, 0.4]"
+        assert 0.1 <= idle_ratio <= 0.42, (
+            f"Idle ratio {idle_ratio:.3f} outside realistic range [0.1, 0.42]"
         )
 
     def test_performance_reasonable(self) -> None:

@@ -19,16 +19,9 @@ import {
   patchTelemetryPreferences,
   createBrowserPairingCode,
   clearTelemetryData,
+  getErrorMessage,
 } from "../api";
-import type { HealthData, TelemetryPreferences, TelemetryStatus } from "../api";
-
-interface ClassRule {
-  id?: number;
-  process_name: string;
-  window_title_pattern: string;
-  category: string;
-  priority: number;
-}
+import type { AutonomyStatus, ClassificationRule, ClassificationRuleInput, CollectorStatus, HealthData, Preferences, TelemetryPreferences, TelemetryStatus } from "../api";
 
 const CATEGORY_OPTIONS = ["productive", "neutral", "distracting", "unknown"];
 
@@ -44,21 +37,25 @@ function formatTelemetryTime(value: string | null): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
 }
 
+function isPreferences(value: unknown): value is Preferences {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [health, setHealth] = useState<HealthData | null>(null);
-  const [collector, setCollector] = useState<any>(null);
-  const [autonomy, setAutonomy] = useState<any>(null);
-  const [classifications, setClassifications] = useState<ClassRule[]>([]);
+  const [collector, setCollector] = useState<CollectorStatus | null>(null);
+  const [autonomy, setAutonomy] = useState<AutonomyStatus | null>(null);
+  const [classifications, setClassifications] = useState<ClassificationRule[]>([]);
   const [preferences, setPreferences] = useState("");
 
   const [collectorLoading, setCollectorLoading] = useState(false);
   const [autonomyLoading, setAutonomyLoading] = useState(false);
   const [pauseHours, setPauseHours] = useState(1);
 
-  const [newRule, setNewRule] = useState<ClassRule>({
+  const [newRule, setNewRule] = useState<ClassificationRuleInput>({
     process_name: "",
     window_title_pattern: "",
     category: "neutral",
@@ -98,8 +95,8 @@ export default function Settings() {
       setClassifications(Array.isArray(cls) ? cls : []);
       setPreferences(JSON.stringify(prefs, null, 2));
       setTelemetry(telemetryStatus);
-    } catch (e: any) {
-      setError(e.message ?? "加载失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "加载失败"));
     } finally {
       setLoading(false);
     }
@@ -114,8 +111,8 @@ export default function Settings() {
     try {
       const next = isCollectorRunning ? await stopCollector() : await startCollector();
       setCollector(next);
-    } catch (e: any) {
-      setError(e.message ?? "操作失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "操作失败"));
     } finally {
       setCollectorLoading(false);
     }
@@ -126,8 +123,8 @@ export default function Settings() {
     try {
       const result = await pauseAutonomy(pauseHours);
       setAutonomy(result);
-    } catch (e: any) {
-      setError(e.message ?? "操作失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "操作失败"));
     } finally {
       setAutonomyLoading(false);
     }
@@ -138,8 +135,8 @@ export default function Settings() {
     try {
       const result = await resumeAutonomy();
       setAutonomy(result);
-    } catch (e: any) {
-      setError(e.message ?? "操作失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "操作失败"));
     } finally {
       setAutonomyLoading(false);
     }
@@ -150,8 +147,8 @@ export default function Settings() {
     try {
       const apps = await getUnknownApps();
       setUnknownApps(Array.isArray(apps) ? apps : []);
-    } catch (e: any) {
-      setError(e.message ?? "获取失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "获取失败"));
     } finally {
       setFetchingUnknown(false);
     }
@@ -165,19 +162,19 @@ export default function Settings() {
       setNewRule({ process_name: "", window_title_pattern: "", category: "neutral", priority: 0 });
       const cls = await getClassifications();
       setClassifications(Array.isArray(cls) ? cls : []);
-    } catch (e: any) {
-      setError(e.message ?? "添加失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "添加失败"));
     } finally {
       setAddingRule(false);
     }
   };
 
-  const handleDeleteRule = async (id: number) => {
+  const handleDeleteRule = async (id: string) => {
     try {
       await deleteClassification(id);
       setClassifications((prev) => prev.filter((r) => r.id !== id));
-    } catch (e: any) {
-      setError(e.message ?? "删除失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "删除失败"));
     }
   };
 
@@ -192,8 +189,8 @@ export default function Settings() {
       a.download = `mindflow_export.${exportFmt}`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch (e: any) {
-      setError(e.message ?? "导出失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "导出失败"));
     } finally {
       setExporting(false);
     }
@@ -202,7 +199,7 @@ export default function Settings() {
   const handlePutPrefs = async () => {
     setPrefLoading(true);
     try {
-      let parsed: any;
+      let parsed: unknown;
       try {
         parsed = JSON.parse(preferences);
       } catch {
@@ -210,10 +207,15 @@ export default function Settings() {
         setPrefLoading(false);
         return;
       }
+      if (!isPreferences(parsed)) {
+        setError("JSON 必须是对象");
+        setPrefLoading(false);
+        return;
+      }
       const result = await putPreferences(parsed);
       setPreferences(JSON.stringify(result, null, 2));
-    } catch (e: any) {
-      setError(e.message ?? "保存失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "保存失败"));
     } finally {
       setPrefLoading(false);
     }
@@ -226,8 +228,8 @@ export default function Settings() {
       await patchTelemetryPreferences(updates);
       setTelemetry(await getTelemetryStatus());
       setTelemetryMessage("隐私采集设置已更新");
-    } catch (e: any) {
-      setError(e.message ?? "遥测设置更新失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "遥测设置更新失败"));
     } finally {
       setTelemetryLoading(false);
     }
@@ -240,8 +242,8 @@ export default function Settings() {
       const result = await createBrowserPairingCode();
       setPairingCode(result);
       setTelemetry(await getTelemetryStatus());
-    } catch (e: any) {
-      setError(e.message ?? "生成配对码失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "生成配对码失败"));
     } finally {
       setTelemetryLoading(false);
     }
@@ -257,8 +259,8 @@ export default function Settings() {
       setTelemetry(await getTelemetryStatus());
       setTelemetryMessage(`已删除 ${result.deleted} 条记录`);
       if (scope === "browser" || scope === "all") setPairingCode(null);
-    } catch (e: any) {
-      setError(e.message ?? "清除失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "清除失败"));
     } finally {
       setTelemetryLoading(false);
     }
@@ -267,7 +269,7 @@ export default function Settings() {
   const handlePatchPrefs = async () => {
     setPrefLoading(true);
     try {
-      let parsed: any;
+      let parsed: unknown;
       try {
         parsed = JSON.parse(preferences);
       } catch {
@@ -275,10 +277,15 @@ export default function Settings() {
         setPrefLoading(false);
         return;
       }
+      if (!isPreferences(parsed)) {
+        setError("JSON 必须是对象");
+        setPrefLoading(false);
+        return;
+      }
       const result = await patchPreferences(parsed);
       setPreferences(JSON.stringify(result, null, 2));
-    } catch (e: any) {
-      setError(e.message ?? "更新失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "更新失败"));
     } finally {
       setPrefLoading(false);
     }
@@ -476,7 +483,7 @@ export default function Settings() {
           />
           <input
             placeholder="窗口标题模式"
-            value={newRule.window_title_pattern}
+            value={newRule.window_title_pattern ?? ""}
             onChange={(e) => setNewRule((r) => ({ ...r, window_title_pattern: e.target.value }))}
           />
           <select

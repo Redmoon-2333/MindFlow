@@ -1,12 +1,4 @@
-"""Bearer token authentication middleware.
-
-All endpoints (except health check and OpenAPI docs) require a valid Bearer
-token in the ``Authorization`` header. The token is loaded from a local file
-on startup and stored in ``app.state.system_token`` for access at request time.
-
-Exempt paths (/api/v1/health, /docs, /openapi.json) are defined in
-``EXEMPT_PATHS``.
-"""
+﻿"""Bearer or HttpOnly-cookie authentication middleware for the local API."""
 
 from __future__ import annotations
 
@@ -16,33 +8,28 @@ from collections.abc import Awaitable, Callable
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from mindflow.infrastructure.security.token_manager import verify_token
+from mindflow.infrastructure.security.token_manager import (
+    SessionTokenStore,
+    verify_token,
+)
 
-_PROBLEM_BASE_URI: str = "https://mindflow.app/errors"
-
-# Paths that don't require authentication
-_EXEMPT_PATHS: frozenset[str] = frozenset({
+_PROBLEM_BASE_URI = "https://mindflow.app/errors"
+_COOKIE_NAME = "mindflow_session"
+_EXEMPT_PATHS = frozenset({
     "/api/v1/health",
-    "/docs",
-    "/openapi.json",
-    "/redoc",
+    "/api/v1/health/live",
+    "/api/v1/health/ready",
+    "/api/v1/auth/bootstrap",
     "/api/v1/telemetry/browser/pair",
     "/api/v1/telemetry/browser/heartbeat",
-})
-
-# Prefix-based exemption check (audit M3): single prefix-based check instead
-# of mixed exact-match + prefix.
-_EXEMPT_PREFIXES: tuple[str, ...] = (
-    "/api/v1/health",
-    "/api/v1/auth",
     "/docs",
     "/openapi.json",
     "/redoc",
-)
+})
+_EXEMPT_PREFIXES = ("/docs/", "/redoc/")
 
 
 def _auth_required_response(path: str) -> Response:
-    """Build a 401 response in RFC 9457 format."""
     body = {
         "type": f"{_PROBLEM_BASE_URI}/auth-required",
         "title": "Authentication Required",
@@ -58,33 +45,32 @@ def _auth_required_response(path: str) -> Response:
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Middleware that validates Bearer tokens on protected endpoints.
-
-    The expected token is read from ``request.app.state.system_token`` at
-    request time, allowing it to be set during the lifespan lifecycle.
-    """
-
     async def dispatch(
         self,
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         path = request.scope["path"]
-
-        # Exempt health, docs, and OpenAPI schema endpoints.
-        if path in _EXEMPT_PATHS or any(
-            path.startswith(prefix) for prefix in _EXEMPT_PREFIXES
+        if (
+            not path.startswith("/api/")
+            or path in _EXEMPT_PATHS
+            or any(path.startswith(p) for p in _EXEMPT_PREFIXES)
         ):
             return await call_next(request)
 
-        expected_token: str = getattr(request.app.state, "system_token", "")
-
+        expected = getattr(request.app.state, "system_token", "")
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        bearer = (
+            auth_header.removeprefix("Bearer ").strip()
+            if auth_header.startswith("Bearer ")
+            else ""
+        )
+        cookie = request.cookies.get(_COOKIE_NAME, "")
+        session_store = getattr(request.app.state, "browser_sessions", None)
+        cookie_valid = (
+            isinstance(session_store, SessionTokenStore)
+            and session_store.verify(cookie)
+        )
+        if not (verify_token(bearer, expected) or cookie_valid):
             return _auth_required_response(path)
-
-        token = auth_header.removeprefix("Bearer ").strip()
-        if not verify_token(token, expected_token):
-            return _auth_required_response(path)
-
         return await call_next(request)

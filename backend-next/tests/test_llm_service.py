@@ -110,6 +110,28 @@ class TestDegradationChain:
     """L1 → L2 → L3 degradation matrix."""
 
     @pytest.mark.asyncio
+    async def test_uses_configured_business_day_bounds(
+        self,
+        mock_activity_repo,
+        mock_analysis_repo,
+        mock_deepseek_success,
+    ) -> None:
+        service = _make_service(
+            activity_repo=mock_activity_repo,
+            analysis_repo=mock_analysis_repo,
+            deepseek=mock_deepseek_success,
+        )
+        service._timezone = "Asia/Shanghai"
+
+        await service.analyze(1, date(2026, 7, 17))
+
+        mock_activity_repo.query_range.assert_awaited_once_with(
+            1,
+            datetime(2026, 7, 16, 16, 0, tzinfo=UTC),
+            datetime(2026, 7, 17, 15, 59, 59, 999999, tzinfo=UTC),
+        )
+
+    @pytest.mark.asyncio
     async def test_l1_success_l2_l3_not_called(
         self, mock_activity_repo, mock_analysis_repo, mock_deepseek_success
     ) -> None:
@@ -219,6 +241,11 @@ class TestCrisisDetection:
 
         assert outcome.crisis_detected is True
         assert "热线" in outcome.assessment.get("response_text", "")
+        mock_analysis_repo.upsert.assert_awaited_once()
+        persisted = mock_analysis_repo.upsert.await_args.kwargs
+        assert persisted["target_date"] == date(2026, 7, 17)
+        assert persisted["llm_model"] == "rule_engine"
+        assert "热线" in persisted["response_text"]
         # DeepSeek should NOT have been called — crisis short-circuits before LLM
         deepseek_mock.analyze.assert_not_called()
 

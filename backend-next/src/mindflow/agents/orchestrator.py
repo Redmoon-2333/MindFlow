@@ -19,6 +19,7 @@ import asyncio
 import json
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any, TypedDict, cast
 
 from langgraph.graph import END, StateGraph
@@ -39,27 +40,37 @@ from mindflow.agents.experts import (
     ExpertDef,
 )
 from mindflow.agents.llm_gateway import PanelLLMGateway
+from mindflow.agents.schemas import (
+    AnalystOutput,
+    AttributionOutput,
+    CriticOutput,
+    ModeratorOutput,
+)
 from mindflow.agents.types import (
-    FORBIDDEN_WORDS,
     CriticResult,
     ExpertOpinion,
     PanelBudgetExceededError,
     PanelUnavailableError,
     PanelVerdict,
     TranscriptEntry,
+    _contains_forbidden_words,
 )
-from mindflow.domain.evidence import EvidenceBundle, metric_names, to_prompt_json
-from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
+from mindflow.domain.evidence import EvidenceBundle, to_prompt_json
+from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
 
 # ── Parsing helpers ────────────────────────────────────────────────────────────
 
 
-def _contains_forbidden_words(text: str) -> str | None:
-    """Return the first forbidden word found in *text*, or None."""
-    for word in FORBIDDEN_WORDS:
-        if word in text:
-            return word
-    return None
+def _strip_markdown_fences(raw: str) -> str:
+    """Strip optional Markdown code-fence markers from *raw*."""
+    text = raw.strip()
+    if text.startswith("```"):
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline + 1:]
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    return text
 
 
 def _safe_parse_json(raw: str, context: str) -> dict[str, Any] | None:
@@ -67,15 +78,7 @@ def _safe_parse_json(raw: str, context: str) -> dict[str, Any] | None:
 
     Strips Markdown fence markers if present.
     """
-    text = raw.strip()
-    # Strip ```json ... ``` or ``` ... ```
-    if text.startswith("```"):
-        first_newline = text.find("\n")
-        if first_newline != -1:
-            text = text[first_newline + 1 :]
-        if text.endswith("```"):
-            text = text[: -3].strip()
-
+    text = _strip_markdown_fences(raw)
     try:
         result: dict[str, Any] = json.loads(text)
         return result
@@ -84,7 +87,35 @@ def _safe_parse_json(raw: str, context: str) -> dict[str, Any] | None:
         return None
 
 
-_CITATION_PATTERN = re.compile(r"\[证据[:：]\s*([A-Za-z0-9_]+)\s*\]")
+def _parse_with_pydantic(
+    raw: str,
+    schema_class: type[AnalystOutput | AttributionOutput | ModeratorOutput | CriticOutput],
+    context: str,
+) -> AnalystOutput | AttributionOutput | ModeratorOutput | CriticOutput | None:
+    """Parse *raw* LLM output with a Pydantic schema, returning None on failure."""
+    text = _strip_markdown_fences(raw)
+    try:
+        return schema_class.model_validate_json(text)
+    except Exception as exc:
+        logger.warning("Pydantic parse failed for {}: {}", context, exc)
+        return None
+
+
+def _make_skipped_opinion(expert: ExpertDef, raw: str = "") -> ExpertOpinion:
+    """Return a skipped ``ExpertOpinion`` for *expert*."""
+    return ExpertOpinion(
+        role=expert.role,
+        perspective=expert.perspective,
+        attribution_types=(),
+        confidence={},
+        evidence_citations=(),
+        argument="",
+        raw_json=raw,
+        skipped=True,
+    )
+
+
+_CITATION_PATTERN = re.compile(r"\[证据[:：]\s*([A-Za-z0-9_.]+)\s*\]")
 
 
 def validate_citations(
@@ -95,12 +126,36 @@ def validate_citations(
 
     Extracts every ``[证据: metric]`` reference from the argument plus the
     structured ``evidence_citations`` field, and returns the subset that does
-    NOT exist in the bundle's metric_names (design §3: hallucinated citations
-    must be caught mechanically; review P1 fix).
+    NOT exist in the bundle's citation IDs.
+
+    Supports controlled alias resolution: bare names that uniquely match
+    one canonical ID are auto-normalized (Codex recommendation).
     """
     cited: set[str] = set(opinion.evidence_citations)
     cited.update(_CITATION_PATTERN.findall(opinion.argument))
-    return tuple(sorted(cited - valid_metrics))
+
+    # Build bare-name → canonical-ID lookup for alias resolution
+    bare_to_canonical: dict[str, str | None] = {}
+    for vid in valid_metrics:
+        if "." in vid:
+            bare = vid.rsplit(".", 1)[-1]
+            if bare not in bare_to_canonical:
+                bare_to_canonical[bare] = vid
+            else:
+                bare_to_canonical[bare] = None  # ambiguous: multiple matches
+
+    # Resolve aliases: bare name with exactly one match → canonicalize
+    resolved: set[str] = set()
+    unresolved: set[str] = set()
+    for cite in cited:
+        if cite in valid_metrics:
+            resolved.add(cite)
+        elif cite in bare_to_canonical and bare_to_canonical[cite] is not None:
+            resolved.add(bare_to_canonical[cite])
+        else:
+            unresolved.add(cite)
+
+    return tuple(sorted(unresolved))
 
 
 def _parse_expert_opinion(
@@ -111,62 +166,31 @@ def _parse_expert_opinion(
 ) -> ExpertOpinion:
     """Parse an expert's raw LLM response into ``ExpertOpinion``.
 
+    Uses ``AttributionOutput.model_validate_json`` for type-safe parsing.
     If JSON parsing fails, returns a skipped opinion (graceful degradation).
-    If forbidden words are found, also skips. If *valid_metrics* is given,
-    hallucinated citations mark the opinion skipped as well (review P1).
+    Forbidden-word and hallucinated-citation checks are still enforced at
+    the code level (semantic validation that Pydantic cannot express).
     """
     if skipped:
-        return ExpertOpinion(
-            role=expert.role,
-            perspective=expert.perspective,
-            attribution_types=(),
-            confidence={},
-            evidence_citations=(),
-            argument="",
-            raw_json=raw,
-            skipped=True,
-        )
+        return _make_skipped_opinion(expert, raw)
 
-    data = _safe_parse_json(raw, expert.role)
-    if data is None:
-        return ExpertOpinion(
-            role=expert.role,
-            perspective=expert.perspective,
-            attribution_types=(),
-            confidence={},
-            evidence_citations=(),
-            argument="",
-            raw_json=raw,
-            skipped=True,
-        )
+    parsed = _parse_with_pydantic(raw, AttributionOutput, expert.role)
+    if parsed is None:
+        return _make_skipped_opinion(expert, raw)
 
-    # Extract fields with safe defaults
-    attribution_types = tuple(data.get("attribution_types", []))
-    confidence_raw = data.get("confidence", {})
-    if not isinstance(confidence_raw, dict):
-        confidence_raw = {}
-    confidence: dict[str, float] = {}
-    for k, v in confidence_raw.items():
-        if isinstance(v, (int, float)):
-            confidence[str(k)] = float(v)
-
-    evidence_citations = tuple(data.get("evidence_citations", []))
-    argument = str(data.get("argument", ""))
+    attribution_types = tuple(parsed.attribution_types)
+    confidence = {
+        k: float(v) for k, v in parsed.confidence.items()
+        if isinstance(v, (int, float))
+    }
+    evidence_citations = tuple(parsed.evidence_citations)
+    argument = parsed.argument
 
     # Check forbidden words
     forbidden = _contains_forbidden_words(argument)
     if forbidden:
         logger.warning("Forbidden word {!r} in {} opinion — skipping", forbidden, expert.role)
-        return ExpertOpinion(
-            role=expert.role,
-            perspective=expert.perspective,
-            attribution_types=(),
-            confidence={},
-            evidence_citations=(),
-            argument="",
-            raw_json=raw,
-            skipped=True,
-        )
+        return _make_skipped_opinion(expert, raw)
 
     opinion = ExpertOpinion(
         role=expert.role,
@@ -188,16 +212,7 @@ def _parse_expert_opinion(
                 bogus,
                 expert.role,
             )
-            return ExpertOpinion(
-                role=expert.role,
-                perspective=expert.perspective,
-                attribution_types=(),
-                confidence={},
-                evidence_citations=(),
-                argument="",
-                raw_json=raw,
-                skipped=True,
-            )
+            return _make_skipped_opinion(expert, raw)
 
     return opinion
 
@@ -206,54 +221,33 @@ def _parse_analyst_opinion(
     raw: str,
     expert: ExpertDef,
 ) -> ExpertOpinion:
-    """Parse analyst output, which has a different JSON shape.
+    """Parse analyst output using Pydantic ``AnalystOutput``.
 
     The analyst outputs ``patterns`` / ``anomalies`` / ``top_concerns``
     rather than ``attribution_types`` / ``confidence``. We map those
     into the generic ``ExpertOpinion`` shape.
     """
-    data = _safe_parse_json(raw, expert.role)
-    if data is None:
-        return ExpertOpinion(
-            role=expert.role,
-            perspective=expert.perspective,
-            attribution_types=(),
-            confidence={},
-            evidence_citations=(),
-            argument="",
-            raw_json=raw,
-            skipped=True,
-        )
+    parsed = _parse_with_pydantic(raw, AnalystOutput, expert.role)
+    if parsed is None:
+        return _make_skipped_opinion(expert, raw)
 
-    evidence_citations = tuple(data.get("evidence_citations", []))
+    evidence_citations = tuple(parsed.evidence_citations)
 
     # Build argument text from patterns + anomalies
-    patterns = data.get("patterns", [])
-    anomalies = data.get("anomalies", [])
-
     parts: list[str] = []
-    for p in patterns:
+    for p in parsed.patterns:
         if isinstance(p, dict):
             parts.append(f"[{p.get('severity', 'info')}] {p.get('description', '')}")
-    for a in anomalies:
+    for a in parsed.anomalies:
         if isinstance(a, dict):
             parts.append(f"异常-{a.get('metric', '')}: {a.get('detail', '')}")
-    argument = "\n".join(parts) if parts else data.get("argument", "") or ""
+    argument = "\n".join(parts) if parts else ""
 
     # Check forbidden words
     forbidden = _contains_forbidden_words(argument)
     if forbidden:
         logger.warning("Forbidden word {!r} in analyst opinion — skipping", forbidden)
-        return ExpertOpinion(
-            role=expert.role,
-            perspective=expert.perspective,
-            attribution_types=(),
-            confidence={},
-            evidence_citations=(),
-            argument="",
-            raw_json=raw,
-            skipped=True,
-        )
+        return _make_skipped_opinion(expert, raw)
 
     return ExpertOpinion(
         role=expert.role,
@@ -269,26 +263,44 @@ def _parse_analyst_opinion(
 def _parse_verdict(raw: str) -> dict[str, Any] | None:
     """Parse the moderator's JSON output into a raw dict.
 
+    Uses ``ModeratorOutput.model_validate_json`` for type-safe parsing
+    then converts back to dict for downstream compatibility.
     Returns None on parse failure.
     """
-    return _safe_parse_json(raw, "moderator")
+    parsed = _parse_with_pydantic(raw, ModeratorOutput, "moderator")
+    if parsed is None:
+        return None
+    result: dict[str, Any] = {
+        "types": parsed.types,
+        "confidence": parsed.confidence,
+        "recommended_technique": parsed.recommended_technique,
+        "rationale": parsed.rationale,
+        "dissent": parsed.dissent,
+    }
+    return result
 
 
 def _parse_critic(raw: str) -> CriticResult:
-    """Parse the critic's JSON output.
+    """Parse the critic's JSON output using Pydantic for type safety.
+
+    Uses ``CriticOutput.model_validate_json`` which correctly parses
+    JSON ``true``/``false`` — fixing the previous bug where
+    ``bool("false") == True`` silently approved rejected verdicts.
 
     Returns a safe default (not approved, with an explanation) on failure.
     """
-    data = _safe_parse_json(raw, "critic")
-    if data is None:
+    text = _strip_markdown_fences(raw)
+
+    try:
+        parsed = CriticOutput.model_validate_json(text)
+    except Exception:
+        logger.warning("Critic JSON parse failed")
         return CriticResult(approved=False, issues=("批评家输出解析失败",))
-    approved = bool(data.get("approved", False))
-    issues_raw = data.get("issues", [])
-    if not isinstance(issues_raw, list):
-        issues: tuple[str, ...] = ("批评家输出格式异常：issues字段非数组",)
-    else:
-        issues = tuple(str(i) for i in issues_raw)
-    return CriticResult(approved=approved, issues=issues)
+
+    return CriticResult(
+        approved=parsed.approved,
+        issues=tuple(parsed.issues) if parsed.issues else (),
+    )
 
 
 def _verdict_dict_to_panel_verdict(
@@ -299,64 +311,15 @@ def _verdict_dict_to_panel_verdict(
 ) -> PanelVerdict:
     """Convert a moderator's JSON dict into a ``PanelVerdict``.
 
-    This is a best-effort conversion: unknown types or techniques are
-    silently mapped to safe defaults rather than crashing the panel.
+    Delegates to the shared :func:`mindflow.services.panel_service.analysis_dict_to_panel_verdict`.
+    The lazy import avoids a circular dependency (``panel_service`` imports ``PanelOrchestrator``).
     """
-    # Parse types
-    types_raw: list[str] = data.get("types", []) if isinstance(data.get("types"), list) else []
-    parsed_types: list[ProcrastinationType] = []
-    for t in types_raw:
-        try:
-            parsed_types.append(ProcrastinationType(t))
-        except ValueError:
-            logger.warning("Unknown procrastination type in verdict: {!r}", t)
+    from mindflow.services.panel_service import analysis_dict_to_panel_verdict
 
-    if not parsed_types:
-        # Fallback — should not happen with a well-behaved moderator
-        parsed_types = [ProcrastinationType.TASK_AVERSION]
-
-    # Parse confidence
-    conf_raw: dict[str, object] = (
-        data.get("confidence", {}) if isinstance(data.get("confidence"), dict) else {}
-    )
-    confidence: dict[ProcrastinationType, float] = {}
-    for k, v in conf_raw.items():
-        try:
-            pt = ProcrastinationType(k)
-            if isinstance(v, (int, float)):
-                confidence[pt] = float(v)
-        except ValueError:
-            pass
-
-    # Fill in any missing types with a default confidence
-    for pt in parsed_types:
-        if pt not in confidence:
-            confidence[pt] = 0.5
-
-    # Parse technique
-    technique_raw = data.get("recommended_technique")
-    technique: CBTTechnique | None = None
-    if technique_raw is not None:
-        try:
-            technique = CBTTechnique(str(technique_raw))
-        except ValueError:
-            logger.warning("Unknown CBT technique in verdict: {!r}", technique_raw)
-
-    # Parse rationale and dissent
-    rationale = str(data.get("rationale", ""))
-    dissent_raw: list[str] = data.get("dissent", [])
-    if not isinstance(dissent_raw, list):
-        dissent_raw = []
-    dissent = tuple(str(d) for d in dissent_raw)
-
-    return PanelVerdict(
-        types=tuple(parsed_types),
-        confidence=confidence,
-        recommended_technique=technique,
-        rationale=rationale,
-        dissent=dissent,
-        transcript=transcript,
+    return analysis_dict_to_panel_verdict(
+        data,
         escalated=escalated,
+        transcript=transcript,
         call_count=call_count,
         source="panel",
     )
@@ -453,6 +416,7 @@ def _build_critic_user_prompt(
 ) -> str:
     """Build the critic's user prompt with verdict + opinions + valid metrics."""
     metrics_str = ", ".join(sorted(valid_metrics)) if valid_metrics else "（无）"
+    # evidence_catalog is embedded in bundle_json by to_prompt_json()
 
     dissent_str = "\n".join(verdict.dissent) if verdict.dissent else "（无分歧）"
 
@@ -552,6 +516,16 @@ class PanelState(TypedDict):  # noqa: UP035 — TypedDict with `from __future__ 
     transcript: list[TranscriptEntry]
     disagreement_summary: DisagreementSummary | None
     rebuttal_delta: object | None  # RebuttalDelta — lazy import to avoid circular
+    runtime: _PanelRunContext
+
+
+@dataclass
+class _PanelRunContext:
+    """Mutable state owned by exactly one panel invocation."""
+
+    call_count: int = 0
+    transcript: list[TranscriptEntry] = field(default_factory=list)
+    budget_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -574,10 +548,6 @@ class PanelOrchestrator:
 
     def __init__(self, gateway: PanelLLMGateway) -> None:
         self._gateway = gateway
-        self._call_count: int = 0
-        self._transcript: list[TranscriptEntry] = []
-        # Serializes budget check-and-increment across parallel batches (P2).
-        self._budget_lock = asyncio.Lock()
         self._compiled_graph: CompiledStateGraph[Any, Any, Any, Any] | None = None
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -597,19 +567,16 @@ class PanelOrchestrator:
             PanelBudgetExceededError: If the panel would exceed 12 LLM calls
                 (hard safety guard, should never trigger on normal paths).
         """
-        self._call_count = 0
-        self._transcript = []
-        self._budget_lock = asyncio.Lock()
-
+        runtime = _PanelRunContext()
         try:
-            return await self._run_graph(bundle)
+            return await self._run_graph(bundle, runtime)
         except (PanelBudgetExceededError, PanelUnavailableError):
             raise
         except Exception as exc:
             logger.error("Panel orchestrator unexpected error: {}", exc)
             raise PanelUnavailableError(
                 reason=f"编排器异常：{exc}",
-                call_count=self._call_count,
+                call_count=runtime.call_count,
             ) from exc
 
     # ── LangGraph orchestration ───────────────────────────────────────────
@@ -630,30 +597,64 @@ class PanelOrchestrator:
         async def analyst_node(state: PanelState) -> dict[str, Any]:
             """Round 0: call the data analyst."""
             logger.info("Panel round 0: Analyst")
-            raw = await self._call_with_budget(ANALYST, state["bundle_json"])
+            raw = await self._call_with_budget(state["runtime"], ANALYST, state["bundle_json"])
             analyst = _parse_analyst_opinion(raw, ANALYST)
+            # Analyst citation validation (prevent hallucinated refs reaching moderator)
+            bogus = validate_citations(analyst, state["valid_metrics"])
+            if bogus:
+                logger.warning("Hallucinated citations {} in analyst — marking", bogus)
+                # Re-parse as skipped to keep graph flowing
+                analyst = ExpertOpinion(
+                    role=ANALYST.role,
+                    perspective=ANALYST.perspective,
+                    attribution_types=(),
+                    confidence={},
+                    evidence_citations=(),
+                    argument="",
+                    raw_json=raw,
+                    skipped=True,
+                )
             entry = TranscriptEntry(role=ANALYST.role, content=_opinion_summary(analyst), round=0)
-            self._transcript.append(entry)
+            state["runtime"].transcript.append(entry)
             return {
                 "analyst_opinion": analyst,
-                "transcript": list(self._transcript),
-                "call_count": self._call_count,
+                "transcript": list(state["runtime"].transcript),
+                "call_count": state["runtime"].call_count,
             }
 
         # ── Node: attribution_node ──────────────────────────────────────
         async def attribution_node(state: PanelState) -> dict[str, Any]:
-            """Round 1: call all three attribution experts in parallel."""
+            """Round 1: call all three attribution experts in parallel.
+
+            Supports 1 retry per expert on forbidden-word rejection.
+            """
             logger.info("Panel round 1: Attribution experts (parallel)")
-            responses = await asyncio.gather(*[
-                self._safe_call_with_budget(exp, state["bundle_json"])
-                for exp in ATTRIBUTION_EXPERTS
+
+            async def _call_and_parse(exp: ExpertDef) -> ExpertOpinion:
+                raw = await self._safe_call_with_budget(state["runtime"], exp, state["bundle_json"])
+                op = _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
+
+                # Retry once if skipped due to forbidden words
+                if op.skipped and _contains_forbidden_words(raw):
+                    logger.warning("{} triggered forbidden words, retrying once", exp.role)
+                    retry_msg = (
+                        "你的上一条回复包含禁用词汇（诊断、治疗、患者、处方）。"
+                        "请用中文重新输出，严格遵守禁用词规则。"
+                    )
+                    raw2 = await self._safe_call_with_budget(state["runtime"], exp, retry_msg)
+                    op2 = _parse_expert_opinion(raw2, exp, valid_metrics=state["valid_metrics"])
+                    if not op2.skipped:
+                        return op2
+                    logger.warning("{} retry still failed, using original", exp.role)
+
+                return op
+
+            results = await asyncio.gather(*[
+                _call_and_parse(exp) for exp in ATTRIBUTION_EXPERTS
             ])
-            opinions = [
-                _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
-                for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True)
-            ]
+            opinions = list(results)
             for op in opinions:
-                self._transcript.append(
+                state["runtime"].transcript.append(
                     TranscriptEntry(role=op.role, content=_opinion_summary(op), round=1),
                 )
 
@@ -661,13 +662,13 @@ class PanelOrchestrator:
             if len(non_skipped) < 2:
                 raise PanelUnavailableError(
                     reason=f"仅{len(non_skipped)}份归因意见有效，需至少2份",
-                    call_count=self._call_count,
+                    call_count=state["runtime"].call_count,
                 )
 
             return {
                 "attribution_opinions": opinions,
-                "transcript": list(self._transcript),
-                "call_count": self._call_count,
+                "transcript": list(state["runtime"].transcript),
+                "call_count": state["runtime"].call_count,
             }
 
         # ── Node: conflict_detection_node ───────────────────────────────
@@ -710,14 +711,25 @@ class PanelOrchestrator:
                 for i in range(len(ATTRIBUTION_EXPERTS))
             ]
             responses = await asyncio.gather(*[
-                self._safe_call_with_budget(exp, msg) for exp, msg in prompts
+                self._safe_call_with_budget(state["runtime"], exp, msg) for exp, msg in prompts
             ])
-            new_opinions = [
-                _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
-                for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True)
-            ]
+            new_opinions = []
+            for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True):
+                op = _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
+                # Retry once on forbidden words
+                if op.skipped and _contains_forbidden_words(raw):
+                    logger.warning("{} rebuttal triggered forbidden words, retrying", exp.role)
+                    retry_msg = (
+                        "你的上一条回复包含禁用词汇（诊断、治疗、患者、处方）。"
+                        "请用中文重新输出，严格遵守禁用词规则并回到推理内容。"
+                    )
+                    raw2 = await self._safe_call_with_budget(state["runtime"], exp, retry_msg)
+                    op2 = _parse_expert_opinion(raw2, exp, valid_metrics=state["valid_metrics"])
+                    if not op2.skipped:
+                        op = op2
+                new_opinions.append(op)
             for op in new_opinions:
-                self._transcript.append(
+                state["runtime"].transcript.append(
                     TranscriptEntry(role=op.role, content=_opinion_summary(op), round=2),
                 )
 
@@ -725,7 +737,7 @@ class PanelOrchestrator:
             if len(non_skipped) < 2:
                 raise PanelUnavailableError(
                     reason=f"辩论后仅{len(non_skipped)}份归因意见有效",
-                    call_count=self._call_count,
+                    call_count=state["runtime"].call_count,
                 )
 
             # Compute rebuttal delta: pre-debate vs post-debate convergence
@@ -740,8 +752,8 @@ class PanelOrchestrator:
 
             return {
                 "attribution_opinions": new_opinions,
-                "transcript": list(self._transcript),
-                "call_count": self._call_count,
+                "transcript": list(state["runtime"].transcript),
+                "call_count": state["runtime"].call_count,
                 "rebuttal_delta": delta,
             }
 
@@ -777,15 +789,15 @@ class PanelOrchestrator:
                 )
 
             logger.info("Panel round {}: Moderator", round_num)
-            raw = await self._call_with_budget(MODERATOR, prompt)
+            raw = await self._call_with_budget(state["runtime"], MODERATOR, prompt)
             verdict = _parse_verdict(raw)
             if verdict is None:
                 raise PanelUnavailableError(
                     reason="主持人输出解析失败",
-                    call_count=self._call_count,
+                    call_count=state["runtime"].call_count,
                 )
 
-            self._transcript.append(
+            state["runtime"].transcript.append(
                 TranscriptEntry(
                     role=MODERATOR.role,
                     content=_verdict_summary(verdict),
@@ -795,8 +807,8 @@ class PanelOrchestrator:
 
             return {
                 "moderator_verdict": verdict,
-                "transcript": list(self._transcript),
-                "call_count": self._call_count,
+                "transcript": list(state["runtime"].transcript),
+                "call_count": state["runtime"].call_count,
             }
 
         # ── Node: critic_node ───────────────────────────────────────────
@@ -811,8 +823,8 @@ class PanelOrchestrator:
             pending_verdict = _verdict_dict_to_panel_verdict(
                 cast(dict[str, Any], state["moderator_verdict"]),
                 state["escalated"],
-                tuple(self._transcript),
-                self._call_count,
+                tuple(state["runtime"].transcript),
+                state["runtime"].call_count,
             )
 
             all_opinions: list[ExpertOpinion] = [
@@ -825,16 +837,16 @@ class PanelOrchestrator:
                 all_opinions,
                 state["valid_metrics"],
             )
-            raw = await self._call_with_budget(CRITIC, prompt)
+            raw = await self._call_with_budget(state["runtime"], CRITIC, prompt)
             result = _parse_critic(raw)
-            self._transcript.append(
+            state["runtime"].transcript.append(
                 TranscriptEntry(role=CRITIC.role, content=_critic_summary(result), round=round_num),
             )
 
             updates: dict[str, Any] = {
                 "critic_result": result,
-                "transcript": list(self._transcript),
-                "call_count": self._call_count,
+                "transcript": list(state["runtime"].transcript),
+                "call_count": state["runtime"].call_count,
             }
             if not result.approved:
                 updates["critic_retries"] = state["critic_retries"] + 1
@@ -893,10 +905,14 @@ class PanelOrchestrator:
             self._compiled_graph = self._build_compiled_graph()
         return self._compiled_graph
 
-    async def _run_graph(self, bundle: EvidenceBundle) -> PanelVerdict:
+    async def _run_graph(
+        self,
+        bundle: EvidenceBundle,
+        runtime: _PanelRunContext,
+    ) -> PanelVerdict:
         """Run the compiled LangGraph StateGraph for this session."""
         bundle_json = to_prompt_json(bundle)
-        valid_metrics = metric_names(bundle)
+        valid_metrics = evidence_catalog_ids(build_evidence_catalog(bundle))
 
         compiled = self._get_compiled_graph()
 
@@ -914,21 +930,30 @@ class PanelOrchestrator:
             "transcript": [],
             "disagreement_summary": None,
             "rebuttal_delta": None,
+            "runtime": runtime,
         }
 
         final = await compiled.ainvoke(initial)
+        critic_result = cast(CriticResult, final["critic_result"])
+        if not critic_result.approved:
+            issues = "；".join(critic_result.issues) or "未提供拒绝原因"
+            raise PanelUnavailableError(
+                reason=f"批评家复核未通过：{issues}",
+                call_count=final["call_count"],
+            )
 
         return _verdict_dict_to_panel_verdict(
             cast(dict[str, Any], final["moderator_verdict"]),
             final["escalated"],
-            tuple(self._transcript),
-            self._call_count,
+            tuple(final["transcript"]),
+            final["call_count"],
         )
 
     # ── Gateway helpers ───────────────────────────────────────────────────
 
     async def _call_with_budget(
         self,
+        runtime: _PanelRunContext,
         expert: ExpertDef,
         user_message: str,
     ) -> str:
@@ -944,10 +969,10 @@ class PanelOrchestrator:
         Raises:
             PanelBudgetExceededError: If budget (12 calls) would be exceeded.
         """
-        async with self._budget_lock:
-            self._call_count += 1
-            if self._call_count > 12:
-                raise PanelBudgetExceededError(call_count=self._call_count)
+        async with runtime.budget_lock:
+            runtime.call_count += 1
+            if runtime.call_count > 12:
+                raise PanelBudgetExceededError(call_count=runtime.call_count)
         return await self._gateway.complete(
             system=expert.system_prompt,
             user=user_message,
@@ -956,6 +981,7 @@ class PanelOrchestrator:
 
     async def _safe_call_with_budget(
         self,
+        runtime: _PanelRunContext,
         expert: ExpertDef,
         user_message: str,
     ) -> str:
@@ -964,7 +990,9 @@ class PanelOrchestrator:
         Used in parallel batches so a single failed call doesn't abort the group.
         """
         try:
-            return await self._call_with_budget(expert, user_message)
+            return await self._call_with_budget(runtime, expert, user_message)
+        except PanelBudgetExceededError:
+            raise
         except Exception as exc:
             logger.error("Parallel call to {} failed: {}", expert.role, exc)
             return ""

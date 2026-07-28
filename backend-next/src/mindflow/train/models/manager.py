@@ -490,6 +490,8 @@ class ModelManager:
             tag = pointer.get("clustering", "")
             if tag.startswith("clustering-") and tag.endswith(".pkl"):
                 return tag[len("clustering-"): -len(".pkl")]
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.opt(exception=True).warning(
+                "Failed to parse latest.json for version tag: {}", exc
+            )
         return None

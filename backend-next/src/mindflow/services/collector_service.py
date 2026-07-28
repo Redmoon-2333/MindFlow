@@ -16,6 +16,10 @@ Key design decisions (ADR-007, ADR-002):
     shutdown (addresses P1-1).
   - Each ``_tick()`` call is wrapped in ``asyncio.wait_for`` so that
     a hung collector never blocks the loop indefinitely (addresses P1-4).
+  - ``_state_lock`` (``asyncio.Lock``) makes start/stop lifecycle
+    transitions atomic.  Task completion is NEVER awaited under the
+    lock — the lock gates only state reads/writes, not I/O-bound
+    awaits (addresses P1-4).
 """
 
 from __future__ import annotations
@@ -68,6 +72,11 @@ class CollectorService:
         )
         self._idle_threshold_s = idle_threshold_s
 
+        self._state_lock = asyncio.Lock()
+        """Serialises start/stop transitions so that concurrent callers
+        never create orphan tasks, double-stop the same task, or leave
+        ``_task`` / ``_status`` / ``_stop_requested`` inconsistent."""
+
         self._task: asyncio.Task[None] | None = None
         self._status: str = "stopped"
         self._stop_requested: bool = False
@@ -82,17 +91,22 @@ class CollectorService:
     async def start(self) -> None:
         """Start the collection loop.
 
-        If the service is already running this is a no-op (idempotent).
+        Idempotent — if a task is already active (or a stop is in
+        progress) this is a safe no-op.  The ``_state_lock`` ensures
+        that the check-then-create sequence is atomic so concurrent
+        callers never spawn duplicate background tasks.
         """
-        if self._task is not None:
-            logger.warning("CollectorService already running (start ignored)")
-            return
+        async with self._state_lock:
+            if self._task is not None or self._status == "stopping":
+                logger.warning("CollectorService already running (start ignored)")
+                return
 
-        self._status = "running"
-        self._stop_requested = False
-        self._consecutive_failures = 0
-        self._last_tick_time = None
-        self._task = asyncio.create_task(self._run())
+            self._status = "running"
+            self._stop_requested = False
+            self._consecutive_failures = 0
+            self._last_tick_time = None
+            self._task = asyncio.create_task(self._run())
+
         logger.info("CollectorService started (interval={}s)", self._interval_s)
 
     async def stop(self) -> None:
@@ -102,26 +116,68 @@ class CollectorService:
         (preserving in-flight events), then waits for the background
         task to exit. If the tick takes longer than ``interval_s * 2``,
         a cancel() fallback kicks in to avoid hanging on shutdown.
-        Safe to call even if the service is not running.
-        """
-        if self._task is None:
-            return
 
-        self._status = "stopping"
-        self._stop_requested = True
+        The ``_state_lock`` is held ONLY for the state reads/writes —
+        the actual ``await`` of the task happens *outside* the lock so
+        that (a) the lock is never held across I/O, and (b) concurrent
+        ``stop()`` callers see a consistent ``_status == "stopping"``
+        gate and return early.
+
+        Cancellation-safe: if the caller's task is cancelled while
+        awaiting the background task, the background task is also
+        cancelled and ``_finalize`` runs under ``asyncio.shield`` so
+        ``_task`` / ``_status`` are always cleaned up.  CancelledError
+        propagates after cleanup — never swallowed.
+        """
+        task: asyncio.Task[None] | None = None
+
+        async with self._state_lock:
+            if self._task is None or self._status == "stopping":
+                return
+            self._status = "stopping"
+            self._stop_requested = True
+            task = self._task
+            # Keep _task alive so concurrent start() sees it is busy;
+            # _finalize clears it after the task completes / is cancelled.
+
+        # ── Await / cancel OUTSIDE the lock ──────────────────────────
         try:
-            await asyncio.wait_for(self._task, timeout=self._interval_s * 2)
-        except TimeoutError:
-            logger.warning(
-                "CollectorService stop timeout — cancelling task (interval={}s)",
-                self._interval_s,
-            )
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-        self._task = None
-        self._status = "stopped"
+            try:
+                await asyncio.wait_for(task, timeout=self._interval_s * 2)
+            except asyncio.CancelledError:
+                # We were cancelled — cancel the background task too,
+                # then re-raise so the caller knows.  The finally block
+                # below runs *before* the re-raise.
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                raise
+            except TimeoutError:
+                logger.warning(
+                    "CollectorService stop timeout — cancelling task (interval={}s)",
+                    self._interval_s,
+                )
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        finally:
+            # Shielded: _finalize always completes even if this
+            # coroutine was cancelled — no stale _task or stuck
+            # _status="stopping" left behind.
+            await asyncio.shield(self._finalize(task))
+
         logger.info("CollectorService stopped")
+
+    async def _finalize(self, task: asyncio.Task[None]) -> None:
+        """Clean up lifecycle state under ``_state_lock``.
+
+        Called from ``stop()`` via ``asyncio.shield`` so that
+        cancellation of the caller never skips this step.
+        """
+        async with self._state_lock:
+            if self._task is task:
+                self._task = None
+            self._status = "stopped"
 
     # ── Internal: tick loop ──────────────────────────────────────────
 

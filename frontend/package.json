@@ -7,9 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate:api": "python ../backend-next/scripts/export_openapi.py src/generated/openapi.json && openapi-typescript src/generated/openapi.json -o src/generated/api-schema.ts && python -c \"from pathlib import Path; Path('src/generated/openapi.json').unlink()\""
   },
   "dependencies": {
+    "openapi-fetch": "^0.17.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1"
@@ -19,8 +21,9 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "openapi-typescript": "^7.13.0",
     "oxlint": "^1.71.0",
-    "typescript": "~6.0.2",
+    "typescript": "~5.9.3",
     "vite": "^8.1.1"
   }
 }

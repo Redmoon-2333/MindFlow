@@ -21,20 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.baseline import BaselineModel
 
-# ── Table definition (matches migration; also referenced by train/) ──────
-
-metadata = sa.MetaData()
-
-baseline_models = sa.Table(
-    "baseline_models",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("model_json", sa.Text(), nullable=False),
-    sa.Column("training_events_count", sa.Integer(), nullable=False),
-    sa.Column("created_at", sa.Text(), nullable=False),
-    sa.Column("updated_at", sa.Text(), nullable=False),
-)
+from mindflow.infrastructure.schema import baseline_models
 
 
 # ── Repository ────────────────────────────────────────────────────────

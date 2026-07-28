@@ -18,6 +18,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from mindflow.api.deps import get_chat_service
+from mindflow.api.schemas import ChatResponse
 from mindflow.services.chat_service import ChatAnswer, ChatService
 
 router = APIRouter(tags=["chat"])
@@ -42,11 +43,11 @@ class ChatRequest(BaseModel):
 # ── Routes ────────────────────────────────────────────────────────────
 
 
-@router.post("/chat")
+@router.post("/chat", response_model=ChatResponse)
 async def post_chat(
     body: ChatRequest,
     chat_service: ChatService = Depends(get_chat_service),  # noqa: B008
-) -> dict[str, Any]:
+) -> ChatResponse:
     """Send a message to the AI assistant.
 
     Creates a new session if ``session_id`` is omitted. Returns the
@@ -69,13 +70,13 @@ async def post_chat(
 
         raise _internal_error() from None
 
-    return {
-        "answer": result.answer,
-        "session_id": result.session_id,
-        "tools_used": list(result.tools_used),
-        "evidence_cited": result.evidence_cited,
-        "degraded": result.degraded,
-    }
+    return ChatResponse(
+        answer=result.answer,
+        session_id=result.session_id,
+        tools_used=list(result.tools_used),
+        evidence_cited=result.evidence_cited,
+        degraded=result.degraded,
+    )
 
 
 @router.get("/chat/sessions")

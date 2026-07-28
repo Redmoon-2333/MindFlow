@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { getActivities, getCurrentActivity } from "../api";
+import { getActivities, getCurrentActivity, getErrorMessage } from "../api";
+import type { ActivityItem } from "../api";
 
 const PAGE_SIZE = 20;
 
@@ -7,8 +8,8 @@ export default function Activities() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [currentActivity, setCurrentActivity] = useState<any>(null);
-  const [items, setItems] = useState<any[]>([]);
+  const [currentActivity, setCurrentActivity] = useState<ActivityItem | null>(null);
+  const [items, setItems] = useState<ActivityItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [startDate, setStartDate] = useState("");
@@ -29,27 +30,26 @@ export default function Activities() {
     setLoading(true);
     setError(null);
     try {
-      const params: Record<string, string> = {
-        page: String(page),
-        page_size: String(PAGE_SIZE),
+      const params = {
+        page,
+        page_size: PAGE_SIZE,
+        start_date: startDate || undefined,
+        end_date: endDate || undefined,
       };
-      if (startDate) params.start_date = startDate;
-      if (endDate) params.end_date = endDate;
-      if (search) params.q = search;
       const result = await getActivities(params);
       const activityItems = result.items ?? [];
       const normalizedSearch = search.trim().toLowerCase();
       setItems(
         normalizedSearch
-          ? activityItems.filter((item: any) =>
+          ? activityItems.filter((item) =>
               [item.data?.app_name, item.data?.process_name, item.data?.window_title]
                 .some((value) => String(value ?? "").toLowerCase().includes(normalizedSearch)),
             )
           : activityItems,
       );
       setTotal(result.total ?? 0);
-    } catch (e: any) {
-      setError(e.message ?? "加载失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Load failed"));
     } finally {
       setLoading(false);
     }
@@ -75,16 +75,6 @@ export default function Activities() {
     if (s < 60) return `${s}s`;
     if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
     return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
-  };
-
-  const classificationBadge = (cls: string) => {
-    const map: Record<string, string> = {
-      productive: "badge-success",
-      neutral: "badge-info",
-      distracting: "badge-warning",
-      unclassified: "",
-    };
-    return map[cls] ?? "";
   };
 
   const statusBadge = (sts: string) => {
@@ -138,11 +128,6 @@ export default function Activities() {
             {currentActivity.data?.window_title && (
               <span style={{ color: "var(--color-text-secondary)" }}>
                 — {currentActivity.data.window_title}
-              </span>
-            )}
-            {currentActivity.classification && (
-              <span className={`badge ${classificationBadge(currentActivity.classification)}`}>
-                {currentActivity.classification}
               </span>
             )}
           </div>
@@ -220,10 +205,10 @@ export default function Activities() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((item: any, idx: number) => (
+                {items.map((item, idx) => (
                   <tr key={item.id ?? idx}>
                     <td style={{ whiteSpace: "nowrap" }}>
-                      {formatTime(item.time ?? item.timestamp ?? item.created_at)}
+                      {formatTime(item.timestamp)}
                     </td>
                     <td style={{ fontWeight: 500 }}>{item.data?.app_name ?? "--"}</td>
                     <td style={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

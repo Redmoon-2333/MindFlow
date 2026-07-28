@@ -134,39 +134,48 @@ class InterventionThrottle:
           3. Type cap
           4. Fatigue check — if ignore rate is high, reduce daily cap
 
+        P2-1 optimisation: all five throttle metrics are fetched in a single
+        ``get_throttle_stats`` DB round-trip; behaviour is unchanged.
+
         Returns:
             ``ThrottleDecision`` — ``allowed=True`` with ``reason=OK`` if
             the intervention may proceed, otherwise the specific rejection.
         """
         now = self._clock.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff_7d = now - timedelta(days=7)
+        cooldown_lower_bound = now - timedelta(hours=self._cooldown_h * 2)
 
-        # ── 1. Check fatigue rate early (affects daily limit) ──────────
-        ignore_rate = await self._repo.ignore_rate_7d(user_id)
+        # ── Single-query aggregate (P2-1) ──────────────────────────────
+        stats = await self._repo.get_throttle_stats(
+            user_id,
+            intervention_type,
+            now=now,
+            today_start=today_start,
+            cutoff_7d=cutoff_7d,
+            cooldown_lower_bound=cooldown_lower_bound,
+        )
+
+        # ── 1. Fatigue check (affects daily limit) ─────────────────────
         effective_daily_limit = (
             self._fatigue_daily_limit
-            if ignore_rate > self._ignore_rate_threshold
+            if stats.ignore_rate > self._ignore_rate_threshold
             else self._daily_limit
         )
 
         # ── 2. Daily cap ──────────────────────────────────────────────
-        today_count = await self._repo.count_today(user_id)
-        if today_count >= effective_daily_limit:
+        if stats.today_count >= effective_daily_limit:
             return ThrottleDecision(
                 reason=ThrottleReason.DAILY_CAP,
-                detail=f"今日干预已达上限 ({today_count}/{effective_daily_limit})",
+                detail=f"今日干预已达上限 ({stats.today_count}/{effective_daily_limit})",
             )
 
         # ── 3. Cooldown ───────────────────────────────────────────────
-        # We need the most recent intervention trigger (cross-day safe).
-        # Using a look-back of 2x cooldown prevents the "yesterday 23:30
-        # → today 00:45" gap.  query_range with this generous window is
-        # sufficient since the logs are ordered.
-        cooldown_lower_bound = now - timedelta(hours=self._cooldown_h * 2)
-        recent = await self._repo.query_range(user_id, cooldown_lower_bound, now)
-        if recent:
-            last_ts_str = recent[-1]["triggered_at"]
+        # stats.last_triggered_at is the most recent triggered_at within
+        # [cooldown_lower_bound, now] — same as old query_range semantic.
+        if stats.last_triggered_at is not None:
             try:
-                last_ts = datetime.fromisoformat(last_ts_str)
+                last_ts = datetime.fromisoformat(stats.last_triggered_at)
                 elapsed_h = (now - last_ts).total_seconds() / 3600.0
                 if elapsed_h < self._cooldown_h:
                     remaining_m = round((self._cooldown_h - elapsed_h) * 60)
@@ -179,24 +188,25 @@ class InterventionThrottle:
 
         # ── 4. Type cap (adjusted for annoying feedback) ────────────────
         # If 3+ "annoying" ratings in 7 days for this type, reduce daily limit to 1
-        annoying_count = await self._repo.annoying_count_7d_by_type(user_id, intervention_type)
-        effective_type_limit = 1 if annoying_count >= self._annoying_threshold else self._type_limit
+        effective_type_limit = (
+            1 if stats.annoying_count_by_type >= self._annoying_threshold
+            else self._type_limit
+        )
 
-        type_count = await self._repo.count_today_by_type(user_id, intervention_type)
-        if type_count >= effective_type_limit:
+        if stats.today_count_by_type >= effective_type_limit:
             reason = (
                 ThrottleReason.ANNOYING
-                if annoying_count >= self._annoying_threshold
+                if stats.annoying_count_by_type >= self._annoying_threshold
                 else ThrottleReason.TYPE_CAP
             )
             return ThrottleDecision(
                 reason=reason,
                 detail=(
                     f"今日 {intervention_type} 类型干预已达上限 "
-                    f"({type_count}/{effective_type_limit})"
+                    f"({stats.today_count_by_type}/{effective_type_limit})"
                     + (
-                        f"（近7日 {annoying_count} 条负面反馈）"
-                        if annoying_count >= self._annoying_threshold
+                        f"（近7日 {stats.annoying_count_by_type} 条负面反馈）"
+                        if stats.annoying_count_by_type >= self._annoying_threshold
                         else ""
                     )
                 ),

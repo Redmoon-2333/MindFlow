@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from mindflow.api.errors import register_exception_handlers
+from mindflow.api.routes.activities import _activity_date_bounds
 from mindflow.api.routes.activities import router as activities_router
 from mindflow.domain.events import make_event
 from mindflow.infrastructure.repositories.activity import (
@@ -22,6 +23,13 @@ from mindflow.infrastructure.repositories.activity import (
     activity_events,
 )
 
+
+def test_activity_date_bounds_use_business_timezone_and_include_end_date() -> None:
+    start, end = _activity_date_bounds(
+        "2026-07-01", "2026-07-02", timezone="Asia/Shanghai"
+    )
+    assert start == datetime(2026, 6, 30, 16, tzinfo=UTC)
+    assert end == datetime(2026, 7, 2, 15, 59, 59, 999999, tzinfo=UTC)
 
 @pytest.fixture
 async def app(engine, session_factory) -> FastAPI:
@@ -96,6 +104,7 @@ class TestActivitiesRoutes:
         assert resp.status_code == 422
         data = resp.json()
         assert data["type"] == "https://mindflow.app/errors/validation-error"
+        assert data["detail"] == "日期格式必须为 YYYY-MM-DD"
 
     def test_list_activities_start_after_end(self, client):
         """start_date after end_date should return 422."""
@@ -103,6 +112,7 @@ class TestActivitiesRoutes:
             "/api/v1/activities?start_date=2025-01-01&end_date=2024-01-01"
         )
         assert resp.status_code == 422
+        assert resp.json()["detail"] == "开始日期不能晚于结束日期"
 
     def test_get_current_activity(self, client):
         """GET /activities/current should return the latest event."""
@@ -159,3 +169,24 @@ class TestActivitiesEmptyRepo:
         assert resp.status_code == 404
         data = resp.json()
         assert data["type"] == "https://mindflow.app/errors/not-found"
+
+
+def test_list_activities_cursor_pagination(client: TestClient) -> None:
+    first = client.get("/api/v1/activities?page_size=2").json()
+    assert first["next_cursor"]
+
+    second = client.get(
+        "/api/v1/activities",
+        params={"page_size": 2, "cursor": first["next_cursor"]},
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert {item["id"] for item in first["items"]}.isdisjoint(
+        item["id"] for item in second_body["items"]
+    )
+    assert second_body["total"] is None
+
+
+def test_list_activities_rejects_invalid_cursor(client: TestClient) -> None:
+    response = client.get("/api/v1/activities?cursor=not-a-valid-cursor")
+    assert response.status_code == 422

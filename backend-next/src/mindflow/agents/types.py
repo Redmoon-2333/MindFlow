@@ -25,17 +25,23 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from mindflow.domain.forbidden_words import FORBIDDEN_MEDICAL_TERMS
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 from mindflow.errors import PanelError
 
-# ── Forbidden words (NF-S7) — reused from infrastructure/llm/schemas.py ────────
+# ── Forbidden words (NF-S7) — canonical import from domain/forbidden_words ────────
 
-FORBIDDEN_WORDS: frozenset[str] = frozenset({
-    "诊断",
-    "治疗",
-    "患者",
-    "处方",
-})
+FORBIDDEN_WORDS: frozenset[str] = FORBIDDEN_MEDICAL_TERMS
+"""Backward-compatible alias. Consumers should prefer importing
+``FORBIDDEN_MEDICAL_TERMS`` directly from ``mindflow.domain.forbidden_words``."""
+
+
+def _contains_forbidden_words(text: str) -> str | None:
+    """Return the first forbidden word found in *text*, or None."""
+    for word in FORBIDDEN_WORDS:
+        if word in text:
+            return word
+    return None
 
 # ── Source type for the four-layer degradation chain ───────────────────────────
 

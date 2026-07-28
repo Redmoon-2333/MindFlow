@@ -11,10 +11,8 @@ from mindflow.infrastructure.repositories.activity import (
     activity_events,
 )
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository, user_preferences
-from mindflow.infrastructure.repositories.telemetry import (
-    TelemetryRepository,
-    metadata,
-)
+from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.infrastructure.schema import metadata
 from mindflow.services.telemetry_service import TelemetryService
 
 
@@ -97,6 +95,49 @@ async def test_focus_feedback_roundtrip(telemetry_repo: TelemetryRepository) -> 
     assert feedback["session_id"] == "session-1"
     assert stored[0]["label"] == "focus"
     assert stored[0]["score"] == 5
+
+
+async def test_focus_feedback_update_reuses_existing_row(
+    telemetry_repo: TelemetryRepository,
+) -> None:
+    original = await telemetry_repo.save_focus_feedback(
+        user_id=1,
+        session_id="session-1",
+        label="focus",
+        score=5,
+        task_type="coding",
+    )
+
+    updated = await telemetry_repo.save_focus_feedback(
+        user_id=1,
+        session_id="session-1",
+        label="distracted",
+        score=2,
+        task_type=None,
+    )
+    stored = await telemetry_repo.list_focus_feedback(1)
+
+    assert updated["id"] == original["id"]
+    assert len(stored) == 1
+    assert stored[0]["label"] == "distracted"
+    assert stored[0]["score"] == 2
+    assert stored[0]["task_type"] is None
+
+
+async def test_revoke_browser_tokens_returns_exact_count(
+    telemetry_repo: TelemetryRepository,
+) -> None:
+    await telemetry_repo.save_browser_token(1, "token-1")
+    await telemetry_repo.save_browser_token(1, "token-2")
+    await telemetry_repo.save_browser_token(2, "token-other-user")
+
+    revoked = await telemetry_repo.revoke_browser_tokens(1)
+
+    assert revoked == 2
+    assert not await telemetry_repo.verify_browser_token("token-1")
+    assert not await telemetry_repo.verify_browser_token("token-2")
+    assert await telemetry_repo.verify_browser_token("token-other-user")
+    assert await telemetry_repo.revoke_browser_tokens(1) == 0
 
 
 async def test_delete_scope_only_removes_selected_data(

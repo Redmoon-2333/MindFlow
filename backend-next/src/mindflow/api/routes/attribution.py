@@ -24,14 +24,14 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends  # noqa: B008
+from fastapi import APIRouter, Depends, Request  # noqa: B008
 from pydantic import BaseModel, Field
 
 from mindflow.api.deps import get_llm_service
 from mindflow.api.errors import ProblemDetail
 from mindflow.errors import NoActivityDataError
 from mindflow.services.llm_service import LLMService
-from mindflow.time_utils import utc_today
+from mindflow.time_utils import business_today
 
 router = APIRouter(tags=["analytics"])
 
@@ -47,6 +47,7 @@ class AttributionRequest(BaseModel):
 
 @router.post("/analytics/attribution")
 async def post_attribution(
+    request: Request,
     payload: AttributionRequest | None = None,
     llm_service: LLMService = Depends(get_llm_service),  # noqa: B008
 ) -> dict[str, Any]:
@@ -63,7 +64,12 @@ async def post_attribution(
         404 ProblemDetail: No activity events exist for the requested date.
     """
     req = AttributionRequest.model_validate(payload or {})
-    target_date = date.fromisoformat(req.date) if req.date else utc_today()
+    settings = getattr(request.app.state, "settings", None)
+    target_date = (
+        date.fromisoformat(req.date)
+        if req.date
+        else business_today(getattr(settings, "timezone", "local"))
+    )
 
     try:
         outcome = await llm_service.analyze(

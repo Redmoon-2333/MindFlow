@@ -10,10 +10,10 @@ Hidden imports:
   - pydantic: validation layer throughout
   - uuid6: UUIDv7 generation (ADR-006)
   - joblib.externals.loky: Parallel backend for sklearn
-  - apscheduler: cron/interval scheduling (ADR-007)
 
 Data files:
   - alembic/ + alembic.ini: database migration support at runtime
+  - frontend/dist: packaged React dashboard assets
 
 Excludes:
   - tkinter: GUI toolkit (unused in headless server)
@@ -40,6 +40,7 @@ a = Analysis(
     datas=[
         ("alembic/", "alembic/"),
         ("alembic.ini", "."),
+        ("../frontend/dist", "frontend"),
     ],
     hiddenimports=[
         "sklearn",
@@ -51,10 +52,6 @@ a = Analysis(
         "joblib",
         "joblib.externals.loky",
         "joblib.externals.loky.backend",
-        "apscheduler",
-        "apscheduler.triggers.cron",
-        "apscheduler.triggers.interval",
-        "apscheduler.schedulers.asyncio",
     ],
     hookspath=[],
     runtime_hooks=[],

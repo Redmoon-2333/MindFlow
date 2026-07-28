@@ -7,6 +7,8 @@ Coverage:
   - Multiple text fields via scan_texts
   - Short-circuit on first match
   - Custom keyword extension
+  - P2-3: new suggested crisis terms (割腕, 跳楼, 服毒, etc.)
+  - P2-3: whitespace-bypass detection (割 腕, 跳   楼, 自\\n杀)
 """
 
 from __future__ import annotations
@@ -117,3 +119,109 @@ class TestCrisisDetector:
         level2, _ = d2.scan("我想自杀")
         assert level1 == CrisisLevel.NONE
         assert level2 == CrisisLevel.HIGH
+
+    # ── P2-3 RED: new suggested crisis terms ─────────────────────────────────
+
+    def test_detects_new_term_gewang(self) -> None:
+        """RED: "割腕" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("有割腕的念头")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '割腕' should now be detected"
+        assert resp is not None
+
+    def test_detects_new_term_tiaolou(self) -> None:
+        """RED: "跳楼" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("想跳楼")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '跳楼' should now be detected"
+        assert resp is not None
+
+    def test_detects_new_term_fudu(self) -> None:
+        """RED: "服毒" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("服毒的想法")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '服毒' should now be detected"
+
+    def test_detects_new_term_anmianyao(self) -> None:
+        """RED: "安眠药" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("吃了一瓶安眠药")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '安眠药' should now be detected"
+
+    def test_detects_new_term_yishu(self) -> None:
+        """RED: "遗书" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("写好了遗书")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '遗书' should now be detected"
+
+    def test_detects_new_term_jiujiuwo(self) -> None:
+        """RED: "救救我" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("我受不了了，救救我")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '救救我' should now be detected"
+
+    def test_detects_new_term_wo_shoubuliao(self) -> None:
+        """RED: "我受不了了" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("我真的我受不了了")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '我受不了了' should now be detected"
+
+    def test_detects_new_term_zoutouwulu(self) -> None:
+        """RED: "走投无路" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("感觉走投无路了")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '走投无路' should now be detected"
+
+    def test_detects_new_term_shangdiao(self) -> None:
+        """RED: "上吊" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("想用上吊的方式结束一切")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '上吊' should now be detected"
+
+    def test_detects_new_term_gemai(self) -> None:
+        """RED: "割脉" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("割脉自尽")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '割脉' should now be detected"
+
+    def test_detects_new_term_huogoule(self) -> None:
+        """RED: "活够了" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("真的活够了")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '活够了' should now be detected"
+
+    def test_detects_new_term_huonile(self) -> None:
+        """RED: "活腻了" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("感觉活腻了")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '活腻了' should now be detected"
+
+    def test_detects_new_term_tailile(self) -> None:
+        """RED: "太累了" should trigger HIGH (P2-3 new term)."""
+        level, resp = self.detector.scan("太累了不想继续")
+        assert level == CrisisLevel.HIGH, "P2-3 RED: '太累了' should now be detected"
+
+    # ── P2-3 RED: whitespace-bypass detection ────────────────────────────────
+
+    def test_whitespace_bypass_gewang_with_space(self) -> None:
+        """RED: "割 腕" (with space) should trigger HIGH."""
+        level, resp = self.detector.scan("割 腕自尽")
+        assert level == CrisisLevel.HIGH, (
+            "P2-3 RED: whitespace bypass '割 腕' should trigger after normalization"
+        )
+
+    def test_whitespace_bypass_tiaolou_with_multiple_spaces(self) -> None:
+        """RED: "跳   楼" (with multiple spaces) should trigger HIGH."""
+        level, resp = self.detector.scan("想跳   楼")
+        assert level == CrisisLevel.HIGH, (
+            "P2-3 RED: whitespace bypass '跳   楼' should trigger after normalization"
+        )
+
+    def test_whitespace_bypass_zisha_with_newline(self) -> None:
+        """RED: "自\\n杀" (with newline) should trigger HIGH."""
+        level, resp = self.detector.scan("有自\n杀倾向")
+        assert level == CrisisLevel.HIGH, (
+            "P2-3 RED: whitespace bypass '自\\n杀' should trigger after normalization"
+        )
+
+    def test_whitespace_bypass_zican_with_tab(self) -> None:
+        """RED: "自\\t残" (with tab) should trigger HIGH."""
+        level, resp = self.detector.scan("有自\t残行为")
+        assert level == CrisisLevel.HIGH, (
+            "P2-3 RED: whitespace bypass '自\\t残' should trigger after normalization"
+        )
+
+    def test_normal_benign_text_no_false_positive(self) -> None:
+        """Normal benign text with spaces should remain NONE (no false positive)."""
+        level, resp = self.detector.scan("今天我割了院子里的杂草，做完后吃了药休息")
+        assert level == CrisisLevel.NONE, (
+            "P2-3: normal text should not trigger false positive"
+        )

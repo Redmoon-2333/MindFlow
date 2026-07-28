@@ -16,7 +16,9 @@ Context:
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections import OrderedDict
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -32,16 +34,48 @@ from mindflow.infrastructure.repositories.intervention import (
 )
 from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.panel_service import PanelService
-from mindflow.time_utils import utc_today
+from mindflow.time_utils import TimezoneLike, business_today
+
+# ── Session-panel usage tracking ────────────────────────
+
+_MAX_SESSION_PANEL_USAGE = 1024
+
+session_panel_usage: OrderedDict[str, int] = OrderedDict()
+"""Completed per-session ``run_panel`` usage, oldest entry first."""
+
+_session_panel_inflight: set[str] = set()
+_session_panel_usage_lock = asyncio.Lock()
+
+
+async def _reserve_panel_session(session_id: str | None) -> bool:
+    """Atomically reserve the single panel slot for a session."""
+    if session_id is None:
+        return True
+    async with _session_panel_usage_lock:
+        if session_id in _session_panel_inflight:
+            return False
+        if session_id in session_panel_usage:
+            session_panel_usage.move_to_end(session_id)
+            return False
+        _session_panel_inflight.add(session_id)
+        return True
+
+
+async def _finish_panel_session(session_id: str | None, succeeded: bool) -> None:
+    """Release a reservation and retain bounded successful usage."""
+    if session_id is None:
+        return
+    async with _session_panel_usage_lock:
+        _session_panel_inflight.discard(session_id)
+        if not succeeded:
+            return
+        session_panel_usage[session_id] = 1
+        session_panel_usage.move_to_end(session_id)
+        while len(session_panel_usage) > _MAX_SESSION_PANEL_USAGE:
+            session_panel_usage.popitem(last=False)
+
 
 # ── Session-panel usage tracking ─────────────────────────────────────────
-
-session_panel_usage: dict[str, int] = {}
-"""Per-session ``run_panel`` call count (modify is not thread-safe — guarded
-by the GIL + single-threaded async model)."""
-
-
-# ── Context for implicit tool arguments ──────────────────────────────────
 
 current_user_id: ContextVar[int] = ContextVar("current_user_id", default=0)
 """User id for the current request, set by ``ChatService.ask`` before the
@@ -100,6 +134,7 @@ def make_query_evidence(
 
 def make_get_latest_analysis(
     analysis_repo: SQLAlchemyProcrastinationAnalysisRepository,
+    timezone: TimezoneLike = "local",
 ) -> BaseTool:
     """Return a ``get_latest_analysis`` tool bound to *analysis_repo*.
 
@@ -122,7 +157,7 @@ def make_get_latest_analysis(
         if uid == 0:
             return '{"error": "user_id not set"}'
 
-        today = utc_today()
+        today = business_today(timezone)
         result: dict[str, Any] | None = await analysis_repo.get_by_date(uid, today)
 
         if result is None:
@@ -142,6 +177,7 @@ def make_get_latest_analysis(
 
 def make_run_panel(
     panel_service: PanelService | None,
+    timezone: TimezoneLike = "local",
 ) -> BaseTool:
     """Return a ``run_panel`` tool bound to *panel_service*.
 
@@ -170,19 +206,17 @@ def make_run_panel(
         if uid == 0:
             return '{"error": "user_id not set"}'
 
-        # Per-session cap — relies on current_session_id
         sid = current_session_id.get()
-        if sid is not None and session_panel_usage.get(sid, 0) >= 1:
-            return "run_panel 每会话最多 1 次，已超出。"
-
         if panel_service is None:
             return "专家会诊服务暂不可用"
+        if not await _reserve_panel_session(sid):
+            return "run_panel 每会话最多 1 次，已超出。"
 
-        target_date = utc_today()
+        target_date = business_today(timezone)
+        succeeded = False
         try:
             verdict = await panel_service.run_daily_panel(uid, target_date)
-            if sid is not None:
-                session_panel_usage[sid] = session_panel_usage.get(sid, 0) + 1
+            succeeded = True
             return json.dumps(
                 {
                     "types": [str(t) for t in verdict.types],
@@ -196,6 +230,8 @@ def make_run_panel(
 
             logger.warning("Panel execution failed in chat tool: {}", exc)
             return f"会诊执行失败: {exc}"
+        finally:
+            await _finish_panel_session(sid, succeeded)
 
     return run_panel
 
@@ -205,6 +241,7 @@ def make_run_panel(
 
 def make_query_interventions(
     intervention_repo: InterventionLogRepository,
+    timezone: TimezoneLike = "local",
 ) -> BaseTool:
     """Return a ``query_interventions`` tool bound to *intervention_repo*.
 
@@ -231,8 +268,8 @@ def make_query_interventions(
             return '{"error": "user_id not set"}'
 
         capped = min(days_back, 30)
-        start_date = utc_today() - timedelta(days=capped)
-        end_date = utc_today()
+        end_date = business_today(timezone)
+        start_date = end_date - timedelta(days=capped)
 
         logs = await intervention_repo.query_range_by_date(uid, start_date, end_date)
 

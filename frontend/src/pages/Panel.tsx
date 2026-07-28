@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { triggerPanel, getPanelResult } from "../api";
+import { triggerPanel, getPanelResult, getErrorMessage } from "../api";
+import type { PanelResult } from "../api";
 
 const ROLE_COLORS: Record<string, string> = {
   analyst: "#4F6BF6",
@@ -31,19 +32,9 @@ function confidencePct(v: number): string {
   return `${Math.round((v ?? 0) * 100)}%`;
 }
 
-function fmtTime(ts: string): string {
-  if (!ts) return "";
-  return new Date(ts).toLocaleString("zh-CN", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 export default function Panel() {
   const [loading, setLoading] = useState<"trigger" | "read" | null>(null);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<PanelResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleTrigger = async () => {
@@ -52,8 +43,8 @@ export default function Panel() {
     try {
       const data = await triggerPanel();
       setResult(data);
-    } catch (e: any) {
-      setError(e.message ?? "触发失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Request failed"));
     } finally {
       setLoading(null);
     }
@@ -65,25 +56,19 @@ export default function Panel() {
     try {
       const data = await getPanelResult();
       setResult(data);
-    } catch (e: any) {
-      setError(e.message ?? "读取失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Request failed"));
     } finally {
       setLoading(null);
     }
   };
 
-  const types: any[] = Array.isArray(result?.procrastination_types)
-    ? result.procrastination_types
-    : result?.procrastination_type
-      ? [{ name: result.procrastination_type, confidence: result.confidence ?? 0 }]
-      : [];
-
-  const discussionRounds: any[] =
-    result?.discussion_rounds ??
-    result?.discussion ??
-    [];
-
-  const hasContent = result && (types.length > 0 || result?.cbt_technique || result?.rationale || discussionRounds.length > 0);
+  const types: { name: string; confidence: number }[] = result?.types.map((name) => ({
+    name,
+    confidence: result.confidence[name] ?? 0,
+  })) ?? [];
+  const discussionRounds = result?.transcript ?? [];
+  const hasContent = Boolean(result && (types.length > 0 || result.technique || result.rationale || discussionRounds.length > 0));
 
   return (
     <div>
@@ -118,19 +103,12 @@ export default function Panel() {
 
       {loading && !result && <div className="spinner" />}
 
-      {result?.date && (
-        <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", marginBottom: 16 }}>
-          分析日期：{fmtTime(result.date)}
-        </div>
-      )}
-
-      {result?.llm_degraded && (
+      {result?.degraded && (
         <div className="card mb16" style={{ borderLeft: "3px solid var(--color-warning)" }}>
           <div className="flex gap8" style={{ alignItems: "center" }}>
             <span className="badge badge-warning">降级模式</span>
             <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
               LLM 服务降级，当前使用本地模型
-              {result?.llm_model ? `（${result.llm_model}）` : ""}
             </span>
           </div>
         </div>
@@ -142,7 +120,7 @@ export default function Panel() {
             <div className="card">
               <h3>拖延类型分析</h3>
               <div className="flex gap16" style={{ flexDirection: "column" }}>
-                {types.map((t: any, i: number) => {
+                {types.map((t, i) => {
                   const v = typeof t.confidence === "number" ? t.confidence : 0;
                   return (
                     <div key={i}>
@@ -176,11 +154,6 @@ export default function Panel() {
                           }}
                         />
                       </div>
-                      {t.description && (
-                        <p style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 6 }}>
-                          {t.description}
-                        </p>
-                      )}
                     </div>
                   );
                 })}
@@ -188,10 +161,10 @@ export default function Panel() {
             </div>
           )}
 
-          {result?.cbt_technique && (
+          {result?.technique && (
             <div className="card">
               <h3>推荐 CBT 技术</h3>
-              <p style={{ fontSize: 14, lineHeight: 1.6 }}>{result.cbt_technique}</p>
+              <p style={{ fontSize: 14, lineHeight: 1.6 }}>{result.technique}</p>
             </div>
           )}
 
@@ -208,11 +181,11 @@ export default function Panel() {
             <div className="card">
               <h3>专家讨论记录</h3>
               <div className="flex gap16" style={{ flexDirection: "column" }}>
-                {discussionRounds.map((round: any, i: number) => (
+                {discussionRounds.map((round, i) => (
                   <div
                     key={i}
                     style={{
-                      borderLeft: `3px solid ${roleColor(round.role || round.expert || "")}`,
+                      borderLeft: `3px solid ${roleColor(round.role)}`,
                       paddingLeft: 12,
                     }}
                   >
@@ -221,8 +194,8 @@ export default function Panel() {
                         <span
                           className="badge"
                           style={{
-                            background: roleColor(round.role || round.expert || "") + "20",
-                            color: roleColor(round.role || round.expert || ""),
+                            background: roleColor(round.role) + "20",
+                            color: roleColor(round.role),
                             fontSize: 11,
                           }}
                         >
@@ -232,11 +205,11 @@ export default function Panel() {
                       <span
                         className="badge"
                         style={{
-                          background: roleColor(round.role || round.expert || "") + "20",
-                          color: roleColor(round.role || round.expert || ""),
+                          background: roleColor(round.role) + "20",
+                          color: roleColor(round.role),
                         }}
                       >
-                        {round.role || round.expert || "专家"}
+                        {round.role || "专家"}
                       </span>
                     </div>
                     <p style={{ fontSize: 13, lineHeight: 1.6, color: "var(--color-text-secondary)" }}>

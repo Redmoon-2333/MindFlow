@@ -187,3 +187,112 @@ class TestMigrations:
         assert "idx_events_user_time" in indexes
         assert "idx_events_type" in indexes
         assert "idx_sessions_user_date" in indexes
+
+    async def test_performance_indexes_and_generated_columns_exist(
+        self, async_db_url: str, sync_db_url: str
+    ) -> None:
+        """Latest migration adds cleanup/process indexes and JSON projections."""
+        await run_migrations(async_db_url)
+
+        sync_path = sync_db_url.replace("sqlite://", "")
+        import sqlite3
+
+        conn = sqlite3.connect(sync_path)
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' ORDER BY name"
+            ).fetchall()
+        }
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_xinfo(activity_events)").fetchall()
+        }
+        conn.close()
+
+        assert "idx_events_cleanup_time" in indexes
+        assert "idx_events_user_process_time" in indexes
+        assert {"app_name", "process_name", "window_title", "is_idle"} <= columns
+
+    async def test_scheduled_job_heartbeat_upgrade_and_downgrade_contract(
+        self,
+        sync_db_url: str,
+    ) -> None:
+        import asyncio
+        import sqlite3
+
+        from alembic.config import Config
+
+        from alembic import command
+        from mindflow.infrastructure.migrations import BASE_DIR
+
+        def _run_alembic(action: str, revision: str) -> None:
+            cfg = Config(str(BASE_DIR / "alembic.ini"))
+            cfg.set_main_option("sqlalchemy.url", sync_db_url)
+            getattr(command, action)(cfg, revision)
+
+        await asyncio.to_thread(
+            _run_alembic,
+            "upgrade",
+            "0009_create_scheduled_job_runs",
+        )
+        sync_path = sync_db_url.replace("sqlite://", "")
+        started_at = "2026-07-25T16:10:00+00:00"
+        conn = sqlite3.connect(sync_path)
+        conn.execute(
+            """
+            INSERT INTO scheduled_job_runs (
+                job_name,
+                local_date,
+                status,
+                attempt_count,
+                started_at,
+                finished_at,
+                last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "daily_report",
+                "2026-07-25",
+                "running",
+                1,
+                started_at,
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        await asyncio.to_thread(
+            _run_alembic,
+            "upgrade",
+            "0010_add_scheduled_job_heartbeat",
+        )
+        conn = sqlite3.connect(sync_path)
+        columns = {
+            row[1]: row
+            for row in conn.execute("PRAGMA table_info(scheduled_job_runs)").fetchall()
+        }
+        heartbeat_at = conn.execute(
+            "SELECT heartbeat_at FROM scheduled_job_runs "
+            "WHERE job_name = 'daily_report' AND local_date = '2026-07-25'"
+        ).fetchone()
+        conn.close()
+
+        assert columns["heartbeat_at"][3] == 1
+        assert heartbeat_at == (started_at,)
+
+        await asyncio.to_thread(
+            _run_alembic,
+            "downgrade",
+            "0009_create_scheduled_job_runs",
+        )
+        conn = sqlite3.connect(sync_path)
+        downgraded_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(scheduled_job_runs)").fetchall()
+        }
+        conn.close()
+
+        assert "heartbeat_at" not in downgraded_columns

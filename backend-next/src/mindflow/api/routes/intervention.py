@@ -12,14 +12,19 @@ explicitly requests feedback (e.g. via the frontend intervention panel).
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, Path, Query  # noqa: B008
 from loguru import logger
-from pydantic import BaseModel
 
 from mindflow.api.deps import get_intervention_service
 from mindflow.api.errors import _not_found
+from mindflow.api.schemas import (
+    InterventionCommandResponse,
+    InterventionFeedbackRequest,
+    InterventionHistoryResponse,
+    InterventionResponseRequest,
+    InterventionTriggerRequest,
+    InterventionTriggerResponse,
+)
 from mindflow.domain.intervention import InterventionIntensity
 from mindflow.domain.procrastination import (
     BehaviorSummary,
@@ -30,20 +35,14 @@ from mindflow.services.intervention_service import InterventionService
 router = APIRouter(tags=["intervention"])
 
 
-class FeedbackRequest(BaseModel):
-    """Request body for intervention feedback."""
-
-    rating: str
-    comment: str | None = None
-
 _DEFAULT_INTENSITY = InterventionIntensity.STANDARD
 
 
-@router.post("/intervention/trigger")
+@router.post("/intervention/trigger", response_model=InterventionTriggerResponse)
 async def trigger_intervention(
-    intensity: str | None = None,
+    body: InterventionTriggerRequest,
     intervention_svc: InterventionService = Depends(get_intervention_service),  # noqa: B008
-) -> dict[str, Any]:
+) -> InterventionTriggerResponse:
     """Manually trigger an intervention (bypasses throttle).
 
     This uses a lightweight rule-engine assessment of the *current*
@@ -60,13 +59,7 @@ async def trigger_intervention(
         The intervention result.
     """
     # Resolve intensity
-    if intensity:
-        try:
-            resolved_intensity = InterventionIntensity(intensity)
-        except ValueError:
-            resolved_intensity = _DEFAULT_INTENSITY
-    else:
-        resolved_intensity = _DEFAULT_INTENSITY
+    resolved_intensity = InterventionIntensity(body.intensity)
 
     # Build a minimal assessment from a default summary.
     # This is a reasonable estimate for on-demand triggers; the
@@ -98,86 +91,67 @@ async def trigger_intervention(
     )
 
     if result.skipped:
-        return {
-            "intervention": None,
-            "skipped": True,
-            "skip_reason": result.skip_reason,
-        }
+        return InterventionTriggerResponse(
+            intervention=None, skipped=True, skip_reason=result.skip_reason
+        )
 
     if result.intervention is None:
-        return {
-            "intervention": None,
-            "skipped": True,
-            "skip_reason": "未能生成干预",
-        }
+        return InterventionTriggerResponse(
+            intervention=None, skipped=True, skip_reason="未能生成干预"
+        )
 
     logger.info("Manual intervention triggered: {}", result.intervention.id)
-    return {
+    return InterventionTriggerResponse.model_validate({
         "intervention": {
             "id": result.intervention.id,
             "intervention_type": result.intervention.intervention_type,
             "title": result.intervention.title,
             "message": result.intervention.message,
             "dismissible": result.intervention.dismissible,
-            "created_at": result.intervention.created_at.isoformat(),
+            "created_at": result.intervention.created_at,
         },
         "skipped": False,
-    }
+    })
 
 
-@router.post("/intervention/{intervention_id}/response")
+@router.post(
+    "/intervention/{intervention_id}/response", response_model=InterventionCommandResponse
+)
 async def respond_to_intervention(
+    body: InterventionResponseRequest,
     intervention_id: str = Path(..., description="Intervention UUID"),  # noqa: B008
-    response: str = Query(..., description="Response: accepted/ignored/dismissed"),  # noqa: B008
-    latency_s: float = Query(0.0, description="Response latency in seconds"),  # noqa: B008
     intervention_svc: InterventionService = Depends(get_intervention_service),  # noqa: B008
-) -> dict[str, Any]:
-    """Record a user's response to an intervention.
-
-    Args:
-        intervention_id: The intervention's UUID.
-        response: One of "accepted", "ignored", "dismissed".
-        latency_s: Time in seconds between trigger and response.
-
-    Returns:
-        A confirmation dict, or 404 if the intervention isn't found.
-    """
-    valid_responses = {"accepted", "ignored", "dismissed"}
-    if response not in valid_responses:
-        return {"error": f"无效的响应值。可用值: {', '.join(sorted(valid_responses))}"}
-
-    result = await intervention_svc.record_response(intervention_id, response, latency_s)
+) -> InterventionCommandResponse:
+    """Record a user's response to an intervention."""
+    result = await intervention_svc.record_response(
+        intervention_id, body.response, body.latency_s
+    )
     if result is None:
         raise _not_found(f"干预记录 {intervention_id}")
 
-    logger.debug("Intervention {} response: {} (latency={}s)", intervention_id, response, latency_s)
-    return {
-        "status": "ok",
-        "intervention_id": intervention_id,
-        "user_response": response,
-    }
+    logger.debug(
+        "Intervention {} response: {} (latency={}s)",
+        intervention_id,
+        body.response,
+        body.latency_s,
+    )
+    return InterventionCommandResponse(
+        intervention_id=intervention_id, user_response=body.response
+    )
 
 
-@router.post("/intervention/{intervention_id}/feedback")
+@router.post(
+    "/intervention/{intervention_id}/feedback", response_model=InterventionCommandResponse
+)
 async def feedback_on_intervention(
+    body: InterventionFeedbackRequest,
     intervention_id: str = Path(..., description="Intervention UUID"),  # noqa: B008
-    body: FeedbackRequest = ...,  # type: ignore[assignment]  # noqa: B008
     intervention_svc: InterventionService = Depends(get_intervention_service),  # noqa: B008
-) -> dict[str, Any]:
-    """Record user feedback on an intervention's helpfulness.
-
-    Args:
-        intervention_id: The intervention's UUID.
-        body: Feedback with rating ("helpful"|"neutral"|"annoying") and optional comment.
-
-    Returns:
-        A confirmation dict, or 404 if the intervention isn't found.
-    """
-    valid_ratings = {"helpful", "neutral", "annoying"}
-    if body.rating not in valid_ratings:
-        return {"error": f"无效的评分值。可用值: {', '.join(sorted(valid_ratings))}"}
-
-    result = await intervention_svc.record_feedback(intervention_id, body.rating, body.comment)
+) -> InterventionCommandResponse:
+    """Record user feedback on an intervention's helpfulness."""
+    result = await intervention_svc.record_feedback(
+        intervention_id, body.rating, body.comment
+    )
     if result is None:
         raise _not_found(f"干预记录 {intervention_id}")
 
@@ -187,29 +161,16 @@ async def feedback_on_intervention(
         body.rating,
         body.comment,
     )
-    return {
-        "status": "ok",
-        "intervention_id": intervention_id,
-        "feedback_rating": body.rating,
-    }
+    return InterventionCommandResponse(
+        intervention_id=intervention_id, feedback_rating=body.rating
+    )
 
 
-@router.get("/intervention/history")
+@router.get("/intervention/history", response_model=InterventionHistoryResponse)
 async def get_intervention_history(
     days: int = Query(7, ge=1, le=90, description="Days of history to return"),  # noqa: B008
     intervention_svc: InterventionService = Depends(get_intervention_service),  # noqa: B008
-) -> dict[str, Any]:
-    """Return intervention history for the past N days.
-
-    Args:
-        days: Number of days of history (1-90).
-
-    Returns:
-        A dict with ``interventions`` list and ``count``.
-    """
-    # TODO(multi-user): single-user assumption — hardcoded user_id=1
+) -> InterventionHistoryResponse:
+    """Return intervention history for the past N days."""
     history = await intervention_svc.get_history(user_id=1, days=days)
-    return {
-        "interventions": history,
-        "count": len(history),
-    }
+    return InterventionHistoryResponse(items=history, count=len(history))

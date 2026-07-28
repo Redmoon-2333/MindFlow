@@ -16,8 +16,20 @@ Design:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+
+from mindflow.domain.forbidden_words import CRISIS_KEYWORDS
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Remove all whitespace from *text* for bypass-resistant scanning.
+
+    P2-3: normalizing whitespace prevents simple spacing/line-break evasion
+    (e.g. ``"割 腕"`` → ``"割腕"``, ``"自\\n杀"`` → ``"自杀"``).
+    """
+    return re.sub(r"\s+", "", text)
 
 
 class CrisisLevel(StrEnum):
@@ -27,21 +39,11 @@ class CrisisLevel(StrEnum):
     HIGH = "high"
 
 
-_CRISIS_KEYWORDS: frozenset[str] = frozenset({
-    "自杀",
-    "不想活",
-    "结束生命",
-    "结束自己的生命",
-    "伤害自己",
-    "自伤",
-    "撑不下去",
-    "活不下去",
-    "不想活了",
-    "没有意义",
-    "死了算了",
-    "想死",
-})
-"""Core Chinese crisis keywords. Extend via :meth:`CrisisDetector.add_keywords`."""
+_CRISIS_KEYWORDS: frozenset[str] = CRISIS_KEYWORDS
+"""Core Chinese crisis keywords — canonical import from domain/forbidden_words.
+
+Extend via :meth:`CrisisDetector.add_keywords`.
+"""
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,11 @@ class CrisisDetector:
     def scan(self, text: str) -> tuple[CrisisLevel, CrisisResponse | None]:
         """Scan *text* for crisis keywords.
 
+        P2-3: whitespace is normalised from *text* before scanning so
+        spacing/line-break evasion (``"割 腕"``, ``"跳   楼"``,
+        ``"自\\n杀"``) is detected.  Empty or whitespace-only text
+        returns NONE immediately.
+
         Args:
             text: The input text to scan (e.g. manual_tag content,
                   intended_task description). Empty or whitespace-only
@@ -122,8 +129,10 @@ class CrisisDetector:
         if not text or not text.strip():
             return CrisisLevel.NONE, None
 
+        normalised = _normalize_whitespace(text)
+
         for keyword in self._keywords:
-            if keyword in text:
+            if keyword in normalised:
                 return CrisisLevel.HIGH, CrisisResponse()
 
         return CrisisLevel.NONE, None

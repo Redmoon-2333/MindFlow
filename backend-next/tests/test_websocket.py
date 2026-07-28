@@ -1,7 +1,7 @@
 """Tests for WebSocket handler at /api/v1/ws.
 
 Covers:
-  - Authentication via query parameter token
+  - Authentication via short-lived HttpOnly session cookie
   - Invalid token -> close with 4001
   - Ping/pong messages
   - Error messages for invalid JSON
@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from contextlib import suppress
 
 import pytest
@@ -20,6 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from mindflow.api.websocket import _MAX_CONNECTIONS
 from mindflow.api.websocket import router as ws_router
+from mindflow.infrastructure.security.token_manager import SessionTokenStore
 
 TEST_TOKEN = "test-token-123"
 
@@ -37,12 +39,17 @@ def app() -> FastAPI:
     app = FastAPI()
     app.include_router(ws_router, prefix="/api/v1")
     app.state.system_token = TEST_TOKEN
+    app.state.browser_sessions = SessionTokenStore()
     return app
 
 
 @pytest.fixture
 def client(app: FastAPI) -> TestClient:
-    return TestClient(app)
+    client = TestClient(app)
+    client.cookies.set(
+        "mindflow_session", app.state.browser_sessions.issue(), path="/api"
+    )
+    return client
 
 
 class TestWebSocketAuth:
@@ -51,12 +58,25 @@ class TestWebSocketAuth:
     def test_connect_with_valid_token(self, client):
         """Connecting with a valid token should succeed."""
         with client.websocket_connect(
-            "/api/v1/ws?token=" + TEST_TOKEN, headers=_TRUSTED_HOST_HEADERS
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
+        ):
+            pass
+
+
+    def test_query_token_fallback_is_rejected(self, client):
+        """Root tokens in query strings are no longer accepted."""
+        client.cookies.clear()
+        with (
+            pytest.raises(WebSocketDisconnect),
+            client.websocket_connect(
+                "/api/v1/ws?token=" + TEST_TOKEN, headers=_TRUSTED_HOST_HEADERS
+            ),
         ):
             pass
 
     def test_connect_without_token(self, client):
         """Connecting without a token should close with 4001."""
+        client.cookies.clear()
         with (
             pytest.raises(WebSocketDisconnect),
             client.websocket_connect("/api/v1/ws", headers=_TRUSTED_HOST_HEADERS),
@@ -64,10 +84,11 @@ class TestWebSocketAuth:
             pass
 
     def test_connect_with_wrong_token(self, client):
-        """Connecting with a wrong token should close with 4001."""
+        """Connecting with a wrong session should close with 4001."""
+        client.cookies.set("mindflow_session", "wrong", path="/api")
         with (
             pytest.raises(WebSocketDisconnect),
-            client.websocket_connect("/api/v1/ws?token=wrong", headers=_TRUSTED_HOST_HEADERS),
+            client.websocket_connect("/api/v1/ws", headers=_TRUSTED_HOST_HEADERS),
         ):
             pass
 
@@ -78,7 +99,7 @@ class TestWebSocketHostValidation:
     def test_untrusted_host_rejected_before_accept(self, client):
         """An untrusted Host header should close with 1008, even with a valid token."""
         with pytest.raises(WebSocketDisconnect) as exc_info, client.websocket_connect(
-            "/api/v1/ws?token=" + TEST_TOKEN, headers={"host": "evil.com"}
+            "/api/v1/ws", headers={"host": "evil.com"}
         ):
             pass
         assert exc_info.value.code == 1008
@@ -87,7 +108,7 @@ class TestWebSocketHostValidation:
         """TestClient's default Host (testserver) is untrusted and must be rejected."""
         with (
             pytest.raises(WebSocketDisconnect) as exc_info,
-            client.websocket_connect("/api/v1/ws?token=" + TEST_TOKEN),
+            client.websocket_connect("/api/v1/ws"),
         ):
             pass
         assert exc_info.value.code == 1008
@@ -95,8 +116,23 @@ class TestWebSocketHostValidation:
     def test_trusted_ipv4_host_allowed(self, client):
         """127.0.0.1 should be accepted like localhost."""
         with client.websocket_connect(
-            "/api/v1/ws?token=" + TEST_TOKEN, headers={"host": "127.0.0.1:8765"}
+            "/api/v1/ws", headers={"host": "127.0.0.1:8765"}
         ):
+            pass
+
+
+class TestWebSocketOriginValidation:
+    def test_untrusted_browser_origin_is_rejected(self, client):
+        headers = {**_TRUSTED_HOST_HEADERS, "origin": "http://localhost:9999"}
+        with pytest.raises(WebSocketDisconnect) as exc_info, client.websocket_connect(
+            "/api/v1/ws", headers=headers
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    def test_vite_origin_is_allowed(self, client):
+        headers = {**_TRUSTED_HOST_HEADERS, "origin": "http://127.0.0.1:5173"}
+        with client.websocket_connect("/api/v1/ws", headers=headers):
             pass
 
 
@@ -109,7 +145,7 @@ class TestWebSocketConnectionCap:
         try:
             for _ in range(_MAX_CONNECTIONS):
                 ctx = client.websocket_connect(
-                    "/api/v1/ws?token=" + TEST_TOKEN, headers=_TRUSTED_HOST_HEADERS
+                    "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
                 )
                 opened.append(ctx)
                 ctx.__enter__()
@@ -117,7 +153,7 @@ class TestWebSocketConnectionCap:
             with (
                 pytest.raises(WebSocketDisconnect) as exc_info,
                 client.websocket_connect(
-                    "/api/v1/ws?token=" + TEST_TOKEN, headers=_TRUSTED_HOST_HEADERS
+                    "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
                 ),
             ):
                 pass
@@ -134,7 +170,7 @@ class TestWebSocketPingPong:
     def test_ping_gets_pong(self, client):
         """Sending a ping should receive a pong."""
         with client.websocket_connect(
-            "/api/v1/ws?token=" + TEST_TOKEN, headers=_TRUSTED_HOST_HEADERS
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
         ) as ws:
             ws.send_json({"type": "ping", "payload": {}})
             response = ws.receive_json()
@@ -144,7 +180,7 @@ class TestWebSocketPingPong:
     def test_multiple_pings(self, client):
         """Multiple pings should each receive a pong."""
         with client.websocket_connect(
-            "/api/v1/ws?token=" + TEST_TOKEN, headers=_TRUSTED_HOST_HEADERS
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
         ) as ws:
             for _ in range(3):
                 ws.send_json({"type": "ping", "payload": {}})
@@ -158,7 +194,7 @@ class TestWebSocketErrors:
     def test_invalid_json_gets_error(self, client):
         """Sending invalid JSON should receive an error message."""
         with client.websocket_connect(
-            "/api/v1/ws?token=" + TEST_TOKEN, headers=_TRUSTED_HOST_HEADERS
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
         ) as ws:
             ws.send_text("not-json")
             response = ws.receive_json()
@@ -172,7 +208,7 @@ class TestWebSocketMessageFlood:
     def test_message_flood_triggers_disconnect(self, client):
         """Sending messages faster than the flood guard allows should disconnect."""
         with client.websocket_connect(
-            "/api/v1/ws?token=" + TEST_TOKEN, headers=_TRUSTED_HOST_HEADERS
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
         ) as ws:
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 # _MSG_MAX_PER_WINDOW is 20 per _MSG_WINDOW_S (1s); sending
@@ -181,4 +217,70 @@ class TestWebSocketMessageFlood:
                     ws.send_json({"type": "ping", "payload": {}})
                     ws.receive_json()
             assert exc_info.value.code == 1008
+
+
+class TestWebSocketMessageSize:
+    """P1-3: enforce 65,536-character max inbound WebSocket text message.
+
+    Messages larger than _MAX_MESSAGE_SIZE (65536) must be rejected
+    with close code 1009 (Message Too Big) BEFORE JSON parsing.
+    """
+
+    MAX_SIZE: int = 65536
+
+    def test_exact_boundary_accepted(self, client):
+        """Exactly 65536 chars is within limit — message processed."""
+        msg = "x" * self.MAX_SIZE
+        with client.websocket_connect(
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
+        ) as ws:
+            ws.send_text(msg)
+            # Not valid JSON, but must NOT be a size rejection — the error
+            # message proves the size check passed and JSON parsing ran.
+            response = ws.receive_json()
+            assert response["type"] == "error"
+            assert response["payload"]["code"] == "INVALID_JSON"
+
+    def test_boundary_plus_one_rejected(self, client):
+        """65537 chars (= boundary+1) must be rejected with code 1009."""
+        oversized = "x" * (self.MAX_SIZE + 1)
+        with pytest.raises(WebSocketDisconnect) as exc_info, client.websocket_connect(
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
+        ) as ws:
+            ws.send_text(oversized)
+            # Server closes connection; next read raises WebSocketDisconnect.
+            ws.receive_text()
+        assert exc_info.value.code == 1009
+
+    def test_normal_message_after_oversized_rejection(self, client):
+        """A fresh connection after an oversized rejection must work normally."""
+        oversized = "x" * (self.MAX_SIZE + 1)
+        # First: oversized connection must be rejected
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
+        ) as ws:
+            ws.send_text(oversized)
+            ws.receive_text()
+
+        # Second: fresh connection must still accept valid messages
+        with client.websocket_connect(
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
+        ) as ws:
+            ws.send_json({"type": "ping", "payload": {}})
+            response = ws.receive_json()
+            assert response["type"] == "pong"
+
+    def test_valid_json_at_boundary_accepted(self, client):
+        """A valid ping message at exactly 65536 bytes must be accepted."""
+        # Build a ping with padding to hit exactly 65536 chars
+        overhead = len(json.dumps({"type": "ping", "payload": {"d": ""}}))
+        pad = "x" * (self.MAX_SIZE - overhead)
+        msg = json.dumps({"type": "ping", "payload": {"d": pad}})
+        assert len(msg) == self.MAX_SIZE, f"expected {self.MAX_SIZE}, got {len(msg)}"
+        with client.websocket_connect(
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
+        ) as ws:
+            ws.send_text(msg)
+            response = ws.receive_json()
+            assert response["type"] == "pong"
 

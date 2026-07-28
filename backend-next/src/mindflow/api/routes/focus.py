@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Query  # noqa: B008
+from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -24,13 +24,14 @@ from mindflow.infrastructure.repositories.focus import (
 )
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.telemetry_service import TelemetryService
-from mindflow.time_utils import utc_today
+from mindflow.time_utils import business_today
 
 router = APIRouter(tags=["focus"])
 
 
 @router.get("/focus")
 async def get_today_focus(
+    request: Request,
     date_param: date | None = Query(  # noqa: B008
         None, alias="date", description="Target date (YYYY-MM-DD, default today)"
     ),
@@ -38,7 +39,8 @@ async def get_today_focus(
     focus_repo: SQLAlchemyFocusSessionRepository = Depends(get_focus_repo),  # noqa: B008
 ) -> dict[str, Any]:
     """Return today's focus sessions (auto-generates if missing)."""
-    target = date_param or utc_today()
+    settings = getattr(request.app.state, "settings", None)
+    target = date_param or business_today(getattr(settings, "timezone", "local"))
 
     # Ensure sessions exist
     sessions = await focus_repo.get_by_date(1, target)
@@ -66,11 +68,13 @@ async def get_today_focus(
 
 @router.get("/focus/trend")
 async def get_focus_trend(
+    request: Request,
     days: int = Query(default=7, ge=1, le=90, description="Number of days to look back"),
     focus_repo: SQLAlchemyFocusSessionRepository = Depends(get_focus_repo),  # noqa: B008
 ) -> dict[str, Any]:
     """Return focus session trends over the last *days* days."""
-    today = utc_today()
+    settings = getattr(request.app.state, "settings", None)
+    today = business_today(getattr(settings, "timezone", "local"))
     start = today - timedelta(days=days - 1)
 
     sessions = await focus_repo.query_range(1, start, today)

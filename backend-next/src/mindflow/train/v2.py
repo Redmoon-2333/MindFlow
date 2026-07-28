@@ -76,8 +76,11 @@ def prepare_v2_training_data(
     feature_windows: list[dict[str, Any]],
     feedback_sessions: list[dict[str, Any]],
 ) -> V2TrainingData:
-    parsed_feedback = [_parse_feedback(row) for row in feedback_sessions]
-    parsed_feedback = [row for row in parsed_feedback if row is not None]
+    parsed_feedback: list[tuple[str, datetime, datetime, str, int | None, str]] = []
+    for row in feedback_sessions:
+        feedback = _parse_feedback(row)
+        if feedback is not None:
+            parsed_feedback.append(feedback)
     explicit_sessions = [row for row in parsed_feedback if row[4] is not None]
     explicit_session_ids = {row[0] for row in explicit_sessions}
     focus_sessions = {row[0] for row in explicit_sessions if row[4] == 1}
@@ -112,13 +115,13 @@ def prepare_v2_training_data(
             ),
             default=None,
         )
-        if selected is not None and selected[4] is None:
-            mixed_window_count += 1
-            continue
-
         row_features = dict(features)
         if selected is not None:
-            label = int(selected[4])
+            selected_label = selected[4]
+            if selected_label is None:
+                mixed_window_count += 1
+                continue
+            label = selected_label
             weight = 1.0
             source = "explicit"
             is_explicit = True
@@ -192,7 +195,7 @@ def evaluate_v2_candidates(
         if len(np.unique(y_train)) < 2 or len(np.unique(y_test)) < 2:
             continue
         candidate = RandomForestClassifier(
-            n_estimators=240,
+            n_estimators=100,  # Must match FocusClassifier (classifier.py:25)
             max_depth=8,
             min_samples_leaf=2,
             class_weight="balanced_subsample",

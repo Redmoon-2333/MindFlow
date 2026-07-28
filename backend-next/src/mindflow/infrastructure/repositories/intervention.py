@@ -32,6 +32,8 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
+from mindflow.domain.intervention import ThrottleStats
+from mindflow.infrastructure.schema import intervention_logs
 
 
 class Clock(Protocol):
@@ -45,31 +47,6 @@ class UTCCLock:
 
     def now(self) -> datetime:
         return datetime.now(UTC)
-
-# ── Table definition (matches migration 0001_create_core_tables) ─────
-
-metadata = sa.MetaData()
-
-intervention_logs = sa.Table(
-    "intervention_logs",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("triggered_at", sa.Text(), nullable=False),
-    sa.Column("intervention_type", sa.Text(), nullable=False),
-    sa.Column("cbt_technique", sa.Text(), nullable=True),
-    sa.Column("context_json", sa.Text(), nullable=True),
-    sa.Column("user_response", sa.Text(), nullable=True),
-    sa.Column("response_latency_s", sa.Float(), nullable=True),
-    sa.Column("feedback_rating", sa.Text(), nullable=True),
-    sa.Column("feedback_comment", sa.Text(), nullable=True),
-    sa.Column(
-        "created_at",
-        sa.Text(),
-        nullable=False,
-        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
-    ),
-)
 
 ResponseType = Literal["accepted", "ignored", "dismissed"]
 FeedbackRating = Literal["helpful", "neutral", "annoying"]
@@ -160,21 +137,12 @@ class InterventionLogRepository:
             sa.update(intervention_logs)
             .where(intervention_logs.c.id == intervention_id)
             .values(user_response=user_response, response_latency_s=latency_s)
+            .returning(*intervention_logs.c)
         )
 
         async with self._session_factory() as session, session.begin():
             result = await session.execute(stmt)
-            # CursorResult.rowcount is the number of rows matched
-            rowcount: int = result.rowcount
-            if rowcount == 0:
-                return None
-
-            # Fetch the updated row
-            select_stmt = sa.select(intervention_logs).where(
-                intervention_logs.c.id == intervention_id
-            )
-            fetch = await session.execute(select_stmt)
-            row = fetch.fetchone()
+            row = result.fetchone()
 
         return _row_to_dict(row) if row is not None else None
 
@@ -299,18 +267,12 @@ class InterventionLogRepository:
             sa.update(intervention_logs)
             .where(intervention_logs.c.id == intervention_id)
             .values(feedback_rating=rating, feedback_comment=comment)
+            .returning(*intervention_logs.c)
         )
 
         async with self._session_factory() as session, session.begin():
             result = await session.execute(stmt)
-            if result.rowcount == 0:
-                return None
-
-            select_stmt = sa.select(intervention_logs).where(
-                intervention_logs.c.id == intervention_id
-            )
-            fetch = await session.execute(select_stmt)
-            row = fetch.fetchone()
+            row = result.fetchone()
 
         return _row_to_dict(row) if row is not None else None
 
@@ -332,6 +294,152 @@ class InterventionLogRepository:
             result = await session.execute(stmt)
             count: int = result.scalar() or 0
             return count
+
+    async def get_throttle_stats(
+        self,
+        user_id: int,
+        intervention_type: str,
+        *,
+        now: datetime,
+        today_start: datetime,
+        cutoff_7d: datetime,
+        cooldown_lower_bound: datetime,
+    ) -> ThrottleStats:
+        """Single-query aggregate for throttle decisions (P2-1 optimisation).
+
+        All time boundaries are provided by the caller so that *now* is the
+        single authoritative snapshot.  The method itself does not access
+        the clock — boundaries are fully explicit.
+
+        The outer WHERE clause uses ``query_start = min(cutoff_7d,
+        cooldown_lower_bound, today_start)`` so that **every** row relevant
+        to **any** sub-aggregate is scanned.  Each aggregate (ignore rate,
+        today counts, annoying count, cooldown last-triggered) then applies
+        its own exact boundary via ``CASE WHEN``, preserving the same
+        per-method semantics as the original five separate queries.
+
+        Args:
+            user_id: User identifier.
+            intervention_type: The requested intervention type.
+            now: Current instant (cooldown upper bound, inclusive via
+                ``<= now`` matching old ``query_range``).
+            today_start: Start of calendar day (UTC).
+            cutoff_7d: Lower bound for the 7-day window
+                (ignore rate, annoying count).
+            cooldown_lower_bound: Lower bound for the cooldown window
+                (matches old ``query_range(start=…)`` call).
+
+        Returns:
+            ``ThrottleStats`` — all counts default to 0; ``last_triggered_at``
+            is ``None`` when no row exists within the cooldown window.
+        """
+        # Earliest instant needed by any sub-aggregate.  When cooldown_h is
+        # larger than 3.5 days, cooldown_lower_bound can be older than the
+        # 7-day window — the outer scan must include those rows so the
+        # cooldown CASE can see them.
+        query_start = min(today_start, cutoff_7d, cooldown_lower_bound)
+
+        c = intervention_logs.c
+
+        stmt = (
+            sa.select(
+                # ── 7-day window (denominator + numerator) ─────────────
+                sa.func.sum(
+                    sa.case(
+                        (c.triggered_at >= cutoff_7d.isoformat(), 1),
+                        else_=0,
+                    ),
+                ).label("total_7d"),
+                sa.func.sum(
+                    sa.case(
+                        (
+                            sa.and_(
+                                c.triggered_at >= cutoff_7d.isoformat(),
+                                c.user_response == "ignored",
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    ),
+                ).label("ignored_7d"),
+                # ── Today counts ───────────────────────────────────────
+                sa.func.sum(
+                    sa.case(
+                        (c.triggered_at >= today_start.isoformat(), 1),
+                        else_=0,
+                    ),
+                ).label("today_count"),
+                sa.func.sum(
+                    sa.case(
+                        (
+                            sa.and_(
+                                c.triggered_at >= today_start.isoformat(),
+                                c.intervention_type == intervention_type,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    ),
+                ).label("today_count_by_type"),
+                # ── Annoying count (7-day window + type + rating) ──────
+                sa.func.sum(
+                    sa.case(
+                        (
+                            sa.and_(
+                                c.triggered_at >= cutoff_7d.isoformat(),
+                                c.intervention_type == intervention_type,
+                                c.feedback_rating == "annoying",
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    ),
+                ).label("annoying_count_7d_by_type"),
+                # ── Cooldown last-triggered (exact old query_range set) ─
+                sa.func.max(
+                    sa.case(
+                        (
+                            sa.and_(
+                                c.triggered_at >= cooldown_lower_bound.isoformat(),
+                                c.triggered_at <= now.isoformat(),
+                            ),
+                            c.triggered_at,
+                        ),
+                        else_=None,
+                    ),
+                ).label("last_triggered_at"),
+            )
+            .select_from(intervention_logs)
+            .where(
+                c.user_id == user_id,
+                c.triggered_at >= query_start.isoformat(),
+            )
+        )
+
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            row = result.fetchone()
+
+        if row is None:
+            return ThrottleStats(
+                ignore_rate=0.0,
+                today_count=0,
+                last_triggered_at=None,
+                annoying_count_by_type=0,
+                today_count_by_type=0,
+            )
+
+        total_7d: int = row.total_7d or 0
+        ignored_7d: int = row.ignored_7d or 0
+        ignore_rate = (ignored_7d / total_7d) if total_7d > 0 else 0.0
+
+        return ThrottleStats(
+            ignore_rate=ignore_rate,
+            today_count=row.today_count or 0,
+            last_triggered_at=row.last_triggered_at,
+            annoying_count_by_type=row.annoying_count_7d_by_type or 0,
+            today_count_by_type=row.today_count_by_type or 0,
+        )
 
     async def get_by_id(self, intervention_id: str) -> dict[str, Any] | None:
         """Return a single intervention log by ID, or None."""

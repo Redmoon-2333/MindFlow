@@ -7,12 +7,15 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import mindflow.api.routes.reports as reports_module
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes.reports import router as reports_router
 from mindflow.domain.events import make_event
@@ -108,6 +111,28 @@ class TestDailyReport:
         assert "focus_score" in data
         assert "pattern_summary" in data
 
+    def test_daily_report_defaults_to_business_today(self, seeded_app, monkeypatch):
+        business_today = MagicMock(return_value=date(2026, 7, 17))
+        monkeypatch.setattr(
+            reports_module,
+            "business_today",
+            business_today,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            reports_module,
+            "utc_today",
+            lambda: date(2026, 7, 16),
+            raising=False,
+        )
+        seeded_app.state.settings = SimpleNamespace(timezone="Asia/Shanghai")
+
+        response = TestClient(seeded_app).get("/api/v1/reports/daily")
+
+        assert response.status_code == 200
+        assert response.json()["date"] == "2026-07-17"
+        business_today.assert_called_once_with("Asia/Shanghai")
+
     def test_daily_report_invalid_date(self, seeded_app):
         """Invalid date format should return 422."""
         client = TestClient(seeded_app)
@@ -180,6 +205,32 @@ class TestWeeklyReport:
         assert data["week_start"] == "2026-07-13"
         assert "averages" in data
         assert "daily_reports" in data
+
+    def test_weekly_report_defaults_to_current_business_week(
+        self,
+        seeded_app,
+        monkeypatch,
+    ):
+        business_today = MagicMock(return_value=date(2026, 7, 17))
+        monkeypatch.setattr(
+            reports_module,
+            "business_today",
+            business_today,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            reports_module,
+            "utc_today",
+            lambda: date(2026, 7, 12),
+            raising=False,
+        )
+        seeded_app.state.settings = SimpleNamespace(timezone="Asia/Shanghai")
+
+        response = TestClient(seeded_app).get("/api/v1/reports/weekly")
+
+        assert response.status_code == 200
+        assert response.json()["week_start"] == "2026-07-13"
+        business_today.assert_called_once_with("Asia/Shanghai")
 
     def test_weekly_report_empty_week(self, seeded_app):
         """Empty week should return structure with zero values, not 404."""

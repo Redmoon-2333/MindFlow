@@ -59,8 +59,7 @@ from mindflow.services.effectiveness_service import (
     EffectivenessReport,
     EffectivenessService,
 )
-from mindflow.train.features import BehaviorFeatureExtractor
-from mindflow.train.models.manager import ModelManager
+from mindflow.services.prediction_service import FocusPredictionService
 
 # Backward-compat alias: ``baseline_models.metadata`` is the MetaData the table
 # was registered on. Kept so ``baseline_models_metadata.create_all`` importers
@@ -291,7 +290,7 @@ class EvidenceBundleBuilder:
         session_factory: async_sessionmaker[AsyncSession],
         effectiveness_service: EffectivenessService | None = None,
         baseline_repo: BaselineRepository | None = None,
-        model_manager: ModelManager | None = None,
+        prediction_service: FocusPredictionService | None = None,
     ) -> None:
         self._activity_repo = activity_repo
         self._intervention_repo = intervention_repo
@@ -300,8 +299,7 @@ class EvidenceBundleBuilder:
         self._baseline_repo = baseline_repo or BaselineRepository(
             session_factory=session_factory
         )
-        self._model_manager = model_manager
-        self._feature_extractor = BehaviorFeatureExtractor()
+        self._prediction_service = prediction_service
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API
@@ -339,6 +337,10 @@ class EvidenceBundleBuilder:
         # 2. Compute features and build evidence items
         items: list[EvidenceItem] = []
         items.extend(self._build_feature_items(events))
+
+        # 3. ML enrichment (v2 feature windows via FocusPredictionService)
+        ml_items = await self._build_ml_items(events, window_start, window_end, user_id)
+        items.extend(ml_items)
 
         # 4. Run deviation detection
         items.extend(self._build_deviation_items(baseline, events, window_start))
@@ -452,118 +454,138 @@ class EvidenceBundleBuilder:
                 )
             )
 
-        # --- ML enrichment (degradation tier 1) ---
-        if self._model_manager is not None:
-            items.extend(self._build_ml_items(events))
+        # --- ML enrichment handled in build() via FocusPredictionService ---
 
         return items
 
-    def _build_ml_items(self, events: list[ActivityEvent]) -> list[EvidenceItem]:
-        """Run ML inference and return enrichment EvidenceItems.
+    async def _build_ml_items(self, events: list[ActivityEvent], window_start: datetime, window_end: datetime, user_id: int = 1) -> list[EvidenceItem]:
+        """Run ML inference via ``FocusPredictionService`` and return enrichment EvidenceItems.
 
-        Extracts the feature matrix via ``BehaviorFeatureExtractor``,
-        then queries the classifier (focus probability) and clustering
-        (behavior cluster assignment).  Returns 0-2 items depending on
-        what the models can produce.
+        Uses v2 feature windows (privacy-preserving, 5-min) instead of the
+        legacy v1 ``BehaviorFeatureExtractor`` (30-min windows with PII).
 
-        All exceptions are caught and logged — ML failure must never
-        break the evidence pipeline (degradation tier 3).
+        Returns 0-4 items depending on prediction status. All exceptions are
+        caught and logged — ML failure must never break the evidence pipeline.
+
+        Degradation chain:
+          1. Prediction ready + fresh + good coverage → full ML evidence
+          2. Prediction ready but stale → ML evidence with staleness note
+          3. No model / no data / schema mismatch → no ML items (rule-only fallback)
+          4. Inference error → logged, no ML items
         """
-        try:
-            feature_rows = self._feature_extractor.extract_session_features(events)
-            if not feature_rows:
-                # Events may span less than one 30-min window boundary
-                # (floor-to-hour), so no complete window can be formed.
-                # This is normal for short observation windows. When the
-                # analysis window is >= 60 minutes this is almost always
-                # a data quality issue (sparse/empty events) rather than
-                # a code bug — check upstream event collection first.
-                if events and len(events) >= 5:
-                    span = events[-1].timestamp_utc - events[0].timestamp_utc
-                    logger.debug(
-                        "ML enrichment skipped: {} events spanning {} "
-                        "produced 0 feature windows (need at least {} min span)",
-                        len(events), span,
-                        self._feature_extractor.window_minutes,
-                    )
-                return []
-
-            # Build (n_samples, n_features) numpy array in FEATURE_NAMES order
-            import numpy as np
-
-            feature_names = self._feature_extractor.get_feature_names()
-            expected_count = len(feature_names)
-            matrix = np.array(
-                [[row[name] for name in feature_names] for row in feature_rows],
-                dtype=np.float64,
-            )
-            if matrix.ndim != 2 or matrix.shape[1] != expected_count:
-                logger.debug(
-                    "ML feature matrix shape mismatch: {} (expected {} features)",
-                    matrix.shape, expected_count,
-                )
-                return []
-
-            items: list[EvidenceItem] = []
-
-            # --- Classifier: focus probability ---
-            try:
-                proba = self._model_manager.classifier.predict_proba(matrix)  # type: ignore[union-attr]
-                # proba shape: (n_samples, 2) — columns [distraction, focus]
-                # Average across all windows in this analysis period
-                focus_proba = float(np.mean(proba[:, 1]))
-                ml_focus_sev = _ml_focus_severity(focus_proba)
-                items.append(
-                    EvidenceItem(
-                        metric="ml_focus_probability",
-                        value=round(focus_proba, 4),
-                        baseline=None,
-                        severity=ml_focus_sev,
-                        confidence=round(
-                            focus_proba if focus_proba >= 0.5 else 1.0 - focus_proba, 3
-                        ),
-                        source="rf_classifier",
-                        human_readable=_format_ml_focus_readable(focus_proba, ml_focus_sev),
-                    )
-                )
-            except Exception:
-                logger.debug("ML classifier inference failed, skipping")
-
-            # --- Clustering: behavior cluster assignment ---
-            try:
-                cluster_labels = self._model_manager.clustering.predict(matrix)  # type: ignore[union-attr]
-                # Map cluster IDs to human-readable names
-                from mindflow.train.models.clustering import BehaviorClustering
-
-                label_map = BehaviorClustering.CLUSTER_LABEL_MAP
-                cluster_names = [label_map.get(int(c), f"cluster_{c}") for c in cluster_labels]
-                # Majority vote across windows
-                from collections import Counter
-
-                most_common_name, most_common_count = Counter(cluster_names).most_common(1)[0]
-                confidence = round(most_common_count / len(cluster_names), 3)
-                items.append(
-                    EvidenceItem(
-                        metric="ml_behavior_cluster",
-                        value=most_common_name,
-                        baseline=None,
-                        severity="info",
-                        confidence=confidence,
-                        source="dbscan_clustering",
-                        human_readable=(
-                            f"ML行为聚类: "
-                            f"{_CLUSTER_READABLE.get(most_common_name, most_common_name)}"
-                        ),
-                    )
-                )
-            except Exception:
-                logger.debug("ML clustering inference failed, skipping")
-
-            return items
-
-        except Exception:
-            logger.warning("ML inference failed, falling back to rule engine")
+        if self._prediction_service is None:
             return []
+
+        try:
+            prediction = await self._prediction_service.predict_range(
+                user_id=user_id,
+                start=window_start,
+                end=window_end,
+            )
+        except Exception as exc:
+            logger.debug("ML enrichment via FocusPredictionService failed: {}", exc)
+            return []
+
+        # Only enrich when we have a usable prediction
+        if prediction.status == "no_model":
+            logger.debug("ML enrichment skipped: no model loaded")
+            return []
+
+        if prediction.status == "no_data":
+            logger.debug("ML enrichment skipped: no v2 feature windows in analysis range")
+            return []
+
+        if prediction.status == "schema_mismatch":
+            logger.debug("ML enrichment skipped: feature schema mismatch")
+            return []
+
+        if prediction.status == "inference_error":
+            logger.debug("ML enrichment skipped: {}", prediction.reason)
+            return []
+
+        # status is "ready" or "stale" — both produce evidence, but
+        # "stale" items get a note in their human_readable field.
+        is_stale = prediction.status == "stale"
+        staleness_note = "（数据已过期）" if is_stale else ""
+
+        items: list[EvidenceItem] = []
+
+        # --- ml_focus_probability_mean ---
+        if prediction.focus_probability is not None:
+            focus_proba = prediction.focus_probability
+            ml_focus_sev = _ml_focus_severity(focus_proba)
+            confidence = round(
+                focus_proba if focus_proba >= 0.5 else 1.0 - focus_proba, 3
+            )
+            items.append(
+                EvidenceItem(
+                    metric="ml_focus_probability",
+                    value=round(focus_proba, 4),
+                    baseline=None,
+                    severity=ml_focus_sev,
+                    confidence=confidence,
+                    source="rf_classifier_v2",
+                    human_readable=_format_ml_focus_readable(focus_proba, ml_focus_sev) + staleness_note,
+                )
+            )
+
+        # --- ml_distracted_window_ratio ---
+        if prediction.distracted_window_ratio is not None and prediction.window_count > 0:
+            d_ratio = prediction.distracted_window_ratio
+            # Confidence: higher when ratio is clearly high or low
+            d_confidence = round(max(d_ratio, 1.0 - d_ratio), 3)
+            items.append(
+                EvidenceItem(
+                    metric="ml_distracted_window_ratio",
+                    value=round(d_ratio, 4),
+                    baseline=None,
+                    severity=_ml_focus_severity(1.0 - d_ratio),
+                    confidence=d_confidence,
+                    source="rf_classifier_v2",
+                    human_readable=(
+                        f"ML分心窗口占比 {d_ratio:.0%}{staleness_note}"
+                    ),
+                )
+            )
+
+        # --- ml_uncertainty_mean ---
+        if prediction.uncertainty is not None:
+            items.append(
+                EvidenceItem(
+                    metric="ml_uncertainty",
+                    value=round(prediction.uncertainty, 4),
+                    baseline=None,
+                    severity="info",
+                    confidence=max(1.0 - prediction.uncertainty, 0.1),
+                    source="rf_classifier_v2",
+                    human_readable=(
+                        f"ML预测不确定度 {prediction.uncertainty:.2f}"
+                        f"（{'高' if prediction.uncertainty > 0.5 else '低'}）{staleness_note}"
+                    ),
+                )
+            )
+
+        # --- ml_feature_coverage ---
+        if prediction.window_count > 0:
+            items.append(
+                EvidenceItem(
+                    metric="ml_feature_coverage",
+                    value=round(prediction.coverage_ratio, 4),
+                    baseline=None,
+                    severity="info",
+                    confidence=min(prediction.coverage_ratio + 0.2, 1.0),
+                    source="rf_classifier_v2",
+                    human_readable=(
+                        f"ML特征覆盖率 {prediction.coverage_ratio:.0%}"
+                        f"（{prediction.window_count}个窗口）{staleness_note}"
+                    ),
+                )
+            )
+
+        if not items:
+            return []
+
+        return items
 
     # ══════════════════════════════════════════════════════════════════════
     # Baseline / deviation items

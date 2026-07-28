@@ -255,7 +255,7 @@ def run_raw_input_watcher(
         if message == wm_destroy:
             user32.PostQuitMessage(0)
             return 0
-        return user32.DefWindowProcW(hwnd, message, wparam, lparam)
+        return int(user32.DefWindowProcW(hwnd, message, wparam, lparam))
 
     callback = wndproc_type(window_proc)
 
@@ -382,6 +382,7 @@ def run_raw_input_watcher(
 
 def read_queue_nowait(input_queue: Any) -> dict[str, Any] | None:
     try:
-        return input_queue.get_nowait()
+        item = input_queue.get_nowait()
     except queue.Empty:
         return None
+    return item if isinstance(item, dict) else None

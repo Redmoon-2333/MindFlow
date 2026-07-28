@@ -1,20 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { sendChat, getChatSessions, getChatMessages } from "../api";
-
-interface ChatSession {
-  id: string;
-  title?: string;
-  name?: string;
-  created_at?: string;
-  updated_at?: string;
-}
+import { sendChat, getChatSessions, getChatMessages, getErrorMessage } from "../api";
+import type { ChatSession } from "../api";
 
 interface ChatMessage {
   id?: string;
   role: "user" | "assistant";
   content: string;
   tools_used?: string[];
-  evidence_cited?: string[];
+  evidence_cited?: string[] | boolean;
   degraded?: boolean;
 }
 
@@ -52,8 +45,8 @@ export default function Chat() {
     try {
       const data = await getChatSessions();
       setSessions(Array.isArray(data) ? data : []);
-    } catch (e: any) {
-      setError(e.message ?? "加载会话列表失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Request failed"));
     } finally {
       setSessionsLoading(false);
     }
@@ -65,8 +58,8 @@ export default function Chat() {
     try {
       const data = await getChatMessages(sessionId);
       setMessages(Array.isArray(data) ? data : []);
-    } catch (e: any) {
-      setError(e.message ?? "加载消息失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Request failed"));
       setMessages([]);
     } finally {
       setMessagesLoading(false);
@@ -110,14 +103,14 @@ export default function Chat() {
       }
       const aiMsg: ChatMessage = {
         role: "assistant",
-        content: reply?.reply ?? reply?.message ?? reply?.content ?? JSON.stringify(reply),
+        content: reply.answer,
         tools_used: reply?.tools_used,
         evidence_cited: reply?.evidence_cited,
         degraded: reply?.degraded,
       };
       setMessages((prev) => [...prev, aiMsg]);
-    } catch (e: any) {
-      setError(e.message ?? "发送消息失败");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Request failed"));
     } finally {
       setLoading(false);
     }
@@ -174,8 +167,8 @@ export default function Chat() {
             <div style={{ flex: 1, overflowY: "auto" }}>
               {sessions.map((s) => (
                 <div
-                  key={s.id}
-                  onClick={() => handleSelectSession(s.id)}
+                  key={s.session_id}
+                  onClick={() => handleSelectSession(s.session_id)}
                   style={{
                     padding: "10px 12px",
                     cursor: "pointer",
@@ -183,27 +176,27 @@ export default function Chat() {
                     fontSize: 13,
                     marginBottom: 4,
                     background:
-                      activeSessionId === s.id
+                      activeSessionId === s.session_id
                         ? "var(--color-primary-light)"
                         : "transparent",
                     color:
-                      activeSessionId === s.id
+                      activeSessionId === s.session_id
                         ? "var(--color-primary)"
                         : "var(--color-text-secondary)",
-                    fontWeight: activeSessionId === s.id ? 500 : 400,
+                    fontWeight: activeSessionId === s.session_id ? 500 : 400,
                   }}
                   onMouseEnter={(e) => {
-                    if (activeSessionId !== s.id) {
+                    if (activeSessionId !== s.session_id) {
                       (e.target as HTMLElement).style.background = "var(--color-bg-inset)";
                     }
                   }}
                   onMouseLeave={(e) => {
-                    if (activeSessionId !== s.id) {
+                    if (activeSessionId !== s.session_id) {
                       (e.target as HTMLElement).style.background = "transparent";
                     }
                   }}
                 >
-                  {s.title || s.name || `对话 ${s.id?.slice(0, 8) ?? "..."}`}
+                  {`会话 ${s.session_id.slice(0, 8)}`}
                 </div>
               ))}
             </div>
@@ -252,12 +245,10 @@ export default function Chat() {
                             工具: {tool}
                           </span>
                         ))}
-                      {msg.evidence_cited && msg.evidence_cited.length > 0 &&
-                        msg.evidence_cited.map((ev, i) => (
-                          <span key={i} className="badge badge-primary">
-                            引用: {ev}
-                          </span>
-                        ))}
+                      {Array.isArray(msg.evidence_cited) && msg.evidence_cited.map((ev, i) => (
+                        <span key={i} className="badge badge-primary">证据: {ev}</span>
+                      ))}
+                      {msg.evidence_cited === true && <span className="badge badge-primary">已引用行为证据</span>}
                     </div>
                   )}
                 </div>

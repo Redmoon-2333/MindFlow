@@ -9,7 +9,9 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from datetime import date
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -64,6 +66,7 @@ class TestPostPanelToday:
     def test_success(self) -> None:
         """200 with full PanelVerdict JSON."""
         mock_service = AsyncMock()
+        mock_service.get_stored_verdict = AsyncMock(return_value=None)
         mock_service.run_daily_panel = AsyncMock(return_value=_make_verdict())
         app = _make_app(mock_service)
         client = TestClient(app)
@@ -82,10 +85,30 @@ class TestPostPanelToday:
         assert len(data["transcript"]) == 2
         assert data["rationale"] == "你的行为模式显示冲动分心倾向，同时伴随任务畏惧。"
 
+    def test_uses_configured_business_timezone(self) -> None:
+        mock_service = AsyncMock()
+        mock_service.get_stored_verdict = AsyncMock(return_value=None)
+        mock_service.run_daily_panel = AsyncMock(return_value=_make_verdict())
+        app = _make_app(mock_service)
+        app.state.settings = SimpleNamespace(timezone="Asia/Shanghai")
+
+        with patch(
+            "mindflow.api.routes.panel.business_today",
+            return_value=date(2026, 7, 26),
+        ) as business_today_mock:
+            response = TestClient(app).post("/api/v1/panel/today")
+
+        assert response.status_code == 200
+        business_today_mock.assert_called_once_with("Asia/Shanghai")
+        mock_service.run_daily_panel.assert_awaited_once_with(
+            user_id=1, target_date=date(2026, 7, 26)
+        )
+
     def test_degraded(self) -> None:
         """200 with meta.degraded=true when panel falls through."""
         degraded = _make_verdict(source="single_expert", call_count=0, transcript=())
         mock_service = AsyncMock()
+        mock_service.get_stored_verdict = AsyncMock(return_value=None)
         mock_service.run_daily_panel = AsyncMock(return_value=degraded)
         app = _make_app(mock_service)
         client = TestClient(app)
@@ -102,6 +125,7 @@ class TestPostPanelToday:
     def test_escalated_flag(self) -> None:
         """200 with escalated=true when panel had conflict."""
         mock_service = AsyncMock()
+        mock_service.get_stored_verdict = AsyncMock(return_value=None)
         mock_service.run_daily_panel = AsyncMock(
             return_value=_make_verdict(escalated=True, call_count=9),
         )
@@ -155,6 +179,7 @@ class TestPanelRateLimit:
     def test_ratelimit_headers(self) -> None:
         """Rate limit headers present on response."""
         mock_service = AsyncMock()
+        mock_service.get_stored_verdict = AsyncMock(return_value=None)
         mock_service.run_daily_panel = AsyncMock(return_value=_make_verdict())
         app = _make_app(mock_service)
         client = TestClient(app)

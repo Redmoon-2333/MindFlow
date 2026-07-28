@@ -17,6 +17,8 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
+from loguru import logger
+
 from mindflow.agents.llm_gateway import PanelLLMGateway
 from mindflow.agents.orchestrator import PanelOrchestrator
 from mindflow.agents.types import PanelVerdict
@@ -107,11 +109,15 @@ _TECHNIQUE_MAP: dict[str, str] = {
 }
 
 # Metrics that are guaranteed to exist in every bundle's evidence items.
-# The orchestrator's citation validator checks against metric_names(bundle),
-# so mock citations must only reference metrics that actually appear.
+# The orchestrator's citation validator checks against canonical IDs
+# (focus.<metric> from evidence items), so mock citations must emit
+# these canonical IDs to pass the validator's alias resolver without
+# ambiguity.
 _SAFE_METRICS: frozenset[str] = frozenset({
-    "focus_score", "switch_rate", "longest_focus_block_s",
-    "social_media_ratio",
+    "focus.focus_score",
+    "focus.switch_rate",
+    "focus.longest_focus_block_s",
+    "focus.social_media_ratio",
 })
 
 
@@ -175,19 +181,38 @@ def _make_citations(types: list[str], available_metrics: frozenset[str] | None =
     Only includes metrics that exist in *available_metrics* (the bundle's
     evidence items), so the orchestrator's citation validator doesn't skip
     the mock's responses as hallucinated.
-    """
-    candidates = ["focus_score"]
-    if "impulsivity" in types:
-        candidates.extend(["switch_rate", "longest_focus_block_s"])
-    if "emotional_regulation" in types:
-        candidates.append("social_media_ratio")
-    if "decisional" in types:
-        candidates.append("start_delay_min")
-    if "task_aversion" in types:
-        candidates.append("focus_score")
 
+    Citations are emitted as canonical ``focus.*`` IDs so the orchestrator's
+    ``validate_citations`` can match them directly without alias-resolution
+    ambiguity.
+    """
+    candidates: list[str] = []
+    _add = candidates.append
+
+    # Always cite focus_score
+    if "focus.focus_score" in _SAFE_METRICS:
+        _add("focus.focus_score")
+
+    if "impulsivity" in types:
+        _add("focus.switch_rate")
+        _add("focus.longest_focus_block_s")
+
+    if "emotional_regulation" in types:
+        _add("focus.social_media_ratio")
+
+    if "decisional" in types:
+        _add("focus.start_delay_min")
+
+    if "task_aversion" in types:
+        _add("focus.focus_score")
+
+    # Filter against bare metric names extracted from the user-prompt evidence
+    # items (these are the item-level ``metric`` fields, not canonical IDs).
     if available_metrics:
-        candidates = [m for m in candidates if m in available_metrics]
+        candidates = [
+            c for c in candidates
+            if c.rsplit(".", 1)[-1] in available_metrics
+        ]
 
     return list(dict.fromkeys(candidates))  # dedup preserving order
 
@@ -289,8 +314,10 @@ def _extract_metrics_from_user(user: str) -> tuple[dict[str, float], frozenset[s
                 if "self_criticism" in user or "redo_pattern" in user:
                     metrics["has_keyword_flags"] = 1.0
 
-    except (json.JSONDecodeError, ValueError, KeyError, IndexError):
-        pass
+    except (json.JSONDecodeError, ValueError, KeyError, IndexError) as exc:
+        logger.opt(exception=True).warning(
+            "Failed to extract metrics from user prompt: {}", exc
+        )
 
     return metrics, frozenset(available)
 

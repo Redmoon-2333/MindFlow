@@ -1,14 +1,17 @@
 """ML training pipeline for MindFlow behavior models.
 
 Wave 8a migration from the old ``mindflow.analyzer`` package.
-Provides synthetic data generation, feature extraction, clustering,
-HMM training, versioned model persistence, and a CLI runner.
+Provides V2 feature extraction (24-dim), clustering, HMM training,
+versioned model persistence, and a CLI runner.
+
+V1 pipeline (synthetic_data.py, raw event-based training) was
+removed in the V2 consolidation — all training now uses the 24-dim
+feature schema (train/v2.py / synthetic_v2.py).
 """
 
 from mindflow.train.features import BehaviorFeatureExtractor
 from mindflow.train.models import BehaviorClustering, BehaviorHMM, ModelManager
 from mindflow.train.pipeline import TrainingReport, run_training
-from mindflow.train.synthetic_data import generate_synthetic_data
 from mindflow.train.user_profiles import (
     EPISODES,
     PROFILES,
@@ -20,7 +23,6 @@ from mindflow.train.user_profiles import (
 )
 
 __all__ = [
-    "generate_synthetic_data",
     "BehaviorFeatureExtractor",
     "BehaviorClustering",
     "BehaviorHMM",

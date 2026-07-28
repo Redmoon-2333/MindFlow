@@ -304,3 +304,300 @@ class TestTickTimeout:
 
         assert service._consecutive_failures >= 1, "Tick should have timed out"
         await service.stop()
+
+
+# ── Concurrency (P1-4) ──────────────────────────────────────────────────
+
+
+class TestConcurrency:
+    """Concurrent start/stop lifecycle transitions are atomic and idempotent.
+
+    P1-4: asyncio.Lock guards state transitions so that concurrent
+    start() / stop() calls never leave orphan tasks, inconsistent
+    status, or deadlock.
+    """
+
+    async def test_concurrent_starts_create_exactly_one_task(
+        self, mock_collector, mock_repository
+    ):
+        """Three concurrent start() calls → exactly one _run task created.
+
+        Tracks distinct asyncio.Task identities entering _run via the
+        mock snapshot.  Each unique task id represents one background
+        loop — there must be exactly one.
+        """
+        seen_tasks: set[int] = set()
+        release_barrier = asyncio.Event()
+        first_entered = asyncio.Event()
+
+        async def blocking_snapshot():
+            task_id = id(asyncio.current_task())
+            seen_tasks.add(task_id)
+            first_entered.set()
+            # Block so the loop cannot complete ticks and we can
+            # inspect state before stop().
+            await release_barrier.wait()
+            return _snapshot()
+
+        mock_collector.snapshot = AsyncMock(side_effect=blocking_snapshot)
+
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+        )
+
+        # Fire three concurrent starts.
+        await asyncio.gather(
+            service.start(),
+            service.start(),
+            service.start(),
+        )
+
+        # Wait for the single task to enter _run.
+        await asyncio.wait_for(first_entered.wait(), timeout=2.0)
+
+        # At this point we should see exactly 1 distinct task.
+        assert len(seen_tasks) == 1, (
+            f"Expected 1 distinct task, got {len(seen_tasks)}. "
+            "Concurrent start() created orphan tasks."
+        )
+
+        # Release the barrier so the tick can complete, then stop.
+        # stop() awaits the task — no sleep needed.
+        release_barrier.set()
+        await service.stop()
+
+        # Post-stop: no new tasks should have appeared.
+        assert len(seen_tasks) == 1, (
+            f"Tasks after stop: {len(seen_tasks)}. Orphan loop survived stop()."
+        )
+
+    async def test_concurrent_stops_on_running_service_are_safe(
+        self, mock_collector, mock_repository
+    ):
+        """Three concurrent stop() calls on a running service
+        must all complete without raising and leave status 'stopped'.
+        """
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+        )
+
+        await service.start()
+
+        # Fire three concurrent stops — no tick-collection sleep needed;
+        # stop() sets _stop_requested and awaits _task regardless.
+        await asyncio.gather(
+            service.stop(),
+            service.stop(),
+            service.stop(),
+        )
+
+        assert service.status == "stopped"
+        assert service._task is None
+
+    async def test_start_during_stop_is_noop(
+        self, mock_collector, mock_repository
+    ):
+        """start() during an in-flight stop() is a safe no-op.
+
+        Uses a marker task created *after* stop_task to signal that
+        stop() has yielded at its await — zero timing sleeps, pure
+        event-loop ordering (tasks run in creation order).
+        """
+        tick_barrier = asyncio.Event()
+        tick_started = asyncio.Event()
+
+        async def blocking_snapshot():
+            tick_started.set()
+            await tick_barrier.wait()
+            return _snapshot()
+
+        mock_collector.snapshot = AsyncMock(side_effect=blocking_snapshot)
+
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+        )
+
+        # Start → task enters _run, blocks on barrier.
+        await service.start()
+        await asyncio.wait_for(tick_started.wait(), timeout=2.0)
+
+        # Fire stop() in background.  A marker task scheduled after it
+        # will only run once stop() yields at its await.
+        stop_task = asyncio.create_task(service.stop())
+        stop_yielded = asyncio.Event()
+
+        async def _mark() -> None:
+            stop_yielded.set()
+
+        asyncio.create_task(_mark())
+        await stop_yielded.wait()
+        # stop() has now released _state_lock and is awaiting _task.
+
+        # start() must be a no-op — _task is non-None, status is "stopping".
+        await service.start()
+
+        # Release barrier so stop() can complete.
+        tick_barrier.set()
+        await stop_task
+
+        assert service._task is None
+        assert service.status == "stopped"
+
+    async def test_start_after_stop_restarts_cleanly(
+        self, mock_collector, mock_repository
+    ):
+        """start() → stop() → start() → stop() — full lifecycle twice,
+        each transition leaving the service in a consistent state.
+        No tick-collection sleeps; the lifecycle transitions are the
+        unit under test, not tick count.
+        """
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+        )
+
+        # First lifecycle
+        await service.start()
+        assert service.status == "running"
+        await service.stop()
+        assert service.status == "stopped"
+        assert service._task is None
+
+        # Second lifecycle
+        await service.start()
+        assert service.status == "running"
+        await service.stop()
+        assert service.status == "stopped"
+        assert service._task is None
+
+    async def test_concurrent_start_and_stop_race_does_not_orphan(
+        self, mock_collector, mock_repository
+    ):
+        """Simultaneous start() and stop() from concurrent tasks must
+        reach a consistent terminal state with no orphaned tasks.
+        """
+        release = asyncio.Event()
+        tick_started = asyncio.Event()
+
+        async def blocking_snapshot():
+            tick_started.set()
+            await release.wait()
+            return _snapshot()
+
+        mock_collector.snapshot = AsyncMock(side_effect=blocking_snapshot)
+
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+        )
+
+        # Start first
+        await service.start()
+        await asyncio.wait_for(tick_started.wait(), timeout=2.0)
+        tick_started.clear()
+
+        # Fire concurrent start + stop.  Await start first so it
+        # completes (no-op — task already running), then launch stop.
+        t_start = asyncio.create_task(service.start())
+        await t_start  # start returns (idempotent)
+        t_stop = asyncio.create_task(service.stop())
+
+        # Release the blocked tick so stop can complete.
+        release.set()
+
+        await asyncio.gather(t_start, t_stop)
+
+        # Both tasks complete — state is already settled.
+        assert service._task is None, "Task reference not cleaned up"
+        assert service.status in ("stopped",), (
+            f"Expected 'stopped', got '{service.status}'"
+        )
+
+    async def test_stop_cancellation_cleans_up_and_allows_restart(
+        self, mock_collector, mock_repository
+    ):
+        """Cancelling stop() mid-await must clean up _task/_status
+        so that a subsequent start() succeeds (no stuck "stopping").
+
+        Uses a barrier inside _tick and the service's own _state_lock
+        as a deterministic signal — zero timing sleeps.
+        """
+        tick_barrier = asyncio.Event()
+        tick_entered = asyncio.Event()
+
+        async def blocking_snapshot():
+            tick_entered.set()
+            await tick_barrier.wait()
+            return _snapshot()
+
+        mock_collector.snapshot = AsyncMock(side_effect=blocking_snapshot)
+
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+        )
+
+        # Phase 1 — Start; task enters _run and blocks on barrier.
+        await service.start()
+        await asyncio.wait_for(tick_entered.wait(), timeout=2.0)
+        assert service.status == "running"
+
+        # Phase 2 — Fire stop() in background.  A marker task created
+        # *after* stop_task signals when stop() has yielded at its
+        # await — tasks run in FIFO creation order.
+        stop_task = asyncio.create_task(service.stop())
+        stop_yielded = asyncio.Event()
+
+        async def _mark() -> None:
+            stop_yielded.set()
+
+        asyncio.create_task(_mark())
+        await stop_yielded.wait()
+        # stop() has now released _state_lock and is awaiting _task.
+
+        # Save the background task reference for post-cancellation await.
+        background_task = service._task
+        assert background_task is not None, "Task vanished before cancel"
+
+        # Phase 3 — Cancel stop_task.  CancelledError MUST propagate.
+        stop_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stop_task
+
+        # After cancellation: _finalize ran under shield → clean state.
+        assert service._task is None, (
+            "_task not cleared after stop cancellation — stale reference"
+        )
+        assert service.status == "stopped", (
+            f"Expected 'stopped' after stop cancellation, got '{service.status}'"
+        )
+
+        # Phase 4 — Release the barrier.  The background task was
+        # already cancelled by stop()'s CancelledError handler and
+        # completed — awaiting it surfaces the cancellation.
+        tick_barrier.set()
+        with pytest.raises(asyncio.CancelledError):
+            await background_task
+
+        # Phase 5 — Restart must work.
+        await service.start()
+        assert service.status == "running", (
+            f"Cannot restart after stop cancellation: status={service.status}"
+        )
+        await service.stop()
+        assert service.status == "stopped"

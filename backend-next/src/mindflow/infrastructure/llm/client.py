@@ -6,6 +6,10 @@ Design decisions:
   - httpx.AsyncClient with connection pooling and a 30-second timeout.
   - One retry on network-level errors (connect, timeout, 5xx) —
     validation errors and 4xx are NOT retried (they won't succeed).
+  - Exponential backoff with jitter before retries (P0-3):
+    delay = min(2^attempt + random.uniform(0, 1), 60).
+    ``Retry-After`` header (integer only) preferred when available.
+    No delay before the final attempt.
   - ``response_format: {"type": "json_object"}`` instructs the API to
     return valid JSON — the caller still validates via Pydantic.
   - System prompt encodes the CBT-coach persona, safety boundaries,
@@ -20,7 +24,9 @@ Raises:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 
 import httpx
 from loguru import logger
@@ -62,6 +68,45 @@ _SYSTEM_PROMPT: str = (
 
 _DEFAULT_TIMEOUT_S: int = 30
 _MAX_RETRIES: int = 1
+_BACKOFF_CAP_S: float = 60.0
+
+
+def _compute_backoff(attempt: int, retry_after: int | None = None) -> float:
+    """Compute the backoff delay for a retry attempt.
+
+    If *retry_after* is a positive integer, use it (capped at ``_BACKOFF_CAP_S``).
+    Otherwise, use exponential backoff with jitter:
+    ``min(2 ** attempt + random.uniform(0, 1), cap)``.
+
+    Args:
+        attempt: Zero-based retry attempt number (0 = first retry).
+        retry_after: Optional ``Retry-After`` header value in seconds (integer only).
+
+    Returns:
+        Delay in seconds (always ≥ 0).
+    """
+    if retry_after is not None and retry_after > 0:
+        capped_ra: float = min(float(retry_after), _BACKOFF_CAP_S)
+        return capped_ra
+
+    jitter: float = random.uniform(0.0, 1.0)
+    delay: float = float(2**attempt) + jitter
+    capped_exp: float = min(delay, _BACKOFF_CAP_S)
+    return capped_exp
+
+
+def _parse_retry_after(response: httpx.Response) -> int | None:
+    """Parse the ``Retry-After`` header as an integer number of seconds.
+
+    Returns ``None`` when the header is absent, non-integer, or unparseable.
+    """
+    header = response.headers.get("Retry-After")
+    if header is None:
+        return None
+    try:
+        return int(header)
+    except (ValueError, TypeError):
+        return None
 
 
 class DeepSeekClient:
@@ -135,15 +180,22 @@ class DeepSeekClient:
             except httpx.TimeoutException:
                 logger.warning("DeepSeek API timeout (attempt {})", attempt + 1)
                 last_exc = httpx.TimeoutException("DeepSeek API timed out after 30s")
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_compute_backoff(attempt))
                 continue
             except httpx.HTTPError as exc:
                 logger.warning("DeepSeek API HTTP error (attempt {}): {}", attempt + 1, exc)
                 last_exc = exc
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
             if response.status_code == 429:
                 logger.warning("DeepSeek rate limited (attempt {})", attempt + 1)
                 last_exc = LLMAPIError(f"Rate limited: {response.status_code}")
+                if attempt < _MAX_RETRIES:
+                    retry_after = _parse_retry_after(response)
+                    await asyncio.sleep(_compute_backoff(attempt, retry_after))
                 continue
 
             if response.status_code >= 500:
@@ -151,6 +203,9 @@ class DeepSeekClient:
                     "DeepSeek server error {} (attempt {})", response.status_code, attempt + 1
                 )
                 last_exc = LLMAPIError(f"Server error: {response.status_code}")
+                if attempt < _MAX_RETRIES:
+                    retry_after = _parse_retry_after(response)
+                    await asyncio.sleep(_compute_backoff(attempt, retry_after))
                 continue
 
             if response.status_code != 200:
@@ -164,12 +219,16 @@ class DeepSeekClient:
             except json.JSONDecodeError as exc:
                 logger.warning("DeepSeek returned non-JSON response: {}", exc)
                 last_exc = exc
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
             content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
             if not content:
                 logger.warning("DeepSeek returned empty content")
                 last_exc = LLMAPIError("Empty content in response")
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
             # Parse and validate via Pydantic strict mode

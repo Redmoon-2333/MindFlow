@@ -8,14 +8,14 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-
-from apscheduler.triggers.interval import IntervalTrigger
+from zoneinfo import ZoneInfo
 
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 from mindflow.services.scheduler import (
     _auto_intervention_check,
+    _next_daily_run_utc,
     build_scheduler,
 )
 
@@ -72,7 +72,6 @@ class TestBuildScheduler:
         assert job is not None
 
         trigger = job.trigger
-        assert isinstance(trigger, IntervalTrigger)
         assert trigger.interval.total_seconds() == 1800  # 30 min
 
     async def test_registers_4_jobs_without_intervention(self) -> None:
@@ -118,18 +117,30 @@ class TestBuildScheduler:
         jobs = scheduler.get_jobs()
         assert len(jobs) == 0
 
-    async def test_scheduler_timezone_is_utc(self) -> None:
-        """Scheduler timezone should be UTC."""
+    async def test_scheduler_timezone_defaults_to_local(self) -> None:
         scheduler = build_scheduler()
-        assert scheduler.timezone == UTC
+        assert scheduler.timezone == datetime.now().astimezone().tzinfo
+
+    async def test_scheduler_uses_configured_local_timezone(self) -> None:
+        scheduler = build_scheduler(timezone="Asia/Shanghai")
+        assert scheduler.timezone == ZoneInfo("Asia/Shanghai")
+
+    def test_next_cron_run_uses_local_wall_clock(self) -> None:
+        now_utc = datetime(2026, 7, 17, 15, 0, tzinfo=UTC)
+
+        target = _next_daily_run_utc(now_utc, hour=0, minute=1, timezone="Asia/Shanghai")
+
+        assert target == datetime(2026, 7, 17, 16, 1, tzinfo=UTC)
 
     async def test_report_job_registered(self) -> None:
-        """daily_report should run at 00:01."""
+        """daily_report should run at 00:05."""
         scheduler = build_scheduler(
             report_service=MagicMock(),
         )
         job = scheduler.get_job("daily_report")
         assert job is not None
+        assert str(job.trigger.fields[5]) == "0"
+        assert str(job.trigger.fields[6]) == "5"
 
     async def test_backup_job_registered(self) -> None:
         """daily_backup should have maintenance_service as dependency."""
@@ -139,11 +150,153 @@ class TestBuildScheduler:
         job = scheduler.get_job("daily_backup")
         assert job is not None
 
+    async def test_startup_recovers_latest_complete_telemetry_day_once(
+        self,
+    ) -> None:
+        runs = AsyncMock()
+        runs.claim.side_effect = [1, None]
+        runs.mark_succeeded.return_value = True
+        telemetry = MagicMock()
+        telemetry.rollup_feature_windows = AsyncMock()
+        telemetry.cleanup_retained_data = AsyncMock()
+        scheduler = build_scheduler(
+            telemetry_service=telemetry,
+            scheduled_job_runs_repository=runs,
+            timezone="Asia/Shanghai",
+        )
+        startup_time = datetime(2026, 7, 26, 11, 30, tzinfo=UTC)
+
+        await scheduler.run_startup_recovery(now_utc=startup_time)
+        await scheduler.run_startup_recovery(now_utc=startup_time)
+
+        telemetry.rollup_feature_windows.assert_awaited_once_with(
+            datetime(2026, 7, 24, 16, 0, tzinfo=UTC),
+            datetime(2026, 7, 25, 16, 0, tzinfo=UTC),
+        )
+        telemetry.cleanup_retained_data.assert_awaited_once_with()
+        runs.claim.assert_any_await(
+            "telemetry_rollup",
+            date(2026, 7, 25),
+            retry_failed=True,
+        )
+
     async def test_shutdown_does_not_raise(self) -> None:
         """shutdown(wait=False) should not raise."""
         scheduler = build_scheduler()
         scheduler.start()  # Initialise event loop reference
-        scheduler.shutdown(wait=False)
+        await scheduler.shutdown()
+
+    async def test_startup_recovers_latest_complete_business_day_once_in_order(
+        self,
+    ) -> None:
+        calls: list[tuple[str, date]] = []
+        identify_refreshes: list[bool] = []
+        claimed: set[tuple[str, date]] = set()
+        runs = AsyncMock()
+
+        async def _claim(job_name: str, target_date: date, **_: object) -> int | None:
+            key = (job_name, target_date)
+            if key in claimed:
+                return None
+            claimed.add(key)
+            return 1
+
+        runs.claim.side_effect = _claim
+        runs.has_succeeded.return_value = True
+        runs.mark_succeeded.return_value = True
+
+        analysis = MagicMock()
+        async def _identify(
+            _user_id: int,
+            target_date: date,
+            *,
+            refresh: bool = False,
+        ) -> None:
+            calls.append(("identify_sessions", target_date))
+            identify_refreshes.append(refresh)
+
+        analysis.identify_focus_sessions = AsyncMock(side_effect=_identify)
+        panel = MagicMock()
+        panel.run_daily_panel = AsyncMock(
+            side_effect=lambda *, user_id, target_date: calls.append(
+                ("daily_panel", target_date)
+            )
+        )
+        report = MagicMock()
+        report.generate_daily_for_all = AsyncMock(
+            side_effect=lambda *, target_date, refresh: calls.append(
+                ("daily_report", target_date)
+            )
+        )
+        autonomy = MagicMock()
+        autonomy.is_enabled = AsyncMock(return_value=True)
+        scheduler = build_scheduler(
+            analysis_service=analysis,
+            panel_service=panel,
+            report_service=report,
+            autonomy_service=autonomy,
+            scheduled_job_runs_repository=runs,
+            timezone="Asia/Shanghai",
+        )
+        startup_time = datetime(2026, 7, 25, 16, 10, tzinfo=UTC)
+
+        await scheduler.run_startup_recovery(now_utc=startup_time)
+        await scheduler.run_startup_recovery(now_utc=startup_time)
+
+        assert calls == [
+            ("identify_sessions", date(2026, 7, 25)),
+            ("daily_panel", date(2026, 7, 25)),
+            ("daily_report", date(2026, 7, 25)),
+        ]
+        assert identify_refreshes == [True]
+
+    async def test_startup_after_panel_time_recovers_current_business_day(self) -> None:
+        runs = AsyncMock()
+        runs.claim.side_effect = [None, 1]
+        runs.has_succeeded.return_value = False
+        runs.mark_succeeded.return_value = True
+        panel = MagicMock()
+        panel.run_daily_panel = AsyncMock()
+        scheduler = build_scheduler(
+            panel_service=panel,
+            scheduled_job_runs_repository=runs,
+            timezone="Asia/Shanghai",
+        )
+
+        await scheduler.run_startup_recovery(
+            now_utc=datetime(2026, 7, 26, 15, 45, tzinfo=UTC)
+        )
+
+        panel.run_daily_panel.assert_awaited_once_with(
+            user_id=1,
+            target_date=date(2026, 7, 26),
+        )
+
+    async def test_startup_after_identify_time_recovers_current_business_day(
+        self,
+    ) -> None:
+        runs = AsyncMock()
+        runs.claim.side_effect = [1, 1]
+        runs.has_succeeded.return_value = False
+        runs.mark_succeeded.return_value = True
+        analysis = MagicMock()
+        analysis.identify_focus_sessions = AsyncMock()
+        scheduler = build_scheduler(
+            analysis_service=analysis,
+            scheduled_job_runs_repository=runs,
+            timezone="Asia/Shanghai",
+        )
+
+        await scheduler.run_startup_recovery(
+            now_utc=datetime(2026, 7, 26, 15, 59, 30, tzinfo=UTC)
+        )
+
+        assert [
+            item.args for item in analysis.identify_focus_sessions.await_args_list
+        ] == [
+            (1, date(2026, 7, 25)),
+            (1, date(2026, 7, 26)),
+        ]
 
 
 class TestAutoInterventionCheck:
@@ -163,11 +316,23 @@ class TestAutoInterventionCheck:
             mock_dt.UTC = UTC
             mock_dt.timedelta = __import__("datetime").timedelta
 
-            await _auto_intervention_check(mock_repo, mock_svc)
+            await _auto_intervention_check(mock_repo, mock_svc, timezone="UTC")
 
             # Should not query events
             mock_repo.query_range.assert_not_called()
             mock_svc.maybe_intervene.assert_not_called()
+
+    async def test_working_hours_use_configured_local_timezone(self) -> None:
+        mock_repo = AsyncMock()
+        mock_repo.query_range = AsyncMock(return_value=[])
+        mock_svc = MagicMock()
+
+        with patch("mindflow.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 7, 17, 0, 30, tzinfo=UTC)
+
+            await _auto_intervention_check(mock_repo, mock_svc, timezone="Asia/Shanghai")
+
+        mock_repo.query_range.assert_awaited_once()
 
     async def test_skips_when_no_events(self) -> None:
         """No events in lookback window should skip silently."""
@@ -304,9 +469,7 @@ class TestAutoInterventionCheckThreeTier:
             mock_dt.UTC = UTC
             mock_dt.timedelta = __import__("datetime").timedelta
 
-            await _auto_intervention_check(
-                mock_repo, mock_svc, autonomy_service=mock_autonomy
-            )
+            await _auto_intervention_check(mock_repo, mock_svc, autonomy_service=mock_autonomy)
 
             mock_repo.query_range.assert_not_called()
             mock_svc.maybe_intervene.assert_not_called()
@@ -532,9 +695,7 @@ class TestDailyPanelRunClaim:
         _DAILY_PANEL_RUN_DATES.discard("2026-07-17")
 
         mock_panel = MagicMock()
-        mock_panel.run_daily_panel = AsyncMock(
-            side_effect=PanelUnavailableError(reason="down")
-        )
+        mock_panel.run_daily_panel = AsyncMock(side_effect=PanelUnavailableError(reason="down"))
         mock_engine = MagicMock()
         mock_engine.assess.return_value = _make_assessment(confidence=0.85)
 

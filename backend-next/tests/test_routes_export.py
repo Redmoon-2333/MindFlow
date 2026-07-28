@@ -8,6 +8,7 @@ Covers (3 main paths):
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,8 +16,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from mindflow.api.errors import register_exception_handlers
+from mindflow.api.routes.export import _parse_datetime_utc
 from mindflow.api.routes.export import router as export_router
 
+
+def test_parse_datetime_utc_converts_offsets_instead_of_relabeling() -> None:
+    parsed = _parse_datetime_utc("2026-07-26T08:00:00+08:00")
+    assert parsed == datetime(2026, 7, 26, 0, tzinfo=UTC)
 
 def _make_mock_deps(app: FastAPI) -> None:
     """Set up mock dependencies on app.state for the export route.
@@ -26,6 +32,12 @@ def _make_mock_deps(app: FastAPI) -> None:
     """
     mock_activity_repo = AsyncMock()
     mock_activity_repo.query_range = AsyncMock(return_value=[])
+
+    async def _empty_event_chunks(*_args, **_kwargs):
+        if False:
+            yield []
+
+    mock_activity_repo.iter_range_chunks = _empty_event_chunks
 
     mock_focus_repo = AsyncMock()
     mock_focus_repo.query_range = AsyncMock(return_value=[])

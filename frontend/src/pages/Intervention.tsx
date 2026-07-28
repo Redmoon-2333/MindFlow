@@ -4,18 +4,22 @@ import {
   getInterventionHistory,
   respondIntervention,
   feedbackIntervention,
+  getErrorMessage,
 } from "../api";
+import type { InterventionIntensity, InterventionRating, InterventionResponse } from "../api";
+import { realtimeClient } from "../realtime";
 
 interface InterventionItem {
-  id: number;
-  type?: string;
-  intensity?: string;
+  id: string;
+  intervention_type: string;
+  triggered_at?: string;
   created_at?: string;
-  response?: string | null;
-  responded_at?: string | null;
-  latency?: number | null;
-  rating?: string | null;
-  comment?: string | null;
+  user_response?: InterventionResponse | null;
+  response_latency_s?: number | null;
+  feedback_rating?: InterventionRating | null;
+  feedback_comment?: string | null;
+  title?: string;
+  message?: string;
 }
 
 const INTENSITY_OPTIONS = [
@@ -74,9 +78,9 @@ export default function Intervention() {
   const [latest, setLatest] = useState<InterventionItem | null>(null);
   const [history, setHistory] = useState<InterventionItem[]>([]);
   const [days, setDays] = useState<number>(7);
-  const [respondingId, setRespondingId] = useState<number | null>(null);
-  const [feedbackId, setFeedbackId] = useState<number | null>(null);
-  const [feedbackRating, setFeedbackRating] = useState("");
+  const [respondingId, setRespondingId] = useState<string | null>(null);
+  const [feedbackId, setFeedbackId] = useState<string | null>(null);
+  const [feedbackRating, setFeedbackRating] = useState<InterventionRating | "">("");
   const [feedbackComment, setFeedbackComment] = useState("");
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
 
@@ -85,11 +89,11 @@ export default function Intervention() {
     setError(null);
     try {
       const data = await getInterventionHistory(days);
-      const items: InterventionItem[] = Array.isArray(data) ? data : data.items || [];
+      const items = [...data.items].reverse();
       setHistory(items);
-      setLatest(items.length > 0 ? items[0] : null);
-    } catch (e: any) {
-      setError(e.message);
+      setLatest(items[0] ?? null);
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "加载干预历史失败"));
     } finally {
       setLoading(false);
     }
@@ -99,34 +103,40 @@ export default function Intervention() {
     loadHistory();
   }, [loadHistory]);
 
-  const handleTrigger = async (intensity: string) => {
+  useEffect(() => realtimeClient.subscribe("intervention", (payload, timestamp) => {
+    const item: InterventionItem = { ...payload, created_at: timestamp };
+    setLatest(item);
+    setHistory((current) => [item, ...current.filter((entry) => entry.id !== item.id)]);
+  }), []);
+
+  const handleTrigger = async (intensity: InterventionIntensity) => {
     setTriggering(true);
     setError(null);
     try {
-      const intervention = await triggerIntervention(intensity);
-      setLatest(intervention);
+      const result = await triggerIntervention(intensity);
+      if (result.intervention) setLatest(result.intervention);
       await loadHistory();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "操作失败"));
     } finally {
       setTriggering(false);
     }
   };
 
-  const handleRespond = async (id: number, response: string) => {
+  const handleRespond = async (id: string, response: InterventionResponse) => {
     setRespondingId(id);
     setError(null);
     try {
       await respondIntervention(id, response);
       await loadHistory();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "操作失败"));
     } finally {
       setRespondingId(null);
     }
   };
 
-  const handleFeedback = async (id: number) => {
+  const handleFeedback = async (id: string) => {
     if (!feedbackRating) return;
     setSubmittingFeedback(true);
     setError(null);
@@ -136,21 +146,21 @@ export default function Intervention() {
       setFeedbackRating("");
       setFeedbackComment("");
       await loadHistory();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "操作失败"));
     } finally {
       setSubmittingFeedback(false);
     }
   };
 
   const hasResponded = (item: InterventionItem) =>
-    !!item.response;
+    !!item.user_response;
 
   const canFeedback = (item: InterventionItem) =>
-    hasResponded(item) && !item.rating;
+    hasResponded(item) && !item.feedback_rating;
 
   const getStatusBadge = (item: InterventionItem) => {
-    const resp = (item.response || "").toLowerCase();
+    const resp = (item.user_response || "").toLowerCase();
     const label = RESPONSE_LABELS[resp];
     const cls = RESPONSE_BADGES[resp];
     if (label && cls) {
@@ -186,7 +196,7 @@ export default function Intervention() {
               key={opt.key}
               className={`btn ${opt.key === "strict" ? "btn-danger" : ""}`}
               disabled={triggering}
-              onClick={() => handleTrigger(opt.key)}
+              onClick={() => handleTrigger(opt.key as InterventionIntensity)}
             >
               {triggering && (
                 <span className="spinner" style={{ width: 16, height: 16, margin: 0, borderWidth: 2 }} />
@@ -201,7 +211,7 @@ export default function Intervention() {
         <div className="card mb24">
           <div className="flex-between mb16">
             <h3 style={{ margin: 0 }}>最新干预</h3>
-            {getIntensityBadge(latest.intensity)}
+            {getIntensityBadge(latest.intervention_type)}
           </div>
           <div style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
             {getStatusBadge(latest)}
@@ -213,7 +223,7 @@ export default function Intervention() {
             <button
               className="btn btn-sm"
               disabled={respondingId !== null}
-              onClick={() => handleRespond(latest.id, "accept")}
+              onClick={() => handleRespond(latest.id, "accepted")}
             >
               {respondingId === latest.id && (
                 <span className="spinner" style={{ width: 12, height: 12, margin: 0, borderWidth: 2 }} />
@@ -223,14 +233,14 @@ export default function Intervention() {
             <button
               className="btn btn-sm btn-ghost"
               disabled={respondingId !== null}
-              onClick={() => handleRespond(latest.id, "ignore")}
+              onClick={() => handleRespond(latest.id, "ignored")}
             >
               忽略
             </button>
             <button
               className="btn btn-sm btn-danger"
               disabled={respondingId !== null}
-              onClick={() => handleRespond(latest.id, "dismiss")}
+              onClick={() => handleRespond(latest.id, "dismissed")}
             >
               关闭
             </button>
@@ -285,16 +295,16 @@ export default function Intervention() {
               <div style={{ flex: 1 }}>
                 <div className="flex-between">
                   <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
-                    {getIntensityBadge(item.intensity)}
+                    {getIntensityBadge(item.intervention_type)}
                     {getStatusBadge(item)}
-                    {item.latency != null && (
+                    {item.response_latency_s != null && (
                       <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
-                        延迟 {item.latency}s
+                        延迟 {item.response_latency_s}s
                       </span>
                     )}
                   </div>
                   <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
-                    {formatTime(item.created_at || "")}
+                    {formatTime(item.triggered_at || item.created_at || "")}
                   </span>
                 </div>
 
@@ -302,7 +312,7 @@ export default function Intervention() {
                   <div className="mt8" style={{ background: "var(--color-bg-inset)", padding: 12, borderRadius: 8 }}>
                     <select
                       value={feedbackRating}
-                      onChange={(e) => setFeedbackRating(e.target.value)}
+                      onChange={(e) => setFeedbackRating(e.target.value as InterventionRating | "")}
                       style={{ marginBottom: 8 }}
                     >
                       <option value="">选择评分</option>

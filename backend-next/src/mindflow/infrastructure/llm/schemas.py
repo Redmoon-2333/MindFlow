@@ -19,6 +19,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from mindflow.domain.forbidden_words import FORBIDDEN_MEDICAL_TERMS
+
 # ── Literal type aliases ──────────────────────────────────────────────────────
 
 PROCRASTINATION_TYPES = Literal[
@@ -38,14 +40,7 @@ CBT_TECHNIQUES = Literal[
     "mindfulness",
 ]
 
-# ── Forbidden words (NF-S7) ────────────────────────────────────────────────────
-
-_FORBIDDEN_WORDS: frozenset[str] = frozenset({
-    "诊断",
-    "治疗",
-    "患者",
-    "处方",
-})
+# ── Forbidden words (NF-S7) — canonical import from domain/forbidden_words ──────
 
 
 # ── Output contract ────────────────────────────────────────────────────────────
@@ -102,7 +97,7 @@ class LLMAttributionResult(BaseModel):
         Raises:
             ValueError: If any forbidden word appears in the text.
         """
-        for word in _FORBIDDEN_WORDS:
+        for word in FORBIDDEN_MEDICAL_TERMS:
             if word in v:
                 msg = f"output contains forbidden word: {word!r} (NF-S7)"
                 raise ValueError(msg)
@@ -113,7 +108,7 @@ class LLMAttributionResult(BaseModel):
     def _no_forbidden_words_in_list(cls, v: list[str]) -> list[str]:
         """Apply the NF-S7 forbidden-word check to each list item (review P1-1)."""
         for item in v:
-            for word in _FORBIDDEN_WORDS:
+            for word in FORBIDDEN_MEDICAL_TERMS:
                 if word in item:
                     msg = f"cognitive_distortions contains forbidden word: {word!r} (NF-S7)"
                     raise ValueError(msg)

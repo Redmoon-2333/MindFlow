@@ -20,19 +20,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from mindflow.domain.forbidden_words import CRISIS_KEYWORDS, FORBIDDEN_MEDICAL_TERMS
 from mindflow.domain.intervention import InterventionIntensity
 
 # ── Forbidden word categories (hard-block, never relaxed) ────────────────────────
 
-_FORBIDDEN_MEDICAL: frozenset[str] = frozenset({
-    "诊断", "治疗", "患者", "处方", "药物", "剂量",
+_FORBIDDEN_MEDICAL: frozenset[str] = FORBIDDEN_MEDICAL_TERMS | frozenset({
+    "药物", "剂量",
     "复诊", "挂号", "住院", "手术", "服药", "副作用",
 })
 
-_FORBIDDEN_CRISIS: frozenset[str] = frozenset({
-    "自杀", "自残", "伤害自己", "不想活", "活不下去",
-    "结束生命", "一了百了", "轻生",
-})
+_FORBIDDEN_CRISIS: frozenset[str] = CRISIS_KEYWORDS
 
 _FORBIDDEN_HARMFUL: frozenset[str] = frozenset({
     "你应该", "你必须", "你一定是", "毫无疑问",

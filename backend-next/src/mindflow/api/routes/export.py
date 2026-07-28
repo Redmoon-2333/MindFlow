@@ -12,7 +12,6 @@ Design:
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query  # noqa: B008
@@ -37,6 +36,12 @@ from mindflow.services.export_service import ExportService
 router = APIRouter(tags=["export"])
 
 _MAX_EXPORT_DAYS: int = 90
+
+
+def _parse_datetime_utc(value: str) -> datetime:
+    """Parse ISO8601 input, interpreting naive values as UTC."""
+    parsed = datetime.fromisoformat(value)
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 @router.get("/export")
@@ -71,12 +76,12 @@ async def export_data(
     # ── Parse date range ─────────────────────────────────────────────
     try:
         start_dt = (
-            datetime.fromisoformat(start).replace(tzinfo=UTC)
+            _parse_datetime_utc(start)
             if start
             else now - timedelta(days=30)
         )
         end_dt = (
-            datetime.fromisoformat(end).replace(tzinfo=UTC)
+            _parse_datetime_utc(end)
             if end
             else now
         )
@@ -112,17 +117,13 @@ async def export_data(
         focus_repo=focus_repo,
         report_repo=report_repo,
     )
-    result = await service.export_events(start_dt, end_dt, fmt=resolved_fmt)
-
-    # Stream the content as a file download
-    async def _stream() -> AsyncGenerator[bytes, None]:
-        yield result.content
+    result = await service.stream_events(start_dt, end_dt, fmt=resolved_fmt)
 
     # Build Content-Disposition filename (sanitised for URL safety)
     disposition = f'attachment; filename="{result.filename}"'
 
     return StreamingResponse(
-        content=_stream(),
+        content=result.content,
         media_type=result.media_type,
         headers={"Content-Disposition": disposition},
     )
