@@ -15,10 +15,12 @@ factories and wired into the agent during ``__init__``.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langchain_deepseek import ChatDeepSeek
@@ -37,7 +39,7 @@ from mindflow.agents.langchain_tools import (
     current_user_id as _tools_user_id,
 )
 from mindflow.agents.llm_gateway import DeepSeekGateway
-from mindflow.agents.types import FORBIDDEN_WORDS
+from mindflow.agents.types import FORBIDDEN_WORDS, _contains_forbidden_words
 from mindflow.config import get_settings
 from mindflow.infrastructure.repositories.analysis import (
     SQLAlchemyProcrastinationAnalysisRepository,
@@ -52,6 +54,7 @@ from mindflow.infrastructure.security.crisis_detector import (
 )
 from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.panel_service import PanelService
+from mindflow.time_utils import TimezoneLike
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Constants
@@ -149,6 +152,9 @@ class ChatService:
         evidence_builder: EvidenceBundleBuilder,
         chat_repo: ChatRepository | None = None,
         max_history_rounds: int | None = None,
+        agent: Any | None = None,
+        model: BaseChatModel | None = None,
+        timezone: TimezoneLike | None = None,
     ) -> None:
         self._chat_repo = chat_repo or ChatRepository(session_factory=session_factory)
         settings = get_settings()
@@ -157,21 +163,28 @@ class ChatService:
             if max_history_rounds is not None
             else settings.max_history_rounds
         )
+        self._timezone: TimezoneLike = timezone or settings.timezone
         self._crisis_detector = crisis_detector
         self._analysis_repo = analysis_repo
         self._panel_service = panel_service
         self._intervention_repo = intervention_repo
         self._evidence_builder = evidence_builder
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
         # ── Backward compat: keep _llm_gateway for existing test fixtures ───
         self._llm_gateway = llm_gateway
 
+        if agent is not None:
+            self._agent = agent
+            self._agent_model: ChatDeepSeek | None = None
+            return
+
         # ── Build LangChain tools ───────────────────────────────────────────
         tools: list[BaseTool] = [
             make_query_evidence(evidence_builder),
-            make_get_latest_analysis(analysis_repo),
-            make_run_panel(panel_service),
-            make_query_interventions(intervention_repo),
+            make_get_latest_analysis(analysis_repo, self._timezone),
+            make_run_panel(panel_service, self._timezone),
+            make_query_interventions(intervention_repo, self._timezone),
         ]
 
         # ── Build LangChain model ───────────────────────────────────────────
@@ -183,28 +196,33 @@ class ChatService:
 
         # Reconstruct the base URL for the LangChain client (strip /chat/completions
         # or keep as-is based on what ChatDeepSeek expects).
-        llm: ChatDeepSeek | None = None
-        if api_key:
-            llm = ChatDeepSeek(
+        llm: BaseChatModel | None = model
+        owned_model: ChatDeepSeek | None = None
+        if llm is None and api_key:
+            owned_model = ChatDeepSeek(
                 model="deepseek-chat",
                 api_key=SecretStr(api_key),
                 base_url=base_url,
                 temperature=0.7,
                 max_tokens=2048,
             )
+            llm = owned_model
 
         # Keep a reference so aclose() can release this model's httpx pool.
         # create_agent does not expose the model back to us, and dropping the
         # reference alone leaks the pool until GC (review C2 connection leak).
-        self._agent_model = llm
+        self._agent_model = owned_model
 
         # ── Build agent ─────────────────────────────────────────────────────
-        self._agent = create_agent(
-            model=llm if llm is not None else "deepseek-chat",
-            tools=tools,
-            system_prompt=CHAT_SYSTEM_PROMPT,
-            name="mindflow_chat_agent",
-        )
+        if llm is None:
+            self._agent = None
+        else:
+            self._agent = create_agent(
+                model=llm,
+                tools=tools,
+                system_prompt=CHAT_SYSTEM_PROMPT,
+                name="mindflow_chat_agent",
+            )
 
     async def aclose(self) -> None:
         """Close the LLM HTTP clients held by this service.
@@ -269,6 +287,26 @@ class ChatService:
                 degraded=True,
             )
 
+        async with self._get_session_lock(session_id):
+            return await self._ask_serialized(user_id, session_id, message)
+
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Return the lock that serializes one conversation session."""
+        locks: dict[str, asyncio.Lock]
+        try:
+            locks = self._session_locks
+        except AttributeError:
+            locks = {}
+            self._session_locks = locks
+        return locks.setdefault(session_id, asyncio.Lock())
+
+    async def _ask_serialized(
+        self,
+        user_id: int,
+        session_id: str,
+        message: str,
+    ) -> ChatAnswer:
+        """Run the mutable chat pipeline while holding the session lock."""
         # ── 2. Persist user message ─────────────────────────────────────
         await self._chat_repo.append(
             session_id, "user", message, user_id=user_id,
@@ -288,93 +326,106 @@ class ChatService:
         evidence_cited = False
 
         # Set context for tool factories
-        current_session_id.set(session_id)
-        _tools_user_id.set(user_id)
-
-        # Build LangChain message list
-        messages: list[BaseMessage] = []
-        if system_summary:
-            messages.append(SystemMessage(content=system_summary))
-
-        for msg in history:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                messages.append(HumanMessage(content=content))
-            elif role == "assistant":
-                messages.append(AIMessage(content=content))
-
-        # Current user message is already the last "user" entry in history
-        # (we persisted it in step 2 and loaded it in step 3).  If it's not
-        # in history yet, add it explicitly — unlikely but keeps the invariant.
-        if not any(
-            isinstance(m, HumanMessage) and m.content == message for m in messages
-        ):
-            messages.append(HumanMessage(content=message))
-
+        session_token = current_session_id.set(session_id)
+        user_token = _tools_user_id.set(user_id)
         try:
-            result = await self._agent.ainvoke({"messages": messages})  # type: ignore[call-overload]
-            final_answer = self._extract_answer(result)
+            # Build LangChain message list
+            messages: list[BaseMessage] = []
+            if system_summary:
+                messages.append(SystemMessage(content=system_summary))
 
-            # Extract tool names from message history
-            for msg_obj in result.get("messages", []):
-                tc = getattr(msg_obj, "tool_calls", None) or []
-                for call in tc:
-                    t_name = (
-                        call.get("name", "")
-                        if isinstance(call, dict)
-                        else getattr(call, "name", "")
-                    )
-                    if t_name:
-                        tools_used.append(t_name)
-                        if t_name in _EVIDENCE_TOOLS:
-                            evidence_cited = True
+            for msg in history:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role == "user":
+                    messages.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    messages.append(AIMessage(content=content))
 
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("LangChain agent invocation failed: {}", exc)
-            degraded = True
+            # Current user message is already the last "user" entry in history
+            # (we persisted it in step 2 and loaded it in step 3).  If it's not
+            # in history yet, add it explicitly — unlikely but keeps the invariant.
+            if not any(
+                isinstance(m, HumanMessage) and m.content == message for m in messages
+            ):
+                messages.append(HumanMessage(content=message))
 
-        # ── 5. Forbidden word check (1 retry) ───────────────────────────
-        if not degraded:
-            bad_word = self._check_forbidden(final_answer)
-            if bad_word is not None:
-                # One retry: append a correction instruction
-                retry_messages = list(messages)
-                retry_messages.append(
-                    SystemMessage(
-                        content=(
-                            f"回答包含禁用词汇「{bad_word}」，"
-                            "请用中文重新回答，不要使用诊断、治疗、患者、处方等词汇。"
-                        )
-                    )
-                )
+            if self._agent is None:
+                degraded = True
+            else:
                 try:
-                    retry_result = await self._agent.ainvoke(
-                        {"messages": retry_messages}  # type: ignore[call-overload]
+                    result = await self._agent.ainvoke(
+                        {"messages": messages},
+                        config={"recursion_limit": 12},
                     )
-                    retry_answer = self._extract_answer(retry_result)
-                    if self._check_forbidden(retry_answer) is None:
-                        final_answer = retry_answer
-                    else:
-                        final_answer = _SAFE_REPLY
-                        degraded = True
+                    final_answer = self._extract_answer(result)
+
+                    # Extract tool names from message history
+                    for msg_obj in result.get("messages", []):
+                        tc = getattr(msg_obj, "tool_calls", None) or []
+                        for call in tc:
+                            t_name = (
+                                call.get("name", "")
+                                if isinstance(call, dict)
+                                else getattr(call, "name", "")
+                            )
+                            if t_name:
+                                tools_used.append(t_name)
+                                if t_name in _EVIDENCE_TOOLS:
+                                    evidence_cited = True
+
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("LangChain agent retry failed: {}", exc)
-                    final_answer = _SAFE_REPLY
+                    logger.warning("LangChain agent invocation failed: {}", exc)
                     degraded = True
 
-        # ── 6. Persist assistant answer ─────────────────────────────────
-        await self._chat_repo.append(
-            session_id, "assistant", final_answer, user_id=user_id,
-        )
+            # ── 5. Forbidden word check (1 retry) ───────────────────────────
+            if not degraded:
+                assert self._agent is not None
+                bad_word = _contains_forbidden_words(final_answer)
+                if bad_word is not None:
+                    logger.warning("Forbidden word '{}' found in response", bad_word)
+                    # One retry: append a correction instruction
+                    retry_messages = list(messages)
+                    retry_messages.append(
+                        SystemMessage(
+                            content=(
+                                f"回答包含禁用词汇「{bad_word}」，"
+                                "请用中文重新回答，不要使用诊断、治疗、患者、处方等词汇。"
+                            )
+                        )
+                    )
+                    try:
+                        retry_result = await self._agent.ainvoke(
+                            {"messages": retry_messages},
+                            config={"recursion_limit": 12},
+                        )
+                        retry_answer = self._extract_answer(retry_result)
+                        if _contains_forbidden_words(retry_answer) is None:
+                            final_answer = retry_answer
+                        else:
+                            final_answer = _SAFE_REPLY
+                            degraded = True
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("LangChain agent retry failed: {}", exc)
+                        final_answer = _SAFE_REPLY
+                        degraded = True
 
-        return ChatAnswer(
-            answer=final_answer,
-            session_id=session_id,
-            tools_used=tuple(tools_used),
-            evidence_cited=evidence_cited,
-            degraded=degraded,
-        )
+            # ── 6. Persist assistant answer ─────────────────────────────────
+            await self._chat_repo.append(
+                session_id, "assistant", final_answer, user_id=user_id,
+            )
+
+            return ChatAnswer(
+                answer=final_answer,
+                session_id=session_id,
+                tools_used=tuple(tools_used),
+                evidence_cited=evidence_cited,
+                degraded=degraded,
+            )
+
+        finally:
+            _tools_user_id.reset(user_token)
+            current_session_id.reset(session_token)
 
     async def list_sessions(
         self,
@@ -466,22 +517,4 @@ class ChatService:
 
         return summary
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Forbidden word check
-    # ══════════════════════════════════════════════════════════════════════
 
-    @staticmethod
-    def _check_forbidden(text: str) -> str | None:
-        """Check if *text* contains any forbidden word.
-
-        Args:
-            text: The text to check.
-
-        Returns:
-            The first forbidden word found, or None if clean.
-        """
-        for word in FORBIDDEN_WORDS:
-            if word in text:
-                logger.warning("Forbidden word '{}' found in response", word)
-                return word
-        return None

@@ -367,6 +367,7 @@ def _generate_user_data(
     injects procrastination episodes.
     """
     rng = np.random.default_rng(seed)
+    procrastination_rng = np.random.default_rng(np.random.SeedSequence([seed, 1]))
     start_date = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     interval_seconds = 3600 // samples_per_hour
 
@@ -399,12 +400,12 @@ def _generate_user_data(
         deadline_panic = False
         if include_procrastination:
             episodes_today = _compute_episodes_for_day(
-                profile, is_weekend, rng
+                profile, is_weekend, procrastination_rng
             )
             # Deadline panic: on non-procrastination days, a burst of
             # hyper-productivity may occur (post-procrastination crunch).
             # Higher probability to ensure reliable test coverage.
-            if not episodes_today and rng.random() < 0.25:
+            if not episodes_today and procrastination_rng.random() < 0.25:
                 deadline_panic = True
 
         for hour in range(24):
@@ -414,75 +415,64 @@ def _generate_user_data(
                 )
                 hour_float = hour + sample / samples_per_hour
 
-                # Check if within an episode window
+                # Always consume the baseline RNG stream first. Enabling
+                # procrastination then overlays episode samples without changing
+                # unrelated profile behaviour for the same seed.
+                pattern_key = _profile_pattern(
+                    hour, rng, is_weekend, profile, samples_per_hour
+                )
+                idle_chance = _profile_idle_chance(
+                    hour, pattern_key, profile, effective_wake
+                )
+
+                if rng.random() < idle_chance:
+                    idx = int(rng.integers(0, len(idle_apps)))
+                    rows.append({
+                        "timestamp": ts,
+                        "process_name": idle_apps[idx],
+                        "window_title": idle_titles[min(idx, len(idle_titles) - 1)],
+                        "duration_seconds": float(max(1, int(rng.normal(120, 30)))),
+                        "is_idle": 1,
+                        "user_id": user_id,
+                    })
+                else:
+                    pattern = apps_by_pattern[pattern_key]
+                    apps: list[str] = pattern["apps"]
+                    titles: list[str] = pattern["titles"]
+                    weights = np.array(pattern["weights"], dtype=float)
+                    weights = weights / weights.sum()
+
+                    idx = int(rng.choice(len(apps), p=weights))
+                    base_dur = interval_seconds
+                    duration = max(
+                        1, int(rng.normal(base_dur, base_dur * 0.2))
+                    )
+                    rows.append({
+                        "timestamp": ts,
+                        "process_name": apps[idx],
+                        "window_title": titles[idx],
+                        "duration_seconds": float(duration),
+                        "is_idle": 0,
+                        "user_id": user_id,
+                    })
+
                 current_ep = _find_active_episode(episodes_today, hour_float)
                 if current_ep is not None:
+                    rows.pop()
                     _append_episode_sample(
-                        rows, ts, current_ep, rng, interval_seconds, user_id
+                        rows, ts, current_ep, procrastination_rng,
+                        interval_seconds, user_id,
                     )
-                else:
-                    # ── Normal pattern-based generation ───────────────────
-                    pattern_key = _profile_pattern(
-                        hour, rng, is_weekend, profile, samples_per_hour
+                elif (
+                    deadline_panic
+                    and pattern_key in {"morning_focus", "afternoon_mixed"}
+                    and rows[-1]["is_idle"] == 0
+                ):
+                    rows.pop()
+                    _append_deadline_panic_sample(
+                        rows, ts, apps_by_pattern, procrastination_rng,
+                        interval_seconds, user_id,
                     )
-
-                    # Idle probability (shifted by effective wake, rigidity-aware)
-                    idle_chance = _profile_idle_chance(
-                        hour, pattern_key, profile, effective_wake
-                    )
-
-                    if rng.random() < idle_chance:
-                        idx = int(rng.integers(0, len(idle_apps)))
-                        rows.append({
-                            "timestamp": ts,
-                            "process_name": idle_apps[idx],
-                            "window_title": idle_titles[
-                                min(idx, len(idle_titles) - 1)
-                            ],
-                            "duration_seconds": float(
-                                max(1, int(rng.normal(120, 30)))
-                            ),
-                            "is_idle": 1,
-                            "user_id": user_id,
-                        })
-                    elif deadline_panic:
-                        # ── Deadline panic: hyper-productivity ──────────
-                        # Minimal idle during panic mode.
-                        if rng.random() < 0.01:
-                            idx = int(rng.integers(0, len(idle_apps)))
-                            rows.append({
-                                "timestamp": ts,
-                                "process_name": idle_apps[idx],
-                                "window_title": idle_titles[min(idx, len(idle_titles) - 1)],
-                                "duration_seconds": float(max(1, int(rng.normal(120, 30)))),
-                                "is_idle": 1,
-                                "user_id": user_id,
-                            })
-                        else:
-                            _append_deadline_panic_sample(
-                                rows, ts, apps_by_pattern, rng,
-                                interval_seconds, user_id,
-                            )
-                    else:
-                        pattern = apps_by_pattern[pattern_key]
-                        apps: list[str] = pattern["apps"]
-                        titles: list[str] = pattern["titles"]
-                        weights = np.array(pattern["weights"], dtype=float)
-                        weights = weights / weights.sum()
-
-                        idx = int(rng.choice(len(apps), p=weights))
-                        base_dur = interval_seconds
-                        duration = max(
-                            1, int(rng.normal(base_dur, base_dur * 0.2))
-                        )
-                        rows.append({
-                            "timestamp": ts,
-                            "process_name": apps[idx],
-                            "window_title": titles[idx],
-                            "duration_seconds": float(duration),
-                            "is_idle": 0,
-                            "user_id": user_id,
-                        })
 
     return rows
 

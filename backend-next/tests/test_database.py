@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -174,13 +175,59 @@ class TestBackupDatabase:
         finally:
             await backup_engine.dispose()
 
-    async def test_backup_nonexistent_db_returns_false(self, tmp_path: Path):
-        """Backup on a nonexistent path returns False."""
-        engine = create_engine(f"sqlite+aiosqlite:///{tmp_path}/nonexistent.db")
-        # Even though the file doesn't exist yet, SQLite creates it on connect
-        # when using aiosqlite. So this tests a non-existent table edge case.
-        # For a truly missing DB, we rely on the exception handler.
-        await engine.dispose()
+    async def test_backup_replaces_existing_destination(
+        self,
+        engine: AsyncEngine,
+        tmp_path: Path,
+    ):
+        """A same-day backup refresh should replace, not fail on, an existing file."""
+        async with engine.connect() as conn:
+            await conn.execute(text("CREATE TABLE IF NOT EXISTS _test (val INTEGER)"))
+            await conn.execute(text("INSERT INTO _test (val) VALUES (42)"))
+            await conn.commit()
+
+        dest = tmp_path / "backup.db"
+        dest.write_bytes(b"stale backup")
+
+        assert await backup_database(engine, dest) is True
+
+        backup_engine = create_engine(f"sqlite+aiosqlite:///{dest}")
+        try:
+            async with backup_engine.connect() as conn:
+                result = await conn.execute(text("SELECT val FROM _test"))
+                assert result.scalar() == 42
+        finally:
+            await backup_engine.dispose()
+
+    async def test_backup_replace_failure_preserves_existing_destination(
+        self,
+        engine: AsyncEngine,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A failed final replace must preserve the old backup and clean temp files."""
+        dest = tmp_path / "backup.db"
+        dest.write_bytes(b"previous backup")
+
+        def _fail_replace(_source: Path, _target: Path) -> Path:
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(Path, "replace", _fail_replace)
+
+        assert await backup_database(engine, dest) is False
+        assert dest.read_bytes() == b"previous backup"
+        assert list(tmp_path.glob(".backup.db.*.tmp")) == []
+
+    async def test_backup_invalid_destination_returns_false(
+        self,
+        engine: AsyncEngine,
+        tmp_path: Path,
+    ):
+        """A destination below a regular file should fail without raising."""
+        blocker = tmp_path / "not-a-directory"
+        blocker.write_text("blocked", encoding="utf-8")
+
+        assert await backup_database(engine, blocker / "backup.db") is False
 
     async def test_backup_with_no_tables(self, engine: AsyncEngine, tmp_path: Path):
         """Backup works even with no tables created."""

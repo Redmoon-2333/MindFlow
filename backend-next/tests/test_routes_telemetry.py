@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 
 from mindflow.api.routes.telemetry import router
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository, user_preferences
-from mindflow.infrastructure.repositories.telemetry import TelemetryRepository, metadata
+from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.infrastructure.schema import metadata
 from mindflow.services.telemetry_service import TelemetryService
 
 

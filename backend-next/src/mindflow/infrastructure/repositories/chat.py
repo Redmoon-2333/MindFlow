@@ -27,23 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
 
-# ── Table definition (matches migration 0003_create_chat_messages) ─────
-
-chat_messages = sa.Table(
-    "chat_messages",
-    sa.MetaData(),
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("session_id", sa.Text(), nullable=False),
-    sa.Column("role", sa.Text(), nullable=False),
-    sa.Column("content", sa.Text(), nullable=False),
-    sa.Column(
-        "created_at",
-        sa.Text(),
-        nullable=False,
-        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
-    ),
-)
+from mindflow.infrastructure.schema import chat_messages
 
 
 # ── Repository ─────────────────────────────────────────────────────────

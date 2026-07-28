@@ -5,10 +5,8 @@ into the event-stream architecture (Wave 5).
 
 Key differences from the old codebase:
   - Uses ``ActivityRepository.query_range()`` instead of raw SQLAlchemy ORM.
-  - Sessions are grouped by consecutive same ``process_name`` events (after
-    heartbeat merge).  Within a same-process group, the switch count is
-    always 0 because heartbeat merge already combined consecutive ticks
-    on the same application.  The old code exhibited the same behaviour.
+  - Sessions are grouped into contiguous active blocks, preserving application
+    switches within each block for classification.
   - UUIDv7 identifiers replace auto-increment integer PKs.
   - All timestamps are ISO8601-aware UTC (not naive).
 """
@@ -26,13 +24,20 @@ from mindflow.domain.features import (
     _non_idle_events,
     app_usage_ranking,
 )
+from mindflow.domain.features import (
+    focus_score as compute_focus_score,
+)
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
-from mindflow.time_utils import utc_today
+from mindflow.time_utils import (
+    business_day_bounds_utc,
+    business_today,
+    resolve_timezone,
+)
 
 # ── Default session thresholds (preserved from old config) ────────────
 
@@ -61,12 +66,14 @@ class AnalysisService:
         focus_threshold_s: int = _FOCUS_THRESHOLD_S,
         switch_rate_focus_cutoff: float = _SWITCH_RATE_FOCUS_CUTOFF,
         switch_rate_distraction_cutoff: float = _SWITCH_RATE_DISTRACTION_CUTOFF,
+        timezone: str = "local",
     ) -> None:
         self._activity_repo = activity_repo
         self._focus_repo = focus_repo
         self._focus_threshold_s = focus_threshold_s
         self._switch_rate_focus_cutoff = switch_rate_focus_cutoff
         self._switch_rate_distraction_cutoff = switch_rate_distraction_cutoff
+        self._timezone = timezone
 
     # ── Focus session identification ──────────────────────────────────
 
@@ -74,6 +81,8 @@ class AnalysisService:
         self,
         user_id: int,
         target_date: date,
+        *,
+        refresh: bool = False,
     ) -> list[dict[str, Any]]:
         """Identify and persist focus sessions for *user_id* on *target_date*.
 
@@ -81,29 +90,32 @@ class AnalysisService:
 
         **Algorithm:**
           1. Fetch all non-idle events for the day.
-          2. Idempotency check — if sessions already exist for this date, skip.
-          3. Group consecutive events by same ``process_name`` (after heartbeat
-             merge, consecutive same-app rows represent long blocks).
-          4. Groups with total duration >= ``_FOCUS_THRESHOLD_S`` (5 min) are
+          2. Idempotency check — if sessions already exist for this date, skip
+             unless ``refresh`` is requested.
+          3. Group active events into contiguous blocks, splitting when the gap
+             from the previous event's end exceeds the focus threshold.
+          4. Blocks with total active duration >= ``_FOCUS_THRESHOLD_S`` (5 min) are
              promoted to focus sessions.
           5. Each session is classified as ``focus`` / ``distraction`` / ``neutral``
-             based on switch rate within the window.  With the current heartbeat
-             merge, switch rate inside a same-process group is always 0 → ``focus``.
-          6. ``focus_score`` = min(total_duration / threshold * 100, 100).
+             based on switch rate over elapsed session time.
+          6. ``focus_score`` uses the shared event-level concentration and
+             switch-rate formula.
 
         Args:
             user_id: User identifier.
             target_date: The calendar date to process.
+            refresh: Recompute and replace existing sessions for the date.
 
         Returns:
             The list of persisted session dicts, or empty if skipped (idempotent).
         """
-        start_dt = datetime(target_date.year, target_date.month, target_date.day, tzinfo=UTC)
-        end_dt = start_dt + timedelta(days=1) - timedelta(seconds=1)
+        start_dt, end_dt = business_day_bounds_utc(target_date, self._timezone)
 
         events = await self._activity_repo.query_range(user_id, start_dt, end_dt)
 
         if len(events) < 2:
+            if refresh:
+                await self._focus_repo.delete_for_date(user_id, target_date)
             logger.debug("Too few events on {} for user {}", target_date, user_id)
             return []
 
@@ -112,33 +124,51 @@ class AnalysisService:
         # guarantee.  The real guard against duplicate rows is the DELETE +
         # INSERT replace in SQLAlchemyFocusSessionRepository.save_sessions(),
         # which guarantees correctness even under concurrent callers.
-        if await self._focus_repo.exists_for_date(user_id, target_date):
+        if not refresh and await self._focus_repo.exists_for_date(user_id, target_date):
             logger.info("Sessions already exist for {} user {}", target_date, user_id)
             return []
 
         active = _non_idle(events)
         if len(active) < 2:
+            if refresh:
+                await self._focus_repo.delete_for_date(user_id, target_date)
             return []
 
         sessions_data: list[dict[str, Any]] = []
         i = 0
         while i < len(active):
-            current_proc = active[i].data.process_name
             j = i + 1
-            while j < len(active) and active[j].data.process_name == current_proc:
+            previous_end = active[i].timestamp_utc + timedelta(
+                seconds=max(0.0, active[i].duration_s)
+            )
+            while j < len(active):
+                gap_s = (active[j].timestamp_utc - previous_end).total_seconds()
+                if gap_s > self._focus_threshold_s:
+                    break
+                current_event_end = active[j].timestamp_utc + timedelta(
+                    seconds=max(0.0, active[j].duration_s)
+                )
+                previous_end = max(previous_end, current_event_end)
                 j += 1
 
-            duration = sum(e.duration_s for e in active[i:j])
+            window_events = active[i:j]
+            duration = sum(max(0.0, e.duration_s) for e in window_events)
 
             if duration >= self._focus_threshold_s:
-                window_events = active[i:j]
                 local_switches = sum(
                     1
                     for k in range(1, len(window_events))
                     if window_events[k].data.process_name
                     != window_events[k - 1].data.process_name
                 )
-                local_hours = duration / 3600.0
+                session_start = window_events[0].timestamp_utc
+                session_end = max(
+                    event.timestamp_utc
+                    + timedelta(seconds=max(0.0, event.duration_s))
+                    for event in window_events
+                )
+                elapsed_s = max(0.0, (session_end - session_start).total_seconds())
+                local_hours = elapsed_s / 3600.0
                 switch_rate = local_switches / local_hours if local_hours > 0 else 0.0
 
                 if switch_rate < self._switch_rate_focus_cutoff:
@@ -148,19 +178,28 @@ class AnalysisService:
                 else:
                     session_type = "neutral"
 
+                app_durations: dict[str, float] = defaultdict(float)
+                for event in window_events:
+                    app_durations[event.data.process_name] += max(
+                        0.0, event.duration_s
+                    )
+                dominant_app = max(app_durations, key=lambda app: app_durations[app])
+
                 sessions_data.append({
                     "date": target_date.isoformat(),
-                    "start_time": active[i].timestamp_utc.isoformat(),
-                    "end_time": active[j - 1].timestamp_utc.isoformat(),
+                    "start_time": session_start.isoformat(),
+                    "end_time": session_end.isoformat(),
                     "session_type": session_type,
-                    "dominant_app": current_proc,
-                    "focus_score": round(min(duration / self._focus_threshold_s * 100.0, 100.0), 1),
+                    "dominant_app": dominant_app,
+                    "focus_score": compute_focus_score(window_events),
                     "switch_count": local_switches,
                 })
 
             i = j
 
         if not sessions_data:
+            if refresh:
+                await self._focus_repo.delete_for_date(user_id, target_date)
             return []
 
         persisted = await self._focus_repo.save_sessions(user_id, sessions_data)
@@ -174,7 +213,9 @@ class AnalysisService:
 
     async def identify_all_today(self, user_id: int = 1) -> list[dict[str, Any]]:
         """Convenience wrapper for scheduled job — identifies sessions for today."""
-        return await self.identify_focus_sessions(user_id, utc_today())
+        return await self.identify_focus_sessions(
+            user_id, business_today(self._timezone)
+        )
 
     # ── Pattern detection ─────────────────────────────────────────────
 
@@ -199,7 +240,7 @@ class AnalysisService:
               - ``total_sessions``: total session count analysed.
               - ``distraction_ratio``: fraction of sessions that are distraction.
         """
-        today = utc_today()
+        today = business_today(self._timezone)
         start = today - timedelta(days=days - 1)
 
         sessions = await self._focus_repo.query_range(user_id, start, today)
@@ -219,12 +260,16 @@ class AnalysisService:
         # 24 hours x 7 days
         heatmap: list[list[int]] = [[0] * 7 for _ in range(24)]
         distraction_count = 0
+        local_timezone = resolve_timezone(self._timezone)
 
         for s in sessions:
             try:
                 start_ts = datetime.fromisoformat(s["start_time"])
-                hour = start_ts.hour
-                dow = start_ts.weekday()  # 0=Monday, 6=Sunday
+                if start_ts.tzinfo is None:
+                    start_ts = start_ts.replace(tzinfo=UTC)
+                local_start = start_ts.astimezone(local_timezone)
+                hour = local_start.hour
+                dow = local_start.weekday()  # 0=Monday, 6=Sunday
                 heatmap[hour][dow] += s.get("switch_count", 0)
 
                 if s.get("session_type") == "distraction":
@@ -283,10 +328,10 @@ class AnalysisService:
               - ``total_events_analysed``: raw event count in the window.
               - ``profile_date``: ISO date of computation.
         """
-        today = utc_today()
+        today = business_today(self._timezone)
         start = today - timedelta(days=days - 1)
-        start_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
-        end_dt = datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=1)
+        start_dt, _ = business_day_bounds_utc(start, self._timezone)
+        _, end_dt = business_day_bounds_utc(today, self._timezone)
 
         events = await self._activity_repo.query_range(user_id, start_dt, end_dt)
         sessions = await self._focus_repo.query_range(user_id, start, today)
@@ -303,11 +348,15 @@ class AnalysisService:
 
         # Peak focus hours: analyse focus scores per hour from sessions
         hour_focus: dict[int, list[float]] = defaultdict(list)
+        local_timezone = resolve_timezone(self._timezone)
         for s in sessions:
             if s.get("session_type") == "focus":
                 try:
                     start_ts = datetime.fromisoformat(s["start_time"])
-                    hour_focus[start_ts.hour].append(s.get("focus_score", 0) or 0)
+                    if start_ts.tzinfo is None:
+                        start_ts = start_ts.replace(tzinfo=UTC)
+                    local_start = start_ts.astimezone(local_timezone)
+                    hour_focus[local_start.hour].append(s.get("focus_score", 0) or 0)
                 except (ValueError, KeyError):
                     continue
 

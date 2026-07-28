@@ -122,7 +122,7 @@ class SQLAlchemyDailyReportRepository:
         }
 
         stmt = sqlite_upsert(daily_reports).values(**values)
-        stmt = stmt.on_conflict_do_update(
+        upsert_stmt = stmt.on_conflict_do_update(
             index_elements=["user_id", "date"],
             set_={
                 "total_focus_min": stmt.excluded.total_focus_min,
@@ -131,23 +131,16 @@ class SQLAlchemyDailyReportRepository:
                 "top_apps_json": stmt.excluded.top_apps_json,
                 "switch_frequency": stmt.excluded.switch_frequency,
                 "pattern_summary": stmt.excluded.pattern_summary,
+                "created_at": sa.func.strftime("%Y-%m-%dT%H:%M:%SZ", "now"),
             },
-        )
+        ).returning(*daily_reports.c)
 
         async with self._session_factory() as session, session.begin():
-            await session.execute(stmt)
+            row = (await session.execute(upsert_stmt)).fetchone()
 
-        return {
-            "id": rid,
-            "user_id": report["user_id"],
-            "date": report["date"],
-            "total_focus_min": values["total_focus_min"],
-            "total_distraction_min": values["total_distraction_min"],
-            "focus_score": values["focus_score"],
-            "top_apps": report.get("top_apps"),
-            "switch_frequency": values["switch_frequency"],
-            "pattern_summary": values["pattern_summary"],
-        }
+        if row is None:
+            raise RuntimeError("Daily report upsert did not return a row")
+        return _row_to_dict(row)
 
     async def get_by_date(
         self,

@@ -98,31 +98,31 @@ FP_CRITIC = "批评家"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _ANALYST_JSON: str = """{
-  "patterns": [{"name": "专注度下降", "severity": "moderate", "description": "专注度显著低于基线 [证据: focus_score]"}],
-  "anomalies": [{"metric": "longest_focus_block_s", "detail": "最长专注块仅3分钟 [证据: longest_focus_block_s]"}],
+  "patterns": [{"name": "专注度下降", "severity": "moderate", "description": "专注度显著低于基线 [证据: focus.focus_score]"}],
+  "anomalies": [{"metric": "focus.longest_block", "detail": "最长专注块仅3分钟 [证据: focus.longest_block]"}],
   "top_concerns": ["专注度下降", "切换频率过高"],
-  "evidence_citations": ["focus_score", "switch_rate", "longest_focus_block_s"]
+  "evidence_citations": ["focus.focus_score", "focus.switch_rate", "focus.longest_block"]
 }"""
 
 _ATTRIBUTION_IMPULSIVITY: str = """{
   "attribution_types": ["impulsivity"],
   "confidence": {"impulsivity": 0.82},
-  "argument": "用户切换频率高、最长专注块仅3分钟，符合冲动分心模式 [证据: switch_rate] [证据: longest_focus_block_s]",
-  "evidence_citations": ["switch_rate", "longest_focus_block_s"]
+  "argument": "用户切换频率高、最长专注块仅3分钟，符合冲动分心模式 [证据: focus.switch_rate] [证据: focus.longest_block]",
+  "evidence_citations": ["focus.switch_rate", "focus.longest_block"]
 }"""
 
 _ATTRIBUTION_TASK_AVERSION: str = """{
   "attribution_types": ["task_aversion"],
   "confidence": {"task_aversion": 0.75},
-  "argument": "专注度45/120分钟，不足40%，符合任务畏惧模式 [证据: focus_score]",
-  "evidence_citations": ["focus_score"]
+  "argument": "专注度45/120分钟，不足40%，符合任务畏惧模式 [证据: focus.focus_score]",
+  "evidence_citations": ["focus.focus_score"]
 }"""
 
 _REBUTTAL_IMPULSIVITY: str = """{
   "attribution_types": ["impulsivity"],
   "confidence": {"impulsivity": 0.78},
-  "argument": "经权衡其他专家意见后，维持冲动分心判断，但适度降低置信度 [证据: switch_rate]",
-  "evidence_citations": ["switch_rate", "longest_focus_block_s"]
+  "argument": "经权衡其他专家意见后，维持冲动分心判断，但适度降低置信度 [证据: focus.switch_rate]",
+  "evidence_citations": ["focus.switch_rate", "focus.longest_block"]
 }"""
 
 _MODERATOR_JSON: str = """{
@@ -179,7 +179,7 @@ def _make_bundle() -> EvidenceBundle:
                 human_readable="切换频率偏高",
             ),
             EvidenceItem(
-                metric="longest_focus_block_s",
+                metric="longest_block",
                 value=180.0, baseline=600.0, severity="severe",
                 confidence=0.90, source="feature_computation",
                 human_readable="最长专注块很短",
@@ -385,8 +385,8 @@ class TestForbiddenWords:
         forbidden_json = """{
           "attribution_types": ["task_aversion"],
           "confidence": {"task_aversion": 0.75},
-          "argument": "这个患者需要治疗 [证据: focus_score]",
-          "evidence_citations": ["focus_score"]
+          "argument": "这个患者需要治疗 [证据: focus.focus_score]",
+          "evidence_citations": ["focus.focus_score"]
         }"""
 
         responses = _fast_responses()
@@ -434,11 +434,11 @@ class TestCitationValidation:
             perspective="CBT",
             attribution_types=("impulsivity",),
             confidence={"impulsivity": 0.8},
-            evidence_citations=("focus_score", "made_up_metric"),
-            argument="切换频繁 [证据: switch_rate]，且虚构 [证据: fantasy_stat]",
+            evidence_citations=("focus.focus_score", "made_up_metric"),
+            argument="切换频繁 [证据: focus.switch_rate]，且虚构 [证据: fantasy_stat]",
             raw_json="{}",
         )
-        bogus = validate_citations(op, frozenset({"focus_score", "switch_rate"}))
+        bogus = validate_citations(op, frozenset({"focus.focus_score", "focus.switch_rate"}))
         assert bogus == ("fantasy_stat", "made_up_metric")
 
     def test_all_valid_citations(self) -> None:
@@ -465,7 +465,7 @@ class TestCitationValidation:
             ' "evidence_citations": ["nonexistent_metric"], "argument": "论证"}'
         )
         op = _parse_expert_opinion(
-            raw, ATTRIBUTION_EXPERTS[0], valid_metrics=frozenset({"focus_score"})
+            raw, ATTRIBUTION_EXPERTS[0], valid_metrics=frozenset({"focus.focus_score"})
         )
         assert op.skipped is True
 

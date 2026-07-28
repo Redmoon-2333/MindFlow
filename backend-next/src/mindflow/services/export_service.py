@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -34,6 +36,15 @@ from mindflow.infrastructure.repositories.report import (
 )
 
 ExportFormat = Literal["csv", "json"]
+
+
+@dataclass(frozen=True)
+class ExportStreamResult:
+    """Metadata and byte iterator for a streaming export."""
+
+    content: AsyncIterator[bytes]
+    filename: str
+    media_type: str
 
 
 @dataclass(frozen=True)
@@ -133,6 +144,150 @@ class ExportService:
         self._user_id = user_id
 
     # ── Main export entry point ──────────────────────────────────────
+
+    async def stream_events(
+        self,
+        start: datetime,
+        end: datetime,
+        fmt: ExportFormat = "csv",
+        *,
+        chunk_size: int = 1000,
+    ) -> ExportStreamResult:
+        """Return a bounded-memory export stream."""
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be positive")
+        focus_sessions, daily_reports = await asyncio.gather(
+            self._focus_repo.query_range(self._user_id, start.date(), end.date()),
+            self._report_repo.query_range(self._user_id, start.date(), end.date()),
+        )
+        date_suffix = f"{start.date().isoformat()}_{end.date().isoformat()}"
+        if fmt == "csv":
+            content = self._stream_csv(
+                start,
+                end,
+                focus_sessions,
+                daily_reports,
+                chunk_size=chunk_size,
+            )
+            return ExportStreamResult(
+                content=content,
+                filename=f"mindflow_export_{date_suffix}.csv",
+                media_type="text/csv; charset=utf-8",
+            )
+        content = self._stream_json(
+            start,
+            end,
+            focus_sessions,
+            daily_reports,
+            chunk_size=chunk_size,
+        )
+        return ExportStreamResult(
+            content=content,
+            filename=f"mindflow_export_{date_suffix}.json",
+            media_type="application/json; charset=utf-8",
+        )
+
+    async def _stream_csv(
+        self,
+        start: datetime,
+        end: datetime,
+        focus_sessions: list[dict[str, Any]],
+        daily_reports: list[dict[str, Any]],
+        *,
+        chunk_size: int,
+    ) -> AsyncIterator[bytes]:
+        output = io.StringIO()
+        output.write("\ufeff# Events\n")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(_EVENTS_CSV_HEADERS)
+        yield output.getvalue().encode("utf-8")
+
+        async for events in self._activity_repo.iter_range_chunks(
+            self._user_id,
+            start,
+            end,
+            chunk_size=chunk_size,
+        ):
+            output = io.StringIO()
+            writer = csv.writer(output, lineterminator="\n")
+            for event in events:
+                writer.writerow([
+                    event.id,
+                    event.user_id,
+                    event.timestamp_utc.isoformat(),
+                    event.duration_s,
+                    event.event_type,
+                    _csv_safe(event.data.app_name),
+                    _csv_safe(event.data.process_name),
+                    "1" if event.data.is_idle else "0",
+                ])
+            yield output.getvalue().encode("utf-8")
+
+        output = io.StringIO()
+        output.write("# Focus Sessions\n")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(_FOCUS_CSV_HEADERS)
+        for session in focus_sessions:
+            writer.writerow([
+                session.get("id", ""),
+                session.get("user_id", ""),
+                session.get("date", ""),
+                session.get("start_time", ""),
+                session.get("end_time", ""),
+                session.get("session_type", ""),
+                _csv_safe(session.get("dominant_app") or ""),
+                session.get("focus_score", ""),
+                session.get("switch_count", ""),
+            ])
+        output.write("# Daily Reports\n")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(_REPORTS_CSV_HEADERS)
+        for report in daily_reports:
+            writer.writerow([
+                report.get("id", ""),
+                report.get("user_id", ""),
+                report.get("date", ""),
+                report.get("total_focus_min", ""),
+                report.get("total_distraction_min", ""),
+                report.get("focus_score", ""),
+                report.get("switch_frequency", ""),
+                _csv_safe(report.get("pattern_summary") or ""),
+            ])
+        yield output.getvalue().encode("utf-8")
+
+    async def _stream_json(
+        self,
+        start: datetime,
+        end: datetime,
+        focus_sessions: list[dict[str, Any]],
+        daily_reports: list[dict[str, Any]],
+        *,
+        chunk_size: int,
+    ) -> AsyncIterator[bytes]:
+        yield b'{"events":['
+        first = True
+        async for events in self._activity_repo.iter_range_chunks(
+            self._user_id,
+            start,
+            end,
+            chunk_size=chunk_size,
+        ):
+            for event in events:
+                prefix = b"" if first else b","
+                first = False
+                yield prefix + json.dumps(
+                    event.to_dict(),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+        suffix = (
+            '],"focus_sessions":'
+            + json.dumps(focus_sessions, ensure_ascii=False, separators=(",", ":"))
+            + ',"daily_reports":'
+            + json.dumps(daily_reports, ensure_ascii=False, separators=(",", ":"))
+            + "}"
+        )
+        yield suffix.encode("utf-8")
 
     async def export_events(
         self,
@@ -251,8 +406,6 @@ class ExportService:
         daily_reports: list[dict[str, Any]],
     ) -> str:
         """Build a JSON string with three top-level keys."""
-        import json
-
         data: dict[str, Any] = {
             "events": [ev.to_dict() for ev in events],
             "focus_sessions": focus_sessions,

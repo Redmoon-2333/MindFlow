@@ -26,7 +26,7 @@ import re
 from typing import Any, Protocol, cast
 
 from mindflow.domain.features import title_features
-from mindflow.train.features import AppClassifier
+from mindflow.domain.classifier import AppClassifier
 
 # ── Repository protocol (avoids circular imports) ────────────────────────────
 

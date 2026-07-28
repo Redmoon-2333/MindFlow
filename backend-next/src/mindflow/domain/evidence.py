@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
+from mindflow.domain.evidence_facts import build_evidence_catalog
 from mindflow.domain.procrastination import BehaviorSummary
 
 Severity = Literal["info", "mild", "moderate", "severe"]
@@ -113,6 +114,14 @@ class EvidenceBundle:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+
+def _json_safe(value: object) -> object:
+    """Convert a value to JSON-safe type."""
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
 def to_prompt_json(bundle: EvidenceBundle) -> str:
     """Serialize an ``EvidenceBundle`` for LLM consumption.
 
@@ -137,9 +146,9 @@ def to_prompt_json(bundle: EvidenceBundle) -> str:
             "human_readable": item.human_readable,
         }
         if item.severity != "info":
-            entry["value"] = item.value
+            entry["value"] = _json_safe(item.value)
             if item.baseline is not None:
-                entry["baseline"] = item.baseline
+                entry["baseline"] = _json_safe(item.baseline)
         evidence_list.append(entry)
 
     # Behaviour summary (aggregated, no raw events)
@@ -175,6 +184,14 @@ def to_prompt_json(bundle: EvidenceBundle) -> str:
         "intervention_history": interventions,
         "novelty_flags": list(bundle.novelty_flags),
     }
+
+    # ── Evidence catalog (canonical citeable IDs for LLM experts) ──────
+    catalog = build_evidence_catalog(bundle)
+    data["evidence_catalog"] = [
+        {"id": fact.id, "label_zh": fact.label_zh, "value": _json_safe(fact.value)}
+        for fact in catalog
+    ]
+
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 

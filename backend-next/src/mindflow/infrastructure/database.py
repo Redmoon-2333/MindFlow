@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from loguru import logger
 from sqlalchemy import event, text
@@ -138,6 +139,7 @@ async def backup_database(engine: AsyncEngine, dest: Path) -> bool:
     Returns:
         True if backup succeeded, False otherwise.
     """
+    temp_dest: Path | None = None
     try:
         dest = Path(dest)
         # VACUUM INTO cannot use bound parameters; refuse paths that would
@@ -146,12 +148,19 @@ async def backup_database(engine: AsyncEngine, dest: Path) -> bool:
             logger.error("Backup path contains a single quote, refusing: {}", dest)
             return False
         dest.parent.mkdir(parents=True, exist_ok=True)
+        temp_dest = dest.with_name(f".{dest.name}.{uuid4().hex}.tmp")
         # VACUUM INTO must run via raw connection (sync pragma in async wrapper)
         async with engine.connect() as conn:
-            await conn.execute(text(f"VACUUM INTO '{dest}'"))
+            await conn.execute(text(f"VACUUM INTO '{temp_dest}'"))
             await conn.commit()
+        temp_dest.replace(dest)
         logger.info("Database backed up to {}", dest)
         return True
     except Exception as exc:
+        if temp_dest is not None:
+            try:
+                temp_dest.unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                logger.warning("Failed to clean temporary backup {}: {}", temp_dest, cleanup_exc)
         logger.error("Database backup failed: {}", exc)
         return False

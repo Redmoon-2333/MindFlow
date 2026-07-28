@@ -97,13 +97,10 @@ async def replace_classifications(
     inserted in order.  Returns the newly created rules with generated
     fields.
     """
-    existing = await repo.get_all(user_id=1)
-    for rule in existing:
-        await repo.delete(rule["id"])
-    results: list[dict[str, Any]] = []
-    for rule_body in body:
-        results.append(await repo.add(user_id=1, rule=rule_body.model_dump()))
-    return results
+    return await repo.replace_all(
+        user_id=1,
+        rules=[rule.model_dump() for rule in body],
+    )
 
 
 @router.delete("/app-classifications/{rule_id}", status_code=204)

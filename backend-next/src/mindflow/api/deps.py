@@ -169,10 +169,5 @@ def get_baseline_repo(request: Request) -> BaselineRepository:
     return cast(BaselineRepository, request.app.state.baseline_repository)
 
 
-def get_model_manager(request: Request) -> ModelManager | None:
-    """Return the ModelManager from app.state (None if models not loaded)."""
-    return cast(ModelManager | None, getattr(request.app.state, "model_manager", None))
-
-
 def get_telemetry_service(request: Request) -> TelemetryService:
     return cast(TelemetryService, request.app.state.telemetry_service)

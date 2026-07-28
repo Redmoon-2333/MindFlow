@@ -6,80 +6,20 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
 
-metadata = sa.MetaData()
-
-interaction_buckets = sa.Table(
-    "interaction_buckets",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("window_start_utc", sa.Text(), nullable=False),
-    sa.Column("duration_s", sa.Float(), nullable=False),
-    sa.Column("context_key", sa.Text(), nullable=False),
-    sa.Column("keypress_count", sa.Integer(), nullable=False),
-    sa.Column("mouse_click_count", sa.Integer(), nullable=False),
-    sa.Column("scroll_delta", sa.Integer(), nullable=False),
-    sa.Column("mouse_distance_px", sa.Float(), nullable=False),
-    sa.Column("input_active_s", sa.Float(), nullable=False),
-    sa.Column("interaction_burst_count", sa.Integer(), nullable=False),
-    sa.Column("created_at", sa.Text(), nullable=False),
+from mindflow.infrastructure.schema import (
+    interaction_buckets,
+    browser_segments,
+    focus_session_feedback,
+    browser_tokens,
+    behavior_feature_windows,
 )
 
-browser_segments = sa.Table(
-    "browser_segments",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("timestamp", sa.Text(), nullable=False),
-    sa.Column("duration_s", sa.Float(), nullable=False),
-    sa.Column("browser_name", sa.Text(), nullable=False),
-    sa.Column("domain", sa.Text(), nullable=False),
-    sa.Column("audible", sa.Boolean(), nullable=False),
-    sa.Column("context_key", sa.Text(), nullable=False),
-    sa.Column("created_at", sa.Text(), nullable=False),
-)
-
-focus_session_feedback = sa.Table(
-    "focus_session_feedback",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("session_id", sa.Text(), nullable=False),
-    sa.Column("label", sa.Text(), nullable=False),
-    sa.Column("score", sa.Integer(), nullable=False),
-    sa.Column("task_type", sa.Text(), nullable=True),
-    sa.Column("created_at", sa.Text(), nullable=False),
-    sa.UniqueConstraint("user_id", "session_id"),
-)
-
-browser_tokens = sa.Table(
-    "browser_tokens",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("token_hash", sa.Text(), nullable=False, unique=True),
-    sa.Column("created_at", sa.Text(), nullable=False),
-    sa.Column("last_used_at", sa.Text(), nullable=True),
-    sa.Column("revoked_at", sa.Text(), nullable=True),
-)
-
-behavior_feature_windows = sa.Table(
-    "behavior_feature_windows",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("window_start_utc", sa.Text(), nullable=False),
-    sa.Column("window_end_utc", sa.Text(), nullable=False),
-    sa.Column("feature_schema_version", sa.Integer(), nullable=False),
-    sa.Column("features_json", sa.Text(), nullable=False),
-    sa.Column("label", sa.Text(), nullable=True),
-    sa.Column("created_at", sa.Text(), nullable=False),
-    sa.UniqueConstraint("user_id", "window_start_utc", "feature_schema_version"),
-)
+_FEATURE_UPSERT_BATCH_SIZE = 250
 
 
 class TelemetryRepository:
@@ -99,55 +39,85 @@ class TelemetryRepository:
         return row
 
     async def save_browser_heartbeat(self, **values: Any) -> dict[str, Any]:
-        timestamp = values["timestamp_utc"].astimezone(UTC)
+        """Save or merge one heartbeat in a single transaction."""
         async with self._session_factory() as session, session.begin():
-            result = await session.execute(
-                sa.select(browser_segments)
-                .where(browser_segments.c.user_id == values["user_id"])
-                .order_by(browser_segments.c.timestamp.desc())
-                .limit(1)
-            )
-            previous = result.fetchone()
-            if previous is not None:
-                previous_end = datetime.fromisoformat(previous.timestamp) + timedelta(
-                    seconds=float(previous.duration_s)
-                )
-                gap_s = (timestamp - previous_end).total_seconds()
-                matches = (
-                    previous.browser_name == values["browser_name"]
-                    and previous.domain == values["domain"]
-                    and bool(previous.audible) == bool(values["audible"])
-                    and previous.context_key == values["context_key"]
-                )
-                if matches and -10.0 <= gap_s <= 10.0:
-                    await session.execute(
-                        sa.update(browser_segments)
-                        .where(browser_segments.c.id == previous.id)
-                        .values(
-                            duration_s=browser_segments.c.duration_s
-                            + float(values["duration_s"])
-                        )
-                    )
-                    return {
-                        "id": previous.id,
-                        "timestamp": previous.timestamp,
-                        "duration_s": float(previous.duration_s)
-                        + float(values["duration_s"]),
-                    }
+            return await self._save_browser_heartbeat_in_session(session, values)
 
-            row = {
-                "id": new_id(),
-                "user_id": values["user_id"],
-                "timestamp": timestamp.isoformat(),
-                "duration_s": float(values["duration_s"]),
-                "browser_name": values["browser_name"],
-                "domain": values["domain"],
-                "audible": bool(values["audible"]),
-                "context_key": values["context_key"],
-                "created_at": datetime.now(UTC).isoformat(),
-            }
-            await session.execute(browser_segments.insert().values(**row))
-            return row
+    async def save_authenticated_browser_heartbeat(
+        self,
+        token_hash: str,
+        *,
+        heartbeat: dict[str, Any] | None,
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Validate token, touch last-used time, and optionally save in one transaction."""
+        now = datetime.now(UTC).isoformat()
+        async with self._session_factory() as session, session.begin():
+            token_result = await session.execute(
+                sa.update(browser_tokens)
+                .where(
+                    browser_tokens.c.token_hash == token_hash,
+                    browser_tokens.c.revoked_at.is_(None),
+                )
+                .values(last_used_at=now)
+                .returning(browser_tokens.c.id)
+            )
+            if token_result.fetchone() is None:
+                return False, None
+            if heartbeat is None:
+                return True, None
+            segment = await self._save_browser_heartbeat_in_session(session, heartbeat)
+            return True, segment
+
+    async def _save_browser_heartbeat_in_session(
+        self,
+        session: AsyncSession,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        timestamp = values["timestamp_utc"].astimezone(UTC)
+        result = await session.execute(
+            sa.select(browser_segments)
+            .where(browser_segments.c.user_id == values["user_id"])
+            .order_by(browser_segments.c.timestamp.desc(), browser_segments.c.id.desc())
+            .limit(1)
+        )
+        previous = result.fetchone()
+        if previous is not None:
+            previous_end = datetime.fromisoformat(previous.timestamp) + timedelta(
+                seconds=float(previous.duration_s)
+            )
+            gap_s = (timestamp - previous_end).total_seconds()
+            matches = (
+                previous.browser_name == values["browser_name"]
+                and previous.domain == values["domain"]
+                and bool(previous.audible) == bool(values["audible"])
+                and previous.context_key == values["context_key"]
+            )
+            if matches and -10.0 <= gap_s <= 10.0:
+                duration_s = float(previous.duration_s) + float(values["duration_s"])
+                await session.execute(
+                    sa.update(browser_segments)
+                    .where(browser_segments.c.id == previous.id)
+                    .values(duration_s=duration_s)
+                )
+                return {
+                    "id": previous.id,
+                    "timestamp": previous.timestamp,
+                    "duration_s": duration_s,
+                }
+
+        row = {
+            "id": new_id(),
+            "user_id": values["user_id"],
+            "timestamp": timestamp.isoformat(),
+            "duration_s": float(values["duration_s"]),
+            "browser_name": values["browser_name"],
+            "domain": values["domain"],
+            "audible": bool(values["audible"]),
+            "context_key": values["context_key"],
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        await session.execute(browser_segments.insert().values(**row))
+        return row
 
     async def last_browser_segment_before(
         self,
@@ -195,22 +165,16 @@ class TelemetryRepository:
     ) -> dict[str, Any]:
         now = datetime.now(UTC).isoformat()
         async with self._session_factory() as session, session.begin():
-            result = await session.execute(
+            row_id = await session.scalar(
                 sa.update(focus_session_feedback)
                 .where(
                     focus_session_feedback.c.user_id == user_id,
                     focus_session_feedback.c.session_id == session_id,
                 )
                 .values(label=label, score=score, task_type=task_type, created_at=now)
+                .returning(focus_session_feedback.c.id)
             )
-            if result.rowcount:
-                row_id = await session.scalar(
-                    sa.select(focus_session_feedback.c.id).where(
-                        focus_session_feedback.c.user_id == user_id,
-                        focus_session_feedback.c.session_id == session_id,
-                    )
-                )
-            else:
+            if row_id is None:
                 row_id = new_id()
                 await session.execute(
                     focus_session_feedback.insert().values(
@@ -271,31 +235,73 @@ class TelemetryRepository:
         features_json: str,
         label: str | None = None,
     ) -> None:
-        values = {
+        await self.upsert_feature_windows([{
             "user_id": user_id,
-            "window_start_utc": window_start_utc.astimezone(UTC).isoformat(),
-            "window_end_utc": window_end_utc.astimezone(UTC).isoformat(),
+            "window_start_utc": window_start_utc,
+            "window_end_utc": window_end_utc,
             "feature_schema_version": feature_schema_version,
             "features_json": features_json,
             "label": label,
-            "created_at": datetime.now(UTC).isoformat(),
-        }
+        }])
+
+    async def upsert_feature_windows(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        """Bulk UPSERT feature windows in one transaction."""
+        if not rows:
+            return
+        now = datetime.now(UTC).isoformat()
+        values = [
+            {
+                "id": new_id(),
+                "user_id": row["user_id"],
+                "window_start_utc": row["window_start_utc"].astimezone(UTC).isoformat(),
+                "window_end_utc": row["window_end_utc"].astimezone(UTC).isoformat(),
+                "feature_schema_version": row["feature_schema_version"],
+                "features_json": row["features_json"],
+                "label": row.get("label"),
+                "created_at": now,
+            }
+            for row in rows
+        ]
         async with self._session_factory() as session, session.begin():
-            result = await session.execute(
-                sa.update(behavior_feature_windows)
-                .where(
-                    behavior_feature_windows.c.user_id == user_id,
-                    behavior_feature_windows.c.window_start_utc
-                    == values["window_start_utc"],
-                    behavior_feature_windows.c.feature_schema_version
-                    == feature_schema_version,
+            for index in range(0, len(values), _FEATURE_UPSERT_BATCH_SIZE):
+                batch = values[index:index + _FEATURE_UPSERT_BATCH_SIZE]
+                statement = sqlite_insert(behavior_feature_windows).values(batch)
+                statement = statement.on_conflict_do_update(
+                    index_elements=[
+                        behavior_feature_windows.c.user_id,
+                        behavior_feature_windows.c.window_start_utc,
+                        behavior_feature_windows.c.feature_schema_version,
+                    ],
+                    set_={
+                        "window_end_utc": statement.excluded.window_end_utc,
+                        "features_json": statement.excluded.features_json,
+                        "label": statement.excluded.label,
+                        "created_at": statement.excluded.created_at,
+                    },
                 )
-                .values(**values)
+                await session.execute(statement)
+
+    async def latest_feature_window(
+        self,
+        user_id: int,
+        feature_schema_version: int = 2,
+    ) -> dict[str, Any] | None:
+        statement = (
+            sa.select(behavior_feature_windows)
+            .where(
+                behavior_feature_windows.c.user_id == user_id,
+                behavior_feature_windows.c.feature_schema_version
+                == feature_schema_version,
             )
-            if not result.rowcount:
-                await session.execute(
-                    behavior_feature_windows.insert().values(id=new_id(), **values)
-                )
+            .order_by(behavior_feature_windows.c.window_start_utc.desc())
+            .limit(1)
+        )
+        async with self._session_factory() as session:
+            row = (await session.execute(statement)).fetchone()
+            return dict(row._mapping) if row is not None else None
 
     async def list_feature_windows(
         self,
@@ -322,27 +328,33 @@ class TelemetryRepository:
     ) -> int:
         total = 0
         async with self._session_factory() as session, session.begin():
-            interaction_result = await session.execute(
-                sa.delete(interaction_buckets).where(
+            interaction_result = await session.scalars(
+                sa.delete(interaction_buckets)
+                .where(
                     interaction_buckets.c.window_start_utc
                     < interaction_cutoff.astimezone(UTC).isoformat()
                 )
+                .returning(interaction_buckets.c.id)
             )
-            browser_result = await session.execute(
-                sa.delete(browser_segments).where(
+            total += len(interaction_result.all())
+            browser_result = await session.scalars(
+                sa.delete(browser_segments)
+                .where(
                     browser_segments.c.timestamp
                     < activity_cutoff.astimezone(UTC).isoformat()
                 )
+                .returning(browser_segments.c.id)
             )
-            feature_result = await session.execute(
-                sa.delete(behavior_feature_windows).where(
+            total += len(browser_result.all())
+            feature_result = await session.scalars(
+                sa.delete(behavior_feature_windows)
+                .where(
                     behavior_feature_windows.c.window_start_utc
                     < feature_cutoff.astimezone(UTC).isoformat()
                 )
+                .returning(behavior_feature_windows.c.id)
             )
-            total += int(interaction_result.rowcount or 0)
-            total += int(browser_result.rowcount or 0)
-            total += int(feature_result.rowcount or 0)
+            total += len(feature_result.all())
         return total
 
     async def save_browser_token(self, user_id: int, token_hash: str) -> None:
@@ -362,32 +374,28 @@ class TelemetryRepository:
         now = datetime.now(UTC).isoformat()
         async with self._session_factory() as session, session.begin():
             result = await session.execute(
-                sa.select(browser_tokens.c.id).where(
+                sa.update(browser_tokens)
+                .where(
                     browser_tokens.c.token_hash == token_hash,
                     browser_tokens.c.revoked_at.is_(None),
                 )
-            )
-            row = result.fetchone()
-            if row is None:
-                return False
-            await session.execute(
-                sa.update(browser_tokens)
-                .where(browser_tokens.c.id == row.id)
                 .values(last_used_at=now)
+                .returning(browser_tokens.c.id)
             )
-            return True
+            return result.fetchone() is not None
 
     async def revoke_browser_tokens(self, user_id: int) -> int:
         async with self._session_factory() as session, session.begin():
-            result = await session.execute(
+            result = await session.scalars(
                 sa.update(browser_tokens)
                 .where(
                     browser_tokens.c.user_id == user_id,
                     browser_tokens.c.revoked_at.is_(None),
                 )
                 .values(revoked_at=datetime.now(UTC).isoformat())
+                .returning(browser_tokens.c.id)
             )
-            return int(result.rowcount or 0)
+            return len(result.all())
 
     async def get_status(self, user_id: int, target_date: date) -> dict[str, Any]:
         day_prefix = target_date.isoformat()
@@ -458,8 +466,10 @@ class TelemetryRepository:
         total = 0
         async with self._session_factory() as session, session.begin():
             for table in tables:
-                result = await session.execute(
-                    sa.delete(table).where(table.c.user_id == user_id)
+                result = await session.scalars(
+                    sa.delete(table)
+                    .where(table.c.user_id == user_id)
+                    .returning(table.c.id)
                 )
-                total += int(result.rowcount or 0)
+                total += len(result.all())
         return total

@@ -11,6 +11,7 @@ All datetime values are timezone-aware UTC throughout the application.
 from __future__ import annotations
 
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import platformdirs
 from pydantic import Field, field_validator, model_validator
@@ -68,9 +69,30 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="MINDFLOW_",
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
+        env_nested_delimiter="__",
     )
+
+    # --- Runtime paths ---
+    data_dir: Path = Field(
+        default_factory=_get_data_dir,
+        description="Application data directory; relative paths are anchored to platform data",
+    )
+    models_dir: Path = Field(
+        default=Path("models"),
+        description="ML model directory; relative paths are anchored to data_dir",
+    )
+
+    @property
+    def backup_dir(self) -> Path:
+        """Directory used for database backups."""
+        return self.data_dir / "backups"
+
+    @property
+    def token_path(self) -> Path:
+        """Path to the local API authentication token."""
+        return self.data_dir / "token"
 
     # --- Database ---
     db_url: str = Field(
@@ -81,6 +103,26 @@ class Settings(BaseSettings):
     # --- Server ---
     host: str = Field(default="127.0.0.1", description="Bind address")
     port: int = Field(default=8765, description="Bind port")
+    timezone: str = Field(
+        default="local",
+        description="Local business timezone: 'local' or an IANA timezone name",
+    )
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, value: str) -> str:
+        if value == "local":
+            return value
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            msg = f"Unknown timezone: {value}"
+            raise ValueError(msg) from exc
+        return value
+
+    # --- Runtime roles ---
+    run_scheduler: bool = Field(default=True, description="Run scheduled background jobs")
+    run_collectors: bool = Field(default=True, description="Run activity and input collectors")
 
     # --- Collector ---
     collect_interval_s: int = Field(
@@ -141,10 +183,18 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
     @model_validator(mode="after")
-    def _resolve_db_url(self) -> Settings:
-        """Resolve {data_dir} placeholder in db_url."""
+    def _resolve_runtime_paths(self) -> Settings:
+        """Anchor runtime paths to the platform data directory, never cwd."""
+        if not self.data_dir.is_absolute():
+            self.data_dir = _get_data_dir() / self.data_dir
+        self.data_dir = self.data_dir.expanduser()
+
+        if not self.models_dir.is_absolute():
+            self.models_dir = self.data_dir / self.models_dir
+        self.models_dir = self.models_dir.expanduser()
+
         if "{data_dir}" in self.db_url:
-            self.db_url = self.db_url.format(data_dir=_get_data_dir())
+            self.db_url = self.db_url.format(data_dir=self.data_dir.as_posix())
         return self
 
 

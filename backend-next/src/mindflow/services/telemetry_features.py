@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -40,9 +39,10 @@ def build_v2_feature_window(
         for previous, current in zip(active_events, active_events[1:], strict=False)
     )
     longest_segment_s = max((duration for _, duration in active_events), default=0.0)
-    app_durations: Counter[str] = Counter()
+    app_durations: dict[str, float] = {}
     for event, duration in active_events:
-        app_durations[event.data.process_name] += duration
+        process_name = event.data.process_name
+        app_durations[process_name] = app_durations.get(process_name, 0.0) + duration
 
     browser_rows = [
         (segment, _segment_overlap_seconds(segment, window_start, window_end))
@@ -57,9 +57,10 @@ def build_v2_feature_window(
     audible_seconds = sum(
         duration for segment, duration in browser_rows if bool(segment.get("audible"))
     )
-    domain_durations: Counter[str] = Counter()
+    domain_durations: dict[str, float] = {}
     for segment, duration in browser_rows:
-        domain_durations[str(segment.get("domain", ""))] += duration
+        domain = str(segment.get("domain", ""))
+        domain_durations[domain] = domain_durations.get(domain, 0.0) + duration
 
     keypress_count = sum(
         max(0, int(bucket.get("keypress_count", 0))) for bucket in interaction_buckets
@@ -205,5 +206,5 @@ def _ratio(numerator: float, denominator: float) -> float:
     return round(min(max(numerator / denominator, 0.0), 1.0), 6)
 
 
-def _top_ratio(durations: Counter[str], total: float) -> float:
+def _top_ratio(durations: dict[str, float], total: float) -> float:
     return _ratio(max(durations.values(), default=0.0), total)

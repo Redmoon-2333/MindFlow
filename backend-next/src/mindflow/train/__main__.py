@@ -175,9 +175,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--source",
-        choices=["synthetic", "db"],
-        default="synthetic",
-        help="Data source: synthetic (default) or real db events",
+        choices=["synthetic_v2", "db"],
+        default="synthetic_v2",
+        help="Data source: synthetic_v2 (archetype-based 24-dim windows) or db (real V2 feature windows)",
     )
     parser.add_argument(
         "--days",
@@ -275,13 +275,15 @@ def main() -> None:
         Path(args.models_dir) if args.models_dir else project_root / "data" / "models"
     )
 
-    manager = ModelManager(models_dir=models_dir)
+    # V2 models live under models_dir/v2/
+    v2_models_dir = models_dir / "v2"
+    manager = ModelManager(models_dir=v2_models_dir, use_ensemble=False)
 
     # ── List versions ─────────────────────────────────────────────────────
     if args.list_versions:
         versions = manager.list_versions()
         if not versions:
-            print("No model versions found in", models_dir)
+            print("No model versions found in", v2_models_dir)
             sys.exit(0)
         print(f"Available model versions ({len(versions)}):")
         for v in versions:

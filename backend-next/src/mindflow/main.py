@@ -73,8 +73,9 @@ class Watchdog:
                     host=self._host,
                     port=self._port,
                     log_level="info",
-                    # WS auth uses ?token= query param; uvicorn access logs would
-                    # record the full request line including the token (review P1-2).
+                    # Keep local API request metadata out of persistent logs.
+                    # Browser and WebSocket auth use an HttpOnly session cookie;
+                    # the launcher root token is never placed in request URLs.
                     access_log=False,
                 )
                 self._server = Server(config)

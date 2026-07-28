@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 
-from mindflow.api.deps import get_analysis_service, get_baseline_repo, get_model_manager
+from mindflow.api.deps import get_analysis_service, get_baseline_repo
 from mindflow.api.errors import _not_found
 from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.services.analysis_service import AnalysisService
@@ -82,13 +82,11 @@ async def get_profile(
 @router.get("/analytics/model-status")
 async def get_model_status(
     request: Request,
-    model_manager: ModelManager | None = Depends(get_model_manager),  # noqa: B008
 ) -> dict[str, Any]:
     """Return ML model loading status and version information.
 
-    Reports whether scikit-learn models (classifier, clustering, HMM) are
-    loaded and available for runtime inference.  When models are loaded,
-    includes the version tag and available versions for rollback.
+    Reports whether V2 feature-schema models (classifier, clustering, HMM)
+    are loaded and available for runtime inference.
     """
     v2_model_manager = getattr(request.app.state, "v2_model_manager", None)
     v2_training_mode = getattr(
@@ -115,36 +113,12 @@ async def get_model_status(
             ),
         }
 
-    if model_manager is None:
-        training_mode = getattr(request.app.state, "model_training_mode", "rule_engine_only")
-        is_shadow = training_mode == "shadow"
-        return {
-            "loaded": False,
-            "ready": False,
-            "mode": "shadow" if is_shadow else "rule_engine_only",
-            "v2_mode": v2_training_mode,
-            "reasons": ["model_in_shadow_mode" if is_shadow else "models_not_loaded"],
-            "message": (
-                "ML candidate is running in shadow mode; rule engine remains active"
-                if is_shadow
-                else "ML models not available, running with rule engine only"
-            ),
-        }
-
-    readiness = model_manager.readiness_status()
-    is_ready = bool(readiness["ready"])
+    # V1 model path removed — all ML now goes through V2
     return {
-        "loaded": True,
-        "ready": is_ready,
-        "mode": "ready" if is_ready else "rule_engine_only",
+        "loaded": False,
+        "ready": False,
+        "mode": v2_training_mode,
         "v2_mode": v2_training_mode,
-        "feature_schema_version": 1,
-        "version": model_manager.current_version_tag,
-        "available_versions": model_manager.list_versions(),
-        "reasons": readiness["reasons"],
-        "message": (
-            "ML models loaded and ready for inference"
-            if is_ready
-            else "ML artifacts loaded but failed inference readiness checks"
-        ),
+        "reasons": ["v2_models_not_loaded"],
+        "message": "V2 ML models not available, running with rule engine only",
     }

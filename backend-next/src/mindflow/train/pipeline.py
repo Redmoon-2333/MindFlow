@@ -27,7 +27,6 @@ from mindflow.domain.events import ActivityEvent, make_event
 from mindflow.domain.labeling import ConsensusLabeler
 from mindflow.train.features import BehaviorFeatureExtractor
 from mindflow.train.models import ModelManager
-from mindflow.train.synthetic_data import generate_synthetic_data
 from mindflow.train.v2 import (
     evaluate_v2_candidates,
     evaluate_v2_quality_gate,
@@ -43,7 +42,7 @@ class TrainingReport:
     """
 
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    source: str = "synthetic"  # "synthetic" | "db"
+    source: str = "synthetic_v2"  # "synthetic_v2" | "db"
     total_records: int = 0
     windows_extracted: int = 0
     n_focus: int = 0
@@ -67,7 +66,7 @@ class TrainingReport:
 
 
 def run_training(
-    source: Literal["synthetic", "db"] = "synthetic",
+    source: Literal["synthetic_v2", "db"] = "synthetic_v2",
     data_dir: str | Path = Path("data"),
     models_dir: str | Path = Path("data/models"),
     user_id: int = 1,
@@ -113,155 +112,48 @@ def run_training(
     models_path = Path(models_dir)
 
     report = TrainingReport(source=source)
-    if source == "db" and feature_windows:
+    if source == "db":
+        if feature_windows:
+            return _run_v2_training(
+                feature_windows=feature_windows,
+                feedback_sessions=feedback_sessions or [],
+                models_path=models_path,
+                source=source,
+            )
+        raise ValueError(
+            "No V2 feature windows found in database. "
+            "Run --source synthetic_v2 first to generate synthetic windows, "
+            "or collect more activity data."
+        )
+
+    # ── V2 synthetic data path ──────────────────────────────────────────
+    if source == "synthetic_v2":
+        print("[synth-v2] Generating synthetic v2 feature windows from archetypes...")
+        from mindflow.train.synthetic_v2 import generate_v2_synthetic_data
+
+        profile_ids = user_profiles  # list of archetype IDs or None for all
+        syn_windows, syn_feedback = generate_v2_synthetic_data(
+            archetype_ids=profile_ids,
+            days_per_archetype=days,
+            seed=seed,
+            sample_explicit_ratio=0.3,
+        )
+        report.total_records = len(syn_windows)
         return _run_v2_training(
-            feature_windows=feature_windows,
-            feedback_sessions=feedback_sessions or [],
+            feature_windows=syn_windows,
+            feedback_sessions=syn_feedback,
             models_path=models_path,
             source=source,
         )
 
-    # ── Step 1: Load / generate data ──────────────────────────────────────
-    raw_rows: list[dict[str, Any]] = []
-    if source == "synthetic":
-        print("[1/6] Generating synthetic activity data...")
-        raw_rows = generate_synthetic_data(
-            days=days,
-            samples_per_hour=samples_per_hour,
-            seed=seed,
-            num_users=num_users,
-            include_procrastination=include_procrastination,
-            user_profiles=user_profiles,
-        )
-        report.total_records = len(raw_rows)
-        print(f"       Generated {len(raw_rows):,} activity records")
-
-        _rows_for_features: Sequence[ActivityEvent] = [
-            make_event(
-                user_id=user_id,
-                timestamp_utc=r["timestamp"],
-                duration_s=r["duration_seconds"],
-                app_name=r["process_name"],
-                window_title=r["window_title"],
-                process_name=r["process_name"],
-                is_idle=bool(r["is_idle"]),
-            )
-            for r in raw_rows
-        ]
-    elif source == "db":
-        if events is None or len(events) == 0:
-            print("[1/6] ERROR: source='db' requires non-empty events list.", file=sys.stderr)
-            return report
-        print(f"[1/6] Using {len(events)} real activity events from database...")
-        report.total_records = len(events)
-        _rows_for_features = list(events)
-    else:
-        raise ValueError(f"Unknown source: {source!r}")
-
-    # ── Step 2: Extract features ──────────────────────────────────────────
-    print("[2/6] Extracting behavioral features...")
-    extractor = BehaviorFeatureExtractor(window_minutes=30)
-    extracted_rows = extractor.extract_session_features(_rows_for_features)
-    report.windows_extracted = len(extracted_rows)
-    feature_rows = [row for row in extracted_rows if _is_trainable_window(row)]
-    report.filtered_windows = len(extracted_rows) - len(feature_rows)
-    print(f"       Extracted {len(extracted_rows)} session windows")
-    print(f"       Trainable windows: {len(feature_rows)}")
-    if not feature_rows:
-        print("       ERROR: No trainable features extracted. Exiting.")
-        return report
-
-    # ── Step 3: Weak supervision labeling ─────────────────────────────────
-    print("[3/6] Applying weak-supervision labeling...")
-    labeler = ConsensusLabeler()
-    labels, confidences = labeler.label_dataframe(feature_rows)
-
-    report.n_focus = int(sum(labels))
-    report.n_distract = len(labels) - report.n_focus
-    report.avg_confidence = round(
-        sum(confidences) / len(confidences), 4
-    ) if confidences else 0.0
-    print(f"       Labels: {report.n_focus} focus, {report.n_distract} distraction")
-    print(f"       Avg confidence: {report.avg_confidence:.3f}")
-
-    # ── Step 4: Build baseline ────────────────────────────────────────────
-    print("[4/6] Building personal behavior baseline...")
-    # Ensure feature rows have the keys BaselineModel expects
-    _rows_with_process = list(feature_rows)
-    if source == "synthetic" and raw_rows:
-        # Add process_name from raw data to first matching window
-        _enrich_with_process(_rows_with_process, raw_rows)
-
-    baseline = BaselineModel(user_id=user_id)
-    # feature rows are dict[str, Any]; update() accepts Mapping — cast the
-    # list invariance away instead of silencing the checker (slop-scan fix).
-    baseline_rows = cast("list[Mapping[str, Any]]", _rows_with_process)
-    report.baseline_updated = baseline.update(baseline_rows)
-    has_data = baseline.has_sufficient_data(min_baseline_samples)
-    print(f"       Baseline updated with {report.baseline_updated} windows")
-    print(f"       Sufficient data: {has_data}")
-
-    # ── Step 5: Train ML models ───────────────────────────────────────────
-    print("[5/6] Training ML models (clustering + classifier + HMM)...")
-    feature_names = extractor.get_feature_names()
-
-    # Build feature matrix (same columns as old backend)
-    X = _build_feature_matrix(feature_rows, feature_names)
-    y = np.array(labels, dtype=np.int32)
-    w = np.array(confidences, dtype=np.float64)
-
-    manager = ModelManager(models_dir=models_path)
-    summary = manager.train_all(
-        X, feature_names, y,
-        sample_weight=w,
-        min_confidence=min_confidence,
+    # V1 pipeline (raw-event-based feature extraction) has been removed.
+    # All training now goes through the V2 24-dim feature schema
+    # (synthetic_v2 or db with pre-computed feature windows).
+    raise ValueError(
+        f"Unsupported training source: {source!r}. "
+        "Use --source synthetic_v2 for synthetic data or --source db for "
+        "real V2 feature windows from the database."
     )
-
-    report.clustering = summary.clustering
-    report.classifier = summary.classifier
-    report.hmm = summary.hmm
-
-    # Print summary (matching old train.py style)
-    _print_clustering_summary(summary.clustering)
-    _print_classifier_summary(summary.classifier)
-    _print_hmm_summary(summary.hmm)
-
-    # ── Step 6: Save artifacts ────────────────────────────────────────────
-    print("[6/6] Saving artifacts...")
-
-    baseline_path = data_path / f"baseline_user{user_id}.json"
-    baseline.save(baseline_path)
-
-    report.quality_gate = _evaluate_quality_gate(report, feature_rows)
-    should_activate = source != "db" or bool(report.quality_gate["passed"])
-    saved = manager.save_all(activate=should_activate)
-    report.saved_models = saved
-    report.activated = should_activate
-    report.model_mode = "ready" if should_activate else "shadow"
-    first_filename = next(iter(saved.values()), "")
-    report.version_tag = first_filename.removesuffix(".pkl").rsplit("-", 1)[-1] or None
-
-    # Training report JSON
-    report_path = models_path / "training_report.json"
-    report_data = report.to_dict()
-    # Remove non-serializable fields
-    report_data["saved_models"] = saved
-    report_path.write_text(
-        json.dumps(report_data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    print(f"\n{'=' * 60}")
-    print("Artifacts saved:")
-    for f in sorted(models_path.glob("*")):
-        if f.is_file():
-            print(f"  - {f.name}")
-    if baseline_path.exists():
-        print(f"  - {baseline_path.name}")
-    print("  - training_report.json")
-    print("\nNext: restart the API server to pick up new models.")
-
-    return report
 
 
 def _run_v2_training(

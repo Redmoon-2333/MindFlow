@@ -114,6 +114,26 @@ class TestInterventionLogRepository:
         updated = await repo.update_response("non-existent-id", "accepted")
         assert updated is None
 
+    async def test_update_feedback_returns_updated_row(self, repo) -> None:
+        """Feedback update returns the persisted row."""
+        log = await repo.log_triggered(user_id=1, intervention_type="nudge")
+
+        updated = await repo.update_feedback(
+            log["id"],
+            "helpful",
+            comment="Useful reminder",
+        )
+
+        assert updated is not None
+        assert updated["feedback_rating"] == "helpful"
+        assert updated["feedback_comment"] == "Useful reminder"
+        assert await repo.get_by_id(log["id"]) == updated
+
+    async def test_update_feedback_not_found(self, repo) -> None:
+        """Feedback update on a non-existent ID returns None."""
+        updated = await repo.update_feedback("non-existent-id", "neutral")
+        assert updated is None
+
     async def test_count_today_zero(self, repo) -> None:
         """No interventions today → count is 0."""
         count = await repo.count_today(1)

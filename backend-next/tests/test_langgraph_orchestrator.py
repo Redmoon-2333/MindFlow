@@ -16,6 +16,7 @@ to guarantee behaviour parity.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Literal
 
 import pytest
@@ -39,7 +40,11 @@ from test_agents_orchestrator import (
 )
 
 from mindflow.agents.orchestrator import PanelOrchestrator
-from mindflow.agents.types import PanelVerdict
+from mindflow.agents.types import (
+    PanelBudgetExceededError,
+    PanelUnavailableError,
+    PanelVerdict,
+)
 
 
 class RecordingGateway(MockGateway):
@@ -56,6 +61,33 @@ class RecordingGateway(MockGateway):
         if FP_MODERATOR in system:
             self.moderator_prompts.append(user)
         return await super().complete(system=system, user=user, model=model)
+
+
+class YieldingGateway(MockGateway):
+    """Gateway that yields once per call to force graph interleaving."""
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        model: Literal["chat", "reasoner"] = "chat",
+    ) -> str:
+        await asyncio.sleep(0)
+        return await super().complete(system=system, user=user, model=model)
+
+
+class BudgetFailingGateway(MockGateway):
+    """Return the analyst response, then surface a hard budget failure."""
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        model: Literal["chat", "reasoner"] = "chat",
+    ) -> str:
+        if FP_ANALYST in system:
+            return _ANALYST_JSON
+        raise PanelBudgetExceededError(call_count=13)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tests — fast path
@@ -162,7 +194,39 @@ class TestLangGraphCriticReject:
         }
         orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
 
-        verdict = await orchestrator.run(_make_bundle())
+        with pytest.raises(PanelUnavailableError) as exc_info:
+            await orchestrator.run(_make_bundle())
 
-        assert verdict.call_count == 8
-        assert len(verdict.transcript) == 8
+        assert exc_info.value.call_count == 8
+        assert "批评家" in exc_info.value.reason
+
+
+class TestLangGraphConcurrency:
+    """A compiled orchestrator instance must isolate concurrent invocations."""
+
+    @pytest.mark.asyncio
+    async def test_same_instance_concurrent_runs_are_isolated(self) -> None:
+        responses: dict[str, list[str]] = {
+            FP_ANALYST: [_ANALYST_JSON, _ANALYST_JSON],
+            FP_CBT: [_ATTRIBUTION_IMPULSIVITY, _ATTRIBUTION_IMPULSIVITY],
+            FP_TMT: [_ATTRIBUTION_IMPULSIVITY, _ATTRIBUTION_IMPULSIVITY],
+            FP_EMOTION: [_ATTRIBUTION_IMPULSIVITY, _ATTRIBUTION_IMPULSIVITY],
+            FP_MODERATOR: [_MODERATOR_JSON, _MODERATOR_JSON],
+            FP_CRITIC: [_CRITIC_APPROVE, _CRITIC_APPROVE],
+        }
+        orchestrator = PanelOrchestrator(gateway=YieldingGateway(responses=responses))
+
+        verdicts = await asyncio.gather(
+            orchestrator.run(_make_bundle()),
+            orchestrator.run(_make_bundle()),
+        )
+
+        assert [verdict.call_count for verdict in verdicts] == [6, 6]
+        assert [len(verdict.transcript) for verdict in verdicts] == [6, 6]
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_is_not_swallowed_by_parallel_safe_call(self) -> None:
+        orchestrator = PanelOrchestrator(gateway=BudgetFailingGateway())
+
+        with pytest.raises(PanelBudgetExceededError):
+            await orchestrator.run(_make_bundle())

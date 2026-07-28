@@ -58,12 +58,12 @@ _ANALYST_PROMPT: str = """你是一个行为数据分析师。你的任务是对
 4. 输出结构化的模式发现报告
 
 ## 分析框架
-- 专注指标：focus_score、focus_deviation、actual_focus_min 等——看总体水平和趋势
-- 切换指标：switch_rate、context_switches_per_hour——高频切换是分心的信号
-- 延迟指标：start_delay_min——启动延迟反映决策困难
-- 社交媒体比例：social_media_ratio——情绪调节避难的代理指标
+- 专注指标：focus.focus_score, focus.behavior_deviation, summary.actual_focus_min 等——看总体水平和趋势
+- 切换指标：focus.switch_rate, summary.context_switches_per_hour——高频切换是分心的信号
+- 延迟指标：summary.start_delay_min——启动延迟反映决策困难
+- 社交媒体比例：summary.social_media_ratio——情绪调节避难的代理指标
 - 基线偏差：baseline_deviation——偏离用户自身基线的程度比绝对值更重要
-- 异常标志：novelty_flags——新出现的行为模式值得关注
+- 异常标志：novelty.flags——新出现的行为模式值得关注
 - 干预历史：用户对之前干预的响应方式——有效/无效反馈
 
 ## 输出格式
@@ -72,7 +72,7 @@ _ANALYST_PROMPT: str = """你是一个行为数据分析师。你的任务是对
   "patterns": [{"name": "模式名称", "severity": "mild|moderate|severe", "description": "中文描述"}],
   "anomalies": [{"metric": "指标名", "detail": "中文说明"}],
   "top_concerns": ["最值得关注的 1-3 个问题"],
-  "evidence_citations": ["引用的所有指标名"]
+  "evidence_citations": ["引用的规范证据ID，如 focus.switch_rate"]
 }
 
 ## 证据引用规则
@@ -113,7 +113,7 @@ CBT 认为拖延不是懒惰，而是功能失调的认知-行为模式的结果
 1. 基于证据包中的行为指标，识别最可能的 1-2 个拖延类型
 2. 为每个类型给出置信度（0-1），必须有理有据
 3. 指出具体的认知扭曲模式（若有证据支持）
-4. 每个论据必须引用证据包中的具体指标
+4. 每个论据必须引用 evidence_catalog 中的规范 ID（如 focus.switch_rate、summary.actual_focus_min）
 
 ## 输出格式
 你必须输出 JSON 对象，不能包含 Markdown 代码块标记，字段如下：
@@ -122,12 +122,12 @@ CBT 认为拖延不是懒惰，而是功能失调的认知-行为模式的结果
   "confidence": {"类型名": 0.0-1.0},
   "cognitive_distortions": ["识别到的认知扭曲"],
   "argument": "你的分析论证文本（中文，每个论点末尾必须标注[证据: 指标名]）",
-  "evidence_citations": ["引用的所有指标名"]
+  "evidence_citations": ["引用的规范证据ID，如 focus.switch_rate"]
 }
 
 ## 证据引用规则
 - 每个结论必须标注 [证据: 指标名]
-- 例如："用户频繁切换应用，最长专注块不足3分钟，符合冲动分心模式 [证据: longest_focus_block_s]"
+- 例如："用户频繁切换应用，最长专注块不足3分钟，符合冲动分心模式 [证据: focus.longest_block]"
 - 引用的指标名必须在证据包中存在
 
 ## 安全边界
@@ -158,7 +158,7 @@ Impulsiveness（冲动性）：对即时满足的敏感度。高冲动→高拖�
   - 行为表现：短专注、高频切换
 
 Delay（延迟）：奖赏的时间距离。延迟越远→越拖延
-  - 证据线索：启动延迟（start_delay_min）、任务是否被一再推迟
+  - 证据线索：启动延迟（summary.start_delay_min）、任务是否被一再推迟
   - 行为表现：开工困难
 
 ## 五种拖延类型与 TMT 映射
@@ -181,7 +181,7 @@ Delay（延迟）：奖赏的时间距离。延迟越远→越拖延
   "confidence": {"类型名": 0.0-1.0},
   "tmt_factors": {"Expectancy": "高|中|低", "Value": "高|中|低", "Impulsiveness": "高|中|低", "Delay": "高|中|低"},
   "argument": "你的分析论证文本（中文，每个论点末尾必须标注[证据: 指标名]）",
-  "evidence_citations": ["引用的所有指标名"]
+  "evidence_citations": ["引用的规范证据ID，如 focus.switch_rate"]
 }
 
 ## 证据引用规则
@@ -233,7 +233,7 @@ _EMOTION_PROMPT: str = """你是一个情绪调节归因专家。你从情绪调
   "emotion_pattern": "检测到的情绪调节模式描述",
   "is_emotion_driven": true|false,
   "argument": "你的分析论证文本（中文，每个论点末尾必须标注[证据: 指标名]）",
-  "evidence_citations": ["引用的所有指标名"]
+  "evidence_citations": ["引用的规范证据ID，如 focus.switch_rate"]
 }
 
 ## 证据引用规则
@@ -260,8 +260,8 @@ _CRITIC_PROMPT: str = """你是一个批评家，负责审查专家团的会诊�
 4. 禁词检查：确保报告中不包含"诊断"、"治疗"、"患者"、"处方"等医疗用语
 
 ## 合法指标清单
-你的输入中会包含一个合法指标清单。只有清单中的指标名才是有效的证据引用。
-任何引用不在清单中的指标名 → 视为幻觉 → 打回。
+你的输入中会包含一个证据目录（evidence_catalog 数组中的 id）。只有目录中的 ID 才是有效的证据引用。
+任何引用不在目录中的 ID → 视为幻觉 → 打回。
 
 ## 检查要点
 - 每个 [证据: X] 中的 X 是否在合法指标清单中？

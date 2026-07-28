@@ -8,12 +8,15 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import mindflow.api.routes.focus as focus_module
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes.focus import router as focus_router
 from mindflow.domain.events import make_event
@@ -85,6 +88,28 @@ class TestFocusRoutes:
         assert "sessions" in data
         assert "date" in data
 
+    def test_get_focus_defaults_to_business_today(self, seeded_app, monkeypatch):
+        business_today = MagicMock(return_value=date(2026, 7, 26))
+        monkeypatch.setattr(
+            focus_module,
+            "business_today",
+            business_today,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            focus_module,
+            "utc_today",
+            lambda: date(2026, 7, 25),
+            raising=False,
+        )
+        seeded_app.state.settings = SimpleNamespace(timezone="Asia/Shanghai")
+
+        response = TestClient(seeded_app).get("/api/v1/focus")
+
+        assert response.status_code == 200
+        assert response.json()["date"] == "2026-07-26"
+        business_today.assert_called_once_with("Asia/Shanghai")
+
     def test_get_focus_with_date(self, seeded_app):
         """GET /focus?date=2026-07-17 should work."""
         client = TestClient(seeded_app)
@@ -99,6 +124,29 @@ class TestFocusRoutes:
         data = resp.json()
         assert "daily" in data
         assert "total_sessions" in data
+
+    def test_focus_trend_ends_on_business_today(self, seeded_app, monkeypatch):
+        business_today = MagicMock(return_value=date(2026, 7, 26))
+        monkeypatch.setattr(
+            focus_module,
+            "business_today",
+            business_today,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            focus_module,
+            "utc_today",
+            lambda: date(2026, 7, 25),
+            raising=False,
+        )
+        seeded_app.state.settings = SimpleNamespace(timezone="Asia/Shanghai")
+
+        response = TestClient(seeded_app).get("/api/v1/focus/trend?days=2")
+
+        assert response.status_code == 200
+        assert response.json()["start_date"] == "2026-07-25"
+        assert response.json()["end_date"] == "2026-07-26"
+        business_today.assert_called_once_with("Asia/Shanghai")
 
 
 class TestFocusEmpty:

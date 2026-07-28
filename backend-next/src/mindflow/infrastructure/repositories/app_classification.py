@@ -26,20 +26,7 @@ _KNOWN_CATEGORIES: frozenset[str] = frozenset({
     "other",
 })
 
-# ── Table definition (matches migration 0006_create_app_classification_rules) ─
-
-app_classification_rules = sa.Table(
-    "app_classification_rules",
-    sa.MetaData(),
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("process_name", sa.Text(), nullable=False),
-    sa.Column("window_title_pattern", sa.Text(), nullable=True),
-    sa.Column("category", sa.Text(), nullable=False),
-    sa.Column("priority", sa.Integer(), nullable=False, server_default=sa.text("0")),
-    sa.Column("created_at", sa.Text(), nullable=False),
-    sa.Column("updated_at", sa.Text(), nullable=False),
-)
+from mindflow.infrastructure.schema import app_classification_rules
 
 
 class AppClassificationRulesRepository:
@@ -84,39 +71,28 @@ class AppClassificationRulesRepository:
     # ── Commands ───────────────────────────────────────────────────────
 
     async def add(self, user_id: int, rule: dict[str, Any]) -> dict[str, Any]:
-        """Insert a new classification rule and return it with generated fields.
+        """Insert one classification rule."""
+        values = _build_rule_values(user_id, rule, datetime.now(UTC).isoformat())
+        async with self._session_factory() as session, session.begin():
+            await session.execute(app_classification_rules.insert().values(**values))
+        return values
 
-        Args:
-            user_id: User identifier.
-            rule: Dict with keys:
-                - ``process_name`` (required): e.g. ``"notion.exe"``
-                - ``window_title_pattern`` (optional): SQL LIKE pattern
-                - ``category`` (required): one of the known categories
-                - ``priority`` (optional, default 0): higher = checked first
-
-        Returns:
-            The complete rule dict including generated ``id``, ``created_at``,
-            and ``updated_at``.
-        """
+    async def replace_all(
+        self,
+        user_id: int,
+        rules: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Atomically replace all rules for a user with one bulk insert."""
         now = datetime.now(UTC).isoformat()
-        rule_id = str(uuid6.uuid7())
-
-        values: dict[str, Any] = {
-            "id": rule_id,
-            "user_id": user_id,
-            "process_name": rule["process_name"],
-            "window_title_pattern": rule.get("window_title_pattern"),
-            "category": rule["category"],
-            "priority": rule.get("priority", 0),
-            "created_at": now,
-            "updated_at": now,
-        }
-
+        values = [_build_rule_values(user_id, rule, now) for rule in rules]
         async with self._session_factory() as session, session.begin():
             await session.execute(
-                app_classification_rules.insert().values(**values)
+                sa.delete(app_classification_rules).where(
+                    app_classification_rules.c.user_id == user_id
+                )
             )
-
+            if values:
+                await session.execute(app_classification_rules.insert(), values)
         return values
 
     async def delete(self, rule_id: str) -> None:
@@ -168,9 +144,7 @@ class AppClassificationRulesRepository:
             )
         ).subquery()
 
-        process_name_expr = sa.func.json_extract(
-            activity_events.c.data_json, "$.process_name"
-        ).label("process_name")
+        process_name_expr = activity_events.c.process_name.label("process_name")
 
         stmt = (
             sa.select(
@@ -180,10 +154,10 @@ class AppClassificationRulesRepository:
             )
             .where(
                 activity_events.c.user_id == user_id,
-                activity_events.c.data_json.isnot(None),
-                sa.func.json_extract(
-                    activity_events.c.data_json, "$.process_name"
-                ).not_in(sa.select(classified_subq.c.process_name)),
+                activity_events.c.process_name.isnot(None),
+                activity_events.c.process_name.not_in(
+                    sa.select(classified_subq.c.process_name)
+                ),
             )
             .group_by(sa.literal_column("process_name"))
             .order_by(sa.literal_column("count").desc())
@@ -205,6 +179,23 @@ class AppClassificationRulesRepository:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
+
+
+def _build_rule_values(
+    user_id: int,
+    rule: dict[str, Any],
+    now: str,
+) -> dict[str, Any]:
+    return {
+        "id": str(uuid6.uuid7()),
+        "user_id": user_id,
+        "process_name": rule["process_name"],
+        "window_title_pattern": rule.get("window_title_pattern"),
+        "category": rule["category"],
+        "priority": rule.get("priority", 0),
+        "created_at": now,
+        "updated_at": now,
+    }
 
 
 def _row_to_dict(row: sa.Row[Any]) -> dict[str, Any]:

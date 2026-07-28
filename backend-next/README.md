@@ -33,7 +33,7 @@ MindFlow 是一款桌面端专注力管理工具，通过实时采集电脑使�
 ┌──────────────────────────────────────────────────┐
 │                MindFlow App                         │
 │  ┌──────────────────────┐  ┌──────────────────┐   │
-│  │  FastAPI (REST :8765) │  │  WebSocket /ws    │   │
+│  │  FastAPI (REST :8765) │  │ WebSocket /api/v1/ws │ │
 │  └──────┬───────────────┘  └──────┬───────────┘   │
 │         │                          │                │
 │  ┌──────┴──────────────────────────┴───────┐      │
@@ -61,7 +61,7 @@ MindFlow 是一款桌面端专注力管理工具，通过实时采集电脑使�
 - **运行时**: Python 3.11+, uv icon (async ASGI)
 - **Web 框架**: FastAPI 0.115+
 - **数据库**: SQLite + SQLAlchemy (async) + Alembic 迁移
-- **调度**: APScheduler (cron 任务 + 定时干预检查)
+- **调度**: 纯 asyncio 调度器（本地时区 cron + 持久化任务 claim）
 - **ML**: scikit-learn, hmmlearn (本地训练/预测)
 - **打包**: PyInstaller (单文件桌面应用)
 
@@ -73,7 +73,7 @@ MindFlow 是一款桌面端专注力管理工具，通过实时采集电脑使�
 
 ```bash
 # 1. 创建 conda 环境
-conda create -n mindflow python=3.11
+conda env create -f environment.yml
 conda activate mindflow
 
 # 2. 安装依赖
@@ -83,9 +83,24 @@ pip install -e ".[dev]"
 # 3. 启动服务（生产入口，含崩溃自动重启 watchdog — E2E 实测验证的启动方式）
 python -m mindflow.main
 
+# 4. 另开终端生成一次性本地登录链接
+python -m mindflow.bootstrap
+
 # 注意：create_app(settings) 是带参工厂，不适用 `uvicorn --factory` 直启。
 # 需要热重载的开发场景，修改代码后 Ctrl+C 重启 python -m mindflow.main 即可（启动 <2s）。
 ```
+
+启动时 Alembic 迁移和 SQLite 完整性检查必须成功；迁移失败会终止启动，不会在不兼容
+schema 上降级运行。
+
+### 本地认证
+
+- 启动器持有本地 root token，并通过回环地址申请 60 秒、单次使用的 bootstrap ticket。
+- 浏览器在 URL fragment 中取得 ticket，交换为 `HttpOnly`、`SameSite=Strict` 的
+  `mindflow_session` Cookie；网页脚本和 URL 均不会接触 root token。
+- `/api/*` REST 请求与 `/api/v1/ws` WebSocket 都使用该会话 Cookie。
+- 旧的用户名/密码 `/auth/login` 接口已移除；请通过 `python -m mindflow.bootstrap`
+  或桌面启动器进入界面。
 
 ### 训练 ML 模型
 
@@ -149,7 +164,9 @@ ruff check src/mindflow
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/v1/health` | GET | 健康检查（免认证） |
+| `/api/v1/health/live` | GET | 存活检查（免认证） |
+| `/api/v1/health/ready` | GET | 就绪检查；迁移、数据库或完整性失败时返回 503 |
+| `/api/v1/health` | GET | 兼容健康检查（始终返回 200） |
 | `/api/v1/activities` | GET/POST | 活动事件流 |
 | `/api/v1/focus/sessions` | GET | 专注会话列表 |
 | `/api/v1/reports/daily` | GET | 日报查询/生成 |
@@ -158,7 +175,7 @@ ruff check src/mindflow
 | `/api/v1/intervention/trigger` | POST | 手动触发干预 |
 | `/api/v1/intervention/history` | GET | 干预历史 |
 | `/api/v1/export` | GET | 数据导出（CSV/JSON） |
-| `/api/v1/ws` | WS | 实时 WebSocket |
+| `/api/v1/ws` | WS | 实时 WebSocket（会话 Cookie + Host/Origin 校验） |
 
 ---
 
@@ -181,6 +198,9 @@ ruff check src/mindflow
 | `MINDFLOW_COLLECT_INTERVAL_S` | `5` | 采集间隔（秒） |
 | `MINDFLOW_HEARTBEAT_PULSETIME_S` | `10` | 心跳合并窗口（秒） |
 | `MINDFLOW_EVENT_RETENTION_DAYS` | `30` | 事件数据保留天数（7-90） |
+| `MINDFLOW_TIMEZONE` | `local` | 业务时区，可设为 IANA 名称，如 `Asia/Shanghai` |
+| `MINDFLOW_RUN_SCHEDULER` | `true` | 是否在当前进程运行调度任务 |
+| `MINDFLOW_RUN_COLLECTORS` | `true` | 是否在当前进程运行行为采集器 |
 | `MINDFLOW_LOG__LEVEL` | `DEBUG` | 日志级别 |
 | `MINDFLOW_LOG__JSON_FORMAT` | `false` | JSON 日志格式 |
 | `MINDFLOW_LLM__API_KEY` | — | LLM API 密钥（DeepSeek） |

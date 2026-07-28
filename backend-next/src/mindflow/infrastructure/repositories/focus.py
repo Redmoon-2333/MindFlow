@@ -170,6 +170,15 @@ class SQLAlchemyFocusSessionRepository:
             count: int = result.scalar() or 0
             return count > 0
 
+    async def delete_for_date(self, user_id: int, target_date: date) -> None:
+        """Delete all sessions for *user_id* on *target_date*."""
+        stmt = sa.delete(focus_sessions).where(
+            focus_sessions.c.user_id == user_id,
+            focus_sessions.c.date == target_date.isoformat(),
+        )
+        async with self._session_factory() as session, session.begin():
+            await session.execute(stmt)
+
     async def get_by_date(
         self,
         user_id: int,

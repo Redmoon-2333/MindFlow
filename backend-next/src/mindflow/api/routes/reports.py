@@ -10,26 +10,28 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query  # noqa: B008
+from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 from loguru import logger
 
 from mindflow.api.deps import get_report_service
 from mindflow.api.errors import _not_found
 from mindflow.services.report_service import ReportService
-from mindflow.time_utils import utc_today
+from mindflow.time_utils import business_today
 
 router = APIRouter(tags=["reports"])
 
 
 @router.get("/reports/daily")
 async def get_daily_report(
+    request: Request,
     report_date: date | None = Query(  # noqa: B008
         None, alias="date", description="Report date (YYYY-MM-DD, default today)"
     ),
     report_svc: ReportService = Depends(get_report_service),  # noqa: B008
 ) -> dict[str, Any]:
     """Return a daily report for the given date (generates if missing)."""
-    target = report_date or utc_today()
+    settings = getattr(request.app.state, "settings", None)
+    target = report_date or business_today(getattr(settings, "timezone", "local"))
 
     report = await report_svc.generate_daily_report(1, target)
     if not report:
@@ -41,6 +43,7 @@ async def get_daily_report(
 
 @router.get("/reports/weekly")
 async def get_weekly_report(
+    request: Request,
     week_start: date | None = Query(  # noqa: B008
         None, alias="week_start", description="Week start (YYYY-MM-DD, ISO week start Monday)"
     ),
@@ -53,7 +56,8 @@ async def get_weekly_report(
     if week_start:
         start = week_start
     else:
-        today = utc_today()
+        settings = getattr(request.app.state, "settings", None)
+        today = business_today(getattr(settings, "timezone", "local"))
         # ISO week start (Monday)
         start = today - timedelta(days=today.weekday())
 

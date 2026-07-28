@@ -21,7 +21,7 @@ Design constraints:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 from typing import Any, Literal
 
 from loguru import logger
@@ -37,6 +37,7 @@ from mindflow.infrastructure.repositories.analysis import (
     SQLAlchemyProcrastinationAnalysisRepository,
 )
 from mindflow.infrastructure.security.crisis_detector import CrisisDetector, CrisisLevel
+from mindflow.time_utils import TimezoneLike, business_day_bounds_utc
 
 SourceType = Literal["deepseek", "ollama", "rule_engine"]
 
@@ -91,6 +92,7 @@ class LLMService:
         crisis_detector: CrisisDetector | None = None,
         ollama_base_url: str | None = None,
         ollama_model: str = "qwen3:8b",
+        timezone: TimezoneLike = "local",
     ) -> None:
         self._activity_repo = activity_repo
         self._analysis_repo = analysis_repo
@@ -99,6 +101,7 @@ class LLMService:
         self._crisis_detector = crisis_detector or CrisisDetector()
         self._ollama_base_url = ollama_base_url
         self._ollama_model = ollama_model
+        self._timezone = timezone
 
     async def aclose(self) -> None:
         """Close the L1 DeepSeek client's HTTP connection pool.
@@ -122,6 +125,7 @@ class LLMService:
         target_date: date,
         *,
         force: bool = False,
+        analysis_kind: str = "daily_attribution",
     ) -> AttributionOutcome:
         """Run the full attribution pipeline for *user_id* on *target_date*.
 
@@ -139,6 +143,9 @@ class LLMService:
             user_id: User identifier.
             target_date: Date to analyse.
             force: If True, bypass the idempotent cache and re-run analysis.
+            analysis_kind: Kind of analysis to persist — ``"daily_panel"``
+                (when called from PanelService fallback) or
+                ``"daily_attribution"`` (default, for direct attribution).
 
         Returns:
             An ``AttributionOutcome`` with the assessment data.
@@ -148,7 +155,9 @@ class LLMService:
         """
         # ── 1. Cache check ────────────────────────────────────────────
         if not force:
-            cached = await self._analysis_repo.get_by_date(user_id, target_date)
+            cached = await self._analysis_repo.get_by_date(
+                user_id, target_date, analysis_kind=analysis_kind,
+            )
             if cached is not None:
                 logger.debug("Cache hit for attribution {}/{}", user_id, target_date)
                 return AttributionOutcome(
@@ -160,8 +169,7 @@ class LLMService:
                 )
 
         # ── 2. Load events ────────────────────────────────────────────
-        start_dt = datetime(target_date.year, target_date.month, target_date.day, tzinfo=UTC)
-        end_dt = start_dt + timedelta(days=1)
+        start_dt, end_dt = business_day_bounds_utc(target_date, self._timezone)
 
         events = await self._activity_repo.query_range(user_id, start_dt, end_dt)
         if not events:
@@ -175,15 +183,23 @@ class LLMService:
 
         if crisis_level == CrisisLevel.HIGH:
             logger.warning("Crisis keywords detected for user {}. Skipping LLM.", user_id)
+            assessment: dict[str, Any] = {
+                "procrastination_types": [],
+                "type_confidence": {},
+                "cognitive_distortions": [],
+                "cbt_technique": None,
+                "response_text": crisis_response.message if crisis_response else "",
+                "next_action": "寻求专业帮助",
+            }
+            await self._persist_assessment(
+                user_id=user_id,
+                target_date=target_date,
+                assessment=assessment,
+                source="rule_engine",
+                analysis_kind=analysis_kind,
+            )
             return AttributionOutcome(
-                assessment={
-                    "procrastination_types": [],
-                    "type_confidence": {},
-                    "cognitive_distortions": [],
-                    "cbt_technique": None,
-                    "response_text": crisis_response.message if crisis_response else "",
-                    "next_action": "寻求专业帮助",
-                },
+                assessment=assessment,
                 source="rule_engine",
                 crisis_detected=True,
             )
@@ -196,6 +212,29 @@ class LLMService:
         assessment, source, degraded = await self._run_degradation_chain(summary, summary_json)
 
         # ── 8. Persist ────────────────────────────────────────────────
+        await self._persist_assessment(
+            user_id=user_id,
+            target_date=target_date,
+            assessment=assessment,
+            source=source,
+            analysis_kind=analysis_kind,
+        )
+
+        return AttributionOutcome(
+            assessment=assessment,
+            source=source,
+            degraded=degraded,
+        )
+
+    async def _persist_assessment(
+        self,
+        *,
+        user_id: int,
+        target_date: date,
+        assessment: dict[str, Any],
+        source: SourceType,
+        analysis_kind: str = "daily_attribution",
+    ) -> None:
         await self._analysis_repo.upsert(
             user_id=user_id,
             target_date=target_date,
@@ -207,12 +246,8 @@ class LLMService:
             ),
             response_text=assessment.get("response_text", assessment.get("rationale", "")),
             llm_model=source,
-        )
-
-        return AttributionOutcome(
-            assessment=assessment,
+            analysis_kind=analysis_kind,
             source=source,
-            degraded=degraded,
         )
 
     # ── Degradation chain ─────────────────────────────────────────────

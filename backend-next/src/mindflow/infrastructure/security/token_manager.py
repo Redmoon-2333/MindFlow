@@ -17,7 +17,11 @@ Security model (ADR-004):
 
 from __future__ import annotations
 
+import hashlib
 import secrets
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
@@ -83,3 +87,115 @@ def _set_file_permissions(path: Path) -> None:
         logger.debug("chmod not supported on this platform (Windows); relying on directory ACL")
     except PermissionError:
         logger.warning("Could not set 0600 on token file — ownership issue")
+
+
+@dataclass(frozen=True, slots=True)
+class _BootstrapTicket:
+    digest: bytes
+    expires_at: float
+
+
+class BootstrapTicketStore:
+    """Bounded in-memory store for short-lived one-time bootstrap tickets."""
+
+    def __init__(
+        self,
+        *,
+        ttl_s: int = 60,
+        max_entries: int = 16,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if ttl_s <= 0 or max_entries <= 0:
+            raise ValueError("ttl_s and max_entries must be positive")
+        self._ttl_s = ttl_s
+        self._max_entries = max_entries
+        self._clock = clock
+        self._entries: list[_BootstrapTicket] = []
+
+    def issue(self) -> str:
+        """Create a random one-time ticket and evict expired/old entries."""
+        now = self._clock()
+        self._entries = [entry for entry in self._entries if entry.expires_at > now]
+        token = secrets.token_urlsafe(32)
+        self._entries.append(
+            _BootstrapTicket(self._digest(token), now + self._ttl_s)
+        )
+        if len(self._entries) > self._max_entries:
+            self._entries = self._entries[-self._max_entries :]
+        return token
+
+    def consume(self, provided: str) -> bool:
+        """Atomically validate and remove a ticket."""
+        if not provided:
+            return False
+        now = self._clock()
+        candidate = self._digest(provided)
+        retained: list[_BootstrapTicket] = []
+        matched = False
+        for entry in self._entries:
+            if entry.expires_at <= now:
+                continue
+            if not matched and secrets.compare_digest(candidate, entry.digest):
+                matched = True
+                continue
+            retained.append(entry)
+        self._entries = retained
+        return matched
+
+    @staticmethod
+    def _digest(token: str) -> bytes:
+        return hashlib.sha256(token.encode("utf-8")).digest()
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionToken:
+    digest: bytes
+    expires_at: float
+
+
+class SessionTokenStore:
+    """Bounded in-memory store for revocable browser session tokens."""
+
+    def __init__(
+        self,
+        *,
+        ttl_s: int = 24 * 60 * 60,
+        max_entries: int = 16,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if ttl_s <= 0 or max_entries <= 0:
+            raise ValueError("ttl_s and max_entries must be positive")
+        self._ttl_s = ttl_s
+        self._max_entries = max_entries
+        self._clock = clock
+        self._entries: list[_SessionToken] = []
+
+    def issue(self) -> str:
+        """Create an independent browser session without exposing the root token."""
+        now = self._clock()
+        self._entries = [entry for entry in self._entries if entry.expires_at > now]
+        token = secrets.token_urlsafe(32)
+        self._entries.append(_SessionToken(self._digest(token), now + self._ttl_s))
+        if len(self._entries) > self._max_entries:
+            self._entries = self._entries[-self._max_entries :]
+        return token
+
+    def verify(self, provided: str) -> bool:
+        """Validate an unexpired browser session token without consuming it."""
+        if not provided:
+            return False
+        now = self._clock()
+        candidate = self._digest(provided)
+        retained: list[_SessionToken] = []
+        matched = False
+        for entry in self._entries:
+            if entry.expires_at <= now:
+                continue
+            retained.append(entry)
+            matched = matched or secrets.compare_digest(candidate, entry.digest)
+        self._entries = retained
+        return matched
+
+    @staticmethod
+    def _digest(token: str) -> bytes:
+        return hashlib.sha256(token.encode("utf-8")).digest()

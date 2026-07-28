@@ -18,27 +18,29 @@ Response shape aligns with ``PanelVerdict``::
       "meta": { "degraded": false }
     }
 
-When the expert panel is unavailable and falls through to single-expert mode,
-``meta.degraded`` is ``true`` and ``source`` is ``"single_expert"``.
+When the expert panel is unavailable and falls through to a lower tier,
+``meta.degraded`` is ``true`` and ``source`` identifies ``"single_expert"``,
+``"ollama"``, or ``"rule_engine"``.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends  # noqa: B008
+from fastapi import APIRouter, Depends, Request  # noqa: B008
 from loguru import logger
 
 from mindflow.api.deps import get_panel_service
 from mindflow.api.errors import ProblemDetail
+from mindflow.api.schemas import PanelResponse
 from mindflow.errors import NoActivityDataError
 from mindflow.services.panel_service import PanelService
-from mindflow.time_utils import utc_today
+from mindflow.time_utils import business_today
 
 router = APIRouter(tags=["panel"])
 
 
-def _verdict_to_dict(verdict: Any) -> dict[str, Any]:
+def _verdict_to_response(verdict: Any) -> PanelResponse:
     """Convert a PanelVerdict to a serializable dict.
 
     Handles both ``PanelVerdict`` dataclass instances and anything with
@@ -64,7 +66,7 @@ def _verdict_to_dict(verdict: Any) -> dict[str, Any]:
         for entry in transcript_raw
     ]
 
-    return {
+    return PanelResponse.model_validate({
         "types": types_str,
         "confidence": confidence_str,
         "technique": (
@@ -79,13 +81,14 @@ def _verdict_to_dict(verdict: Any) -> dict[str, Any]:
         "call_count": getattr(verdict, "call_count", 0),
         "degraded": is_degraded,
         "meta": {"degraded": is_degraded},
-    }
+    })
 
 
-@router.post("/panel/today")
+@router.post("/panel/today", response_model=PanelResponse)
 async def post_panel_today(
+    request: Request,
     panel_service: PanelService = Depends(get_panel_service),  # noqa: B008
-) -> dict[str, Any]:
+) -> PanelResponse:
     """Trigger a daily expert panel for today.
 
     Runs the full multi-expert panel (analyst → attribution ×3 → moderator → critic).
@@ -95,7 +98,18 @@ async def post_panel_today(
     Returns:
         A ``PanelVerdict`` JSON response.
     """
-    today = utc_today()
+    settings = getattr(request.app.state, "settings", None)
+    today = business_today(getattr(settings, "timezone", "local"))
+
+    # Idempotency guard: if today's panel already ran (via cron or earlier
+    # POST), return the stored result instead of incurring duplicate LLM cost.
+    # Without this check, a concurrent 23:30 cron and manual POST would both
+    # execute the expensive 6-12 call panel (Codex review finding).
+    existing = await panel_service.get_stored_verdict(user_id=1, target_date=today)
+    if existing is not None:
+        logger.info("Panel already exists for {}, returning stored result", today)
+        return _verdict_to_response(existing)
+
     logger.info("Triggering daily panel for user 1 on {}", today)
 
     try:
@@ -111,13 +125,14 @@ async def post_panel_today(
 
         raise _internal_error() from None
 
-    return _verdict_to_dict(verdict)
+    return _verdict_to_response(verdict)
 
 
-@router.get("/panel")
+@router.get("/panel", response_model=PanelResponse)
 async def get_panel_result(
+    request: Request,
     panel_service: PanelService = Depends(get_panel_service),  # noqa: B008
-) -> dict[str, Any]:
+) -> PanelResponse:
     """Retrieve the most recent stored panel result (read-only, idempotent).
 
     A GET must not trigger the expensive 6-12-call expert panel (review C3 —
@@ -128,7 +143,8 @@ async def get_panel_result(
     Returns:
         A ``PanelVerdict`` JSON response matching the POST shape, or 404.
     """
-    today = utc_today()
+    settings = getattr(request.app.state, "settings", None)
+    today = business_today(getattr(settings, "timezone", "local"))
     logger.debug("GET /panel — reading stored panel result for user 1 on {}", today)
 
     try:
@@ -146,4 +162,4 @@ async def get_panel_result(
 
         raise _not_found("今日尚无面板分析结果，请先触发 POST /api/v1/panel/today")
 
-    return _verdict_to_dict(verdict)
+    return _verdict_to_response(verdict)

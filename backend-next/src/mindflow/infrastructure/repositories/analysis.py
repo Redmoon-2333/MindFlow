@@ -1,10 +1,16 @@
 """SQLAlchemy-backed ProcrastinationAnalysis repository.
 
-Stores idempotent LLM attribution results (one per user per date via
-UNIQUE constraint).  Data is written by ``services/llm_service.py``
-and read for cache checks and historical lookup.
+Stores idempotent LLM attribution results — one row per
+(user_id, date, analysis_kind) via UNIQUE constraint
+(migration 0011).  Multiple analysis kinds (daily_panel,
+daily_attribution, ml) can coexist for the same day without
+overwriting each other.
 
-Table schema matches the Alembic migration (0001_create_core_tables).
+Data is written by ``services/llm_service.py`` and
+``services/panel_service.py``, and read for cache checks
+and historical lookup.
+
+Table schema matches Alembic migrations 0001, 0002, and 0011.
 """
 
 from __future__ import annotations
@@ -19,32 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
 
-# ── Table definition (matches migration 0001_create_core_tables) ─────
-
-metadata = sa.MetaData()
-
-procrastination_analyses = sa.Table(
-    "procrastination_analyses",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("date", sa.Text(), nullable=False),
-    sa.Column("procrastination_types_json", sa.Text(), nullable=True),
-    sa.Column("type_confidence_json", sa.Text(), nullable=True),
-    sa.Column("cognitive_distortions_json", sa.Text(), nullable=True),
-    sa.Column("cbt_technique", sa.Text(), nullable=True),
-    sa.Column("response_text", sa.Text(), nullable=True),
-    sa.Column("llm_model", sa.Text(), nullable=True),
-    sa.Column("llm_cost_usd", sa.Float(), nullable=True),
-    sa.Column(
-        "created_at",
-        sa.Text(),
-        nullable=False,
-        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
-    ),
-    sa.PrimaryKeyConstraint("id"),
-    sa.UniqueConstraint("user_id", "date"),
-)
+from mindflow.infrastructure.schema import procrastination_analyses
 
 
 # ── Repository ───────────────────────────────────────────────────────
@@ -68,8 +49,14 @@ class SQLAlchemyProcrastinationAnalysisRepository:
         self,
         user_id: int,
         target_date: date,
+        *,
+        analysis_kind: str | None = None,
     ) -> dict[str, Any] | None:
         """Return the analysis for *user_id* on *target_date*, or None.
+
+        When *analysis_kind* is given, filters to that specific kind
+        (e.g. ``"daily_panel"``).  When omitted, returns the first
+        matching row for the date regardless of kind.
 
         Returns:
             A dict with the analysis data (types, confidence, etc.)
@@ -83,6 +70,10 @@ class SQLAlchemyProcrastinationAnalysisRepository:
             )
             .limit(1)
         )
+        if analysis_kind is not None:
+            stmt = stmt.where(
+                procrastination_analyses.c.analysis_kind == analysis_kind,
+            )
 
         async with self._session_factory() as session:
             result = await session.execute(stmt)
@@ -105,12 +96,17 @@ class SQLAlchemyProcrastinationAnalysisRepository:
         response_text: str,
         llm_model: str | None = None,
         llm_cost_usd: float = 0.0,
+        panel_transcript: dict[str, Any] | None = None,
+        analysis_kind: str = "daily_attribution",
+        source: str | None = None,
     ) -> None:
         """Insert or update a procrastination analysis record.
 
-        The UNIQUE(user_id, date) constraint makes this idempotent:
-        calling upsert twice with the same (user_id, date) updates
-        the existing row rather than creating a duplicate.
+        The UNIQUE(user_id, date, analysis_kind) constraint makes this
+        idempotent per kind: calling upsert twice with the same
+        (user_id, date, analysis_kind) updates the existing row rather
+        than creating a duplicate.  Different kinds coexist for the
+        same day.
 
         Args:
             user_id: User identifier.
@@ -120,8 +116,13 @@ class SQLAlchemyProcrastinationAnalysisRepository:
             cognitive_distortions: List of cognitive distortions identified.
             cbt_technique: Recommended CBT technique.
             response_text: User-facing analysis text.
-            llm_model: Source identifier (deepseek/ollama/rule_engine).
+            llm_model: LLM model identifier (deepseek-chat, ollama, etc.).
             llm_cost_usd: Approximate cost of the LLM call.
+            panel_transcript: Optional panel transcript and verdict metadata.
+            analysis_kind: Workflow kind — ``"daily_panel"``, ``"daily_attribution"``,
+                ``"ml"``, or ``"legacy_unknown"``.
+            source: Degradation source — ``"panel"``, ``"single_expert"``,
+                ``"ollama"``, or ``"rule_engine"``.
         """
         stmt = sqlite_upsert(procrastination_analyses).values(
             id=new_id(),
@@ -134,13 +135,20 @@ class SQLAlchemyProcrastinationAnalysisRepository:
             response_text=response_text,
             llm_model=llm_model,
             llm_cost_usd=llm_cost_usd,
+            panel_transcript_json=(
+                json.dumps(panel_transcript, ensure_ascii=False)
+                if panel_transcript is not None
+                else None
+            ),
+            analysis_kind=analysis_kind,
+            source=source,
         )
 
         # On conflict, update the existing row. SQLite dialect requires
         # index_elements (constraint= is PostgreSQL-only — E2E-discovered bug:
         # the L3 persistence path crashed with TypeError at runtime).
         stmt = stmt.on_conflict_do_update(
-            index_elements=["user_id", "date"],
+            index_elements=["user_id", "date", "analysis_kind"],
             set_={
                 "procrastination_types_json": stmt.excluded.procrastination_types_json,
                 "type_confidence_json": stmt.excluded.type_confidence_json,
@@ -149,6 +157,9 @@ class SQLAlchemyProcrastinationAnalysisRepository:
                 "response_text": stmt.excluded.response_text,
                 "llm_model": stmt.excluded.llm_model,
                 "llm_cost_usd": stmt.excluded.llm_cost_usd,
+                "panel_transcript_json": stmt.excluded.panel_transcript_json,
+                "analysis_kind": stmt.excluded.analysis_kind,
+                "source": stmt.excluded.source,
             },
         )
 
@@ -204,6 +215,17 @@ def _row_to_analysis(row: sa.Row[Any]) -> dict[str, Any]:
     if row.response_text:
         result["response_text"] = row.response_text
     if row.llm_model:
+        result["llm_model"] = row.llm_model
+    # New "source" column (degradation tier) takes precedence over
+    # the legacy convention of reading source from llm_model.
+    source_col = getattr(row, "source", None)
+    if source_col:
+        result["source"] = source_col
+    elif row.llm_model:
         result["source"] = row.llm_model
+    if row.panel_transcript_json:
+        result["panel_transcript"] = json.loads(row.panel_transcript_json)
+    if row.analysis_kind:
+        result["analysis_kind"] = row.analysis_kind
 
     return result

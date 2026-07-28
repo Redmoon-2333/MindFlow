@@ -15,15 +15,7 @@ import sqlalchemy as sa
 import uuid6
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-# Table reference (matches migration 0001_create_core_tables)
-user_preferences = sa.Table(
-    "user_preferences",
-    sa.MetaData(),
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("preferences_json", sa.Text(), nullable=False, server_default=sa.text("'{}'")),
-    sa.Column("updated_at", sa.Text(), nullable=False),
-)
+from mindflow.infrastructure.schema import user_preferences
 
 
 class PreferencesRepository:
@@ -75,15 +67,13 @@ class PreferencesRepository:
         raw = json.dumps(preferences, ensure_ascii=False)
 
         async with self._session_factory() as session, session.begin():
-            # Try update first
-            result = await session.execute(
+            updated_id = await session.scalar(
                 sa.update(user_preferences)
                 .where(user_preferences.c.user_id == user_id)
                 .values(preferences_json=raw, updated_at=now)
+                .returning(user_preferences.c.id)
             )
-            # Check if update affected any rows by trying to fetch
-            if result.rowcount == 0:
-                # Insert if not exists
+            if updated_id is None:
                 await session.execute(
                     user_preferences.insert().values(
                         id=str(uuid6.uuid7()),

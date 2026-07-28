@@ -1,20 +1,12 @@
-"""Health check endpoint — /api/v1/health.
-
-Returns the overall health status of the application, including:
-  - Collector status (running, stopped, degraded)
-  - Database connectivity (ok, error)
-  - Migration status
-  - Application version
-
-This endpoint is exempt from authentication (§4.6 of requirements).
-"""
+"""Liveness, readiness, and backward-compatible health endpoints."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from mindflow import __version__
@@ -28,36 +20,88 @@ from mindflow.services.collector_service import CollectorService
 router = APIRouter(tags=["health"])
 
 
+async def _database_connected(engine: AsyncEngine | None) -> bool:
+    if engine is None:
+        return False
+    try:
+        async with engine.connect():
+            return True
+    except Exception:
+        return False
+
+
+def _base_payload() -> dict[str, Any]:
+    return {
+        "version": __version__,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+
+
+@router.get("/health/live")
+async def liveness_check() -> dict[str, Any]:
+    """Report process liveness without touching startup dependencies."""
+    return {"status": "alive", **_base_payload()}
+
+
+@router.get("/health/ready")
+async def readiness_check(
+    request: Request,
+    engine: AsyncEngine = Depends(get_engine),  # noqa: B008
+    migration_status: bool = Depends(get_migration_status),  # noqa: B008
+) -> JSONResponse:
+    """Report readiness; failed migration, DB, or integrity checks return 503."""
+    db_connected = await _database_connected(engine)
+    integrity_ok = bool(getattr(request.app.state, "db_integrity_ok", False))
+    ready = migration_status and db_connected and integrity_ok
+    payload = {
+        "status": "ready" if ready else "not_ready",
+        **_base_payload(),
+        "database": {
+            "status": "ok" if db_connected else "error",
+            "connected": db_connected,
+            "integrity_ok": integrity_ok,
+        },
+        "migration": {"applied": migration_status},
+    }
+    return JSONResponse(content=payload, status_code=200 if ready else 503)
+
+
 @router.get("/health")
 async def health_check(
+    request: Request,
     collector_service: CollectorService | None = Depends(get_collector_service),  # noqa: B008
     engine: AsyncEngine = Depends(get_engine),  # noqa: B008
     migration_status: bool = Depends(get_migration_status),  # noqa: B008
 ) -> dict[str, Any]:
-    """Return application health information.
+    """Return the legacy component payload and always keep HTTP 200 compatibility."""
+    db_connected = await _database_connected(engine)
+    integrity_ok = bool(getattr(request.app.state, "db_integrity_ok", False))
 
-    Returns collector status, database health, migration status, and version.
-    Always succeeds — status codes in the body indicate component health.
-    """
-    db_ok = False
-    try:
-        async with engine.connect():
-            db_ok = True
-    except Exception:
-        db_ok = False
+    # ML status from PredictionService if available
+    ml_status: dict[str, Any] | None = None
+    prediction_service = getattr(request.app.state, "prediction_service", None)
+    if prediction_service is not None:
+        try:
+            ml_status = await prediction_service.check_health()
+        except Exception:
+            ml_status = {"status": "error", "model_version": None, "feature_schema_version": 2}
+    else:
+        ml_status = {
+            "status": "no_service",
+            "v2_training_mode": getattr(request.app.state, "v2_training_mode", None),
+        }
 
     return {
         "status": "ok",
-        "version": __version__,
-        "timestamp": datetime.now(UTC).isoformat(),
+        **_base_payload(),
         "collector": {
             "status": collector_service.status if collector_service else "unavailable",
         },
         "database": {
-            "status": "ok" if db_ok else "error",
-            "connected": db_ok,
+            "status": "ok" if db_connected else "error",
+            "connected": db_connected,
+            "integrity_ok": integrity_ok,
         },
-        "migration": {
-            "applied": migration_status,
-        },
+        "migration": {"applied": migration_status},
+        "ml": ml_status,
     }

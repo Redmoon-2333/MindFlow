@@ -8,8 +8,8 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from unittest.mock import AsyncMock
+from datetime import UTC, date, datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -20,6 +20,10 @@ from mindflow.agents.types import (
     TranscriptEntry,
 )
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
+from mindflow.infrastructure.repositories.analysis import (
+    SQLAlchemyProcrastinationAnalysisRepository,
+    procrastination_analyses,
+)
 from mindflow.services.panel_service import PanelService
 
 
@@ -83,6 +87,8 @@ def panel_service(
     service._builder = mock_builder
     service._orchestrator = mock_orchestrator
     service._llm_service = mock_llm_service
+    service._analysis_repository = AsyncMock()
+    service._timezone = "local"
     return service
 
 
@@ -107,6 +113,20 @@ def _make_verdict(**overrides: object) -> PanelVerdict:
     return PanelVerdict(**defaults)  # type: ignore[arg-type]
 
 
+def test_panel_service_requires_analysis_repository(
+    mock_orchestrator: AsyncMock,
+    mock_llm_service: AsyncMock,
+) -> None:
+    with pytest.raises(TypeError, match="analysis_repository"):
+        PanelService(
+            activity_repo=MagicMock(),
+            intervention_repo=MagicMock(),
+            session_factory=MagicMock(),
+            orchestrator=mock_orchestrator,
+            llm_service=mock_llm_service,
+        )
+
+
 class TestPanelServiceNormal:
     """Normal panel flow — orchestrator succeeds."""
 
@@ -117,6 +137,49 @@ class TestPanelServiceNormal:
         assert verdict.source == "panel"
         assert verdict.call_count == 6
         assert verdict.types == (ProcrastinationType.IMPULSIVITY,)
+
+    async def test_panel_uses_local_business_day_utc_bounds(
+        self, panel_service: PanelService
+    ) -> None:
+        panel_service._timezone = "Asia/Shanghai"
+        panel_service._orchestrator.run = AsyncMock(return_value=_make_verdict())
+
+        await panel_service.run_daily_panel(
+            user_id=1,
+            target_date=date(2026, 7, 17),
+        )
+
+        panel_service._builder.build.assert_awaited_once_with(
+            1,
+            datetime(2026, 7, 16, 16, 0, tzinfo=UTC),
+            datetime(2026, 7, 17, 15, 59, 59, 999999, tzinfo=UTC),
+        )
+
+    async def test_panel_success_is_persisted_and_read_back(
+        self,
+        panel_service: PanelService,
+        engine,
+        session_factory,
+    ) -> None:
+        async with engine.begin() as connection:
+            await connection.run_sync(procrastination_analyses.metadata.create_all)
+        repository = SQLAlchemyProcrastinationAnalysisRepository(session_factory)
+        panel_service._analysis_repository = repository
+        expected = _make_verdict(
+            dissent=("少数意见",),
+            escalated=True,
+            call_count=9,
+        )
+        panel_service._orchestrator.run = AsyncMock(return_value=expected)
+        target_date = date(2026, 7, 25)
+
+        await panel_service.run_daily_panel(user_id=1, target_date=target_date)
+        stored = await panel_service.get_stored_verdict(
+            user_id=1,
+            target_date=target_date,
+        )
+
+        assert stored == expected
 
     async def test_panel_escalated(self, panel_service: PanelService) -> None:
         """Panel with conflict escalation returns escalated=True."""
@@ -148,6 +211,31 @@ class TestPanelServiceNormal:
 
 class TestPanelServiceDegradation:
     """Degradation to single-expert LLM service."""
+
+    @pytest.mark.parametrize(
+        ("outcome_source", "expected_source"),
+        [
+            ("ollama", "ollama"),
+            ("rule_engine", "rule_engine"),
+        ],
+    )
+    async def test_fallback_preserves_lower_tier_source(
+        self,
+        panel_service: PanelService,
+        outcome_source: str,
+        expected_source: str,
+    ) -> None:
+        panel_service._orchestrator.run = AsyncMock(
+            side_effect=PanelUnavailableError(reason="专家解析失败"),
+        )
+        panel_service._llm_service.analyze.return_value.source = outcome_source
+
+        verdict = await panel_service.run_daily_panel(
+            user_id=1,
+            target_date=date(2026, 7, 18),
+        )
+
+        assert verdict.source == expected_source
 
     async def test_panel_unavailable_fallback(self, panel_service: PanelService) -> None:
         """PanelUnavailableError triggers single-expert fallback."""

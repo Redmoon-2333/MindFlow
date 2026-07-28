@@ -10,12 +10,15 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.language_models import FakeListChatModel
+from langchain_core.messages import AIMessage
 
+from mindflow.agents.langchain_tools import current_session_id, current_user_id
 from mindflow.infrastructure.security.crisis_detector import (
     CrisisDetector,
     CrisisLevel,
@@ -47,7 +50,7 @@ def _make_agent(responses: list[str]) -> Any:
     from langchain_core.tools import tool
 
     @tool
-    def _test_tool() -> str:  # type: ignore[empty-docstring]
+    def _test_tool() -> str:
         """A test tool — always returns "ok"."""
         return "ok"
 
@@ -87,7 +90,7 @@ def chat_service() -> ChatService:
 class TestCrisisDetection:
     """Crisis detection short-circuits the LLM."""
 
-    async def test_crisis_returns_hotline(self, chat_service: ChatService) -> None:
+    async def test_crisis_returns_hotline(self, chat_service: Any) -> None:
         """Crisis detection → hotline response, no LLM call."""
         chat_service._crisis_detector.scan.return_value = (
             CrisisLevel.HIGH,
@@ -104,7 +107,7 @@ class TestCrisisDetection:
         # No persistence (agent not called)
         chat_service._chat_repo.append.assert_not_called()
 
-    async def test_no_crisis_passes_through(self, chat_service: ChatService) -> None:
+    async def test_no_crisis_passes_through(self, chat_service: Any) -> None:
         """No crisis → normal flow through the agent."""
         result = await chat_service.ask(user_id=1, session_id="s1", message="你好")
 
@@ -117,7 +120,7 @@ class TestCrisisDetection:
 class TestForbiddenWords:
     """Forbidden word handling."""
 
-    async def test_forbidden_word_retry(self, chat_service: ChatService) -> None:
+    async def test_forbidden_word_retry(self, chat_service: Any) -> None:
         """Answer with forbidden word → retry once → accept retry."""
         # First response has forbidden word, second is clean
         chat_service._agent = _make_agent([
@@ -132,7 +135,7 @@ class TestForbiddenWords:
         assert "调整工作节奏" in result.answer
         assert result.degraded is False
 
-    async def test_forbidden_word_retry_fails(self, chat_service: ChatService) -> None:
+    async def test_forbidden_word_retry_fails(self, chat_service: Any) -> None:
         """Answer with forbidden word repeatedly → safe reply after retry exhausted."""
         chat_service._agent = _make_agent([
             "根据诊断结果，你确实需要治疗。",  # First attempt
@@ -148,19 +151,19 @@ class TestForbiddenWords:
 class TestLLMUnavailable:
     """LLM gateway failures."""
 
-    async def test_llm_gateway_timeout(self, chat_service: ChatService) -> None:
+    async def test_llm_gateway_timeout(self, chat_service: Any) -> None:
         """LLM timeout → fallback reply."""
         # Mock the agent to raise an exception on invoke
-        chat_service._agent.ainvoke = AsyncMock(side_effect=TimeoutError("Gateway timed out"))  # type: ignore[method-assign]
+        chat_service._agent.ainvoke = AsyncMock(side_effect=TimeoutError("Gateway timed out"))
 
         result = await chat_service.ask(user_id=1, session_id="s1", message="你好")
 
         assert result.answer == _LLM_DOWN_REPLY
         assert result.degraded is True
 
-    async def test_llm_gateway_api_error(self, chat_service: ChatService) -> None:
+    async def test_llm_gateway_api_error(self, chat_service: Any) -> None:
         """LLM API error → fallback reply."""
-        chat_service._agent.ainvoke = AsyncMock(side_effect=RuntimeError("API error"))  # type: ignore[method-assign]
+        chat_service._agent.ainvoke = AsyncMock(side_effect=RuntimeError("API error"))
 
         result = await chat_service.ask(user_id=1, session_id="s1", message="你好")
 
@@ -171,7 +174,7 @@ class TestLLMUnavailable:
 class TestHistoryCompression:
     """History compression when exceeding max rounds."""
 
-    async def test_no_compression_below_limit(self, chat_service: ChatService) -> None:
+    async def test_no_compression_below_limit(self, chat_service: Any) -> None:
         """Under the round limit → no compression."""
         chat_service._chat_repo.recent.return_value = [
             {"role": "user", "content": f"msg{i}", "created_at": "2026-01-01T00:00:00Z"}
@@ -185,7 +188,7 @@ class TestHistoryCompression:
 
         assert "你好！有什么可以帮助你的？" in result.answer
 
-    async def test_compression_triggers(self, chat_service: ChatService) -> None:
+    async def test_compression_triggers(self, chat_service: Any) -> None:
         """Over the round limit → compression summary is generated."""
         # Create 22 messages (11 rounds) to trigger compression
         msgs: list[dict[str, Any]] = []
@@ -211,3 +214,116 @@ class TestHistoryCompression:
 
         # Agent should still respond
         assert "你好！有什么可以帮助你的？" in result.answer
+
+
+class TestChatConcurrencyAndContext:
+    """Concurrent session handling and LangGraph invocation safeguards."""
+
+    async def test_same_session_asks_are_serialized(self, chat_service: Any) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        call_count = 0
+
+        async def blocked_ainvoke(
+            input: dict[str, Any],
+            config: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                entered.set()
+                await release.wait()
+            return {"messages": [AIMessage(content="done")]}
+
+        chat_service._agent.ainvoke = AsyncMock(side_effect=blocked_ainvoke)
+
+        first = asyncio.create_task(
+            chat_service.ask(user_id=1, session_id="serial-session", message="first")
+        )
+        await entered.wait()
+        second = asyncio.create_task(
+            chat_service.ask(user_id=1, session_id="serial-session", message="second")
+        )
+        try:
+            await asyncio.sleep(0.05)
+            assert call_count == 1
+        finally:
+            release.set()
+            await asyncio.gather(first, second)
+
+        assert call_count == 2
+
+    async def test_contextvars_are_reset_after_agent_failure(
+        self,
+        chat_service: Any,
+    ) -> None:
+        session_token = current_session_id.set("outer-session")
+        user_token = current_user_id.set(99)
+        chat_service._agent.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
+        try:
+            await chat_service.ask(user_id=1, session_id="inner-session", message="hello")
+
+            assert current_session_id.get() == "outer-session"
+            assert current_user_id.get() == 99
+        finally:
+            current_user_id.reset(user_token)
+            current_session_id.reset(session_token)
+
+    async def test_agent_invocation_sets_recursion_limit(
+        self,
+        chat_service: Any,
+    ) -> None:
+        agent_call = AsyncMock(return_value={"messages": [AIMessage(content="done")]})
+        chat_service._agent.ainvoke = agent_call
+
+        await chat_service.ask(user_id=1, session_id="recursion-session", message="hello")
+
+        assert agent_call.await_args is not None
+        assert agent_call.await_args.kwargs["config"] == {"recursion_limit": 12}
+
+
+class TestChatInjection:
+    """Constructor-level injection keeps agent tests independent of provider setup."""
+
+    def test_constructor_accepts_injected_agent(self) -> None:
+        injected_agent = MagicMock()
+        service = ChatService(
+            session_factory=MagicMock(),
+            crisis_detector=MagicMock(),
+            llm_gateway=MagicMock(),
+            analysis_repo=MagicMock(),
+            panel_service=None,
+            intervention_repo=MagicMock(),
+            evidence_builder=MagicMock(),
+            chat_repo=MagicMock(),
+            agent=injected_agent,
+        )
+
+        assert service._agent is injected_agent
+        assert service._agent_model is None
+
+    async def test_constructor_without_api_key_uses_degraded_agent_mode(self) -> None:
+        gateway = MagicMock()
+        gateway._api_key = ""
+        gateway._base_url = ""
+        repository = MagicMock()
+        repository.append = AsyncMock()
+        repository.recent = AsyncMock(return_value=[])
+        detector = MagicMock()
+        detector.scan.return_value = (CrisisLevel.NONE, None)
+        service = ChatService(
+            session_factory=MagicMock(),
+            crisis_detector=detector,
+            llm_gateway=gateway,
+            analysis_repo=MagicMock(),
+            panel_service=None,
+            intervention_repo=MagicMock(),
+            evidence_builder=MagicMock(),
+            chat_repo=repository,
+        )
+
+        result = await service.ask(user_id=1, session_id="offline", message="??")
+
+        assert result.degraded is True
+        assert service._agent is None
+        repository.append.assert_awaited()

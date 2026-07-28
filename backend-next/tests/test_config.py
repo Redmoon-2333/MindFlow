@@ -10,6 +10,7 @@ Tests cover:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -68,6 +69,21 @@ class TestSettingsDefaults:
         assert settings.llm.base_url is None
         assert settings.llm.model is None
 
+    def test_timezone_defaults_to_local(self):
+        settings = Settings()
+        assert settings.timezone == "local"
+
+    def test_runtime_directories_are_derived_from_data_dir(self, tmp_path: Path):
+        settings = Settings(data_dir=tmp_path)
+
+        assert settings.data_dir == tmp_path
+        assert settings.models_dir == tmp_path / "models"
+        assert settings.backup_dir == tmp_path / "backups"
+        assert settings.token_path == tmp_path / "token"
+        assert Path(settings.db_url.removeprefix("sqlite+aiosqlite:///")) == (
+            tmp_path / "mindflow.db"
+        )
+
 
 class TestSettingsFromEnv:
     """Verify environment variable overrides work."""
@@ -98,6 +114,36 @@ class TestSettingsFromEnv:
         with mock.patch.dict(os.environ, {"MINDFLOW_EVENT_RETENTION_DAYS": "45"}):
             settings = Settings()
             assert settings.event_retention_days == 45
+
+    def test_nested_env_override_uses_double_underscore(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MINDFLOW_LLM__API_KEY": "nested-key",
+                "MINDFLOW_LOG__LEVEL": "INFO",
+            },
+        ):
+            settings = Settings()
+
+        assert settings.llm.api_key == "nested-key"
+        assert settings.log.level == "INFO"
+
+    def test_relative_runtime_directories_are_anchored_to_data_dir(self, tmp_path: Path):
+        settings = Settings(
+            data_dir=tmp_path,
+            models_dir=Path("custom-models"),
+        )
+
+        assert settings.models_dir == tmp_path / "custom-models"
+        assert settings.backup_dir == tmp_path / "backups"
+
+    def test_settings_does_not_load_dotenv_from_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        (tmp_path / ".env").write_text("MINDFLOW_PORT=9999\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        assert Settings().port == 8765
 
 
 class TestSettingsValidation:
@@ -161,3 +207,15 @@ class TestLLMSettings:
         llm = LLMSettings(api_key="sk-test", model="deepseek-chat")
         assert llm.api_key == "sk-test"
         assert llm.model == "deepseek-chat"
+
+
+def test_runtime_role_defaults_are_enabled() -> None:
+    settings = Settings()
+    assert settings.run_scheduler is True
+    assert settings.run_collectors is True
+
+
+def test_runtime_roles_can_be_disabled() -> None:
+    settings = Settings(run_scheduler=False, run_collectors=False)
+    assert settings.run_scheduler is False
+    assert settings.run_collectors is False
