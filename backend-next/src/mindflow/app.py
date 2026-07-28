@@ -19,14 +19,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import platformdirs
 from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from mindflow import __version__
 
@@ -79,10 +81,16 @@ from mindflow.infrastructure.repositories.preferences import (
 from mindflow.infrastructure.repositories.report import (
     SQLAlchemyDailyReportRepository,
 )
+from mindflow.infrastructure.repositories.scheduled_jobs import ScheduledJobRunsRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.infrastructure.security.crisis_detector import CrisisDetector
-from mindflow.infrastructure.security.token_manager import load_or_create_token
+from mindflow.infrastructure.security.token_manager import (
+    BootstrapTicketStore,
+    SessionTokenStore,
+    load_or_create_token,
+)
 from mindflow.logging_config import setup_logging
+from mindflow.runtime import RuntimeServices
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.autonomy_service import AutonomyService
 from mindflow.services.chat_service import ChatService
@@ -95,6 +103,7 @@ from mindflow.services.intervention_throttle import InterventionThrottle
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
+from mindflow.services.prediction_service import FocusPredictionService
 from mindflow.services.report_service import ReportService
 from mindflow.services.scheduler import build_scheduler
 from mindflow.services.telemetry_service import TelemetryService
@@ -102,12 +111,98 @@ from mindflow.services.telemetry_service import TelemetryService
 # ── Lifespan ────────────────────────────────────────────────────────────────
 
 
+class SPAStaticFiles(StaticFiles):
+    """Serve built frontend assets and fall back to index.html for SPA routes."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if (
+                exc.status_code != 404
+                or str(scope.get("path", "")).startswith("/api/")
+                or "." in Path(path).name
+            ):
+                raise
+            return await super().get_response("index.html", scope)
+        if (
+            response.status_code == 404
+            and not str(scope.get("path", "")).startswith("/api/")
+            and "." not in Path(path).name
+        ):
+            return await super().get_response("index.html", scope)
+        return response
+
+
+def _frontend_dist_dir() -> Path:
+    """Resolve frontend assets in source checkouts and PyInstaller bundles."""
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root is not None:
+        return Path(bundle_root) / "frontend"
+    return Path(__file__).resolve().parents[3] / "frontend" / "dist"
+
+
+def _publish_runtime_state(app: FastAPI, runtime: RuntimeServices) -> None:
+    """Publish the aggregate while preserving legacy ``app.state`` aliases."""
+    app.state.runtime = runtime
+    for name in runtime.__dataclass_fields__:
+        setattr(app.state, name, getattr(runtime, name))
+
+
+async def _start_runtime_services(
+    runtime: RuntimeServices, *, input_telemetry_enabled: bool
+) -> None:
+    if runtime.settings.run_collectors:
+        if runtime.collector_service is not None:
+            await runtime.collector_service.start()
+        if input_telemetry_enabled and runtime.input_telemetry_service is not None:
+            await runtime.input_telemetry_service.start()
+    if runtime.settings.run_scheduler and runtime.scheduler is not None:
+        runtime.scheduler.start()
+
+
+async def _shutdown_runtime_services(runtime: RuntimeServices) -> None:
+    if runtime.scheduler is not None:
+        try:
+            await runtime.scheduler.shutdown()
+        except Exception as exc:
+            logger.warning("Scheduler shutdown error: {}", exc)
+    for name, service in (
+        ("PanelService", runtime.panel_service),
+        ("ChatService", runtime.chat_service),
+        ("LLMService", runtime.llm_service),
+    ):
+        if service is not None:
+            try:
+                await service.aclose()
+            except Exception as exc:
+                logger.warning("{} close error: {}", name, exc)
+    if runtime.input_telemetry_service is not None:
+        try:
+            await runtime.input_telemetry_service.stop()
+        except Exception as exc:
+            logger.warning("Input telemetry stop error: {}", exc)
+    if runtime.collector_service is not None:
+        try:
+            await asyncio.wait_for(runtime.collector_service.stop(), timeout=3.0)
+        except TimeoutError:
+            logger.warning("Collector stop timed out, forcing")
+        except Exception as exc:
+            logger.warning("Collector stop error: {}", exc)
+    try:
+        await asyncio.wait_for(runtime.engine.dispose(), timeout=3.0)
+    except TimeoutError:
+        logger.warning("Engine dispose timed out")
+    except Exception as exc:
+        logger.warning("Engine dispose error: {}", exc)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: startup initialisation, shutdown cleanup.
 
     Startup sequence:
-      1. Run Alembic migrations (graceful on failure)
+      1. Run Alembic migrations (fail fast on failure)
       2. Integrity check (attempt VACUUM recovery on failure)
       3. Load/create auth token
       4. Create repositories (activity, preferences, focus, report)
@@ -124,387 +219,402 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     # ── Extract settings ─────────────────────────────────────────────
     settings: Settings = app.state.settings
-    data_dir = Path(platformdirs.user_data_dir("mindflow", ensure_exists=True))
-    token_path = data_dir / "token"
+    data_dir = settings.data_dir
+    token_path = settings.token_path
 
     # ── Database engine ───────────────────────────────────────────────
     engine = create_engine(settings.db_url)
-    session_factory = create_session_factory(engine)
-
-    # ── 1. Migrations ─────────────────────────────────────────────────
-    migration_applied = await run_migrations(settings.db_url)
-    if not migration_applied:
-        logger.warning(
-            "Database migration failed — running with existing schema "
-            "(health endpoint will report migration_failed)"
-        )
-
-    # ── 2. Integrity check ────────────────────────────────────────────
-    db_ok = await integrity_check(engine)
-    if not db_ok:
-        logger.critical("Database integrity check failed after recovery attempt")
-    else:
-        logger.info("Database integrity check passed")
-
-    # ── 3. Auth token ─────────────────────────────────────────────────
-    system_token = load_or_create_token(token_path)
-    logger.debug("Auth token loaded from {}", token_path)
-
-    # ── 4. Repositories ───────────────────────────────────────────────
-    activity_repository = SQLAlchemyActivityRepository(
-        session_factory=session_factory,
-        pulsetime_s=settings.heartbeat_pulsetime_s,
-    )
-    preferences_repository = PreferencesRepository(
-        session_factory=session_factory,
-    )
-    telemetry_repository = TelemetryRepository(
-        session_factory=session_factory,
-    )
-    classification_rules_repository = AppClassificationRulesRepository(
-        session_factory=session_factory,
-    )
-    focus_repository = SQLAlchemyFocusSessionRepository(
-        session_factory=session_factory,
-    )
-    report_repository = SQLAlchemyDailyReportRepository(
-        session_factory=session_factory,
-    )
-    analysis_repository = SQLAlchemyProcrastinationAnalysisRepository(
-        session_factory=session_factory,
-    )
-    baseline_repository = BaselineRepository(
-        session_factory=session_factory,
-    )
-    chat_repository = ChatRepository(
-        session_factory=session_factory,
-    )
-
-    # ── 4b. Wave 7: Intervention repository ───────────────────────────
-    intervention_repository = InterventionLogRepository(
-        session_factory=session_factory,
-    )
-
-    # ── 4c. G005: Autonomy service ──────────────────────────────────
-    autonomy_service = AutonomyService(
-        preferences_repo=preferences_repository,
-    )
-
-    # ── 5. Collector ──────────────────────────────────────────────────
-    collector: EventCollector | None = None
-    collector_service: CollectorService | None = None
+    runtime: RuntimeServices | None = None
     try:
-        collector = create_collector()
-        collector_service = CollectorService(
-            collector=collector,
-            repository=activity_repository,
-            interval_s=float(settings.collect_interval_s),
-        )
-        logger.info("CollectorService created (not started)")
-    except Exception as exc:
-        logger.warning("Failed to create collector: {}", exc)
+        session_factory = create_session_factory(engine)
 
-    input_telemetry_service = InputTelemetryService(
-        telemetry_repository=telemetry_repository,
-        activity_repository=activity_repository,
-    )
-    telemetry_service = TelemetryService(
-        repository=telemetry_repository,
-        preferences_repository=preferences_repository,
-        data_dir=data_dir,
-        activity_repository=activity_repository,
-    )
-    telemetry_service.attach_input_watcher(input_telemetry_service)
-    telemetry_preferences = await telemetry_service.get_preferences()
-    if telemetry_preferences["input_telemetry_enabled"]:
-        await input_telemetry_service.start()
-
-    # ── 6. Notifier ───────────────────────────────────────────────────
-    notifier = create_notifier()
-
-    # ── 7. Wave 7: Effectiveness service (needed by report service) ────
-    effectiveness_service = EffectivenessService(
-        activity_repo=activity_repository,
-        intervention_repo=intervention_repository,
-    )
-
-    # ── 7-ext. ML models (scikit-learn behaviour analysis) ─────────────
-    # Three-tier degradation chain mirrors LLM's DeepSeek -> Ollama -> RuleEngine:
-    #   Tier 1: Trained ML models available  -> ML + rule engine enrichment
-    #   Tier 2: Models not found / load fail -> rule engine only (current)
-    #   Tier 3: ML inference fails at runtime -> log warning, rule-only fallback
-    from mindflow.train.models.manager import ModelManager  # noqa: PLC0415
-
-    model_manager: ModelManager | None = None
-    v2_model_manager: ModelManager | None = None
-    model_training_mode = "rule_engine_only"
-    v2_training_mode = "rule_engine_only"
-    model_base_dir = Path("data/models")
-    try:
-        _model_manager = ModelManager(models_dir=model_base_dir)
-        if _model_manager.load_latest():
-            model_manager = _model_manager
-            model_training_mode = "ready"
-            logger.info(
-                "ML models loaded (version: {})", model_manager.current_version_tag
+        # ── 1. Migrations ─────────────────────────────────────────────────
+        migration_applied = await run_migrations(settings.db_url)
+        if not migration_applied:
+            raise RuntimeError(
+                "Database migration failed; refusing to start on an incompatible schema"
             )
+
+        # ── 2. Integrity check ────────────────────────────────────────────
+        db_ok = await integrity_check(engine)
+        if not db_ok:
+            logger.critical("Database integrity check failed after recovery attempt")
         else:
-            logger.warning("ML models not found; running in rule_engine_only mode")
-    except Exception as exc:
-        logger.warning("Failed to load ML models: {}", exc)
+            logger.info("Database integrity check passed")
 
-    v2_report_path = model_base_dir / "v2" / "training_report.json"
-    if v2_report_path.exists():
-        try:
-            v2_report = json.loads(v2_report_path.read_text(encoding="utf-8"))
-            if v2_report.get("model_mode") == "shadow":
-                v2_training_mode = "shadow"
-        except (json.JSONDecodeError, OSError):
-            pass
+        # ── 3. Auth token ─────────────────────────────────────────────────
+        system_token = load_or_create_token(token_path)
+        bootstrap_tickets = BootstrapTicketStore()
+        browser_sessions = SessionTokenStore()
+        logger.debug("Auth token loaded from {}", token_path)
 
-    try:
-        _v2_model_manager = ModelManager(
-            models_dir=model_base_dir / "v2",
-            use_ensemble=False,
+        # ── 4. Repositories ───────────────────────────────────────────────
+        activity_repository = SQLAlchemyActivityRepository(
+            session_factory=session_factory,
+            pulsetime_s=settings.heartbeat_pulsetime_s,
         )
-        if _v2_model_manager.load_latest():
-            v2_model_manager = _v2_model_manager
-            telemetry_service.attach_model_manager(v2_model_manager)
-            model_training_mode = "ready"
-            v2_training_mode = "ready"
-            logger.info(
-                "Feature schema v2 model loaded (version: {})",
-                v2_model_manager.current_version_tag,
+        preferences_repository = PreferencesRepository(
+            session_factory=session_factory,
+        )
+        telemetry_repository = TelemetryRepository(
+            session_factory=session_factory,
+        )
+        classification_rules_repository = AppClassificationRulesRepository(
+            session_factory=session_factory,
+        )
+        focus_repository = SQLAlchemyFocusSessionRepository(
+            session_factory=session_factory,
+        )
+        report_repository = SQLAlchemyDailyReportRepository(
+            session_factory=session_factory,
+        )
+        analysis_repository = SQLAlchemyProcrastinationAnalysisRepository(
+            session_factory=session_factory,
+        )
+        baseline_repository = BaselineRepository(
+            session_factory=session_factory,
+        )
+        chat_repository = ChatRepository(
+            session_factory=session_factory,
+        )
+        scheduled_job_runs_repository = ScheduledJobRunsRepository(session_factory)
+
+        # ── 4b. Wave 7: Intervention repository ───────────────────────────
+        intervention_repository = InterventionLogRepository(
+            session_factory=session_factory,
+        )
+
+        # ── 4c. G005: Autonomy service ──────────────────────────────────
+        autonomy_service = AutonomyService(
+            preferences_repo=preferences_repository,
+        )
+
+        # ── 5. Collector ──────────────────────────────────────────────────
+        collector: EventCollector | None = None
+        collector_service: CollectorService | None = None
+        try:
+            collector = create_collector()
+            collector_service = CollectorService(
+                collector=collector,
+                repository=activity_repository,
+                interval_s=float(settings.collect_interval_s),
             )
-    except Exception as exc:
-        logger.warning("Failed to load feature schema v2 model: {}", exc)
+            logger.info("CollectorService created (not started)")
+        except Exception as exc:
+            logger.warning("Failed to create collector: {}", exc)
 
-    # ── 7a. Wave 5 Services ────────────────────────────────────────────
-    analysis_service = AnalysisService(
-        activity_repo=activity_repository,
-        focus_repo=focus_repository,
-    )
-    report_service = ReportService(
-        activity_repo=activity_repository,
-        focus_repo=focus_repository,
-        report_repo=report_repository,
-        effectiveness_svc=effectiveness_service,
-    )
-    maintenance_service = MaintenanceService(
-        engine=engine,
-        session_factory=session_factory,
-        notifier=notifier,
-    )
+        input_telemetry_service = InputTelemetryService(
+            telemetry_repository=telemetry_repository,
+            activity_repository=activity_repository,
+        )
 
-    # ── 7b. Wave 6: LLM service ───────────────────────────────────────
-    llm_service: LLMService | None = None
-    try:
-        from mindflow.infrastructure.llm.client import DeepSeekClient  # noqa: PLC0415
+        # ── 7-ext. ML prediction service (unified online inference) ─────────
+        prediction_service = FocusPredictionService(
+            telemetry_repository=telemetry_repository,
+        )
 
-        deepseek = DeepSeekClient(settings.llm) if settings.llm.api_key else None
-        llm_service = LLMService(
+        telemetry_service = TelemetryService(
+            repository=telemetry_repository,
+            preferences_repository=preferences_repository,
+            data_dir=data_dir,
+            activity_repository=activity_repository,
+            prediction_service=prediction_service,
+        )
+        telemetry_service.attach_input_watcher(input_telemetry_service)
+        telemetry_preferences = await telemetry_service.get_preferences()
+
+        # ── 6. Notifier ───────────────────────────────────────────────────
+        notifier = create_notifier()
+
+        # ── 7. Wave 7: Effectiveness service (needed by report service) ────
+        effectiveness_service = EffectivenessService(
             activity_repo=activity_repository,
-            analysis_repo=analysis_repository,
-            deepseek_client=deepseek,
-            ollama_base_url=settings.llm.ollama_base_url if settings.llm.ollama_enabled else None,
-            ollama_model=settings.llm.ollama_model,
+            intervention_repo=intervention_repository,
         )
-        logger.info(
-            "LLMService created (L1: {}, L2: {})",
-            "yes" if deepseek else "no",
-            settings.llm.ollama_enabled,
-        )
-    except Exception as exc:
-        logger.warning("Failed to create LLMService: {}", exc)
 
-    # ── 7c. Wave 7: Intervention service ───────────────────────────────
-    intervention_throttle = InterventionThrottle(
-        repo=intervention_repository,
-        daily_limit=settings.throttle_daily_limit,
-        type_limit=settings.throttle_type_limit,
-        cooldown_h=settings.throttle_cooldown_hours,
-        ignore_rate_threshold=settings.throttle_ignore_rate_threshold,
-        fatigue_daily_limit=settings.throttle_fatigue_daily_limit,
-        annoying_threshold=settings.throttle_annoying_threshold,
-    )
-    intervention_service = InterventionService(
-        intervention_repo=intervention_repository,
-        throttle=intervention_throttle,
-        notifier=notifier,
-        activity_repo=activity_repository,
-        broadcast_fn=broadcast,
-    )
+        # ── 7-ext. ML models (scikit-learn behaviour analysis) ─────────────
+        # Three-tier degradation chain mirrors LLM's DeepSeek -> Ollama -> RuleEngine:
+        #   Tier 1: Trained ML models available  -> ML + rule engine enrichment
+        #   Tier 2: Models not found / load fail -> rule engine only (current)
+        #   Tier 3: ML inference fails at runtime -> log warning, rule-only fallback
+        from mindflow.train.models.manager import ModelManager  # noqa: PLC0415
 
-    # ── 7d. G003: Panel service ──────────────────────────────────────────
-    panel_service: PanelService | None = None
-    if llm_service is not None:
+        v2_model_manager: ModelManager | None = None
+        v2_training_mode = "rule_engine_only"
+        model_base_dir = settings.models_dir
+
+        # V1 model loading removed — only V2 (24-dim feature schema) is supported.
+
+        v2_report_path = model_base_dir / "v2" / "training_report.json"
+        if v2_report_path.exists():
+            try:
+                v2_report = json.loads(v2_report_path.read_text(encoding="utf-8"))
+                if v2_report.get("model_mode") == "shadow":
+                    v2_training_mode = "shadow"
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.opt(exception=True).warning(
+                    "Failed to parse training report {}: {}", v2_report_path, exc
+                )
+
         try:
-            gateway = DeepSeekGateway(
+            _v2_model_manager = ModelManager(
+                models_dir=model_base_dir / "v2",
+                use_ensemble=False,
+            )
+            if _v2_model_manager.load_latest():
+                v2_model_manager = _v2_model_manager
+                prediction_service.attach_model_manager(v2_model_manager)
+                telemetry_service.attach_model_manager(v2_model_manager)
+                v2_training_mode = "ready"
+                logger.info(
+                    "Feature schema v2 model loaded (version: {})",
+                    v2_model_manager.current_version_tag,
+                )
+        except Exception as exc:
+            logger.warning("Failed to load feature schema v2 model: {}", exc)
+
+        # ── 7a. Wave 5 Services ────────────────────────────────────────────
+        analysis_service = AnalysisService(
+            activity_repo=activity_repository,
+            focus_repo=focus_repository,
+            timezone=settings.timezone,
+        )
+        report_service = ReportService(
+            activity_repo=activity_repository,
+            focus_repo=focus_repository,
+            report_repo=report_repository,
+            effectiveness_svc=effectiveness_service,
+            timezone=settings.timezone,
+        )
+        maintenance_service = MaintenanceService(
+            engine=engine,
+            session_factory=session_factory,
+            notifier=notifier,
+            data_dir=data_dir,
+        )
+
+        # ── 7b. Wave 6: LLM service ───────────────────────────────────────
+        llm_service: LLMService | None = None
+        try:
+            from mindflow.infrastructure.llm.client import DeepSeekClient  # noqa: PLC0415
+
+            deepseek = DeepSeekClient(settings.llm) if settings.llm.api_key else None
+            llm_service = LLMService(
+                activity_repo=activity_repository,
+                analysis_repo=analysis_repository,
+                deepseek_client=deepseek,
+                ollama_base_url=(
+                    settings.llm.ollama_base_url
+                    if settings.llm.ollama_enabled
+                    else None
+                ),
+                ollama_model=settings.llm.ollama_model,
+                timezone=settings.timezone,
+            )
+            logger.info(
+                "LLMService created (L1: {}, L2: {})",
+                "yes" if deepseek else "no",
+                settings.llm.ollama_enabled,
+            )
+        except Exception as exc:
+            logger.warning("Failed to create LLMService: {}", exc)
+
+        # ── 7c. Wave 7: Intervention service ───────────────────────────────
+        intervention_throttle = InterventionThrottle(
+            repo=intervention_repository,
+            daily_limit=settings.throttle_daily_limit,
+            type_limit=settings.throttle_type_limit,
+            cooldown_h=settings.throttle_cooldown_hours,
+            ignore_rate_threshold=settings.throttle_ignore_rate_threshold,
+            fatigue_daily_limit=settings.throttle_fatigue_daily_limit,
+            annoying_threshold=settings.throttle_annoying_threshold,
+        )
+        intervention_service = InterventionService(
+            intervention_repo=intervention_repository,
+            throttle=intervention_throttle,
+            notifier=notifier,
+            activity_repo=activity_repository,
+            broadcast_fn=broadcast,
+        )
+
+        # ── 7d. G003: Panel service ──────────────────────────────────────────
+        panel_service: PanelService | None = None
+        if llm_service is not None:
+            try:
+                gateway = DeepSeekGateway(
+                    api_key=settings.llm.api_key,
+                    base_url=settings.llm.base_url,
+                    timeout_s=settings.llm.timeout_s,
+                    max_retries=settings.llm.max_retries,
+                )
+                orchestrator = PanelOrchestrator(gateway=gateway)
+                # Create shared EvidenceBundleBuilder for Panel + Chat
+                shared_evidence_builder = EvidenceBundleBuilder(
+                    activity_repo=activity_repository,
+                    intervention_repo=intervention_repository,
+                    session_factory=session_factory,
+                    effectiveness_service=effectiveness_service,
+                    baseline_repo=baseline_repository,
+                    prediction_service=prediction_service,
+                )
+                panel_service = PanelService(
+                    activity_repo=activity_repository,
+                    intervention_repo=intervention_repository,
+                    session_factory=session_factory,
+                    orchestrator=orchestrator,
+                    llm_service=llm_service,
+                    effectiveness_service=effectiveness_service,
+                    timezone=settings.timezone,
+                    analysis_repository=analysis_repository,
+                    evidence_builder=shared_evidence_builder,
+                )
+                logger.info("PanelService created with expert panel orchestrator")
+            except Exception as exc:
+                logger.warning("Failed to create PanelService: {}", exc)
+        else:
+            logger.warning("LLMService not available, skipping PanelService creation")
+
+        # ── 7e. G004: Chat service ────────────────────────────────────────────
+        chat_service: ChatService | None = None
+        try:
+            crisis_detector = CrisisDetector()
+            chat_gateway = DeepSeekGateway(
                 api_key=settings.llm.api_key,
                 base_url=settings.llm.base_url,
                 timeout_s=settings.llm.timeout_s,
                 max_retries=settings.llm.max_retries,
             )
-            orchestrator = PanelOrchestrator(gateway=gateway)
-            panel_service = PanelService(
-                activity_repo=activity_repository,
-                intervention_repo=intervention_repository,
+            # Use the shared evidence builder from panel section, or create one
+            shared_evidence = locals().get("shared_evidence_builder")
+            if shared_evidence is None:
+                shared_evidence = EvidenceBundleBuilder(
+                    activity_repo=activity_repository,
+                    intervention_repo=intervention_repository,
+                    session_factory=session_factory,
+                    effectiveness_service=effectiveness_service,
+                    baseline_repo=baseline_repository,
+                    prediction_service=prediction_service,
+                )
+            chat_service = ChatService(
                 session_factory=session_factory,
-                orchestrator=orchestrator,
-                llm_service=llm_service,
-                effectiveness_service=effectiveness_service,
+                crisis_detector=crisis_detector,
+                llm_gateway=chat_gateway,
+                analysis_repo=analysis_repository,
+                panel_service=panel_service,
+                intervention_repo=intervention_repository,
+                evidence_builder=shared_evidence,
+                chat_repo=chat_repository,
+                max_history_rounds=settings.max_history_rounds,
+                timezone=settings.timezone,
             )
-            logger.info("PanelService created with expert panel orchestrator")
+            logger.info("ChatService created for G004 conversational assistant")
         except Exception as exc:
-            logger.warning("Failed to create PanelService: {}", exc)
-    else:
-        logger.warning("LLMService not available, skipping PanelService creation")
+            logger.warning("Failed to create ChatService: {}", exc)
 
-    # ── 7e. G004: Chat service ────────────────────────────────────────────
-    chat_service: ChatService | None = None
-    try:
-        crisis_detector = CrisisDetector()
-        chat_gateway = DeepSeekGateway(
-            api_key=settings.llm.api_key,
-            base_url=settings.llm.base_url,
-            timeout_s=settings.llm.timeout_s,
-            max_retries=settings.llm.max_retries,
-        )
-        evidence_builder = EvidenceBundleBuilder(
-            activity_repo=activity_repository,
-            intervention_repo=intervention_repository,
-            session_factory=session_factory,
-            effectiveness_service=effectiveness_service,
-            baseline_repo=baseline_repository,
-            model_manager=model_manager,
-        )
-        chat_service = ChatService(
-            session_factory=session_factory,
-            crisis_detector=crisis_detector,
-            llm_gateway=chat_gateway,
-            analysis_repo=analysis_repository,
+        # ── 8. Scheduler (Wave 5 cron jobs) ───────────────────────────────
+        scheduler = build_scheduler(
+            analysis_service=analysis_service,
+            report_service=report_service,
+            maintenance_service=maintenance_service,
+            intervention_service=intervention_service,
+            activity_repository=activity_repository,
             panel_service=panel_service,
-            intervention_repo=intervention_repository,
-            evidence_builder=evidence_builder,
-            chat_repo=chat_repository,
-            max_history_rounds=settings.max_history_rounds,
+            autonomy_service=autonomy_service,
+            telemetry_service=telemetry_service,
+            scheduled_job_runs_repository=scheduled_job_runs_repository,
+            event_retention_days=settings.event_retention_days,
+            min_confidence=settings.auto_intervention_min_confidence,
+            panel_confidence=settings.auto_intervention_panel_confidence,
+            timezone=settings.timezone,
         )
-        logger.info("ChatService created for G004 conversational assistant")
-    except Exception as exc:
-        logger.warning("Failed to create ChatService: {}", exc)
+        runtime = RuntimeServices(
+            settings=settings,
+            engine=engine,
+            session_factory=session_factory,
+            scheduled_job_runs_repository=scheduled_job_runs_repository,
+            scheduler=scheduler,
+            collector_service=collector_service,
+            input_telemetry_service=input_telemetry_service,
+            panel_service=panel_service,
+            chat_service=chat_service,
+            llm_service=llm_service,
+            prediction_service=prediction_service,
+            evidence_builder=shared_evidence_builder if panel_service is not None else None,
+        )
+        await _start_runtime_services(
+            runtime,
+            input_telemetry_enabled=bool(
+                telemetry_preferences.get("input_telemetry_enabled", False)
+            ),
+        )
+        _publish_runtime_state(app, runtime)
+        logger.info(
+            "Runtime services started (scheduler={}, collectors={})",
+            settings.run_scheduler,
+            settings.run_collectors,
+        )
 
-    # ── 8. Scheduler (Wave 5 cron jobs) ───────────────────────────────
-    scheduler = build_scheduler(
-        analysis_service=analysis_service,
-        report_service=report_service,
-        maintenance_service=maintenance_service,
-        intervention_service=intervention_service,
-        activity_repository=activity_repository,
-        panel_service=panel_service,
-        autonomy_service=autonomy_service,
-        telemetry_service=telemetry_service,
-        event_retention_days=settings.event_retention_days,
-        min_confidence=settings.auto_intervention_min_confidence,
-        panel_confidence=settings.auto_intervention_panel_confidence,
-    )
-    scheduler.start()
-    logger.info("Scheduler started")
+        # ── Inject into app.state ─────────────────────────────────────────
+        app.state.engine = engine
+        app.state.session_factory = session_factory
+        app.state.activity_repository = activity_repository
+        app.state.preferences_repository = preferences_repository
+        app.state.telemetry_repository = telemetry_repository
+        app.state.telemetry_service = telemetry_service
+        app.state.input_telemetry_service = input_telemetry_service
+        app.state.classification_rules_repository = classification_rules_repository
+        app.state.collector_service = collector_service
+        app.state.system_token = system_token
+        app.state.bootstrap_tickets = bootstrap_tickets
+        app.state.browser_sessions = browser_sessions
+        app.state.migration_applied = migration_applied
+        app.state.db_integrity_ok = db_ok
+        app.state.notifier = notifier
+        app.state.focus_repository = focus_repository
+        app.state.report_repository = report_repository
+        app.state.analysis_repository = analysis_repository
+        app.state.baseline_repository = baseline_repository
+        app.state.analysis_service = analysis_service
+        app.state.scheduled_job_runs_repository = scheduled_job_runs_repository
+        app.state.report_service = report_service
+        app.state.maintenance_service = maintenance_service
+        app.state.scheduler = scheduler
+        app.state.llm_service = llm_service
+        app.state.panel_service = panel_service
+        app.state.intervention_repository = intervention_repository
+        app.state.intervention_service = intervention_service
+        app.state.effectiveness_service = effectiveness_service
+        app.state.v2_model_manager = v2_model_manager
+        app.state.v2_training_mode = v2_training_mode
+        app.state.chat_service = chat_service
+        app.state.autonomy_service = autonomy_service
+        app.state.prediction_service = prediction_service
+        if panel_service is not None:
+            try:
+                app.state.shared_evidence_builder = shared_evidence_builder
+            except Exception as exc:
+                logger.opt(exception=True).warning(
+                    "Failed to set app.state.shared_evidence_builder: {}", exc
+                )
 
-    # ── Inject into app.state ─────────────────────────────────────────
-    app.state.engine = engine
-    app.state.session_factory = session_factory
-    app.state.activity_repository = activity_repository
-    app.state.preferences_repository = preferences_repository
-    app.state.telemetry_repository = telemetry_repository
-    app.state.telemetry_service = telemetry_service
-    app.state.input_telemetry_service = input_telemetry_service
-    app.state.classification_rules_repository = classification_rules_repository
-    app.state.collector_service = collector_service
-    app.state.system_token = system_token
-    app.state.migration_applied = migration_applied
-    app.state.notifier = notifier
-    app.state.focus_repository = focus_repository
-    app.state.report_repository = report_repository
-    app.state.analysis_repository = analysis_repository
-    app.state.baseline_repository = baseline_repository
-    app.state.analysis_service = analysis_service
-    app.state.report_service = report_service
-    app.state.maintenance_service = maintenance_service
-    app.state.scheduler = scheduler
-    app.state.llm_service = llm_service
-    app.state.panel_service = panel_service
-    app.state.intervention_repository = intervention_repository
-    app.state.intervention_service = intervention_service
-    app.state.effectiveness_service = effectiveness_service
-    app.state.model_manager = model_manager
-    app.state.v2_model_manager = v2_model_manager
-    app.state.model_training_mode = model_training_mode
-    app.state.v2_training_mode = v2_training_mode
-    app.state.chat_service = chat_service
-    app.state.autonomy_service = autonomy_service
+        logger.info("MindFlow v{} startup complete", __version__)
 
-    logger.info("MindFlow v{} startup complete", __version__)
-
-    yield  # ── Application runs here ──
-
-    # ── Graceful shutdown ─────────────────────────────────────────────
-    logger.info("Shutting down MindFlow...")
-
-    # 1. Stop scheduler (Wave 5 cron jobs)
-    if scheduler is not None:
+        yield  # ── Application runs here ──
+    finally:
+        logger.info("Shutting down MindFlow...")
+        if runtime is not None:
+            await _shutdown_runtime_services(runtime)
+        else:
+            try:
+                await engine.dispose()
+            except Exception as exc:
+                logger.warning("Engine dispose error during failed startup: {}", exc)
         try:
-            scheduler.shutdown(wait=False)
-            logger.debug("Scheduler shut down")
+            n_closed = await close_all_connections()
+            logger.debug("Closed {} active WebSocket connection(s)", n_closed)
         except Exception as exc:
-            logger.warning("Scheduler shutdown error: {}", exc)
-
-    # 1b. Close LLM gateway connections (review P2 — connection leak)
-    if panel_service is not None:
-        try:
-            await panel_service.aclose()
-        except Exception as exc:
-            logger.warning("PanelService gateway close error: {}", exc)
-    if chat_service is not None:
-        try:
-            await chat_service.aclose()
-        except Exception as exc:
-            logger.warning("ChatService gateway close error: {}", exc)
-    if llm_service is not None:
-        try:
-            await llm_service.aclose()
-        except Exception as exc:
-            logger.warning("LLMService client close error: {}", exc)
-
-    # 2. Close WebSocket connections
-    try:
-        n_closed = await close_all_connections()
-        logger.debug("Closed {} active WebSocket connection(s)", n_closed)
-    except Exception as exc:
-        logger.warning("WebSocket close error: {}", exc)
-
-    try:
-        await input_telemetry_service.stop()
-    except Exception as exc:
-        logger.warning("Input telemetry stop error: {}", exc)
-
-    # 3. Stop collector
-    if collector_service is not None:
-        try:
-            await asyncio.wait_for(collector_service.stop(), timeout=3.0)
-        except TimeoutError:
-            logger.warning("Collector stop timed out, forcing")
-        except Exception as exc:
-            logger.warning("Collector stop error: {}", exc)
-
-    # 4. Dispose engine
-    try:
-        await asyncio.wait_for(engine.dispose(), timeout=3.0)
-    except TimeoutError:
-        logger.warning("Engine dispose timed out")
-    except Exception as exc:
-        logger.warning("Engine dispose error: {}", exc)
-
-    logger.info("MindFlow shutdown complete")
+            logger.warning("WebSocket close error: {}", exc)
+        logger.info("MindFlow shutdown complete")
 
 
 # ── App factory ────────────────────────────────────────────────────────────
@@ -547,7 +657,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Starlette's add_middleware is LIFO: the LAST middleware added becomes
     # the OUTERMOST layer and therefore runs FIRST on each request. The list
     # below is in ADDITION order; actual request-processing order is the
-    # reverse (CORS → RateLimit → Auth → Host → Logging → route).
+    # reverse (Auth → RateLimit → Host → Logging → route).
     #
     # F2 fix: Auth is added AFTER RateLimit (so Auth processes the request
     # BEFORE RateLimit does). Previously Auth was added before RateLimit,
@@ -574,20 +684,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # so it doesn't need to be set during construction.
     app.add_middleware(AuthMiddleware)
 
-    # 5. CORSMiddleware (localhost origins only)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
-            "http://localhost",
-            "http://127.0.0.1",
-            "http://localhost:5173",
-            "http://localhost:3000",
-        ],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     # ── Routes ─────────────────────────────────────────────────────────
     register_routes(app)
 
@@ -612,6 +708,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "https://fastapi.tiangolo.com"
         )
         return response
+
+    frontend_dist = _frontend_dist_dir()
+    if (frontend_dist / "index.html").is_file():
+        app.mount(
+            "/",
+            SPAStaticFiles(directory=frontend_dist, html=True),
+            name="frontend",
+        )
+    else:
+        logger.warning("Frontend build not found at {}; API-only mode", frontend_dist)
 
     logger.info("MindFlow app created (v{})", __version__)
     return app

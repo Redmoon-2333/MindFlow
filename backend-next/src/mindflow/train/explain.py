@@ -12,10 +12,11 @@ shap is not installed.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+from loguru import logger
 
 
 class ModelExplainer:
@@ -91,17 +92,18 @@ class ModelExplainer:
 
         # Per-feature mean absolute SHAP → importance ranking
         importance = np.abs(sv).mean(axis=0)
-        ranked = sorted(
+        ranked_pairs = sorted(
             (
-                {
-                    "name": self.feature_names[i],
-                    "importance": round(float(importance[i]), 6),
-                }
-                for i in range(len(self.feature_names))
+                (self.feature_names[index], round(float(importance[index]), 6))
+                for index in range(len(self.feature_names))
             ),
-            key=lambda x: cast(float, x["importance"]),
+            key=lambda item: item[1],
             reverse=True,
         )
+        ranked = [
+            {"name": name, "importance": importance_value}
+            for name, importance_value in ranked_pairs
+        ]
 
         top3 = ranked[:3]
         summary = (
@@ -220,14 +222,17 @@ class ModelExplainer:
                     return None
 
                 def _predict_fn(x: npt.NDArray[Any]) -> npt.NDArray[Any]:
-                    return cast(npt.NDArray[Any], np.asarray(model.predict_proba(x)[:, 1]))
+                    return np.asarray(model.predict_proba(x)[:, 1])
 
                 explainer = self._shap.KernelExplainer(
                     _predict_fn,
                     background,
                 )
                 raw = explainer.shap_values(X_proc)
-            except Exception:
+            except Exception as exc:
+                logger.opt(exception=True).warning(
+                    "KernelExplainer SHAP computation failed: {}", exc
+                )
                 return None
 
         # Normalise across SHAP API versions:
@@ -236,6 +241,7 @@ class ModelExplainer:
         # - New API multiclass:   (n_samples, n_features, n_classes)
         if isinstance(raw, list):
             return np.asarray(raw[1])
-        if raw.ndim == 3:
-            return cast(npt.NDArray[Any], raw[:, :, 1])  # class 1 = focus
-        return cast(npt.NDArray[Any], np.asarray(raw))
+        raw_array = np.asarray(raw)
+        if raw_array.ndim == 3:
+            return raw_array[:, :, 1]  # class 1 = focus
+        return raw_array
