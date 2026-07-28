@@ -76,30 +76,28 @@ class MaintenanceService:
         total_deleted = 0
 
         while True:
-            # Select the IDs to delete (limit batch size)
-            select_stmt = (
+            candidate_ids = (
                 sa.select(activity_events.c.id)
                 .where(activity_events.c.timestamp < cutoff)
+                .order_by(activity_events.c.timestamp.asc(), activity_events.c.id.asc())
                 .limit(_BATCH_SIZE)
             )
+            delete_stmt = sa.delete(activity_events).where(
+                activity_events.c.id.in_(candidate_ids)
+            )
 
-            async with self._session_factory() as session:
-                ids_result = await session.execute(select_stmt)
-                ids = [row[0] for row in ids_result.fetchall()]
-
-                if not ids:
-                    break
-
-                delete_stmt = sa.delete(activity_events).where(
-                    activity_events.c.id.in_(ids)
+            async with self._session_factory() as session, session.begin():
+                result = await session.scalars(
+                    delete_stmt.returning(activity_events.c.id)
                 )
-                await session.execute(delete_stmt)
-                await session.commit()
+                deleted = len(result.all())
 
-            total_deleted += len(ids)
+            if deleted == 0:
+                break
+            total_deleted += deleted
             logger.debug(
                 "Cleanup batch: deleted {} events (total {})",
-                len(ids),
+                deleted,
                 total_deleted,
             )
 
@@ -112,7 +110,24 @@ class MaintenanceService:
         else:
             logger.debug("Event cleanup: no events to delete")
 
+        await self._wal_checkpoint_truncate()
+
         return total_deleted
+
+    async def _wal_checkpoint_truncate(self) -> None:
+        """Run ``PRAGMA wal_checkpoint(TRUNCATE)`` to zero the WAL file.
+
+        Called after ``cleanup_old_events`` to reclaim disk space freed by
+        deleted rows.  Must run outside any active write transaction so that
+        the TRUNCATE pass actually zeros the WAL file header.
+
+        Raises on checkpoint failure — the scheduled caller (scheduler
+        ``_run_daily_cron``) catches and logs exceptions, so this matches
+        the existing error contract of ``cleanup_old_events`` itself.
+        """
+        async with self._engine.connect() as conn:
+            await conn.execute(sa.text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            await conn.commit()
 
     # ── Daily backup ─────────────────────────────────────────────────
 

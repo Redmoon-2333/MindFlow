@@ -4,19 +4,24 @@ Covers:
   - cleanup_old_events: old events deleted, recent events preserved,
     batch deletion
   - run_daily_backup: backup file created, notification on failure
+  - P1-5: WAL checkpoint after daily event cleanup
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from mindflow.infrastructure.repositories.activity import (
     activity_events,
 )
+from mindflow.services import maintenance_service as maintenance_module
 from mindflow.services.maintenance_service import MaintenanceService
 
 _BASE = datetime(2026, 7, 17, tzinfo=UTC)
@@ -137,3 +142,192 @@ class TestRunDailyBackup:
         success = await svc.run_daily_backup()
         assert not success
         notifier.send.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# P1-5: WAL checkpoint after daily event cleanup
+# ═══════════════════════════════════════════════════════════════════════
+
+
+_WAL_TABLE_DEF = activity_events
+
+
+class TestWalCheckpointAfterCleanup:
+    """WAL truncation after cleanup_old_events."""
+
+    async def test_checkpoint_truncates_wal_after_cleanup(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """After cleanup_old_events, the WAL file is truncated to zero bytes."""
+        db_path = tmp_path / "test.db"
+        wal_path = tmp_path / "test.db-wal"
+
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda c: c.execute(sa.text("PRAGMA journal_mode=WAL")))
+            await conn.run_sync(lambda c: c.execute(sa.text("PRAGMA synchronous=NORMAL")))
+            await conn.run_sync(_WAL_TABLE_DEF.metadata.create_all)
+            for batch in range(3):
+                rows = []
+                for idx in range(200):
+                    rows.append({
+                        "id": f"old-{batch}-{idx}",
+                        "user_id": 1,
+                        "timestamp": "2026-01-01T00:00:00+00:00",
+                        "duration_s": 1.0,
+                        "data_json": json.dumps({
+                            "app_name": "Test",
+                            "window_title": "",
+                            "process_name": "test.exe",
+                            "is_idle": False,
+                            "timestamp_utc": "2026-01-01T00:00:00+00:00",
+                        }),
+                        "event_type": "window_snapshot",
+                    })
+                await conn.execute(_WAL_TABLE_DEF.insert(), rows)
+
+        assert wal_path.exists()
+        wal_size_before = wal_path.stat().st_size
+        assert wal_size_before > 0, "WAL must have content before cleanup"
+
+        monkeypatch.setattr(maintenance_module, "_BATCH_SIZE", 50)
+
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        svc = MaintenanceService(
+            engine=engine,
+            session_factory=session_factory,
+            notifier=AsyncMock(),
+            clock=lambda: datetime(2026, 7, 26, tzinfo=UTC),
+        )
+
+        deleted = await svc.cleanup_old_events(retention_days=30)
+        assert deleted == 600
+
+        wal_size_after = wal_path.stat().st_size
+        assert wal_size_after == 0, (
+            f"WAL should be truncated after cleanup, got {wal_size_after} bytes"
+        )
+
+        await engine.dispose()
+
+    async def test_checkpoint_runs_even_with_zero_deletions(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When no events match retention, checkpoint still runs harmlessly."""
+        db_path = tmp_path / "test.db"
+        wal_path = tmp_path / "test.db-wal"
+
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda c: c.execute(sa.text("PRAGMA journal_mode=WAL")))
+            await conn.run_sync(lambda c: c.execute(sa.text("PRAGMA synchronous=NORMAL")))
+            await conn.run_sync(_WAL_TABLE_DEF.metadata.create_all)
+            # Insert recent events — none match retention
+            ts = datetime(2026, 7, 20, tzinfo=UTC).isoformat()
+            for idx in range(50):
+                await conn.execute(
+                    _WAL_TABLE_DEF.insert().values(
+                        id=f"recent-{idx}",
+                        user_id=1,
+                        timestamp=ts,
+                        duration_s=1.0,
+                        data_json=json.dumps({
+                            "app_name": "Test",
+                            "window_title": "",
+                            "process_name": "test.exe",
+                            "is_idle": False,
+                            "timestamp_utc": ts,
+                        }),
+                        event_type="window_snapshot",
+                    )
+                )
+
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        svc = MaintenanceService(
+            engine=engine,
+            session_factory=session_factory,
+            notifier=AsyncMock(),
+            clock=lambda: datetime(2026, 7, 26, tzinfo=UTC),
+        )
+
+        deleted = await svc.cleanup_old_events(retention_days=30)
+        assert deleted == 0
+
+        # Checkpoint still runs — WAL truncated
+        wal_size_after = wal_path.stat().st_size
+        assert wal_size_after == 0, (
+            f"WAL should be truncated even with zero deletions, "
+            f"got {wal_size_after} bytes"
+        )
+
+        await engine.dispose()
+
+    async def test_checkpoint_failure_propagates(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the checkpoint operation fails, the exception propagates.
+
+        The scheduler catches and logs exceptions from cron coroutines,
+        so a checkpoint failure here is observable to the daily-maintenance
+        caller.
+        """
+        db_path = tmp_path / "test.db"
+
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda c: c.execute(sa.text("PRAGMA journal_mode=WAL")))
+            await conn.run_sync(lambda c: c.execute(sa.text("PRAGMA synchronous=NORMAL")))
+            await conn.run_sync(_WAL_TABLE_DEF.metadata.create_all)
+            for idx in range(50):
+                await conn.execute(
+                    _WAL_TABLE_DEF.insert().values(
+                        id=f"old-{idx}",
+                        user_id=1,
+                        timestamp="2026-01-01T00:00:00+00:00",
+                        duration_s=1.0,
+                        data_json=json.dumps({
+                            "app_name": "Test",
+                            "window_title": "",
+                            "process_name": "test.exe",
+                            "is_idle": False,
+                            "timestamp_utc": "2026-01-01T00:00:00+00:00",
+                        }),
+                        event_type="window_snapshot",
+                    )
+                )
+
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        svc = MaintenanceService(
+            engine=engine,
+            session_factory=session_factory,
+            notifier=AsyncMock(),
+            clock=lambda: datetime(2026, 7, 26, tzinfo=UTC),
+        )
+
+        # Inject a failure into the checkpoint method itself
+        async def _failing_checkpoint() -> None:
+            raise OSError("disk full during checkpoint")
+
+        with patch.object(svc, "_wal_checkpoint_truncate", _failing_checkpoint), \
+             pytest.raises(OSError, match="disk full"):
+            await svc.cleanup_old_events(retention_days=30)
+
+        await engine.dispose()

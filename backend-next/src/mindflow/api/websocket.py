@@ -2,21 +2,9 @@
 
 Connection: ``/api/v1/ws``
 
-Authentication is handled via **query parameter token** (chosen over
-first-message auth; see rationale below). The token is passed as
-``?token=<token>`` in the WebSocket URL.
-
-Justification for query-param auth:
-  - WebSocket ``Authorization`` headers are not sent by the browser's
-    ``WebSocket(url)`` constructor — only ``Cookie`` and custom headers
-    set via the ``protocols`` parameter work reliably across all origins.
-  - First-message auth would require the client to send a message before
-    receiving any real-time data, adding latency and complexity to the
-    reconnect flow (especially during exponential backoff).
-  - The token is a local-file-only secret (no network transmission), so
-    query-param exposure in logs is mitigated by the fact that both the
-    frontend and backend run on localhost.
-  - WS ``/api/v1/ws`` shares the same token as REST, avoiding token duplication.
+Authentication uses the short-lived HttpOnly ``mindflow_session`` cookie
+issued by the one-time bootstrap flow. Browser origins are checked explicitly
+because CORS middleware does not apply to WebSocket handshakes.
 
 Message frames (§4.3 of requirements):
 
@@ -48,7 +36,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
 from mindflow.api.middleware.host import _TRUSTED_HOST_LOWERCASE, _parse_host
-from mindflow.infrastructure.security.token_manager import verify_token
+from mindflow.infrastructure.security.token_manager import SessionTokenStore
 
 router = APIRouter(tags=["websocket"])
 
@@ -64,6 +52,13 @@ _MAX_CONNECTIONS = 10
 """Cap on concurrent WS connections. Single-user desktop app — a handful of
 tabs/clients is plenty; an unbounded dict is a resource-exhaustion vector for
 any local process that can reach the port (F3)."""
+
+_MAX_MESSAGE_SIZE = 65536
+"""P1-3: maximum inbound WebSocket text message size in characters.
+
+Messages exceeding this limit are rejected with close code 1009 (Message Too
+Big) BEFORE JSON parsing, to prevent resource-exhaustion attacks via
+oversized frames."""
 
 _MSG_WINDOW_S = 1.0
 _MSG_MAX_PER_WINDOW = 20
@@ -158,7 +153,7 @@ def _with_timestamp(message: dict[str, Any]) -> dict[str, Any]:
 async def websocket_handler(websocket: WebSocket) -> None:
     """Handle WebSocket connections at ``/api/v1/ws``.
 
-    Authentication: token passed as ``?token=...`` query parameter.
+    Authentication: short-lived HttpOnly browser session cookie.
     Once authenticated, the client receives real-time activity updates,
     focus changes, and interventions.
 
@@ -182,11 +177,24 @@ async def websocket_handler(websocket: WebSocket) -> None:
             await websocket.close(code=1008, reason="Forbidden host")
             return
 
-    # ── Authentication via query parameter ──
-    token = websocket.query_params.get("token", "")
-    expected_token = getattr(websocket.app.state, "system_token", "")
+    # Browsers always send Origin on WebSocket handshakes. Native/test clients
+    # may omit it, so reject only present-but-untrusted origins.
+    origin = websocket.headers.get("origin", "")
+    settings = getattr(websocket.app.state, "settings", None)
+    port = int(getattr(settings, "port", 8765))
+    allowed_origins = {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    }
+    if origin and origin not in allowed_origins:
+        await websocket.close(code=1008, reason="Forbidden origin")
+        return
 
-    if not token or not verify_token(token, expected_token):
+    token = websocket.cookies.get("mindflow_session", "")
+    session_store = getattr(websocket.app.state, "browser_sessions", None)
+    if not isinstance(session_store, SessionTokenStore) or not session_store.verify(token):
         await websocket.close(code=4001, reason="Authentication required")
         return
 
@@ -231,6 +239,19 @@ async def _handle_messages(websocket: WebSocket, client_id: str) -> None:
     recent_msg_times: deque[float] = deque(maxlen=_MSG_MAX_PER_WINDOW)
 
     async for raw in websocket.iter_text():
+        # ── Message size limit (P1-3) ──
+        # Reject oversized frames BEFORE JSON parsing to prevent
+        # resource-exhaustion via maliciously large text frames.
+        if len(raw) > _MAX_MESSAGE_SIZE:
+            logger.warning(
+                "WebSocket client {} sent oversized message ({} chars, limit={})",
+                client_id,
+                len(raw),
+                _MAX_MESSAGE_SIZE,
+            )
+            await websocket.close(code=1009, reason="Message too large")
+            return
+
         now = time.monotonic()
         recent_msg_times.append(now)
         if (
