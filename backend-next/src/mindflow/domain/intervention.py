@@ -95,6 +95,34 @@ CBT_TECHNIQUE_LABELS_ZH: Final[dict[str, str]] = {
 
 
 @dataclass(frozen=True)
+class ThrottleStats:
+    """Pre-computed throttle aggregate — single-DB-call optimisation (P2-1).
+
+    All numeric fields come from a single ``SUM(CASE…)`` SQL query over
+    the last 7 days of intervention logs.  ``last_triggered_at`` is the
+    most recent ``triggered_at`` within that 7-day window (ISO8601 UTC
+    text, or None if no rows exist).
+
+    Attributes:
+        ignore_rate: Fraction of 7-day interventions with ``IGNORED``
+            response.  0.0 when no interventions exist.
+        today_count: Total interventions triggered today.
+        last_triggered_at: ISO8601 timestamp of the most recent
+            intervention (for cooldown checks), or None.
+        annoying_count_by_type: Count of ``"annoying"`` feedback
+            ratings for the requested intervention type in 7 days.
+        today_count_by_type: Count of today's interventions of the
+            requested type.
+    """
+
+    ignore_rate: float
+    today_count: int
+    last_triggered_at: str | None
+    annoying_count_by_type: int
+    today_count_by_type: int
+
+
+@dataclass(frozen=True)
 class Intervention:
     """An immutable intervention recommendation.
 

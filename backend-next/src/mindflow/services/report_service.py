@@ -41,7 +41,7 @@ from mindflow.infrastructure.repositories.report import (
 from mindflow.services.effectiveness_service import (
     EffectivenessService,
 )
-from mindflow.time_utils import utc_today
+from mindflow.time_utils import business_day_bounds_utc, business_today
 
 
 class ReportService:
@@ -61,11 +61,13 @@ class ReportService:
         focus_repo: SQLAlchemyFocusSessionRepository,
         report_repo: SQLAlchemyDailyReportRepository,
         effectiveness_svc: EffectivenessService | None = None,
+        timezone: str = "local",
     ) -> None:
         self._activity_repo = activity_repo
         self._focus_repo = focus_repo
         self._report_repo = report_repo
         self._effectiveness_svc = effectiveness_svc
+        self._timezone = timezone
 
     # ── Daily report ─────────────────────────────────────────────────
 
@@ -73,6 +75,8 @@ class ReportService:
         self,
         user_id: int,
         target_date: date,
+        *,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         """Generate an idempotent daily report for *user_id* on *target_date*.
 
@@ -91,21 +95,32 @@ class ReportService:
         Args:
             user_id: User identifier.
             target_date: The report date.
+            refresh: Recompute even when an existing report appears final.
 
         Returns:
             The persisted report dict.
         """
-        # Idempotency check
+        # Reports created before the business day ended are provisional.
         existing = await self._report_repo.get_by_date(user_id, target_date)
-        if existing is not None:
-            logger.info("Daily report already exists for {} user {}", target_date, user_id)
-            return existing
+        if existing is not None and not refresh:
+            created_at = existing.get("created_at")
+            _, day_end = business_day_bounds_utc(target_date, self._timezone)
+            try:
+                created_at_dt = datetime.fromisoformat(created_at) if created_at else None
+                if created_at_dt is not None and created_at_dt.tzinfo is None:
+                    created_at_dt = created_at_dt.replace(tzinfo=UTC)
+            except (TypeError, ValueError):
+                created_at_dt = None
+            if created_at_dt is not None and created_at_dt > day_end:
+                logger.info(
+                    "Daily report already exists for {} user {}", target_date, user_id
+                )
+                return existing
 
         # Sessions and same-day events are independent reads (no data
         # dependency) — fetch concurrently. Both run only after the
         # idempotency check above short-circuits.
-        start_dt = datetime(target_date.year, target_date.month, target_date.day, tzinfo=UTC)
-        end_dt = start_dt + timedelta(days=1) - timedelta(seconds=1)
+        start_dt, end_dt = business_day_bounds_utc(target_date, self._timezone)
 
         sessions, events = await asyncio.gather(
             self._focus_repo.get_by_date(user_id, target_date),
@@ -191,14 +206,18 @@ class ReportService:
               - ``week_number``: ISO week number.
         """
         week_end = week_start + timedelta(days=6)
+        generation_end = min(week_end, business_today(self._timezone))
 
-        # Fetch or generate reports for each day
-        daily: list[dict[str, Any]] = []
+        # Build ordered date list, then generate all reports concurrently
+        days: list[date] = []
         current = week_start
-        while current <= week_end:
-            report = await self.generate_daily_report(user_id, current)
-            daily.append(report)
+        while current <= generation_end:
+            days.append(current)
             current += timedelta(days=1)
+
+        daily: list[dict[str, Any]] = await asyncio.gather(
+            *(self.generate_daily_report(user_id, d) for d in days)
+        )
 
         if not daily:
             return {
@@ -283,9 +302,20 @@ class ReportService:
 
     # ── Scheduler convenience ─────────────────────────────────────────
 
-    async def generate_daily_for_all(self, user_id: int = 1) -> dict[str, Any]:
-        """Convenience wrapper for scheduled job — generates today's report."""
-        return await self.generate_daily_report(user_id, utc_today())
+    async def generate_daily_for_all(
+        self,
+        user_id: int = 1,
+        *,
+        target_date: date | None = None,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Generate the requested business day report for the desktop user."""
+        resolved_date = target_date or business_today(self._timezone)
+        return await self.generate_daily_report(
+            user_id,
+            resolved_date,
+            refresh=refresh,
+        )
 
 
 # ── Internal helpers ──────────────────────────────────────────────────
