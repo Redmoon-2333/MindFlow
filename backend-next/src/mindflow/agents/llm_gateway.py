@@ -21,6 +21,8 @@ Raises:
 
 from __future__ import annotations
 
+import asyncio
+import random
 from typing import Literal, Protocol, runtime_checkable
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -91,6 +93,24 @@ class PanelLLMGateway(Protocol):
 
 _DEFAULT_TIMEOUT_S: int = 30
 _MAX_RETRIES: int = 1
+_BACKOFF_CAP_S: float = 60.0
+
+
+def _compute_backoff(attempt: int) -> float:
+    """Compute exponential backoff with jitter for a retry attempt.
+
+    Formula: ``min(2 ** attempt + random.uniform(0, 1), cap)``.
+
+    Args:
+        attempt: Zero-based retry attempt number (0 = first retry).
+
+    Returns:
+        Delay in seconds (always ≥ 0).
+    """
+    jitter: float = random.uniform(0.0, 1.0)
+    delay: float = float(2**attempt) + jitter
+    capped: float = min(delay, _BACKOFF_CAP_S)
+    return capped
 
 
 class LangChainGateway:
@@ -203,6 +223,8 @@ class LangChainGateway:
             except Exception as exc:
                 logger.warning("LangChain gateway error (attempt {}): {}", attempt + 1, exc)
                 last_exc = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
             raw_content = result.content
@@ -210,6 +232,8 @@ class LangChainGateway:
             if not content:
                 logger.warning("LangChain gateway returned empty content")
                 last_exc = GatewayAPIError("Empty content in response")
+                if attempt < self._max_retries:
+                    await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
             return content

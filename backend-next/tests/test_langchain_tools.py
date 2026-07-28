@@ -7,11 +7,13 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+from datetime import UTC, date, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import mindflow.agents.langchain_tools as langchain_tools
 from mindflow.agents.langchain_tools import (
     current_session_id,
     current_user_id,
@@ -137,6 +139,20 @@ class TestGetLatestAnalysis:
         assert "impulsivity" in result
         mock_analysis_repo.get_by_date.assert_called_once()
 
+    async def test_get_latest_analysis_uses_business_timezone(
+        self, mock_analysis_repo: AsyncMock
+    ) -> None:
+        current_user_id.set(1)
+        mock_analysis_repo.get_by_date = AsyncMock(return_value={"type": "ok"})
+        with patch(
+            "mindflow.agents.langchain_tools.business_today",
+            return_value=date(2026, 7, 26),
+        ) as business_today_mock:
+            tool = make_get_latest_analysis(mock_analysis_repo, "Asia/Shanghai")
+            await tool.ainvoke({})
+        business_today_mock.assert_called_once_with("Asia/Shanghai")
+        mock_analysis_repo.get_by_date.assert_awaited_once_with(1, date(2026, 7, 26))
+
     async def test_get_latest_analysis_not_found(
         self,
         mock_analysis_repo: AsyncMock,
@@ -200,6 +216,115 @@ class TestRunPanel:
         assert "已超出" in result2
         # run_daily_panel not called again
         assert mock_panel_service.run_daily_panel.call_count == 1
+
+    async def test_run_panel_same_session_limit_is_atomic(
+        self,
+        mock_panel_service: AsyncMock,
+    ) -> None:
+        """A concurrent second call is rejected while the first is in flight."""
+        current_user_id.set(1)
+        current_session_id.set("atomic-cap-session")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        mock_verdict = MagicMock(types=(), confidence={}, rationale="panel complete")
+
+        async def blocked_panel(*args: object, **kwargs: object) -> MagicMock:
+            entered.set()
+            await release.wait()
+            return mock_verdict
+
+        mock_panel_service.run_daily_panel = AsyncMock(side_effect=blocked_panel)
+        panel_tool = make_run_panel(mock_panel_service)
+
+        first = asyncio.create_task(panel_tool.ainvoke({}))
+        await entered.wait()
+        second = asyncio.create_task(panel_tool.ainvoke({}))
+        try:
+            await asyncio.sleep(0.05)
+            assert second.done()
+            assert "\u5df2\u8d85\u51fa" in await second
+        finally:
+            release.set()
+            await first
+
+        assert mock_panel_service.run_daily_panel.call_count == 1
+
+    async def test_run_panel_usage_tracking_is_bounded(
+        self,
+        mock_panel_service: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Completed session usage evicts oldest entries above the tracking cap."""
+        monkeypatch.setattr(langchain_tools, "_MAX_SESSION_PANEL_USAGE", 3)
+        current_user_id.set(1)
+        mock_verdict = MagicMock(types=(), confidence={}, rationale="panel complete")
+        mock_panel_service.run_daily_panel = AsyncMock(return_value=mock_verdict)
+        panel_tool = make_run_panel(mock_panel_service)
+
+        for index in range(4):
+            current_session_id.set(f"bounded-session-{index}")
+            assert "panel complete" in await panel_tool.ainvoke({})
+
+        assert len(session_panel_usage) == 3
+        assert "bounded-session-0" not in session_panel_usage
+
+
+class TestPanelLockAsyncSafety:
+    """Panel session reservation lock MUST use asyncio.Lock, not threading.Lock.
+
+    threading.Lock is not event-loop-safe: if the lock-holding code ever
+    yields to the event loop (e.g., adding I/O inside the critical section),
+    other coroutines trying to acquire the lock block the entire event loop
+    thread instead of just their own coroutine.  asyncio.Lock makes lock
+    acquisition cooperative — contenders ``await`` the lock and yield to the
+    event loop until the holder releases.
+    """
+
+    async def test_panel_lock_is_asyncio_lock(self) -> None:
+        """RED: _session_panel_usage_lock must be asyncio.Lock, not threading.Lock."""
+        import asyncio as _asyncio
+
+        assert isinstance(
+            langchain_tools._session_panel_usage_lock, _asyncio.Lock
+        ), (
+            "RED: _session_panel_usage_lock is a threading.Lock — this blocks the "
+            "entire event-loop thread when contended in async code.  Replace with "
+            "asyncio.Lock so that contending coroutines cooperatively yield."
+        )
+
+    async def test_panel_async_lock_cooperatively_awaits(self) -> None:
+        """When the lock is held, contenders await cooperatively (no event-loop block)."""
+        import asyncio as _asyncio
+
+        lock = _asyncio.Lock()
+        holder_entered = _asyncio.Event()
+        release_signal = _asyncio.Event()
+
+        async def hold_across_await() -> None:
+            async with lock:
+                holder_entered.set()
+                await release_signal.wait()
+
+        async def contender() -> bool:
+            await holder_entered.wait()
+            # asyncio.Lock: this await yields to the event loop cooperatively
+            async with lock:
+                return True
+
+        t_hold = _asyncio.create_task(hold_across_await())
+        await holder_entered.wait()
+
+        t_contend = _asyncio.create_task(contender())
+        # The contender must NOT be done — it's awaiting the lock
+        done_early, _ = await _asyncio.wait([t_contend], timeout=0.3)
+        assert not done_early, (
+            "asyncio.Lock acquired while held — lock was not cooperative"
+        )
+
+        release_signal.set()
+        await t_contend  # now it should complete
+        await t_hold
 
 
 class TestQueryInterventions:

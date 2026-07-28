@@ -9,6 +9,8 @@ Coverage:
   - Successful ChatDeepSeek response returns the raw content string.
   - ``model="reasoner"`` does *not* send ``response_format: json_object``
     (unsupported by deepseek-reasoner).
+  - P0-3: Exponential backoff + jitter on retryable errors, no delay on last
+    attempt, no delay on success.
 """
 
 from __future__ import annotations
@@ -19,7 +21,10 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_deepseek import ChatDeepSeek
 
-from mindflow.agents.llm_gateway import GatewayNotConfiguredError, LangChainGateway
+from mindflow.agents.llm_gateway import (
+    GatewayNotConfiguredError,
+    LangChainGateway,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
