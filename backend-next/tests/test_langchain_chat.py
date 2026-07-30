@@ -55,6 +55,7 @@ def chat_service() -> ChatService:
     service._crisis_detector = MagicMock(spec=CrisisDetector)
     service._crisis_detector.scan.return_value = (CrisisLevel.NONE, None)
     service._llm_gateway = _make_mock_gateway()
+    service._tool_adapters = []  # no adapters needed for dummy-agent tests
 
     # Replace the real agent with one backed by FakeChatModel
     from langchain.agents import create_agent

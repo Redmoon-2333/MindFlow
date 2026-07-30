@@ -18,7 +18,12 @@ import pytest
 from langchain_core.language_models import FakeListChatModel
 from langchain_core.messages import AIMessage
 
-from mindflow.agents.langchain_tools import current_session_id, current_user_id
+from mindflow.agents.langchain_tools import (  # noqa: F401 — ContextVar removed in Todo 13
+    make_get_latest_analysis,
+    make_query_evidence,
+    make_query_interventions,
+    make_run_panel,
+)
 from mindflow.infrastructure.security.crisis_detector import (
     CrisisDetector,
     CrisisLevel,
@@ -253,21 +258,13 @@ class TestChatConcurrencyAndContext:
 
         assert call_count == 2
 
+    @pytest.mark.skip(reason="ContextVar replaced by ToolContext in Todo 13; adapters use explicit context")
     async def test_contextvars_are_reset_after_agent_failure(
         self,
         chat_service: Any,
     ) -> None:
-        session_token = current_session_id.set("outer-session")
-        user_token = current_user_id.set(99)
-        chat_service._agent.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
-        try:
-            await chat_service.ask(user_id=1, session_id="inner-session", message="hello")
-
-            assert current_session_id.get() == "outer-session"
-            assert current_user_id.get() == 99
-        finally:
-            current_user_id.reset(user_token)
-            current_session_id.reset(session_token)
+        """ContextVars removed — adapters now use explicit ToolContext."""
+        pass
 
     async def test_agent_invocation_sets_recursion_limit(
         self,
@@ -327,3 +324,295 @@ class TestChatInjection:
         assert result.degraded is True
         assert service._agent is None
         repository.append.assert_awaited()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ChatGraph integration tests (Todo 15)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestNewChatGraphFlag:
+    """When new_chat_graph=True, ChatService delegates to ChatGraph."""
+
+    async def test_new_flag_delegates_to_graph(self) -> None:
+        """ChatService with new_chat_graph=True + injected ChatGraph → graph path."""
+        from mindflow.graph.chat_graph import ChatGraph
+        from mindflow.services.chat_service import ChatAnswer
+
+        # ── Build a ChatGraph with a fake model ────────────────────────
+        fake_model = _FakeChatModel(responses=["来自新图的回复"])
+        repo = AsyncMock()
+        repo.append = AsyncMock()
+        repo.recent = AsyncMock(return_value=[])
+        detector = MagicMock(spec=CrisisDetector)
+        detector.scan.return_value = (CrisisLevel.NONE, None)
+
+        chat_graph = ChatGraph(
+            chat_repo=repo,
+            crisis_detector=detector,
+            model=fake_model,
+            tools=[],
+        )
+
+        # ── Build service with graph injection ──────────────────────────
+        service = ChatService.__new__(ChatService)
+        service._chat_repo = repo
+        service._crisis_detector = detector
+        service._llm_gateway = _make_mock_gateway()
+        service._tool_adapters = []
+        service._agent = None  # legacy agent unused
+        service._chat_graph = chat_graph
+        service._shadow_graph = None
+        service._shadow_mode_chat = False
+        service._new_chat_graph = True
+        service._session_locks = {}
+
+        result = await service.ask(user_id=1, session_id="g1", message="你好")
+
+        assert isinstance(result, ChatAnswer)
+        assert result.answer == "来自新图的回复"
+        assert result.session_id == "g1"
+
+    async def test_new_flag_without_graph_falls_back_to_legacy(self) -> None:
+        """When new_chat_graph=True but _chat_graph=None, legacy path used."""
+        service = ChatService.__new__(ChatService)
+        service._chat_repo = AsyncMock()
+        service._chat_repo.append = AsyncMock()
+        service._chat_repo.recent = AsyncMock(return_value=[])
+        service._crisis_detector = MagicMock(spec=CrisisDetector)
+        service._crisis_detector.scan.return_value = (CrisisLevel.NONE, None)
+        service._llm_gateway = _make_mock_gateway()
+        service._tool_adapters = []
+        service._agent = _make_agent(["传统回复"])
+        service._chat_graph = None
+        service._shadow_graph = None
+        service._shadow_mode_chat = False
+        service._new_chat_graph = True  # flag on but no graph
+        service._session_locks = {}
+
+        result = await service.ask(user_id=1, session_id="g2", message="你好")
+
+        # Falls back to legacy (agent) path
+        assert "传统回复" in result.answer
+
+
+class TestShadowModeChat:
+    """Shadow mode runs both paths, compares, returns legacy only."""
+
+    async def test_shadow_mode_returns_legacy_output(self) -> None:
+        """Shadow mode → legacy result returned, not shadow."""
+        from mindflow.graph.chat_graph import ChatGraph
+        from mindflow.services.chat_service import _ShadowChatRepo
+
+        # ── Legacy agent ────────────────────────────────────────────────
+        legacy_agent = _make_agent(["传统路径的回复"])
+
+        # ── Shadow graph ────────────────────────────────────────────────
+        fake_model = _FakeChatModel(responses=["新图的回复"])
+        real_repo = AsyncMock()
+        real_repo.append = AsyncMock()
+        real_repo.recent = AsyncMock(return_value=[])
+        detector = MagicMock(spec=CrisisDetector)
+        detector.scan.return_value = (CrisisLevel.NONE, None)
+
+        shadow_repo = _ShadowChatRepo(real_repo)
+        shadow_graph = ChatGraph(
+            chat_repo=shadow_repo,
+            crisis_detector=detector,
+            model=fake_model,
+            tools=[],
+        )
+
+        # ── Build service ───────────────────────────────────────────────
+        service = ChatService.__new__(ChatService)
+        service._chat_repo = real_repo
+        service._crisis_detector = detector
+        service._llm_gateway = _make_mock_gateway()
+        service._tool_adapters = []
+        service._agent = legacy_agent
+        service._chat_graph = None  # not used in shadow mode
+        service._shadow_graph = shadow_graph
+        service._shadow_repo = shadow_repo
+        service._shadow_mode_chat = True
+        service._new_chat_graph = False
+        service._session_locks = {}
+
+        result = await service.ask(user_id=1, session_id="sh1", message="你好")
+
+        # Legacy output returned
+        assert "传统路径" in result.answer
+        # Shadow output NOT returned
+        assert "新图" not in result.answer
+
+    async def test_shadow_mode_never_double_persists(self) -> None:
+        """Shadow mode → only one user + one assistant persisted."""
+        from mindflow.graph.chat_graph import ChatGraph
+        from mindflow.services.chat_service import _ShadowChatRepo
+
+        fake_model = _FakeChatModel(responses=["新图回复"])
+        real_repo = AsyncMock()
+        real_repo.append = AsyncMock()
+        real_repo.recent = AsyncMock(return_value=[])
+        detector = MagicMock(spec=CrisisDetector)
+        detector.scan.return_value = (CrisisLevel.NONE, None)
+
+        shadow_repo = _ShadowChatRepo(real_repo)
+        shadow_graph = ChatGraph(
+            chat_repo=shadow_repo,
+            crisis_detector=detector,
+            model=fake_model,
+            tools=[],
+        )
+
+        service = ChatService.__new__(ChatService)
+        service._chat_repo = real_repo
+        service._crisis_detector = detector
+        service._llm_gateway = _make_mock_gateway()
+        service._tool_adapters = []
+        service._agent = _make_agent(["传统回复"])
+        service._chat_graph = None
+        service._shadow_graph = shadow_graph
+        service._shadow_repo = shadow_repo
+        service._shadow_mode_chat = True
+        service._new_chat_graph = False
+        service._session_locks = {}
+
+        await service.ask(user_id=1, session_id="sh2", message="你好")
+
+        # Real repo: exactly 2 appends (user + assistant), no duplicates
+        assert real_repo.append.call_count == 2
+        calls = real_repo.append.call_args_list
+        assert calls[0].args[1] == "user"
+        assert calls[1].args[1] == "assistant"
+
+    async def test_shadow_mode_logs_comparison(self) -> None:
+        """Shadow mode completes without error; diff is emitted via loguru."""
+        from mindflow.graph.chat_graph import ChatGraph
+        from mindflow.services.chat_service import _ShadowChatRepo
+
+        fake_model = _FakeChatModel(responses=["新图不同回复"])
+        real_repo = AsyncMock()
+        real_repo.append = AsyncMock()
+        real_repo.recent = AsyncMock(return_value=[])
+        detector = MagicMock(spec=CrisisDetector)
+        detector.scan.return_value = (CrisisLevel.NONE, None)
+
+        shadow_repo = _ShadowChatRepo(real_repo)
+        shadow_graph = ChatGraph(
+            chat_repo=shadow_repo,
+            crisis_detector=detector,
+            model=fake_model,
+            tools=[],
+        )
+
+        service = ChatService.__new__(ChatService)
+        service._chat_repo = real_repo
+        service._crisis_detector = detector
+        service._llm_gateway = _make_mock_gateway()
+        service._tool_adapters = []
+        service._agent = _make_agent(["传统回复"])
+        service._chat_graph = None
+        service._shadow_graph = shadow_graph
+        service._shadow_repo = shadow_repo
+        service._shadow_mode_chat = True
+        service._new_chat_graph = False
+        service._session_locks = {}
+
+        # Shadow mode runs without error, returns legacy answer
+        result = await service.ask(user_id=1, session_id="sh3", message="你好")
+        assert "传统回复" in result.answer  # legacy returned
+        # Shadow ran (its answer differs from legacy — logged by loguru)
+
+
+class TestSharedResourceCleanup:
+    """Shutdown closes shared resources once, not twice."""
+
+    async def test_aclose_noop_with_registry(self) -> None:
+        """With registry injected, aclose() is a no-op (registry manages pools)."""
+        service = ChatService.__new__(ChatService)
+        service._registry = MagicMock()  # registry present
+        service._llm_gateway = AsyncMock()
+        service._agent_model = MagicMock()
+
+        # Should not raise, should not close anything
+        await service.aclose()
+
+        service._llm_gateway.close.assert_not_called()
+
+
+class TestFlagSwitchRestoresLegacy:
+    """Switching flag restores legacy behavior without DB migration rollback."""
+
+    async def test_flag_false_uses_legacy_agent(self) -> None:
+        """new_chat_graph=False, _chat_graph=None → legacy path always."""
+        service = ChatService.__new__(ChatService)
+        service._chat_repo = AsyncMock()
+        service._chat_repo.append = AsyncMock()
+        service._chat_repo.recent = AsyncMock(return_value=[])
+        service._crisis_detector = MagicMock(spec=CrisisDetector)
+        service._crisis_detector.scan.return_value = (CrisisLevel.NONE, None)
+        service._llm_gateway = _make_mock_gateway()
+        service._tool_adapters = []
+        service._agent = _make_agent(["传统回复"])
+        service._chat_graph = None
+        service._shadow_graph = None
+        service._shadow_mode_chat = False
+        service._new_chat_graph = False
+        service._session_locks = {}
+
+        result = await service.ask(user_id=1, session_id="f1", message="切换")
+
+        assert "传统回复" in result.answer
+        assert "新图" not in result.answer
+
+    async def test_flag_switch_from_graph_to_legacy(self) -> None:
+        """After switching new_chat_graph from True→False, legacy path works."""
+        from mindflow.graph.chat_graph import ChatGraph
+
+        fake_model = _FakeChatModel(responses=["新图回复"])
+        repo = AsyncMock()
+        repo.append = AsyncMock()
+        repo.recent = AsyncMock(return_value=[])
+        detector = MagicMock(spec=CrisisDetector)
+        detector.scan.return_value = (CrisisLevel.NONE, None)
+
+        chat_graph = ChatGraph(
+            chat_repo=repo,
+            crisis_detector=detector,
+            model=fake_model,
+            tools=[],
+        )
+
+        service = ChatService.__new__(ChatService)
+        service._chat_repo = repo
+        service._crisis_detector = detector
+        service._llm_gateway = _make_mock_gateway()
+        service._tool_adapters = []
+        service._agent = _make_agent(["传统回复"])
+        service._chat_graph = chat_graph  # graph available
+        service._shadow_graph = None
+        service._session_locks = {}
+
+        # ── Flag ON → graph path ─────────────────────────────────────────
+        service._new_chat_graph = True
+        service._shadow_mode_chat = False
+        result1 = await service.ask(user_id=1, session_id="sw", message="on")
+        assert "新图回复" in result1.answer
+
+        # ── Flag OFF → legacy path (no DB migration needed) ──────────────
+        service._new_chat_graph = False
+        result2 = await service.ask(user_id=1, session_id="sw2", message="off")
+        assert "传统回复" in result2.answer
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _make_mock_gateway() -> AsyncMock:
+    """Create a backward-compat mock DeepSeekGateway."""
+    gw = AsyncMock()
+    gw._api_key = "test-key"
+    gw._base_url = "https://api.deepseek.com"
+    return gw

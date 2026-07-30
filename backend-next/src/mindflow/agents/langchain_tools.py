@@ -1,100 +1,37 @@
 """MindFlow tools declared as LangChain ``@tool`` for use with ``create_agent``.
 
-Each tool wraps an existing service or repository call and returns a string
-suitable for inclusion in the LLM context window.  Tools that require
-dependencies (repositories, services) capture them via closure at factory
-time — the exported ``make_*`` functions take the dependency and return the
-tool callable.
+Each tool wraps a typed adapter from ``mindflow.graph.tools`` and returns a
+string suitable for inclusion in the LLM context window.  Adapters receive
+dependencies via constructor injection and context via an explicit
+``ToolContext`` set before agent invocation — no ContextVars, no global state.
 
 Per-session caps:
-  - ``run_panel``: 1 invocation per session (tracked via ``session_panel_usage``).
-
-Context:
-  - ``current_user_id``: ContextVar set by ``ChatService.ask`` before
-    agent invocation, read by tools that need the user identity.
+  - ``run_panel``: 1 invocation per session (enforced by
+    ``RunAnalysisTool`` via ``BudgetReservationPort``).
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-from collections import OrderedDict
-from contextvars import ContextVar
-from datetime import UTC, datetime, timedelta
-from typing import Any
-
 from langchain_core.tools import BaseTool, tool
 
-from mindflow.domain.evidence import to_prompt_json
-from mindflow.infrastructure.repositories.analysis import (
-    SQLAlchemyProcrastinationAnalysisRepository,
+from mindflow.graph.tools import (
+    InterventionHistoryTool,
+    LatestAnalysisTool,
+    QueryEvidenceTool,
+    RunAnalysisTool,
+    format_analysis_output,
+    format_evidence_output,
+    format_intervention_output,
+    format_run_output,
 )
-from mindflow.infrastructure.repositories.intervention import (
-    InterventionLogRepository,
-)
-from mindflow.services.evidence_service import EvidenceBundleBuilder
-from mindflow.services.panel_service import PanelService
-from mindflow.time_utils import TimezoneLike, business_today
-
-# ── Session-panel usage tracking ────────────────────────
-
-_MAX_SESSION_PANEL_USAGE = 1024
-
-session_panel_usage: OrderedDict[str, int] = OrderedDict()
-"""Completed per-session ``run_panel`` usage, oldest entry first."""
-
-_session_panel_inflight: set[str] = set()
-_session_panel_usage_lock = asyncio.Lock()
-
-
-async def _reserve_panel_session(session_id: str | None) -> bool:
-    """Atomically reserve the single panel slot for a session."""
-    if session_id is None:
-        return True
-    async with _session_panel_usage_lock:
-        if session_id in _session_panel_inflight:
-            return False
-        if session_id in session_panel_usage:
-            session_panel_usage.move_to_end(session_id)
-            return False
-        _session_panel_inflight.add(session_id)
-        return True
-
-
-async def _finish_panel_session(session_id: str | None, succeeded: bool) -> None:
-    """Release a reservation and retain bounded successful usage."""
-    if session_id is None:
-        return
-    async with _session_panel_usage_lock:
-        _session_panel_inflight.discard(session_id)
-        if not succeeded:
-            return
-        session_panel_usage[session_id] = 1
-        session_panel_usage.move_to_end(session_id)
-        while len(session_panel_usage) > _MAX_SESSION_PANEL_USAGE:
-            session_panel_usage.popitem(last=False)
-
-
-# ── Session-panel usage tracking ─────────────────────────────────────────
-
-current_user_id: ContextVar[int] = ContextVar("current_user_id", default=0)
-"""User id for the current request, set by ``ChatService.ask`` before the
-agent invocation."""
-
-current_session_id: ContextVar[str | None] = ContextVar(
-    "current_session_id", default=None
-)
-"""Session id for the current request, set by ``ChatService.ask`` before the
-agent invocation.  Read by tools that need session-level state (e.g. panel cap)."""
-
 
 # ── Tool factory: query_evidence ─────────────────────────────────────────
 
 
 def make_query_evidence(
-    evidence_builder: EvidenceBundleBuilder,
+    adapter: QueryEvidenceTool,
 ) -> BaseTool:
-    """Return a ``query_evidence`` tool bound to *evidence_builder*.
+    """Return a ``query_evidence`` tool bound to *adapter*.
 
     The tool signature exposed to the LLM::
 
@@ -115,16 +52,8 @@ def make_query_evidence(
         Returns:
             JSON string of the evidence bundle.
         """
-        uid = current_user_id.get()
-        if uid == 0:
-            return '{"error": "user_id not set"}'
-
-        capped = min(days_back, 30)
-        window_end = datetime.now(UTC)
-        window_start = window_end - timedelta(days=capped)
-
-        bundle = await evidence_builder.build(uid, window_start, window_end)
-        return to_prompt_json(bundle)
+        result = await adapter.execute(days=days_back)
+        return format_evidence_output(result)
 
     return query_evidence
 
@@ -133,10 +62,9 @@ def make_query_evidence(
 
 
 def make_get_latest_analysis(
-    analysis_repo: SQLAlchemyProcrastinationAnalysisRepository,
-    timezone: TimezoneLike = "local",
+    adapter: LatestAnalysisTool,
 ) -> BaseTool:
-    """Return a ``get_latest_analysis`` tool bound to *analysis_repo*.
+    """Return a ``get_latest_analysis`` tool bound to *adapter*.
 
     The tool signature exposed to the LLM::
 
@@ -153,21 +81,8 @@ def make_get_latest_analysis(
         Returns:
             JSON string of the analysis result, or a not-found message.
         """
-        uid = current_user_id.get()
-        if uid == 0:
-            return '{"error": "user_id not set"}'
-
-        today = business_today(timezone)
-        result: dict[str, Any] | None = await analysis_repo.get_by_date(uid, today)
-
-        if result is None:
-            yesterday = today - timedelta(days=1)
-            result = await analysis_repo.get_by_date(uid, yesterday)
-
-        if result is None:
-            return "暂无分析数据"
-
-        return json.dumps(result, ensure_ascii=False)
+        result = await adapter.execute()
+        return format_analysis_output(result)
 
     return get_latest_analysis
 
@@ -176,17 +91,16 @@ def make_get_latest_analysis(
 
 
 def make_run_panel(
-    panel_service: PanelService | None,
-    timezone: TimezoneLike = "local",
+    adapter: RunAnalysisTool,
 ) -> BaseTool:
-    """Return a ``run_panel`` tool bound to *panel_service*.
+    """Return a ``run_panel`` tool bound to *adapter*.
 
     The tool signature exposed to the LLM::
 
         run_panel() -> str
 
-    Per-session cap (1 call) is enforced via ``session_panel_usage``.
-    The *session_id* is read from ``current_session_id`` contextvar.
+    Per-session cap (1 call) is enforced by the adapter via
+    ``BudgetReservationPort``.
     """
 
     @tool
@@ -202,36 +116,11 @@ def make_run_panel(
         Returns:
             JSON string of the panel verdict, or an error/skip message.
         """
-        uid = current_user_id.get()
-        if uid == 0:
-            return '{"error": "user_id not set"}'
+        from mindflow.time_utils import business_today  # noqa: PLC0415
 
-        sid = current_session_id.get()
-        if panel_service is None:
-            return "专家会诊服务暂不可用"
-        if not await _reserve_panel_session(sid):
-            return "run_panel 每会话最多 1 次，已超出。"
-
-        target_date = business_today(timezone)
-        succeeded = False
-        try:
-            verdict = await panel_service.run_daily_panel(uid, target_date)
-            succeeded = True
-            return json.dumps(
-                {
-                    "types": [str(t) for t in verdict.types],
-                    "confidence": {str(k): float(v) for k, v in verdict.confidence.items()},
-                    "rationale": verdict.rationale,
-                },
-                ensure_ascii=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            from loguru import logger
-
-            logger.warning("Panel execution failed in chat tool: {}", exc)
-            return f"会诊执行失败: {exc}"
-        finally:
-            await _finish_panel_session(sid, succeeded)
+        target_date = business_today("local")
+        result = await adapter.execute(date=target_date)
+        return format_run_output(result)
 
     return run_panel
 
@@ -240,10 +129,9 @@ def make_run_panel(
 
 
 def make_query_interventions(
-    intervention_repo: InterventionLogRepository,
-    timezone: TimezoneLike = "local",
+    adapter: InterventionHistoryTool,
 ) -> BaseTool:
-    """Return a ``query_interventions`` tool bound to *intervention_repo*.
+    """Return a ``query_interventions`` tool bound to *adapter*.
 
     The tool signature exposed to the LLM::
 
@@ -263,27 +151,7 @@ def make_query_interventions(
         Returns:
             JSON string of intervention records, or a not-found message.
         """
-        uid = current_user_id.get()
-        if uid == 0:
-            return '{"error": "user_id not set"}'
-
-        capped = min(days_back, 30)
-        end_date = business_today(timezone)
-        start_date = end_date - timedelta(days=capped)
-
-        logs = await intervention_repo.query_range_by_date(uid, start_date, end_date)
-
-        if not logs:
-            return "暂无干预记录"
-
-        summary = [
-            {
-                "type": log.get("intervention_type", "unknown"),
-                "time": log.get("triggered_at", ""),
-                "response": log.get("user_response", "pending"),
-            }
-            for log in logs
-        ]
-        return json.dumps(summary, ensure_ascii=False)
+        result = await adapter.execute(days=days_back)
+        return format_intervention_output(result)
 
     return query_interventions

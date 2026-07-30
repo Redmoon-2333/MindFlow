@@ -16,14 +16,17 @@ to catch and fall through the four-layer degradation chain:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypedDict, cast
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import interrupt
 from loguru import logger
 
 from mindflow.agents.conflict import ConflictReport, detect_conflict
@@ -512,11 +515,11 @@ class PanelState(TypedDict):  # noqa: UP035 — TypedDict with `from __future__ 
     moderator_verdict: dict[str, Any] | None
     critic_result: CriticResult | None
     critic_retries: int
+    moderator_redo_count: int
     call_count: int
     transcript: list[TranscriptEntry]
     disagreement_summary: DisagreementSummary | None
     rebuttal_delta: object | None  # RebuttalDelta — lazy import to avoid circular
-    runtime: _PanelRunContext
 
 
 @dataclass
@@ -526,6 +529,14 @@ class _PanelRunContext:
     call_count: int = 0
     transcript: list[TranscriptEntry] = field(default_factory=list)
     budget_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+# Context variable to carry the mutable per-invocation runtime through the
+# LangGraph StateGraph without including it in the checkpointable state.
+# Set by ``_run_graph`` before ``ainvoke`` and read by all graph nodes.
+_PANEL_RUNTIME: contextvars.ContextVar[_PanelRunContext] = contextvars.ContextVar(
+    "_PANEL_RUNTIME",
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -586,94 +597,71 @@ class PanelOrchestrator:
     ) -> CompiledStateGraph[Any, Any, Any, Any]:
         """Build and compile the LangGraph StateGraph once.
 
-        The graph structure (nodes + edges) is static across all invocations.
-        Node closures capture only ``self`` (the orchestrator instance); all
-        per-call data (``bundle_json``, ``valid_metrics``) is read from state
-        so the compiled graph can be reused safely.
+        Graph nodes: analyst → attribution → conflict_detection
+          → [rebuttal (if escalated) | moderator]
+          → human_review_interrupt → critic
+          → [END (approved) | moderator (retry) | END (exhausted)]
         """
         graph = StateGraph(PanelState)
 
-        # ── Node: analyst_node ──────────────────────────────────────────
+        # ── Node: analyst ──────────────────────────────────────────────
         async def analyst_node(state: PanelState) -> dict[str, Any]:
-            """Round 0: call the data analyst."""
+            rt = _PANEL_RUNTIME.get()
             logger.info("Panel round 0: Analyst")
-            raw = await self._call_with_budget(state["runtime"], ANALYST, state["bundle_json"])
+            raw = await self._call_with_budget(rt, ANALYST, state["bundle_json"])
             analyst = _parse_analyst_opinion(raw, ANALYST)
-            # Analyst citation validation (prevent hallucinated refs reaching moderator)
             bogus = validate_citations(analyst, state["valid_metrics"])
             if bogus:
                 logger.warning("Hallucinated citations {} in analyst — marking", bogus)
-                # Re-parse as skipped to keep graph flowing
                 analyst = ExpertOpinion(
-                    role=ANALYST.role,
-                    perspective=ANALYST.perspective,
-                    attribution_types=(),
-                    confidence={},
-                    evidence_citations=(),
-                    argument="",
-                    raw_json=raw,
-                    skipped=True,
+                    role=ANALYST.role, perspective=ANALYST.perspective,
+                    attribution_types=(), confidence={}, evidence_citations=(),
+                    argument="", raw_json=raw, skipped=True,
                 )
-            entry = TranscriptEntry(role=ANALYST.role, content=_opinion_summary(analyst), round=0)
-            state["runtime"].transcript.append(entry)
+            rt.transcript.append(TranscriptEntry(role=ANALYST.role, content=_opinion_summary(analyst), round=0))
             return {
                 "analyst_opinion": analyst,
-                "transcript": list(state["runtime"].transcript),
-                "call_count": state["runtime"].call_count,
+                "transcript": list(rt.transcript),
+                "call_count": rt.call_count,
             }
 
-        # ── Node: attribution_node ──────────────────────────────────────
+        # ── Node: attribution ──────────────────────────────────────────
         async def attribution_node(state: PanelState) -> dict[str, Any]:
-            """Round 1: call all three attribution experts in parallel.
-
-            Supports 1 retry per expert on forbidden-word rejection.
-            """
+            rt = _PANEL_RUNTIME.get()
             logger.info("Panel round 1: Attribution experts (parallel)")
 
             async def _call_and_parse(exp: ExpertDef) -> ExpertOpinion:
-                raw = await self._safe_call_with_budget(state["runtime"], exp, state["bundle_json"])
+                raw = await self._safe_call_with_budget(rt, exp, state["bundle_json"])
                 op = _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
-
-                # Retry once if skipped due to forbidden words
                 if op.skipped and _contains_forbidden_words(raw):
                     logger.warning("{} triggered forbidden words, retrying once", exp.role)
-                    retry_msg = (
-                        "你的上一条回复包含禁用词汇（诊断、治疗、患者、处方）。"
-                        "请用中文重新输出，严格遵守禁用词规则。"
-                    )
-                    raw2 = await self._safe_call_with_budget(state["runtime"], exp, retry_msg)
+                    retry_msg = "你的上一条回复包含禁用词汇（诊断、治疗、患者、处方）。请用中文重新输出，严格遵守禁用词规则。"
+                    raw2 = await self._safe_call_with_budget(rt, exp, retry_msg)
                     op2 = _parse_expert_opinion(raw2, exp, valid_metrics=state["valid_metrics"])
                     if not op2.skipped:
                         return op2
                     logger.warning("{} retry still failed, using original", exp.role)
-
                 return op
 
-            results = await asyncio.gather(*[
-                _call_and_parse(exp) for exp in ATTRIBUTION_EXPERTS
-            ])
+            results = await asyncio.gather(*[_call_and_parse(exp) for exp in ATTRIBUTION_EXPERTS])
             opinions = list(results)
             for op in opinions:
-                state["runtime"].transcript.append(
-                    TranscriptEntry(role=op.role, content=_opinion_summary(op), round=1),
-                )
+                rt.transcript.append(TranscriptEntry(role=op.role, content=_opinion_summary(op), round=1))
 
             non_skipped = [o for o in opinions if not o.skipped]
             if len(non_skipped) < 2:
                 raise PanelUnavailableError(
                     reason=f"仅{len(non_skipped)}份归因意见有效，需至少2份",
-                    call_count=state["runtime"].call_count,
+                    call_count=rt.call_count,
                 )
-
             return {
                 "attribution_opinions": opinions,
-                "transcript": list(state["runtime"].transcript),
-                "call_count": state["runtime"].call_count,
+                "transcript": list(rt.transcript),
+                "call_count": rt.call_count,
             }
 
-        # ── Node: conflict_detection_node ───────────────────────────────
+        # ── Node: conflict_detection ───────────────────────────────────
         async def conflict_detection_node(state: PanelState) -> dict[str, Any]:
-            """Pure-function conflict detection + disagreement analytics — no LLM call."""
             logger.info("Conflict detection")
             conflict = detect_conflict(state["attribution_opinions"])
             escalated = conflict.has_conflict
@@ -681,193 +669,109 @@ class PanelOrchestrator:
                 logger.info("Conflict detected: {}", conflict.details)
             else:
                 logger.info("No conflict among attribution experts")
+            ds = analyze_disagreement(state["attribution_opinions"], conflict.details, conflict.max_confidence_gap, rebuttal_delta=None)
+            logger.info("Disagreement analytics: agreement={:.3f}, stability={}", ds.agreement_strength, ds.stability)
+            return {"conflict_report": conflict, "escalated": escalated, "disagreement_summary": ds}
 
-            # Compute structured disagreement analytics
-            ds = analyze_disagreement(
-                state["attribution_opinions"],
-                conflict.details,
-                conflict.max_confidence_gap,
-                rebuttal_delta=None,
-            )
-            logger.info(
-                "Disagreement analytics: agreement={:.3f}, stability={}",
-                ds.agreement_strength,
-                ds.stability,
-            )
-
-            return {
-                "conflict_report": conflict,
-                "escalated": escalated,
-                "disagreement_summary": ds,
-            }
-
-        # ── Node: rebuttal_node ─────────────────────────────────────────
+        # ── Node: rebuttal ─────────────────────────────────────────────
         async def rebuttal_node(state: PanelState) -> dict[str, Any]:
-            """Round 2a: attribution experts rebut each other (parallel)."""
+            rt = _PANEL_RUNTIME.get()
             logger.info("Panel round 2a: Attribution rebuttal (parallel)")
             opinions = state["attribution_opinions"]
-            prompts = [
-                (ATTRIBUTION_EXPERTS[i], _build_rebuttal_prompt(state["bundle_json"], opinions, i))
-                for i in range(len(ATTRIBUTION_EXPERTS))
-            ]
-            responses = await asyncio.gather(*[
-                self._safe_call_with_budget(state["runtime"], exp, msg) for exp, msg in prompts
-            ])
+            prompts = [(ATTRIBUTION_EXPERTS[i], _build_rebuttal_prompt(state["bundle_json"], opinions, i)) for i in range(len(ATTRIBUTION_EXPERTS))]
+            responses = await asyncio.gather(*[self._safe_call_with_budget(rt, exp, msg) for exp, msg in prompts])
             new_opinions = []
             for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True):
                 op = _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
-                # Retry once on forbidden words
                 if op.skipped and _contains_forbidden_words(raw):
                     logger.warning("{} rebuttal triggered forbidden words, retrying", exp.role)
-                    retry_msg = (
-                        "你的上一条回复包含禁用词汇（诊断、治疗、患者、处方）。"
-                        "请用中文重新输出，严格遵守禁用词规则并回到推理内容。"
-                    )
-                    raw2 = await self._safe_call_with_budget(state["runtime"], exp, retry_msg)
+                    retry_msg = "你的上一条回复包含禁用词汇（诊断、治疗、患者、处方）。请用中文重新输出，严格遵守禁用词规则并回到推理内容。"
+                    raw2 = await self._safe_call_with_budget(rt, exp, retry_msg)
                     op2 = _parse_expert_opinion(raw2, exp, valid_metrics=state["valid_metrics"])
                     if not op2.skipped:
                         op = op2
                 new_opinions.append(op)
             for op in new_opinions:
-                state["runtime"].transcript.append(
-                    TranscriptEntry(role=op.role, content=_opinion_summary(op), round=2),
-                )
-
+                rt.transcript.append(TranscriptEntry(role=op.role, content=_opinion_summary(op), round=2))
             non_skipped = [o for o in new_opinions if not o.skipped]
             if len(non_skipped) < 2:
-                raise PanelUnavailableError(
-                    reason=f"辩论后仅{len(non_skipped)}份归因意见有效",
-                    call_count=state["runtime"].call_count,
-                )
-
-            # Compute rebuttal delta: pre-debate vs post-debate convergence
+                raise PanelUnavailableError(reason=f"辩论后仅{len(non_skipped)}份归因意见有效", call_count=rt.call_count)
             delta = compute_rebuttal_delta(opinions, new_opinions)
-            logger.info(
-                "Rebuttal delta: agreement {:.3f}→{:.3f}, delta={:+.3f}, converged={}",
-                delta.before_agreement,
-                delta.after_agreement,
-                delta.agreement_delta,
-                delta.converged,
-            )
+            logger.info("Rebuttal delta: agreement {:.3f}→{:.3f}, delta={:+.3f}, converged={}", delta.before_agreement, delta.after_agreement, delta.agreement_delta, delta.converged)
+            return {"attribution_opinions": new_opinions, "transcript": list(rt.transcript), "call_count": rt.call_count, "rebuttal_delta": delta}
 
-            return {
-                "attribution_opinions": new_opinions,
-                "transcript": list(state["runtime"].transcript),
-                "call_count": state["runtime"].call_count,
-                "rebuttal_delta": delta,
-            }
-
-        # ── Node: moderator_node ────────────────────────────────────────
+        # ── Node: moderator ────────────────────────────────────────────
         async def moderator_node(state: PanelState) -> dict[str, Any]:
-            """Round 2b/3/4: moderator synthesises the verdict.
-
-            Supports both first-pass and redo (when critic rejected).
-            """
-            is_redo = state["critic_retries"] > 0
+            rt = _PANEL_RUNTIME.get()
+            is_redo = state["moderator_redo_count"] > 0
             analyst = state["analyst_opinion"]
             conflict = state["conflict_report"]
-            # These are guaranteed non-None by graph execution order
             assert analyst is not None
             assert conflict is not None
-
             if is_redo:
                 round_num = 4
-                prompt = _build_moderator_redo_prompt(
-                    state["bundle_json"],
-                    analyst,
-                    state["attribution_opinions"],
-                    conflict,
-                    cast(CriticResult, state["critic_result"]).issues,
-                )
+                prompt = _build_moderator_redo_prompt(state["bundle_json"], analyst, state["attribution_opinions"], conflict, cast(CriticResult, state["critic_result"]).issues)
             else:
                 round_num = 2 if not state["escalated"] else 3
-                prompt = _build_moderator_user_prompt(
-                    state["bundle_json"],
-                    analyst,
-                    state["attribution_opinions"],
-                    conflict,
-                )
-
-            logger.info("Panel round {}: Moderator", round_num)
-            raw = await self._call_with_budget(state["runtime"], MODERATOR, prompt)
+                prompt = _build_moderator_user_prompt(state["bundle_json"], analyst, state["attribution_opinions"], conflict)
+            logger.info("Panel round {}: Moderator (redo_count={})", round_num, state["moderator_redo_count"])
+            raw = await self._call_with_budget(rt, MODERATOR, prompt)
             verdict = _parse_verdict(raw)
             if verdict is None:
-                raise PanelUnavailableError(
-                    reason="主持人输出解析失败",
-                    call_count=state["runtime"].call_count,
-                )
+                raise PanelUnavailableError(reason="主持人输出解析失败", call_count=rt.call_count)
+            rt.transcript.append(TranscriptEntry(role=MODERATOR.role, content=_verdict_summary(verdict), round=round_num))
+            return {"moderator_verdict": verdict, "transcript": list(rt.transcript), "call_count": rt.call_count}
 
-            state["runtime"].transcript.append(
-                TranscriptEntry(
-                    role=MODERATOR.role,
-                    content=_verdict_summary(verdict),
-                    round=round_num,
-                ),
-            )
+        # ── Node: human_review_interrupt ────────────────────────────────
+        async def human_review_interrupt_node(state: PanelState) -> dict[str, Any]:
+            """Optional human review gate — disabled by default (Todo 10)."""
+            from mindflow.config import get_settings
 
-            return {
-                "moderator_verdict": verdict,
-                "transcript": list(state["runtime"].transcript),
-                "call_count": state["runtime"].call_count,
-            }
+            settings = get_settings()
+            if not settings.human_review_enabled:
+                return {}
+            verdict = state.get("moderator_verdict")
+            if verdict is None:
+                return {}
+            confidence: dict[str, float] = verdict.get("confidence", {})
+            min_conf = min(confidence.values()) if confidence else 1.0
+            ds = state.get("disagreement_summary")
+            agreement_strength: float = float(ds.agreement_strength) if ds is not None else 1.0
+            disagreement_strength = 1.0 - agreement_strength
+            if min_conf < settings.human_review_confidence_threshold or disagreement_strength > settings.human_review_disagreement_threshold:
+                logger.warning("Human review interrupt triggered: min_confidence={:.2f}, disagreement={:.2f}", min_conf, disagreement_strength)
+                interrupt({"verdict": verdict, "min_confidence": min_conf, "agreement_strength": agreement_strength})
+                logger.info("Human review interrupt resumed")
+            return {}
 
-        # ── Node: critic_node ───────────────────────────────────────────
+        # ── Node: critic ───────────────────────────────────────────────
         async def critic_node(state: PanelState) -> dict[str, Any]:
-            """Round 3/4/5: critic validates the moderator's verdict."""
-            # Determine round number based on escalation + retries
+            rt = _PANEL_RUNTIME.get()
             base_round = 2 if not state["escalated"] else 3
             round_num = base_round + 1 + state["critic_retries"]
-
             logger.info("Panel round {}: Critic", round_num)
-
-            pending_verdict = _verdict_dict_to_panel_verdict(
-                cast(dict[str, Any], state["moderator_verdict"]),
-                state["escalated"],
-                tuple(state["runtime"].transcript),
-                state["runtime"].call_count,
-            )
-
-            all_opinions: list[ExpertOpinion] = [
-                cast(ExpertOpinion, state["analyst_opinion"]),
-                *state["attribution_opinions"],
-            ]
-            prompt = _build_critic_user_prompt(
-                state["bundle_json"],
-                pending_verdict,
-                all_opinions,
-                state["valid_metrics"],
-            )
-            raw = await self._call_with_budget(state["runtime"], CRITIC, prompt)
+            pending_verdict = _verdict_dict_to_panel_verdict(cast(dict[str, Any], state["moderator_verdict"]), state["escalated"], tuple(rt.transcript), rt.call_count)
+            all_opinions: list[ExpertOpinion] = [cast(ExpertOpinion, state["analyst_opinion"]), *state["attribution_opinions"]]
+            prompt = _build_critic_user_prompt(state["bundle_json"], pending_verdict, all_opinions, state["valid_metrics"])
+            raw = await self._call_with_budget(rt, CRITIC, prompt)
             result = _parse_critic(raw)
-            state["runtime"].transcript.append(
-                TranscriptEntry(role=CRITIC.role, content=_critic_summary(result), round=round_num),
-            )
-
-            updates: dict[str, Any] = {
-                "critic_result": result,
-                "transcript": list(state["runtime"].transcript),
-                "call_count": state["runtime"].call_count,
-            }
+            rt.transcript.append(TranscriptEntry(role=CRITIC.role, content=_critic_summary(result), round=round_num))
+            updates: dict[str, Any] = {"critic_result": result, "transcript": list(rt.transcript), "call_count": rt.call_count}
             if not result.approved:
                 updates["critic_retries"] = state["critic_retries"] + 1
+                updates["moderator_redo_count"] = state["moderator_redo_count"] + 1
             return updates
 
-        # ── Conditional route helpers ───────────────────────────────────
-
+        # ── Routers ────────────────────────────────────────────────────
         def should_escalate(state: PanelState) -> str:
-            """Route: conflict detected → rebuttal, else → moderator."""
             return "rebuttal" if state["escalated"] else "moderator"
 
         def critic_verdict(state: PanelState) -> str:
-            """Route: approved→END, rejected+retries<2→redo, else→END."""
             if cast(CriticResult, state["critic_result"]).approved:
                 return "approved"
-            # Maximum 1 retry: critic_retries is incremented by moderator_node
-            # on redo. After the re-pass through critic, if it still rejects,
-            # critic_retries will be >= 2 → exhausted.
-            if state["critic_retries"] < 2:
-                return "rejected_retry"
-            return "rejected_exhausted"
+            if state["moderator_redo_count"] < 2:
+                return "retry"
+            return "exhausted"
 
         # ── Wire graph ──────────────────────────────────────────────────
         graph.add_node("analyst", analyst_node)
@@ -875,29 +779,22 @@ class PanelOrchestrator:
         graph.add_node("conflict_detection", conflict_detection_node)
         graph.add_node("rebuttal", rebuttal_node)
         graph.add_node("moderator", moderator_node)
+        graph.add_node("human_review_interrupt", human_review_interrupt_node)
         graph.add_node("critic", critic_node)
 
         graph.set_entry_point("analyst")
         graph.add_edge("analyst", "attribution")
         graph.add_edge("attribution", "conflict_detection")
-        graph.add_conditional_edges(
-            "conflict_detection",
-            should_escalate,
-            {"rebuttal": "rebuttal", "moderator": "moderator"},
-        )
+        graph.add_conditional_edges("conflict_detection", should_escalate, {"rebuttal": "rebuttal", "moderator": "moderator"})
         graph.add_edge("rebuttal", "moderator")
-        graph.add_edge("moderator", "critic")
-        graph.add_conditional_edges(
-            "critic",
-            critic_verdict,
-            {
-                "approved": END,
-                "rejected_retry": "moderator",
-                "rejected_exhausted": END,
-            },
-        )
+        graph.add_edge("moderator", "human_review_interrupt")
+        graph.add_edge("human_review_interrupt", "critic")
+        graph.add_conditional_edges("critic", critic_verdict, {"approved": END, "retry": "moderator", "exhausted": END})
 
-        return graph.compile()
+        from mindflow.config import get_settings
+
+        checkpointer = MemorySaver() if get_settings().human_review_enabled else None
+        return graph.compile(checkpointer=checkpointer)
 
     def _get_compiled_graph(self) -> CompiledStateGraph[Any, Any, Any, Any]:
         """Return the compiled graph, building it on first access (lazy)."""
@@ -911,6 +808,7 @@ class PanelOrchestrator:
         runtime: _PanelRunContext,
     ) -> PanelVerdict:
         """Run the compiled LangGraph StateGraph for this session."""
+
         bundle_json = to_prompt_json(bundle)
         valid_metrics = evidence_catalog_ids(build_evidence_catalog(bundle))
 
@@ -920,18 +818,22 @@ class PanelOrchestrator:
             "bundle_json": bundle_json,
             "valid_metrics": valid_metrics,
             "analyst_opinion": None,
-            "attribution_opinions": [],
+            "attribution_opinions": (),
             "conflict_report": None,
             "escalated": False,
             "moderator_verdict": None,
             "critic_result": None,
             "critic_retries": 0,
+            "moderator_redo_count": 0,
             "call_count": 0,
-            "transcript": [],
+            "transcript": (),
             "disagreement_summary": None,
             "rebuttal_delta": None,
-            "runtime": runtime,
         }
+
+        # Set runtime in context var so graph nodes can access it without
+        # including it in the checkpointable state (avoids msgpack error).
+        _PANEL_RUNTIME.set(runtime)
 
         final = await compiled.ainvoke(initial)
         critic_result = cast(CriticResult, final["critic_result"])

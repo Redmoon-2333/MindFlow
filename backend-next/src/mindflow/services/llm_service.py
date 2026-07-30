@@ -22,14 +22,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from loguru import logger
 
 from mindflow.domain.events import ActivityEvent
 from mindflow.domain.procrastination import BehaviorSummary, ProcrastinationAssessment, RuleEngine
 from mindflow.errors import NoActivityDataError
-from mindflow.infrastructure.llm.client import DeepSeekClient, LLMAPIError, LLMNotConfiguredError
+from mindflow.infrastructure.llm.client import DeepSeekClient
 from mindflow.infrastructure.llm.schemas import LLMAttributionResult
 from mindflow.infrastructure.llm.summary import build_behavior_summary, serialize_summary
 from mindflow.infrastructure.repositories.activity import SQLAlchemyActivityRepository
@@ -81,6 +81,9 @@ class LLMService:
         crisis_detector: Crisis keyword scanner.
         ollama_base_url: Base URL for Ollama API. If None, L2 is skipped.
         ollama_model: Ollama model name. Defaults to "qwen3:8b".
+        provider_registry: Optional shared ProviderRegistry. When provided,
+            the DeepSeek client is obtained from the registry and pool
+            lifecycle is managed by the registry (aclose becomes a no-op).
     """
 
     def __init__(  # noqa: PLR0913 — service wiring naturally needs many args
@@ -93,24 +96,39 @@ class LLMService:
         ollama_base_url: str | None = None,
         ollama_model: str = "qwen3:8b",
         timezone: TimezoneLike = "local",
+        provider_registry: Any | None = None,
     ) -> None:
         self._activity_repo = activity_repo
         self._analysis_repo = analysis_repo
         self._rule_engine = rule_engine or RuleEngine()
-        self._deepseek_client = deepseek_client
         self._crisis_detector = crisis_detector or CrisisDetector()
         self._ollama_base_url = ollama_base_url
         self._ollama_model = ollama_model
         self._timezone = timezone
+        self._registry = provider_registry
+
+        # If a registry is provided, obtain the client from it (shared pool).
+        # Otherwise, use the standalone client for backward compatibility.
+        if provider_registry is not None:
+            self._deepseek_client = provider_registry.get_structured_attribution()
+        else:
+            self._deepseek_client = deepseek_client
 
     async def aclose(self) -> None:
         """Close the L1 DeepSeek client's HTTP connection pool.
 
-        Cleanup hook for application shutdown (review C1 connection leak):
-        the DeepSeekClient owns a long-lived ``httpx.AsyncClient`` whose pool
-        is never released otherwise. L2 (Ollama) opens per-call clients that
-        close on their own; L3 (RuleEngine) holds no resources.
+        When a ``ProviderRegistry`` is injected, pool lifecycle is managed
+        by the registry — this method becomes a no-op (the registry's
+        ``shutdown()`` is called separately during application shutdown).
+
+        Otherwise (standalone client), close the DeepSeekClient's
+        ``httpx.AsyncClient`` pool directly (review C1 connection leak).
+        L2 (Ollama) opens per-call clients that close on their own;
+        L3 (RuleEngine) holds no resources.
         """
+        if self._registry is not None:
+            return  # registry manages pool lifecycle
+
         if self._deepseek_client is not None:
             import contextlib
 
@@ -259,40 +277,77 @@ class LLMService:
     ) -> tuple[dict[str, Any], SourceType, bool]:
         """Execute L1 → L2 → L3, returning (assessment, source, degraded).
 
+        Delegates to typed fallback nodes (graph/fallback_nodes.py) so
+        individual tiers are independently testable.  The degradation
+        semantics (L1→L2→L3, deterministic failures NOT retried as
+        transport) are preserved exactly.
+
         Returns:
             A tuple of (assessment_dict, source_string, was_degraded).
         """
-        # L1: DeepSeek API
-        if self._deepseek_client is not None:
-            try:
-                result = await self._deepseek_client.analyze(summary_json)
-                logger.info("L1 (DeepSeek) succeeded")
-                return self._llm_result_to_assessment(result), "deepseek", False
-            except LLMNotConfiguredError:
-                logger.warning(_LLM_NOT_CONFIGURED_HINT)
-            except (LLMAPIError, TimeoutError) as exc:
-                logger.warning("L1 (DeepSeek) failed: {}. Falling back to L2.", exc)
-            except Exception as exc:
-                logger.warning("L1 (DeepSeek) unexpected error: {}. Falling back.", exc)
-        else:
-            logger.debug("DeepSeek client not configured, skipping L1")
+        from datetime import date as _date
 
-        # L2: Ollama local
-        if self._ollama_base_url:
-            try:
-                ollama_result = await self._ollama_call(summary_json)
-                if ollama_result is not None:
-                    logger.info("L2 (Ollama) succeeded")
-                    return self._llm_result_to_assessment(ollama_result), "ollama", True
-            except Exception as exc:
-                logger.warning("L2 (Ollama) failed: {}. Falling back to L3.", exc)
-        else:
-            logger.debug("Ollama not configured, skipping L2")
+        from mindflow.graph.fallback_nodes import (
+            FallbackRunContext,
+            FallbackState,
+            ollama_node,
+            rule_engine_node,
+            single_expert_node,
+        )
+
+        runtime = FallbackRunContext(
+            deepseek_client=self._deepseek_client,
+            ollama_base_url=self._ollama_base_url,
+            ollama_model=self._ollama_model,
+            rule_engine=self._rule_engine,
+        )
+
+        state: FallbackState = cast(FallbackState, {
+            "user_id": 0,
+            "target_date": _date.today(),
+            "summary_json": summary_json,
+            "behavior_summary": summary,
+            "analysis_kind": "daily_attribution",
+            "runtime": runtime,
+            "degradation_path": [],
+            "degraded": False,
+            "source": "",
+            "cache_hit": False,
+            "crisis_detected": False,
+            "crisis_response_text": "",
+            "current_result": None,
+            "assessment": None,
+            "persistence_intent": "save",
+            "error": None,
+        })
+
+        # L1: DeepSeek
+        ds_update = await single_expert_node(state)
+        if ds_update.get("current_result"):
+            return (
+                ds_update["current_result"],
+                ds_update.get("source", "deepseek"),
+                ds_update.get("degraded", False),
+            )
+
+        # L2: Ollama
+        state.update(ds_update)  # type: ignore[typeddict-item]
+        os_update = await ollama_node(state)
+        if os_update.get("current_result"):
+            return (
+                os_update["current_result"],
+                os_update.get("source", "ollama"),
+                os_update.get("degraded", True),
+            )
 
         # L3: RuleEngine (never fails)
-        logger.info("Falling back to L3 (RuleEngine) for attribution")
-        assessment = self._rule_engine_to_assessment(self._rule_engine.assess(summary))
-        return assessment, "rule_engine", True
+        state.update(os_update)  # type: ignore[typeddict-item]
+        re_update = await rule_engine_node(state)
+        return (
+            re_update.get("current_result", {}),
+            re_update.get("source", "rule_engine"),
+            re_update.get("degraded", True),
+        )
 
     # ── Ollama helper ─────────────────────────────────────────────────
 

@@ -29,18 +29,22 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.agents.langchain_tools import (
-    current_session_id,
     make_get_latest_analysis,
     make_query_evidence,
     make_query_interventions,
     make_run_panel,
 )
-from mindflow.agents.langchain_tools import (
-    current_user_id as _tools_user_id,
-)
 from mindflow.agents.llm_gateway import DeepSeekGateway
 from mindflow.agents.types import FORBIDDEN_WORDS, _contains_forbidden_words
 from mindflow.config import get_settings
+from mindflow.graph.chat_graph import ChatGraph
+from mindflow.graph.tools import (
+    InterventionHistoryTool,
+    LatestAnalysisTool,
+    QueryEvidenceTool,
+    RunAnalysisTool,
+    ToolContext,
+)
 from mindflow.infrastructure.repositories.analysis import (
     SQLAlchemyProcrastinationAnalysisRepository,
 )
@@ -114,6 +118,70 @@ class ChatAnswer:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Shadow repo — shadow-mode proxy that never writes to the real DB
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class _ShadowChatRepo:
+    """Wraps a real ``ChatRepository`` for shadow-mode comparison.
+
+    ``append()`` writes only to an in-memory buffer — never to the real DB —
+    so the shadow graph can load its own user message via ``recent()`` without
+    double-persisting.  ``recent()`` delegates to the real repo for historical
+    context and prepends any buffered messages for the current session.
+
+    The buffer is cleared before each shadow request.
+    """
+
+    def __init__(self, real_repo: Any) -> None:
+        self._real = real_repo
+        self._buffer: list[dict[str, Any]] = []
+
+    def clear(self) -> None:
+        """Clear the in-memory buffer (call before each shadow request)."""
+        self._buffer.clear()
+
+    async def append(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        *,
+        user_id: int | None = None,
+        message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record message in-memory only — NEVER write to the real DB."""
+        entry: dict[str, Any] = {
+            "role": role,
+            "content": content,
+            "session_id": session_id,
+            "user_id": user_id,
+        }
+        self._buffer.append(entry)
+        return {"id": message_id or "shadow-msg", **entry}
+
+    async def recent(
+        self,
+        session_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return real history + buffered messages for *session_id*."""
+        real_history = await self._real.recent(session_id, limit=limit)
+        buffered = [m for m in self._buffer if m.get("session_id") == session_id]
+        # Buffered messages (user) go first so the graph sees the current
+        # user message before loading older history.
+        return buffered + real_history
+
+    async def list_sessions(
+        self,
+        user_id: int,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Delegate to the real repository."""
+        return await self._real.list_sessions(user_id=user_id, limit=limit)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Service
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -139,6 +207,12 @@ class ChatService:
             built from *session_factory* (kept optional so existing call
             sites need no change), matching how other services receive
             their repos injected.
+        provider_registry: Optional shared ProviderRegistry. When provided,
+            the chat model is obtained from the registry and HTTP pool
+            lifecycle is managed by the registry (aclose becomes a no-op).
+        chat_graph: Optional ``ChatGraph`` for v2 graph-based chat path.
+            When provided and ``new_chat_graph`` config is True, ``ask()``
+            delegates to the graph instead of ``create_agent``.
     """
 
     def __init__(
@@ -155,6 +229,8 @@ class ChatService:
         agent: Any | None = None,
         model: BaseChatModel | None = None,
         timezone: TimezoneLike | None = None,
+        provider_registry: Any | None = None,
+        chat_graph: ChatGraph | None = None,
     ) -> None:
         self._chat_repo = chat_repo or ChatRepository(session_factory=session_factory)
         settings = get_settings()
@@ -173,18 +249,46 @@ class ChatService:
 
         # ── Backward compat: keep _llm_gateway for existing test fixtures ───
         self._llm_gateway = llm_gateway
+        self._registry = provider_registry
+
+        # ── Graph integration (Wave 4) ────────────────────────────────────
+        self._chat_graph: ChatGraph | None = chat_graph
+        self._shadow_graph: ChatGraph | None = None
+        self._shadow_repo: _ShadowChatRepo | None = None
+        self._new_chat_graph: bool = settings.new_chat_graph
+        self._shadow_mode_chat: bool = settings.shadow_mode_chat
 
         if agent is not None:
             self._agent = agent
             self._agent_model: ChatDeepSeek | None = None
             return
 
-        # ── Build LangChain tools ───────────────────────────────────────────
+        # ── Build typed tool adapters ──────────────────────────────────────────
+        evidence_adapter = QueryEvidenceTool(
+            evidence_builder=evidence_builder, timezone=self._timezone
+        )
+        analysis_adapter = LatestAnalysisTool(
+            analysis_repo=analysis_repo, timezone=self._timezone
+        )
+        panel_adapter = RunAnalysisTool(
+            panel_service=panel_service, timezone=self._timezone
+        )
+        intervention_adapter = InterventionHistoryTool(
+            intervention_repo=intervention_repo, timezone=self._timezone
+        )
+        self._tool_adapters: list = [
+            evidence_adapter,
+            analysis_adapter,
+            panel_adapter,
+            intervention_adapter,
+        ]
+
+        # ── Build LangChain tools from adapters ───────────────────────────────
         tools: list[BaseTool] = [
-            make_query_evidence(evidence_builder),
-            make_get_latest_analysis(analysis_repo, self._timezone),
-            make_run_panel(panel_service, self._timezone),
-            make_query_interventions(intervention_repo, self._timezone),
+            make_query_evidence(evidence_adapter),
+            make_get_latest_analysis(analysis_adapter),
+            make_run_panel(panel_adapter),
+            make_query_interventions(intervention_adapter),
         ]
 
         # ── Build LangChain model ───────────────────────────────────────────
@@ -224,15 +328,45 @@ class ChatService:
                 name="mindflow_chat_agent",
             )
 
+        # ── Build ChatGraph if not already injected ──────────────────────────
+        if self._new_chat_graph and self._chat_graph is None:
+            # Build ChatGraph from local components (app.py may inject instead)
+            self._chat_graph = ChatGraph(
+                chat_repo=self._chat_repo,
+                crisis_detector=self._crisis_detector,
+                model=llm,
+                tools=list(tools),
+                tool_adapters=list(self._tool_adapters),
+                max_history_rounds=self._max_history_rounds,
+            )
+
+        # ── Build shadow graph (shadow-mode comparison) ─────────────────────
+        if self._shadow_mode_chat and self._chat_graph is not None:
+            self._shadow_repo = _ShadowChatRepo(self._chat_repo)
+            self._shadow_graph = ChatGraph(
+                chat_repo=self._shadow_repo,
+                crisis_detector=self._crisis_detector,
+                model=self._chat_graph._model,
+                tools=list(self._chat_graph._tools),
+                tool_adapters=list(self._tool_adapters),
+                max_history_rounds=self._max_history_rounds,
+            )
+
     async def aclose(self) -> None:
         """Close the LLM HTTP clients held by this service.
 
-        Cleanup hook for application shutdown (review C2 connection leak).
-        Closes both the injected gateway and the standalone ``ChatDeepSeek``
-        built for the agent (its ``root_async_client`` owns a separate httpx
-        pool that would otherwise linger until GC).
+        When a ``ProviderRegistry`` is injected, pool lifecycle is managed
+        by the registry — this method becomes a no-op (the registry's
+        ``shutdown()`` is called separately during application shutdown).
+
+        Otherwise (standalone clients), close both the injected gateway
+        and the standalone ``ChatDeepSeek`` built for the agent (review
+        C2 connection leak).
         """
         import contextlib
+
+        if self._registry is not None:
+            return  # registry manages pool lifecycle
 
         with contextlib.suppress(Exception):
             await self._llm_gateway.close()
@@ -288,6 +422,11 @@ class ChatService:
             )
 
         async with self._get_session_lock(session_id):
+            # ── Route: new graph → shadow mode → legacy ─────────────────
+            if getattr(self, "_shadow_mode_chat", False) and self._shadow_graph is not None:
+                return await self._ask_shadow_mode(user_id, session_id, message)
+            if getattr(self, "_new_chat_graph", False) and self._chat_graph is not None:
+                return await self._ask_via_graph(user_id, session_id, message)
             return await self._ask_serialized(user_id, session_id, message)
 
     def _get_session_lock(self, session_id: str) -> asyncio.Lock:
@@ -325,9 +464,10 @@ class ChatService:
         tools_used: list[str] = []
         evidence_cited = False
 
-        # Set context for tool factories
-        session_token = current_session_id.set(session_id)
-        user_token = _tools_user_id.set(user_id)
+        # Set context on tool adapters (replaces ContextVars)
+        ctx = ToolContext(user_id=user_id, session_id=session_id)
+        for adapter in getattr(self, "_tool_adapters", []):
+            adapter.context = ctx
         try:
             # Build LangChain message list
             messages: list[BaseMessage] = []
@@ -424,8 +564,113 @@ class ChatService:
             )
 
         finally:
-            _tools_user_id.reset(user_token)
-            current_session_id.reset(session_token)
+            # Clear context on adapters after agent invocation
+            for adapter in getattr(self, "_tool_adapters", []):
+                adapter.context = None
+
+    async def _ask_via_graph(
+        self,
+        user_id: int,
+        session_id: str,
+        message: str,
+    ) -> ChatAnswer:
+        """Delegate the full pipeline to ``ChatGraph.ask()``.
+
+        The graph internally handles persistence, tool execution, forbidden
+        word checks, and history compression — producing the same
+        ``ChatAnswer`` shape as ``_ask_serialized``.
+        """
+        assert self._chat_graph is not None, "_ask_via_graph requires _chat_graph"
+
+        try:
+            result = await self._chat_graph.ask(user_id, session_id, message)
+            if not isinstance(result, ChatAnswer):
+                return ChatAnswer(
+                    answer=_LLM_DOWN_REPLY,
+                    session_id=session_id,
+                    degraded=True,
+                )
+            return result
+        except Exception as exc:
+            logger.warning("ChatGraph invocation failed in _ask_via_graph: {}", exc)
+            return ChatAnswer(
+                answer=_LLM_DOWN_REPLY,
+                session_id=session_id,
+                degraded=True,
+            )
+
+    async def _ask_shadow_mode(
+        self,
+        user_id: int,
+        session_id: str,
+        message: str,
+    ) -> ChatAnswer:
+        """Run both legacy and new paths, compare, return legacy output.
+
+        The legacy path persists to the real DB normally.  The shadow
+        (new) path uses ``_ShadowChatRepo`` — its writes are in-memory
+        only and discarded after comparison.  Shadow output is never
+        returned to the caller.
+
+        Comparison is logged at INFO level for answer text diffs and at
+        DEBUG level for metadata diffs (tools_used, evidence_cited,
+        degraded).
+        """
+        assert self._shadow_graph is not None, "_ask_shadow_mode requires _shadow_graph"
+        assert self._shadow_repo is not None, "_ask_shadow_mode requires _shadow_repo"
+
+        # ── 1. Legacy path (persists normally) ──────────────────────────
+        legacy_result = await self._ask_serialized(user_id, session_id, message)
+
+        # ── 2. Shadow path (no real DB writes) ──────────────────────────
+        self._shadow_repo.clear()
+        shadow_result: ChatAnswer | None = None
+        try:
+            shadow_result = await self._shadow_graph.ask(
+                user_id, session_id, message,
+            )
+        except Exception as exc:
+            logger.warning("Shadow graph invocation failed: {}", exc)
+
+        # ── 3. Compare ─────────────────────────────────────────────────
+        if shadow_result is not None:
+            if legacy_result.answer != shadow_result.answer:
+                logger.info(
+                    "Shadow mode diff [answer]: session={}, legacy='{}', new='{}'",
+                    session_id,
+                    legacy_result.answer[:200],
+                    shadow_result.answer[:200],
+                )
+            else:
+                logger.debug(
+                    "Shadow mode match [answer]: session={}", session_id,
+                )
+            if legacy_result.tools_used != shadow_result.tools_used:
+                logger.info(
+                    "Shadow mode diff [tools_used]: legacy={}, new={}",
+                    list(legacy_result.tools_used),
+                    list(shadow_result.tools_used),
+                )
+            if legacy_result.evidence_cited != shadow_result.evidence_cited:
+                logger.info(
+                    "Shadow mode diff [evidence_cited]: legacy={}, new={}",
+                    legacy_result.evidence_cited,
+                    shadow_result.evidence_cited,
+                )
+            if legacy_result.degraded != shadow_result.degraded:
+                logger.info(
+                    "Shadow mode diff [degraded]: legacy={}, new={}",
+                    legacy_result.degraded,
+                    shadow_result.degraded,
+                )
+        else:
+            logger.info(
+                "Shadow mode: shadow path failed for session={}, legacy returned",
+                session_id,
+            )
+
+        # ── 4. Return legacy output ONLY ────────────────────────────────
+        return legacy_result
 
     async def list_sessions(
         self,
