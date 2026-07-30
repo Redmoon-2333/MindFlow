@@ -93,6 +93,31 @@ class InterventionHistoryResponse(BaseModel):
     next_cursor: str | None = None
 
 
+# ── Shared metadata schemas ───────────────────────────────────────────
+
+PrerequisiteStatus = Literal["available", "missing", "stale", "unknown"]
+
+
+class PrerequisiteInfo(BaseModel):
+    """Status of a single prerequisite for a data pipeline or feature."""
+
+    name: str
+    status: PrerequisiteStatus = "unknown"
+    message: str | None = None
+
+
+class DataStateMetadata(BaseModel):
+    """Optional metadata about data freshness and prerequisites.
+
+    Additive-only — downstream consumers must tolerate its absence.
+    Later tasks may populate these fields for specific endpoints.
+    """
+
+    prerequisites: list[PrerequisiteInfo] = Field(default_factory=list)
+    last_updated: str | None = None
+    stale: bool = False
+
+
 # ── Reports schemas ───────────────────────────────────────────────────
 
 

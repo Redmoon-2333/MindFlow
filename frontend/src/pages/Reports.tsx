@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { getDailyReport, getErrorMessage, getWeeklyReport } from "../api";
-import type { DailyReport, WeeklyReport } from "../api";
+import type { DailyReportView, WeeklyReportView } from "../api";
 
 type Tab = "daily" | "weekly";
 
@@ -38,13 +38,13 @@ export default function Reports() {
 
   // Daily state
   const [dailyDate, setDailyDate] = useState(todayStr());
-  const [daily, setDaily] = useState<DailyReport | null>(null);
+  const [daily, setDaily] = useState<DailyReportView | null>(null);
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyErr, setDailyErr] = useState("");
 
   // Weekly state
   const [weekStart, setWeekStart] = useState(mondayOf(new Date()));
-  const [weekly, setWeekly] = useState<WeeklyReport | null>(null);
+  const [weekly, setWeekly] = useState<WeeklyReportView | null>(null);
   const [weeklyLoading, setWeeklyLoading] = useState(false);
   const [weeklyErr, setWeeklyErr] = useState("");
 

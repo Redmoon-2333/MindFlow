@@ -8,11 +8,11 @@ import {
   getErrorMessage,
 } from "../api";
 import type {
-  AnalyticsPatterns,
-  AttributionResponse,
-  BaselineSummary,
-  BehavioralProfile,
-  ModelStatus,
+  AnalyticsPatternsView,
+  AttributionResponseView,
+  BaselineView,
+  BehavioralProfileView,
+  ModelStatusView,
 } from "../api";
 
 const DAYS_OPTIONS = [7, 14, 30, 90];
@@ -38,11 +38,11 @@ export default function Analytics() {
   const [days, setDays] = useState(14);
   const [activeTab, setActiveTab] = useState(TABS[0]);
 
-  const [patterns, setPatterns] = useState<AnalyticsPatterns | null>(null);
-  const [baseline, setBaseline] = useState<BaselineSummary | null>(null);
-  const [profile, setProfile] = useState<BehavioralProfile | null>(null);
-  const [modelStatus, setModelStatusState] = useState<ModelStatus | null>(null);
-  const [attribution, setAttribution] = useState<AttributionResponse | null>(null);
+  const [patterns, setPatterns] = useState<AnalyticsPatternsView | null>(null);
+  const [baseline, setBaseline] = useState<BaselineView | null>(null);
+  const [profile, setProfile] = useState<BehavioralProfileView | null>(null);
+  const [modelStatus, setModelStatusState] = useState<ModelStatusView | null>(null);
+  const [attribution, setAttribution] = useState<AttributionResponseView | null>(null);
 
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);

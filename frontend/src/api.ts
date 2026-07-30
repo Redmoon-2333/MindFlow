@@ -205,18 +205,13 @@ export interface FocusFeedbackResponse {
   created_at: string;
 }
 
-export interface DailyReport {
-  id?: string;
-  user_id: number;
-  date: string;
-  total_focus_min: number;
-  total_distraction_min: number;
-  focus_score: number;
-  top_apps: Array<{ app: string; minutes: number }>;
-  switch_frequency: number;
-  pattern_summary: string;
-  created_at?: string;
-  updated_at?: string;
+// ── Reports & Analytics (generated aliases) ──────────────────────────
+
+/** Canonical daily report from OpenAPI. */
+export type DailyReport = components["schemas"]["DailyReportResponse"];
+
+/** UI view extension for pages that display non-canonical fields. */
+export interface DailyReportView extends DailyReport {
   total_focus_minutes?: number;
   total_sessions?: number;
   total_distractions?: number;
@@ -235,23 +230,11 @@ export interface DailyReport {
   }>;
 }
 
-export interface WeeklyReport {
-  week_start: string;
-  week_end: string;
-  daily_reports: DailyReport[];
-  averages: {
-    avg_focus_min?: number;
-    avg_distraction_min?: number;
-    avg_focus_score?: number;
-    avg_switch_frequency?: number;
-  };
-  trend: {
-    focus_min_delta_pct?: number;
-    focus_score_delta?: number;
-    direction?: "up" | "down" | "stable";
-  };
-  week_number: number;
-  intervention_effectiveness?: Record<string, unknown> | null;
+/** Canonical weekly report from OpenAPI. */
+export type WeeklyReport = components["schemas"]["WeeklyReportResponse"];
+
+/** UI view extension for weekly report non-canonical fields. */
+export interface WeeklyReportView extends WeeklyReport {
   total_focus_minutes?: number;
   total_sessions?: number;
   total_distractions?: number;
@@ -266,65 +249,60 @@ export interface WeeklyReport {
   week_over_week?: Record<string, number | null | undefined>;
 }
 
-export interface AnalyticsPatterns {
-  high_switch_periods: Array<{
-    hour: number;
-    switch_count: number;
-    period?: string;
-    label?: string;
-    intensity?: string;
-    level?: string;
-  }>;
-  trigger_apps: Array<{
-    app: string;
-    count: number;
-    app_name?: string;
-    name?: string;
-    percentage?: number;
-  }>;
-  heatmap: number[][];
-  total_sessions: number;
-  distraction_ratio: number;
+/** Canonical analytics patterns from OpenAPI. */
+export type AnalyticsPatterns = components["schemas"]["PatternsResponse"];
+
+/** UI view extension for analytics patterns non-canonical fields. */
+export interface AnalyticsPatternsView extends AnalyticsPatterns {
+  high_switch_periods: Array<
+    components["schemas"]["HighSwitchPeriod"] & {
+      period?: string;
+      label?: string;
+      intensity?: string;
+      level?: string;
+    }
+  >;
+  trigger_apps: Array<
+    components["schemas"]["TriggerApp"] & {
+      app_name?: string;
+      name?: string;
+      percentage?: number;
+    }
+  >;
 }
 
-export interface BaselineSummary {
-  user_id: number;
-  created_at: string;
-  updated_at: string;
-  total_days: number;
-  total_samples: number;
-  features: string[];
+/** Canonical baseline summary from OpenAPI. */
+export type BaselineSummary = components["schemas"]["BaselineResponse"];
+
+/** UI view extension for baseline non-canonical fields. */
+export interface BaselineView extends BaselineSummary {
   avg_focus_min?: number;
   avg_switches_per_day?: number;
   productivity_score?: number;
 }
 
-export interface BehavioralProfile {
-  peak_focus_hours: Array<{ hour: number; avg_score: number }>;
-  top_apps: Array<{ app: string; total_min: number }>;
-  avg_focus_block_min: number;
-  distraction_triggers: Array<{ app: string; count: number }>;
-  total_events_analysed: number;
-  profile_date: string;
+/** Canonical behavioral profile from OpenAPI. */
+export type BehavioralProfile = components["schemas"]["BehavioralProfileResponse"];
+
+/** UI view extension for profile non-canonical fields. */
+export interface BehavioralProfileView extends BehavioralProfile {
   peak_focus?: string;
   productivity_apps?: string[];
   trigger_apps?: string[];
   details?: Record<string, unknown>;
 }
 
-export interface ModelStatus {
-  loaded: boolean;
-  ready: boolean;
-  mode: string;
-  v2_mode: string;
-  message: string;
-  feature_schema_version?: number;
-  version?: string | null;
-  available_versions?: string[];
-  reasons?: string[];
+/** Canonical model status from OpenAPI. */
+export type ModelStatus = components["schemas"]["ModelStatusResponse"];
+
+/** UI view extension for model status non-canonical fields. */
+export interface ModelStatusView extends ModelStatus {
   model_name?: string;
   last_updated?: string;
 }
+
+/** Canonical attribution response from OpenAPI. */
+export type AttributionResponse = components["schemas"]["AttributionResponse"];
 
 export interface AttributionResult {
   procrastination_type?: string;
@@ -334,18 +312,8 @@ export interface AttributionResult {
   evidence?: string;
 }
 
-export interface AttributionResponse {
-  assessment: {
-    procrastination_types: string[];
-    type_confidence: Record<string, number>;
-    cognitive_distortions: string[];
-    cbt_technique: string | null;
-    response_text: string;
-    next_action: string;
-  };
-  source: "deepseek" | "ollama" | "rule_engine";
-  cached: boolean;
-  meta: { degraded: boolean };
+/** UI view extension for attribution non-canonical fields. */
+export interface AttributionResponseView extends AttributionResponse {
   results?: AttributionResult[];
   confidence?: string | number;
   procrastination_type?: string;
@@ -532,38 +500,34 @@ export const getAutonomy = () => request<AutonomyStatus>("/autonomy");
 export const pauseAutonomy = (hours: number) => request<AutonomyStatus>("/autonomy/pause", { method: "POST", body: JSON.stringify({ hours }) });
 export const resumeAutonomy = () => request<AutonomyStatus>("/autonomy/resume", { method: "POST" });
 
-// ── AI / Diagnostics ──
+// ── AI / Diagnostics (generated aliases) ─────────────────────────────
 
-export interface AIRunItem {
-  run_id: string;
-  status: string;
-  started_at: string;
-  completed_at: string | null;
-  source: string;
-  duration_ms: number | null;
-}
+/** Canonical run summary from OpenAPI. */
+export type AIRunItem = components["schemas"]["RunSummary"];
 
-export interface AIRunsResponse {
-  items: AIRunItem[];
-  total: number;
-  limit: number;
-  offset: number;
-}
+/** Canonical diagnostics list response from OpenAPI. */
+export type AIRunsResponse = components["schemas"]["DiagnosticsListResponse"];
 
-export interface NodeEvent {
+/** Canonical node event summary from OpenAPI. */
+export type NodeEvent = components["schemas"]["NodeEventSummary"];
+
+/** UI view extension for node events with legacy fields. */
+export interface NodeEventView extends NodeEvent {
+  /** @deprecated Use node_name */
   name?: string;
+  /** @deprecated Not in canonical schema */
   type?: string;
-  status?: string;
-  started_at?: string;
-  completed_at?: string;
-  duration_ms?: number;
+  /** @deprecated Not in canonical schema */
   message?: string;
-  [key: string]: unknown;
 }
 
-export interface AIRunDetail extends AIRunItem {
-  node_events: NodeEvent[];
-  error: string | null;
+/** Canonical run detail from OpenAPI. */
+export type AIRunDetail = components["schemas"]["RunDetail"];
+
+/** UI view extension for run detail with legacy error field. */
+export interface AIRunDetailView extends AIRunDetail {
+  /** @deprecated Not in canonical schema */
+  error?: string | null;
 }
 
 export interface FocusPredictionResponse {
@@ -618,3 +582,47 @@ export const getTrainingJob = (jobId: string) =>
 
 export const cancelTrainingJob = (jobId: string) =>
   request<TrainingJobResponse>(`/analytics/training-jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+
+// ── Compile-time type assertions (prevent alias drift) ───────────────
+// These assertions verify that exported DTO names are aliases of the
+// generated OpenAPI component schemas. If the generated schema changes
+// shape incompatibly, TypeScript will error here.
+
+type AssertEqual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+
+// Verify canonical DTOs are aliases of generated schemas
+const _assertDailyReport: AssertEqual<DailyReport, components["schemas"]["DailyReportResponse"]> = true;
+const _assertWeeklyReport: AssertEqual<WeeklyReport, components["schemas"]["WeeklyReportResponse"]> = true;
+const _assertAnalyticsPatterns: AssertEqual<AnalyticsPatterns, components["schemas"]["PatternsResponse"]> = true;
+const _assertBaselineSummary: AssertEqual<BaselineSummary, components["schemas"]["BaselineResponse"]> = true;
+const _assertBehavioralProfile: AssertEqual<BehavioralProfile, components["schemas"]["BehavioralProfileResponse"]> = true;
+const _assertModelStatus: AssertEqual<ModelStatus, components["schemas"]["ModelStatusResponse"]> = true;
+const _assertAttributionResponse: AssertEqual<AttributionResponse, components["schemas"]["AttributionResponse"]> = true;
+const _assertAIRunItem: AssertEqual<AIRunItem, components["schemas"]["RunSummary"]> = true;
+const _assertAIRunsResponse: AssertEqual<AIRunsResponse, components["schemas"]["DiagnosticsListResponse"]> = true;
+const _assertNodeEvent: AssertEqual<NodeEvent, components["schemas"]["NodeEventSummary"]> = true;
+const _assertAIRunDetail: AssertEqual<AIRunDetail, components["schemas"]["RunDetail"]> = true;
+
+// Verify view types extend canonical types (not the other way around)
+type AssertExtends<A, B> = A extends B ? true : never;
+const _assertDailyReportViewExtends: AssertExtends<DailyReport, DailyReportView> = true;
+const _assertWeeklyReportViewExtends: AssertExtends<WeeklyReport, WeeklyReportView> = true;
+const _assertNodeEventViewExtends: AssertExtends<NodeEvent, NodeEventView> = true;
+const _assertAIRunDetailViewExtends: AssertExtends<AIRunDetail, AIRunDetailView> = true;
+
+// Suppress unused variable warnings
+void _assertDailyReport;
+void _assertWeeklyReport;
+void _assertAnalyticsPatterns;
+void _assertBaselineSummary;
+void _assertBehavioralProfile;
+void _assertModelStatus;
+void _assertAttributionResponse;
+void _assertAIRunItem;
+void _assertAIRunsResponse;
+void _assertNodeEvent;
+void _assertAIRunDetail;
+void _assertDailyReportViewExtends;
+void _assertWeeklyReportViewExtends;
+void _assertNodeEventViewExtends;
+void _assertAIRunDetailViewExtends;

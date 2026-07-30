@@ -11,7 +11,7 @@ import {
 } from "../api";
 import type {
   BaselineSummary,
-  ModelStatus,
+  ModelStatusView,
   GateStatus,
   TrainingReadinessResponse,
   TrainingJobResponse,
@@ -67,7 +67,7 @@ export default function ModelCenter() {
   const [rd, setRd] = useState<TrainingReadinessResponse | null>(null);
   const [baseline, setBaselineLocal] = useState<BaselineSummary | null>(null);
   const [baselineEmpty, setBaselineEmpty] = useState(false);
-  const [modelStatus, setModelStatusState] = useState<ModelStatus | null>(null);
+  const [modelStatus, setModelStatusState] = useState<ModelStatusView | null>(null);
   const [activeJob, setActiveJob] = useState<TrainingJobResponse | null>(null);
   // Active job id tracked as state so effects react to it
   const [activeJobId, setActiveJobId] = useState<string | null>(null);

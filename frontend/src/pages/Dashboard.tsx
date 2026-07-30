@@ -14,7 +14,7 @@ import {
   pauseAutonomy,
   getErrorMessage,
 } from "../api";
-import type { ActivityItem, AutonomyStatus, CollectorStatus, FocusPredictionResponse, FocusTrendResponse, HealthData, InterventionHistoryItem, ModelStatus } from "../api";
+import type { ActivityItem, AutonomyStatus, CollectorStatus, FocusPredictionResponse, FocusTrendResponse, HealthData, InterventionHistoryItem, ModelStatusView } from "../api";
 import { realtimeClient } from "../realtime";
 import type { RealtimeStatus } from "../realtime";
 
@@ -34,7 +34,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
 
   const [health, setHealth] = useState<HealthData | null>(null);
-  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [modelStatus, setModelStatus] = useState<ModelStatusView | null>(null);
   const [focusTrend, setFocusTrend] = useState<FocusTrendResponse | null>(null);
   const [currentActivity, setCurrentActivity] = useState<ActivityItem | null>(null);
   const [interventions, setInterventions] = useState<InterventionHistoryItem[]>([]);

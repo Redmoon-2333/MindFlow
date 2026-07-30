@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { getAIRuns, getAIRunDetail, getFocusPrediction, getHealthLive, getHealthReady, getErrorMessage } from "../api";
-import type { AIRunItem, AIRunDetail, FocusPredictionResponse, HealthLiveResponse, HealthReadyResponse } from "../api";
+import type { AIRunItem, AIRunDetailView, FocusPredictionResponse, HealthLiveResponse, HealthReadyResponse } from "../api";
 
 function statusBadgeClass(status: string): string {
   const s = status.toLowerCase();
@@ -30,7 +30,7 @@ export default function Diagnostics() {
 
   const [runs, setRuns] = useState<AIRunItem[]>([]);
   const [totalRuns, setTotalRuns] = useState(0);
-  const [selectedRun, setSelectedRun] = useState<AIRunDetail | null>(null);
+  const [selectedRun, setSelectedRun] = useState<AIRunDetailView | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
@@ -45,7 +45,7 @@ export default function Diagnostics() {
     try {
       const res = await getAIRuns(50, 0);
       setRuns(res.items);
-      setTotalRuns(res.total);
+      setTotalRuns(res.count);
     } catch (e: unknown) {
       setError(getErrorMessage(e, "加载 AI 运行记录失败"));
     } finally {
@@ -244,12 +244,14 @@ export default function Diagnostics() {
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedRun.node_events.map((evt, idx) => (
-                        <tr key={`${evt.name ?? "node"}-${evt.type ?? "event"}-${evt.started_at ?? ""}`}>
+                      {selectedRun.node_events.map((evt, idx) => {
+                        const v = evt as import("../api").NodeEventView;
+                        return (
+                        <tr key={`${v.name ?? v.node_name ?? "node"}-${v.type ?? "event"}-${evt.started_at ?? ""}`}>
                           <td style={{ fontFamily: "monospace", fontSize: 12 }}>
-                            {evt.name ?? `node-${idx}`}
+                            {v.name ?? v.node_name ?? `node-${idx}`}
                           </td>
-                          <td>{evt.type ?? "--"}</td>
+                          <td>{v.type ?? "--"}</td>
                           <td>
                             <span className={`badge ${statusBadgeClass(evt.status ?? "")}`}>
                               {evt.status ?? "--"}
@@ -265,7 +267,8 @@ export default function Diagnostics() {
                             {formatDuration(evt.duration_ms ?? null)}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
