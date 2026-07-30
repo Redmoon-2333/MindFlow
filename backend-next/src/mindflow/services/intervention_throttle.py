@@ -216,3 +216,54 @@ class InterventionThrottle:
             reason=ThrottleReason.OK,
             detail="节流检查通过",
         )
+
+    # ── Atomic daily slot reservation (Wave 18) ───────────────────────
+
+    async def reserve_slot(
+        self,
+        user_id: int,
+        intervention_type: str,
+        *,
+        slot_index: int | None = None,
+    ) -> int | None:
+        """Atomically reserve a daily intervention slot.
+
+        Uses ``INSERT … ON CONFLICT DO NOTHING`` via
+        ``InterventionLogRepository.try_reserve_daily_slot()`` — the same
+        atomic pattern as ``BudgetReservationRepository.try_reserve()``.
+
+        Callers should first check ``can_intervene()`` to determine the
+        current count, then call ``reserve_slot()`` with the next available
+        slot index.  If the reservation succeeds, the slot is claimed and
+        the caller may proceed to log the intervention.  If it fails,
+        another concurrent caller beat us to the slot.
+
+        Args:
+            user_id: User identifier.
+            intervention_type: Type of intervention for audit tracking.
+            slot_index: Specific slot to reserve (1-based).  If None,
+                auto-computes from the current daily count + 1.
+
+        Returns:
+            The reserved ``slot_index`` (1-based) on success, or ``None``
+            if the slot was already taken.
+        """
+        if slot_index is None:
+            now = self._clock.now()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            cutoff_7d = now - timedelta(days=7)
+            cooldown_lower_bound = now - timedelta(hours=self._cooldown_h * 2)
+            stats = await self._repo.get_throttle_stats(
+                user_id,
+                intervention_type,
+                now=now,
+                today_start=today_start,
+                cutoff_7d=cutoff_7d,
+                cooldown_lower_bound=cooldown_lower_bound,
+            )
+            slot_index = stats.today_count + 1
+
+        reserved = await self._repo.try_reserve_daily_slot(
+            user_id, slot_index, intervention_type,
+        )
+        return slot_index if reserved else None

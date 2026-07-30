@@ -12,10 +12,12 @@ explicitly requests feedback (e.g. via the frontend intervention panel).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, Depends, Path, Query  # noqa: B008
 from loguru import logger
 
-from mindflow.api.deps import get_intervention_service
+from mindflow.api.deps import get_activity_repo, get_intervention_service
 from mindflow.api.errors import _not_found
 from mindflow.api.schemas import (
     InterventionCommandResponse,
@@ -26,9 +28,10 @@ from mindflow.api.schemas import (
     InterventionTriggerResponse,
 )
 from mindflow.domain.intervention import InterventionIntensity
-from mindflow.domain.procrastination import (
-    BehaviorSummary,
-    RuleEngine,
+from mindflow.domain.procrastination import RuleEngine
+from mindflow.infrastructure.llm.summary import build_behavior_summary
+from mindflow.infrastructure.repositories.activity import (
+    SQLAlchemyActivityRepository,
 )
 from mindflow.services.intervention_service import InterventionService
 
@@ -36,20 +39,21 @@ router = APIRouter(tags=["intervention"])
 
 
 _DEFAULT_INTENSITY = InterventionIntensity.STANDARD
+_MANUAL_LOOKBACK_MINUTES = 45
 
 
 @router.post("/intervention/trigger", response_model=InterventionTriggerResponse)
 async def trigger_intervention(
     body: InterventionTriggerRequest,
     intervention_svc: InterventionService = Depends(get_intervention_service),  # noqa: B008
+    activity_repo: SQLAlchemyActivityRepository = Depends(get_activity_repo),  # noqa: B008
 ) -> InterventionTriggerResponse:
     """Manually trigger an intervention (bypasses throttle).
 
-    This uses a lightweight rule-engine assessment of the *current*
-    default behavior summary to determine the appropriate intervention
-    type.  In production, the assessment is pre-computed by the
-    attribution pipeline; this endpoint creates one on the fly for
-    on-demand triggers.
+    Recent activity is read from the database and compressed into the
+    same privacy-preserving behavior summary used by automated checks.
+    The summary drives both rule-engine attribution and AI message
+    generation, so manual reminders reflect the user's current context.
 
     Args:
         intensity: Optional override for intervention intensity.
@@ -61,24 +65,21 @@ async def trigger_intervention(
     # Resolve intensity
     resolved_intensity = InterventionIntensity(body.intensity)
 
-    # Build a minimal assessment from a default summary.
-    # This is a reasonable estimate for on-demand triggers; the
-    # full attribution pipeline feeds the automated path.
-    rule_engine = RuleEngine()
-    # A neutral summary — the rule engine will produce a low-confidence
-    # assessment which the intervention service handles gracefully.
-    summary = BehaviorSummary(
-        intended_task=None,
-        duration_min=60.0,
-        actual_focus_min=20.0,
-        context_switches_per_hour=15.0,
-        longest_focus_block_s=180.0,
-        social_media_ratio=0.3,
-        start_delay_min=15.0,
-        keyword_flags=frozenset(),
-        baseline_deviation=None,
+    now = datetime.now(UTC)
+    recent_events = await activity_repo.query_overlapping_range(
+        user_id=1,
+        start=now - timedelta(minutes=_MANUAL_LOOKBACK_MINUTES),
+        end=now,
     )
-    assessment = rule_engine.assess(summary)
+    if not recent_events:
+        return InterventionTriggerResponse(
+            intervention=None,
+            skipped=True,
+            skip_reason="近期活动数据不足，暂时无法生成针对性提醒",
+        )
+
+    summary = build_behavior_summary(recent_events)
+    assessment = RuleEngine().assess(summary)
 
     # Intentionally skip both throttle and deep-work guard on manual trigger:
     # the user explicitly requested feedback, so limits don't apply here.
@@ -87,7 +88,8 @@ async def trigger_intervention(
         assessment=assessment,
         intensity=resolved_intensity,
         bypass_throttle=True,
-        recent_events=None,
+        bypass_deep_work_guard=True,
+        recent_events=recent_events,
     )
 
     if result.skipped:

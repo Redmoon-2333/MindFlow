@@ -29,7 +29,8 @@ from mindflow.domain.procrastination import (
 from mindflow.services.intervention_service import (
     InterventionService,
     _deep_work_guard,
-    _render_message,
+    _enrich_history_item,
+    _render_template_message,
     _select_intervention_type,
 )
 from mindflow.services.intervention_throttle import ThrottleDecision, ThrottleReason
@@ -116,28 +117,28 @@ class TestSelectInterventionType:
 
 
 class TestRenderMessage:
-    """_render_message template rendering."""
+    """_render_template_message template rendering."""
 
     def test_gentle_intensity(self) -> None:
-        title, body = _render_message("nudge", InterventionIntensity.GENTLE)
+        title, body = _render_template_message("nudge", InterventionIntensity.GENTLE)
         assert "小提示" in title
         assert "行动提示" in title
         assert "分心" in body or "延迟" in body
 
     def test_standard_intensity(self) -> None:
-        title, body = _render_message("task_breakdown", InterventionIntensity.STANDARD)
+        title, body = _render_template_message("task_breakdown", InterventionIntensity.STANDARD)
         assert "MindFlow" in title
         assert "拆解" in body
 
     def test_strict_intensity(self) -> None:
-        title, body = _render_message(
+        title, body = _render_template_message(
             "environment_optimization", InterventionIntensity.STRICT
         )
         assert "专注提醒" in title
         assert "干扰" in body
 
     def test_with_cbt_technique(self) -> None:
-        title, body = _render_message(
+        title, body = _render_template_message(
             "task_breakdown", InterventionIntensity.STANDARD, cbt_technique="goal_setting"
         )
         # Uses Chinese label, not raw enum value (P2 requirement)
@@ -220,6 +221,29 @@ class TestInterventionService:
         assert result.skipped
         assert "深度专注" in result.skip_reason
 
+    async def test_manual_request_can_bypass_deep_work_guard(
+        self, service, assessment
+    ) -> None:
+        events = [
+            make_event(
+                user_id=1,
+                timestamp_utc=datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC)
+                + timedelta(seconds=i * 10),
+                duration_s=10.0,
+                process_name="Code.exe",
+            )
+            for i in range(85)
+        ]
+
+        result = await service.maybe_intervene(
+            assessment=assessment,
+            recent_events=events,
+            bypass_deep_work_guard=True,
+        )
+
+        assert not result.skipped
+        assert result.intervention is not None
+
     # ── Throttle rejection ───────────────────────────────────────────
 
     async def test_skipped_when_throttled(
@@ -277,6 +301,25 @@ class TestInterventionService:
         assert call_kwargs["intervention_type"] == "environment_optimization"
         assert call_kwargs["intervention_id"] == result.intervention.id
 
+    async def test_context_json_contains_title_and_message(
+        self, service, assessment, mock_repo
+    ) -> None:
+        """context_json persisted by log_triggered includes concrete title and message text."""
+        result = await service.maybe_intervene(assessment=assessment)
+        assert result.intervention is not None
+        mock_repo.log_triggered.assert_awaited_once()
+        call_kwargs = mock_repo.log_triggered.await_args[1]
+        ctx = call_kwargs["context"]
+        assert isinstance(ctx, dict)
+        assert "title" in ctx, "context_json must contain the generated title"
+        assert "message" in ctx, "context_json must contain the generated message"
+        # The title/message should be concrete Chinese text, not a raw enum
+        assert ctx["title"] == result.intervention.title
+        assert ctx["message"] == result.intervention.message
+        assert "environment_optimization" not in str(ctx["title"]), (
+            "title must be concrete text, not a raw type enum"
+        )
+
     # ── Bypass throttle ──────────────────────────────────────────────
 
     async def test_bypass_throttle(
@@ -323,6 +366,47 @@ class TestInterventionService:
         assert len(history) == 2
         mock_repo.query_range.assert_awaited_once()
 
+    async def test_get_history_enriches_with_title_message(
+        self, service, mock_repo
+    ) -> None:
+        """get_history enriches new-style rows with concrete title and message."""
+        mock_repo.query_range = AsyncMock(return_value=[
+            {
+                "id": "log-new",
+                "intervention_type": "nudge",
+                "cbt_technique": None,
+                "context_json": {
+                    "intensity": "gentle",
+                    "title": "休息一下",
+                    "message": "你已经工作45分钟了，起来走动两分钟吧",
+                },
+            },
+        ])
+        history = await service.get_history(user_id=1, days=7)
+        assert len(history) == 1
+        assert history[0]["title"] == "休息一下"
+        assert history[0]["message"] == "你已经工作45分钟了，起来走动两分钟吧"
+
+    async def test_get_history_provides_fallback_for_legacy_rows(
+        self, service, mock_repo
+    ) -> None:
+        """get_history provides Chinese fallback for legacy rows without stored text."""
+        mock_repo.query_range = AsyncMock(return_value=[
+            {
+                "id": "log-legacy",
+                "intervention_type": "task_breakdown",
+                "cbt_technique": None,
+                "context_json": {"intensity": "standard"},
+            },
+        ])
+        history = await service.get_history(user_id=1, days=7)
+        assert len(history) == 1
+        assert "title" in history[0]
+        assert "message" in history[0]
+        # Must be readable Chinese, not a raw enum
+        assert "task_breakdown" not in str(history[0]["title"])
+        assert "task_breakdown" not in str(history[0]["message"])
+
     # ── Record feedback ─────────────────────────────────────────────
 
     async def test_record_feedback(self, service, mock_repo) -> None:
@@ -346,3 +430,91 @@ class TestInterventionService:
         mock_repo.update_feedback.assert_awaited_once_with(
             "some-id", "neutral", None
         )
+
+
+class TestEnrichHistoryItem:
+    """_enrich_history_item — title/message extraction and legacy fallback."""
+
+    def test_new_record_promotes_stored_title_and_message(self) -> None:
+        """New-style record with title/message in context_json → promoted to top-level."""
+        row: dict[str, object] = {
+            "id": "test-1",
+            "intervention_type": "nudge",
+            "cbt_technique": None,
+            "context_json": {
+                "intensity": "gentle",
+                "title": "该开始了",
+                "message": "你已经停留了5分钟，试试番茄钟吧",
+            },
+        }
+        result = _enrich_history_item(row)
+        assert result["title"] == "该开始了"
+        assert result["message"] == "你已经停留了5分钟，试试番茄钟吧"
+
+    def test_legacy_record_derives_chinese_fallback_with_intensity(self) -> None:
+        """Legacy record without stored text → derives fallback using recorded intensity."""
+        row: dict[str, object] = {
+            "id": "test-2",
+            "intervention_type": "environment_optimization",
+            "cbt_technique": "stimulus_control",
+            "context_json": {
+                "intensity": "strict",
+                "procrastination_types": ["impulsivity"],
+            },
+        }
+        result = _enrich_history_item(row)
+        assert "title" in result
+        assert "message" in result
+        # Strict intensity uses "专注提醒" title
+        assert "专注提醒" in str(result["title"])
+        # Should contain Chinese text, NOT a raw type enum
+        assert "environment_optimization" not in str(result["title"])
+        assert "environment_optimization" not in str(result["message"])
+
+    def test_legacy_record_falls_back_to_standard_when_intensity_missing(self) -> None:
+        """Legacy record with no intensity → falls back to STANDARD."""
+        row: dict[str, object] = {
+            "id": "test-3",
+            "intervention_type": "task_breakdown",
+            "cbt_technique": None,
+            "context_json": {"procrastination_types": ["task_aversion"]},
+        }
+        result = _enrich_history_item(row)
+        assert "title" in result
+        assert "message" in result
+        # Standard intensity uses "MindFlow" in the title
+        assert "MindFlow" in str(result["title"])
+
+    def test_legacy_record_no_context_at_all(self) -> None:
+        """Entirely missing context_json → fallback with STANDARD intensity."""
+        row: dict[str, object] = {
+            "id": "test-4",
+            "intervention_type": "smart_prioritization",
+            "cbt_technique": None,
+            "context_json": None,
+        }
+        result = _enrich_history_item(row)
+        assert "title" in result
+        assert "message" in result
+        # Must be readable Chinese, not a raw enum
+        assert "smart_prioritization" not in str(result["title"])
+        assert "smart_prioritization" not in str(result["message"])
+
+    def test_legacy_fallback_never_returns_raw_enum_labels(self) -> None:
+        """No fallback path should expose a raw enum like 'environment_optimization'."""
+        for itype in (
+            "task_breakdown", "nudge", "environment_optimization", "smart_prioritization"
+        ):
+            row: dict[str, object] = {
+                "id": f"test-{itype}",
+                "intervention_type": itype,
+                "cbt_technique": None,
+                "context_json": None,
+            }
+            result = _enrich_history_item(row)
+            assert itype not in str(result["title"]), (
+                f"title should not contain raw enum {itype!r}"
+            )
+            assert itype not in str(result["message"]), (
+                f"message should not contain raw enum {itype!r}"
+            )

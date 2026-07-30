@@ -8,6 +8,7 @@ Covers (3 endpoints x 3 paths each):
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes.intervention import router as intervention_router
+from mindflow.domain.events import ActivityEvent, WindowSnapshot
 from mindflow.domain.intervention import (
     Intervention,
     InterventionIntensity,
@@ -44,6 +46,24 @@ class TestTriggerIntervention:
         app = FastAPI()
         register_exception_handlers(app)
         app.include_router(intervention_router, prefix="/api/v1")
+        now = datetime.now(UTC)
+        recent_event = ActivityEvent(
+            id="recent-001",
+            user_id=1,
+            timestamp_utc=now,
+            duration_s=600.0,
+            event_type="window_snapshot",
+            data=WindowSnapshot(
+                app_name="Visual Studio Code",
+                window_title="MindFlow",
+                process_name="Code.exe",
+                is_idle=False,
+                timestamp_utc=now,
+            ),
+        )
+        activity_repo = MagicMock()
+        activity_repo.query_overlapping_range = AsyncMock(return_value=[recent_event])
+        app.state.activity_repository = activity_repo
         return app
 
     def test_trigger_success(self, app) -> None:
@@ -72,6 +92,25 @@ class TestTriggerIntervention:
         assert data["skipped"] is False
         assert data["intervention"]["id"] == "trig-001"
         assert data["intervention"]["intervention_type"] == "nudge"
+        call_kwargs = mock_svc.maybe_intervene.await_args.kwargs
+        assert (
+            call_kwargs["recent_events"]
+            == app.state.activity_repository.query_overlapping_range.return_value
+        )
+
+    def test_trigger_skips_when_recent_activity_is_empty(self, app) -> None:
+        mock_svc = _make_mock_service()
+        app.state.intervention_service = mock_svc
+        app.state.activity_repository.query_overlapping_range.return_value = []
+
+        client = TestClient(app)
+        resp = client.post("/api/v1/intervention/trigger", json={"intensity": "standard"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["skipped"] is True
+        assert data["skip_reason"] == "近期活动数据不足，暂时无法生成针对性提醒"
+        mock_svc.maybe_intervene.assert_not_awaited()
 
     def test_trigger_with_intensity(self, app) -> None:
         """Custom intensity parameter is passed through."""

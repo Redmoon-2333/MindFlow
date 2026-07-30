@@ -29,11 +29,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
 from mindflow.domain.intervention import ThrottleStats
-from mindflow.infrastructure.schema import intervention_logs
+from mindflow.infrastructure.schema import intervention_logs, intervention_slot_reservations
 
 
 class Clock(Protocol):
@@ -78,6 +79,8 @@ class InterventionLogRepository:
         *,
         intervention_id: str | None = None,
         triggered_at: datetime | None = None,
+        title: str | None = None,
+        message: str | None = None,
     ) -> dict[str, Any]:
         """Record an intervention trigger event.
 
@@ -88,6 +91,8 @@ class InterventionLogRepository:
             context: Optional JSON-serialisable context (e.g. current assessment data).
             intervention_id: Override the auto-generated ID (for testing).
             triggered_at: Override the timestamp (for testing).
+            title: Notification title (rendered from template or LLM).
+            message: Notification body (rendered from template or LLM).
 
         Returns:
             The inserted row as a dict.
@@ -102,6 +107,8 @@ class InterventionLogRepository:
             "intervention_type": intervention_type,
             "cbt_technique": cbt_technique,
             "context_json": json.dumps(context, ensure_ascii=False) if context else None,
+            "title": title,
+            "message": message,
             "user_response": None,
             "response_latency_s": None,
         }
@@ -475,6 +482,92 @@ class InterventionLogRepository:
         )
         return await self.query_range(user_id, start_dt, end_dt)
 
+    # ── Atomic daily slot reservation (Wave 18) ──────────────────────
+
+    async def try_reserve_daily_slot(
+        self,
+        user_id: int,
+        slot_index: int,
+        intervention_type: str,
+        *,
+        date_str: str | None = None,
+    ) -> bool:
+        """Atomically reserve a daily intervention slot.
+
+        Uses ``INSERT … ON CONFLICT DO NOTHING`` on
+        ``(user_id, date, slot_index)`` — the same pattern as
+        ``BudgetReservationRepository.try_reserve()``.  The UNIQUE
+        constraint acts as the atomic gate: exactly one concurrent
+        caller per slot wins.
+
+        This prevents the TOCTOU race between the throttle's read-only
+        ``can_intervene()`` check and the subsequent ``log_triggered()``
+        INSERT in ``intervention_service.maybe_intervene()``.
+
+        Args:
+            user_id: User identifier.
+            slot_index: 1-based index of the slot to reserve (1, 2, 3, …).
+            intervention_type: Type of intervention for audit purposes.
+            date_str: Optional date override (ISO8601 date). Defaults to today.
+
+        Returns:
+            ``True`` if the slot was successfully reserved, ``False`` if
+            it was already taken by a concurrent caller.
+        """
+        if date_str is None:
+            date_str = self._clock.now().date().isoformat()
+
+        values = {
+            "id": new_id(),
+            "user_id": user_id,
+            "date": date_str,
+            "slot_index": slot_index,
+            "intervention_type": intervention_type,
+        }
+
+        async with self._session_factory() as session, session.begin():
+            stmt = (
+                sqlite_insert(intervention_slot_reservations)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    index_elements=["user_id", "date", "slot_index"]
+                )
+                .returning(intervention_slot_reservations.c.id)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none() is not None
+
+    async def release_daily_slot(
+        self,
+        user_id: int,
+        slot_index: int,
+        *,
+        date_str: str | None = None,
+    ) -> None:
+        """Release a previously reserved daily slot.
+
+        Deletes the reservation row so the slot becomes available again
+        (e.g. when an intervention dispatch fails after reservation).
+
+        Args:
+            user_id: User identifier.
+            slot_index: 1-based slot index to release.
+            date_str: Optional date override. Defaults to today.
+        """
+        if date_str is None:
+            date_str = self._clock.now().date().isoformat()
+
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                sa.delete(intervention_slot_reservations).where(
+                    sa.and_(
+                        intervention_slot_reservations.c.user_id == user_id,
+                        intervention_slot_reservations.c.date == date_str,
+                        intervention_slot_reservations.c.slot_index == slot_index,
+                    )
+                )
+            )
+
     def __repr__(self) -> str:
         return "<InterventionLogRepository>"
 
@@ -498,6 +591,8 @@ def _row_to_dict(row: sa.Row[Any]) -> dict[str, Any]:
         "intervention_type": row.intervention_type,
         "cbt_technique": row.cbt_technique,
         "context_json": context,
+        "title": getattr(row, "title", None),
+        "message": getattr(row, "message", None),
         "user_response": row.user_response,
         "response_latency_s": row.response_latency_s,
         "feedback_rating": row.feedback_rating,
