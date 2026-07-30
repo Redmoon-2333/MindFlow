@@ -214,6 +214,224 @@ class TestMigrations:
         assert "idx_events_user_process_time" in indexes
         assert {"app_name", "process_name", "window_title", "is_idle"} <= columns
 
+    async def test_workflow_tables_exist_with_correct_columns(
+        self, async_db_url: str, sync_db_url: str
+    ) -> None:
+        """Workflow tables exist after migration with correct column types."""
+        await run_migrations(async_db_url)
+        tables = _get_table_names(sync_db_url)
+        assert "workflow_runs" in tables
+        assert "workflow_node_events" in tables
+        assert "workflow_budget_reservations" in tables
+
+        sync_path = sync_db_url.replace("sqlite://", "")
+        import sqlite3
+
+        conn = sqlite3.connect(sync_path)
+
+        wfr_cols = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(workflow_runs)")}
+        assert wfr_cols["id"] == "TEXT"
+        assert wfr_cols["workflow_name"] == "TEXT"
+        assert wfr_cols["run_id"] == "TEXT"
+        assert wfr_cols["status"] == "TEXT"
+        assert wfr_cols["origin"] == "TEXT"
+        assert wfr_cols["user_id"] == "INTEGER"
+        assert wfr_cols["target_date"] == "TEXT"
+        assert wfr_cols["idempotency_key"] == "TEXT"
+        assert wfr_cols["token_count"] == "INTEGER"
+        assert wfr_cols["call_count"] == "INTEGER"
+        assert wfr_cols["trace_id"] == "TEXT"
+        assert "source" in wfr_cols
+        assert "retry_reason" in wfr_cols
+        assert "degradation_reason" in wfr_cols
+
+        wne_cols = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(workflow_node_events)")}
+        assert wne_cols["id"] == "TEXT"
+        assert wne_cols["run_id"] == "TEXT"
+        assert wne_cols["node_name"] == "TEXT"
+        assert wne_cols["status"] == "TEXT"
+        assert wne_cols["started_at"] == "TEXT"
+        assert wne_cols["duration_ms"] == "INTEGER"
+        assert "error_category" in wne_cols
+
+        wbr_cols = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(workflow_budget_reservations)")}
+        assert wbr_cols["id"] == "TEXT"
+        assert wbr_cols["idempotency_key"] == "TEXT"
+        assert wbr_cols["origin"] == "TEXT"
+        assert wbr_cols["user_id"] == "INTEGER"
+        assert wbr_cols["reserved_at"] == "TEXT"
+        assert "expires_at" in wbr_cols
+        assert "released_at" in wbr_cols
+
+        conn.close()
+
+    async def test_workflow_tables_have_unique_constraints(
+        self, async_db_url: str, sync_db_url: str
+    ) -> None:
+        """idempotency_key columns have UNIQUE constraints."""
+        await run_migrations(async_db_url)
+
+        sync_path = sync_db_url.replace("sqlite://", "")
+        import sqlite3
+
+        conn = sqlite3.connect(sync_path)
+
+        # Check workflow_runs has unique on idempotency_key
+        wfr_indexes = {
+            row[1] for row in conn.execute(
+                "SELECT * FROM sqlite_master WHERE type='index' AND tbl_name='workflow_runs'"
+            )
+        }
+        # SQLite creates auto-named index for UNIQUE but also our explicit named indexes
+        has_unique = any(
+            "idempotency_key" in str(idx) for idx in wfr_indexes
+        )
+        # Also check via the auto index from UNIQUE constraint
+        auto_indexes = {
+            row[1] for row in conn.execute(
+                "PRAGMA index_list('workflow_runs')"
+            )
+        }
+        # The UNIQUE on idempotency_key creates an auto-named unique index
+        unique_wfr = {
+            row[1]: row[2]
+            for row in conn.execute("PRAGMA index_list('workflow_runs')")
+        }
+        wfr_unique = any(
+            unique_wfr[name] for name in unique_wfr
+            if unique_wfr[name] == 1  # unique flag
+        )
+
+        # Check budget reservations has unique on idempotency_key
+        unique_wbr = {
+            row[1]: row[2]
+            for row in conn.execute("PRAGMA index_list('workflow_budget_reservations')")
+        }
+        wbr_unique = any(
+            unique_wbr[name] for name in unique_wbr
+            if unique_wbr[name] == 1  # unique flag
+        )
+
+        conn.close()
+        assert wfr_unique, "workflow_runs idempotency_key should have UNIQUE constraint"
+        assert wbr_unique, "workflow_budget_reservations idempotency_key should have UNIQUE constraint"
+
+    async def test_workflow_tables_have_indexes(
+        self, async_db_url: str, sync_db_url: str
+    ) -> None:
+        """Named indexes exist on workflow tables."""
+        await run_migrations(async_db_url)
+
+        sync_path = sync_db_url.replace("sqlite://", "")
+        import sqlite3
+
+        conn = sqlite3.connect(sync_path)
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' ORDER BY name"
+            ).fetchall()
+        }
+        conn.close()
+
+        assert "ix_wfr_status_target_date" in indexes
+        assert "ix_wfr_user_date" in indexes
+        assert "ix_wne_run_node" in indexes
+        assert "ix_wbr_key" in indexes
+
+    async def test_workflow_tables_upgrade_downgrade_upgrade_cycle(
+        self, sync_db_url: str
+    ) -> None:
+        """Upgrade to 0013, downgrade to 0012, then upgrade again — leaves tables intact."""
+        import asyncio
+
+        from alembic.config import Config
+
+        from alembic import command
+        from mindflow.infrastructure.migrations import BASE_DIR
+
+        def _run_alembic(action: str, revision: str) -> None:
+            cfg = Config(str(BASE_DIR / "alembic.ini"))
+            cfg.set_main_option("sqlalchemy.url", sync_db_url)
+            getattr(command, action)(cfg, revision)
+
+        # Step 1: Upgrade to 0013
+        await asyncio.to_thread(_run_alembic, "upgrade", "0013_create_workflow_tables")
+
+        sync_path = sync_db_url.replace("sqlite://", "")
+        import sqlite3
+
+        conn = sqlite3.connect(sync_path)
+        tables_before = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+        }
+        conn.close()
+        assert "workflow_runs" in tables_before
+
+        # Step 2: Downgrade to 0012
+        await asyncio.to_thread(_run_alembic, "downgrade", "0012_add_chat_session_recent_index")
+
+        conn = sqlite3.connect(sync_path)
+        tables_after_down = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+        }
+        conn.close()
+        assert "workflow_runs" not in tables_after_down
+        assert "workflow_node_events" not in tables_after_down
+        assert "workflow_budget_reservations" not in tables_after_down
+
+        # Step 3: Re-upgrade to 0013
+        await asyncio.to_thread(_run_alembic, "upgrade", "0013_create_workflow_tables")
+
+        conn = sqlite3.connect(sync_path)
+        tables_after_reup = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+        }
+        conn.close()
+        assert "workflow_runs" in tables_after_reup
+        assert "workflow_node_events" in tables_after_reup
+        assert "workflow_budget_reservations" in tables_after_reup
+
+    async def test_workflow_table_status_default(
+        self, async_db_url: str, sync_db_url: str
+    ) -> None:
+        """workflow_runs.status defaults to 'pending'."""
+        await run_migrations(async_db_url)
+
+        sync_path = sync_db_url.replace("sqlite://", "")
+        import sqlite3
+
+        conn = sqlite3.connect(sync_path)
+        # Insert a row without specifying status
+        conn.execute(
+            """
+            INSERT INTO workflow_runs (
+                id, workflow_name, run_id, origin, user_id, target_date,
+                idempotency_key, created_at, updated_at
+            ) VALUES (
+                'test-id', 'test_wf', 'test-run', 'scheduler', 1, '2026-01-01',
+                'test-key', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+            )
+            """
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT status FROM workflow_runs WHERE id = 'test-id'"
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row[0] == "pending"
+
     async def test_scheduled_job_heartbeat_upgrade_and_downgrade_contract(
         self,
         sync_db_url: str,

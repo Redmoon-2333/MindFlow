@@ -10,17 +10,20 @@ Every table here mirrors an Alembic migration.  If you add a column
 here, add it in the migration too, and vice versa.
 
 Tables owned by this module:
-  - procrastination_analyses   (migration 0001, 0002, 0011)
-  - intervention_logs          (migration 0001)
-  - chat_messages              (migration 0003)
-  - user_preferences           (migration 0001)
-  - baseline_models            (migration 0001; also used by train/)
-  - app_classification_rules   (migration 0006)
-  - interaction_buckets        (migration 0001)
-  - browser_segments           (migration 0001)
-  - focus_session_feedback     (migration 0001)
-  - browser_tokens             (migration 0001)
-  - behavior_feature_windows   (migration 0001)
+  - procrastination_analyses        (migration 0001, 0002, 0011)
+  - intervention_logs               (migration 0001)
+  - chat_messages                   (migration 0003)
+  - user_preferences                (migration 0001)
+  - baseline_models                 (migration 0001; also used by train/)
+  - app_classification_rules        (migration 0006)
+  - interaction_buckets             (migration 0001)
+  - browser_segments                (migration 0001)
+  - focus_session_feedback          (migration 0001)
+  - browser_tokens                  (migration 0001)
+  - behavior_feature_windows        (migration 0001)
+  - workflow_runs                   (migration 0013)
+  - workflow_node_events            (migration 0013)
+  - workflow_budget_reservations    (migration 0013)
 
 NOTE: ``activity_events`` is intentionally NOT here — it lives in
 ``repositories/activity.py`` because its computed columns (JSON
@@ -77,6 +80,8 @@ intervention_logs = sa.Table(
     sa.Column("intervention_type", sa.Text(), nullable=False),
     sa.Column("cbt_technique", sa.Text(), nullable=True),
     sa.Column("context_json", sa.Text(), nullable=True),
+    sa.Column("title", sa.Text(), nullable=True),
+    sa.Column("message", sa.Text(), nullable=True),
     sa.Column("user_response", sa.Text(), nullable=True),
     sa.Column("response_latency_s", sa.Float(), nullable=True),
     sa.Column("feedback_rating", sa.Text(), nullable=True),
@@ -224,4 +229,112 @@ behavior_feature_windows = sa.Table(
     sa.Column("label", sa.Text(), nullable=True),
     sa.Column("created_at", sa.Text(), nullable=False),
     sa.UniqueConstraint("user_id", "window_start_utc", "feature_schema_version"),
+)
+
+# ── Workflow orchestration tables (from repositories/workflow_runs.py) ──
+# Matches migration 0013.
+#
+# These tables track workflow runs, per-node events, and atomic budget
+# reservations.  They intentionally store ONLY runtime metadata (status,
+# timestamps, counters, privacy-safe trace IDs) — NO chat text, raw
+# prompts, evidence payloads, or expert content is duplicated here.
+
+workflow_runs = sa.Table(
+    "workflow_runs",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("workflow_name", sa.Text(), nullable=False),
+    sa.Column("run_id", sa.Text(), nullable=False),
+    sa.Column(
+        "status",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("'pending'"),
+    ),
+    sa.Column("graph_version", sa.Text(), nullable=True),
+    sa.Column("source", sa.Text(), nullable=True),
+    sa.Column("origin", sa.Text(), nullable=False),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("target_date", sa.Text(), nullable=False),
+    sa.Column("idempotency_key", sa.Text(), nullable=True, unique=True),
+    sa.Column("started_at", sa.Text(), nullable=True),
+    sa.Column("completed_at", sa.Text(), nullable=True),
+    sa.Column("retry_reason", sa.Text(), nullable=True),
+    sa.Column("degradation_reason", sa.Text(), nullable=True),
+    sa.Column("token_count", sa.Integer(), nullable=True),
+    sa.Column("call_count", sa.Integer(), nullable=True),
+    sa.Column("trace_id", sa.Text(), nullable=True),
+    sa.Column(
+        "created_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.Column(
+        "updated_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.UniqueConstraint("idempotency_key"),
+)
+
+workflow_node_events = sa.Table(
+    "workflow_node_events",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("run_id", sa.Text(), nullable=False),
+    sa.Column("node_name", sa.Text(), nullable=False),
+    sa.Column("status", sa.Text(), nullable=False),
+    sa.Column("started_at", sa.Text(), nullable=False),
+    sa.Column("completed_at", sa.Text(), nullable=True),
+    sa.Column("duration_ms", sa.Integer(), nullable=True),
+    sa.Column("error_category", sa.Text(), nullable=True),
+)
+
+# ── Intervention daily slot reservations (atomic throttle concurrency) ──
+# Matches migration (in-memory for tests; no separate migration file).
+#
+# Each (user_id, date, slot_index) uniquely reserves one intervention slot
+# per day.  The UNIQUE constraint acts as the atomic gate — exactly one
+# concurrent caller wins the slot via INSERT ON CONFLICT DO NOTHING.
+# This prevents the TOCTOU race between throttle read-check and log insert.
+
+intervention_slot_reservations = sa.Table(
+    "intervention_slot_reservations",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("date", sa.Text(), nullable=False),
+    sa.Column("slot_index", sa.Integer(), nullable=False),
+    sa.Column("intervention_type", sa.Text(), nullable=False),
+    sa.Column(
+        "reserved_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.UniqueConstraint("user_id", "date", "slot_index"),
+)
+
+workflow_budget_reservations = sa.Table(
+    "workflow_budget_reservations",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("workflow_name", sa.Text(), nullable=False),
+    sa.Column("run_id", sa.Text(), nullable=True),
+    sa.Column("origin", sa.Text(), nullable=False),
+    sa.Column("idempotency_key", sa.Text(), nullable=False, unique=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("target_date", sa.Text(), nullable=False),
+    sa.Column("budget_type", sa.Text(), nullable=False),
+    sa.Column(
+        "reserved_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.Column("expires_at", sa.Text(), nullable=True),
+    sa.Column("released_at", sa.Text(), nullable=True),
+    sa.UniqueConstraint("idempotency_key"),
 )
