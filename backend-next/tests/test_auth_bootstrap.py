@@ -1,7 +1,8 @@
-﻿"""Security tests for one-time local desktop bootstrap authentication."""
+"""Security tests for one-time local desktop bootstrap authentication."""
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -28,6 +29,10 @@ def _app() -> FastAPI:
     @app.get("/panel")
     async def panel() -> dict[str, bool]:
         return {"ui": True}
+
+    @app.get("/api/v1/health/live")
+    async def health_live() -> dict[str, str]:
+        return {"status": "alive"}
 
     return app
 
@@ -102,3 +107,40 @@ def test_browser_session_store_is_independent_expiring_and_bounded() -> None:
     assert store.verify(third) is True
     now[0] = 106.0
     assert store.verify(second) is False
+
+
+# ── Public route exemption characterisation ────────────────────────────────
+
+
+def test_documented_public_paths_accessible_without_auth() -> None:
+    """Baseline: documented public paths must remain accessible without auth."""
+    with TestClient(_app()) as client:
+        assert client.get("/api/v1/health/live").status_code == 200
+        assert client.get("/panel").status_code == 200
+        # /api/v1/auth/bootstrap is public (ticket IS the auth);
+        # POST without body gets 422 validation error, not 401.
+        resp = client.post("/api/v1/auth/bootstrap", json={})
+        assert resp.status_code != 401
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        pytest.param("POST", "/api/v1/auth/bootstrap/ticket", id="bootstrap-ticket"),
+        pytest.param("POST", "/api/v1/auth/bootstrap/ticket-extra", id="bootstrap-ticket-extra"),
+        pytest.param("POST", "/api/v1/auth/login", id="auth-login"),
+        pytest.param("GET", "/api/v1/protected", id="generic-protected"),
+    ],
+)
+def test_auth_required_for_protected_api_paths(method: str, path: str) -> None:
+    """Protected /api/ paths must reject unauthenticated requests with 401.
+
+    Regression guard: ``/api/v1/auth/bootstrap/ticket`` MUST require a
+    valid Bearer token — it is the launcher-only ticket-issuance endpoint.
+    """
+    with TestClient(_app()) as client:
+        response = client.request(method, path)
+    assert response.status_code == 401, (
+        f"Expected 401 for unauthenticated {method} {path}, "
+        f"got {response.status_code}"
+    )
