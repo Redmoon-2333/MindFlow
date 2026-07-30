@@ -1,0 +1,78 @@
+/* Model Center — V2 training readiness, job lifecycle, baseline, model status */
+/* All colors reference theme.css tokens */
+
+.mc-header { margin-bottom: 24px; }
+.mc-header h1 { font-size: 24px; font-weight: 700; }
+.mc-header p { color: var(--color-text-secondary); font-size: 14px; margin-top: 4px; }
+
+.mc-section { margin-bottom: 24px; }
+.mc-section-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+
+/* Data readiness summary row — intrinsic grid */
+.mc-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+/* Gate check list */
+.mc-gates { display: flex; flex-direction: column; gap: 8px; }
+.mc-gate {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border: 1px solid var(--color-border); border-radius: 8px;
+  font-size: 13px; background: var(--color-bg-elevated);
+}
+.mc-gate .gate-label { font-weight: 500; }
+.mc-gate .gate-detail { font-size: 12px; color: var(--color-text-tertiary); margin-top: 2px; }
+
+/* Blockers — reuse .error-box pattern from theme.css (existing debt documented) */
+.mc-blockers { display: flex; flex-direction: column; gap: 6px; }
+
+/* Training job status display */
+.mc-job-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mc-job-status .spinner { margin: 0; width: 18px; height: 18px; border-width: 2px; }
+
+/* Baseline empty state */
+.mc-baseline-empty { font-size: 13px; color: var(--color-text-tertiary); }
+
+/* Model mode display */
+.mc-model-mode { display: flex; align-items: center; gap: 8px; }
+.mc-model-mode .mode-label { font-size: 13px; color: var(--color-text-secondary); }
+
+/* Training action row */
+.mc-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+
+/* Focus-visible for all new interactive elements */
+.tabs .tab:focus-visible,
+.mc-section .btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* NotFound page — class-based */
+.not-found-page {
+  text-align: center;
+  padding-top: 80px;
+}
+.not-found-page .nf-title {
+  font-size: 72px;
+  font-weight: 700;
+  color: var(--color-primary);
+  margin-bottom: 8px;
+}
+.not-found-page .nf-desc {
+  font-size: 18px;
+  color: var(--color-text-secondary);
+  margin-bottom: 32px;
+}
+.not-found-page .nf-link {
+  text-decoration: none;
+  display: inline-flex;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .not-found-page { padding-top: 48px; }
+  .not-found-page .nf-title { font-size: 48px; }
+}
