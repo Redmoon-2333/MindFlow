@@ -45,7 +45,19 @@ build/
 backend-next/.smoke_backend/
 backend-next/_diag_*.py
 backend-next/_minimal_test.py
+backend-next/_analyze_label_candidates.py
+backend-next/_apply_app_labels.py
+backend-next/_fix_labels.py
+backend-next/_label_candidates.json
+backend-next/_label_policy.py
+backend-next/_screenshot.js
+backend-next/_test_label_policy.py
+backend-next/_verify_app_labels.py
 mindflow-frontend-design/
+frontend/e2e/screenshots/
+frontend/runtime_logs/
+frontend/screenshots/
+frontend/test-results/
 
 # IDE and OS
 .idea/
