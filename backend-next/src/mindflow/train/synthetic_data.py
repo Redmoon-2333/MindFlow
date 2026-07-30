@@ -367,7 +367,12 @@ def _generate_user_data(
     injects procrastination episodes.
     """
     rng = np.random.default_rng(seed)
-    procrastination_rng = np.random.default_rng(np.random.SeedSequence([seed, 1]))
+    # Use seed % 100 so user RNG streams stay close for small user_id
+    # offsets, producing consistent procrastination behaviour across users
+    # when called with a single seed value (e.g. seed=42).
+    procrastination_rng = np.random.default_rng(
+        np.random.SeedSequence([seed % 100, user_id])
+    )
     start_date = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     interval_seconds = 3600 // samples_per_hour
 

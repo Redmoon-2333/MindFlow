@@ -46,6 +46,7 @@ class V2TrainingData:
     session_ids: list[str]
     dates: list[str]
     explicit_mask: np.ndarray
+    label_sources: list[str]
     explicit_feedback_count: int
     explicit_focus_count: int
     explicit_distract_count: int
@@ -82,6 +83,7 @@ def prepare_v2_training_data(
     sid_list: list[str] = []
     date_list: list[str] = []
     explicit_list: list[bool] = []
+    source_list: list[str] = []
 
     for row in feature_windows:
         parsed = _parse_window(row)
@@ -94,27 +96,40 @@ def prepare_v2_training_data(
 
         # Match by time overlap with feedback sessions
         matched_label: int | None = None
+        has_feedback_match: bool = False
         for fb_start, fb_end, fb_label, _fb_task in feedback_intervals:
             if _overlap_seconds(start, end, fb_start, fb_end) > 0:
+                has_feedback_match = True
                 matched_label = fb_label
                 break
 
-        wid = str(row.get("id", ""))
+        wid = str(row.get("id", "") or start.isoformat())
         if matched_label is not None:
             y_list.append(matched_label)
             w_list.append(1.0)
             explicit_list.append(True)
+            source_list.append("explicit")
             explicit_session_ids.add(wid)
             if matched_label == 1:
                 focus_sessions.add(wid)
             else:
                 distract_sessions.add(wid)
             feedback_days.add(start.strftime("%Y-%m-%d"))
+        elif has_feedback_match:
+            # Window overlapped a feedback session whose label is None
+            # (e.g. "mixed" or score == 3).  Treat as mixed (-1) so it
+            # is excluded from training rather than weak-labelled.
+            y_list.append(-1)
+            w_list.append(0.25)
+            explicit_list.append(False)
+            source_list.append("mixed")
+            mixed_count += 1
         else:
             weak = _weak_label(features)
             y_list.append(weak)
-            w_list.append(0.3)
+            w_list.append(0.25)
             explicit_list.append(False)
+            source_list.append("weak")
             if weak == -1:
                 mixed_count += 1
 
@@ -133,6 +148,7 @@ def prepare_v2_training_data(
         session_ids=[s for s, v in zip(sid_list, valid) if v],
         dates=[d for d, v in zip(date_list, valid) if v],
         explicit_mask=explicit_mask[valid],
+        label_sources=[s for s, v in zip(source_list, valid) if v],
         explicit_feedback_count=len(explicit_session_ids),
         explicit_focus_count=len(focus_sessions),
         explicit_distract_count=len(distract_sessions),
@@ -211,7 +227,7 @@ def evaluate_v2_quality_gate(
     rule_baseline = evaluation.get("rule_baseline", {})
     checks = {
         "minimum_days": distinct_feedback_days >= 1,
-        "minimum_explicit_feedback": explicit_feedback_count >= 20,
+        "minimum_explicit_feedback": explicit_feedback_count >= 30,
         "minimum_class_feedback": explicit_focus_count >= 5 and explicit_distract_count >= 5,
         "balanced_accuracy": float(candidate.get("balanced_accuracy", 0.0)) >= 0.50,
         "minority_f1": float(candidate.get("minority_f1", 0.0)) >= 0.30,
