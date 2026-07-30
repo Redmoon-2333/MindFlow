@@ -15,13 +15,14 @@ from loguru import logger
 
 from mindflow.api.deps import get_report_service
 from mindflow.api.errors import _not_found
+from mindflow.api.schemas import DailyReportResponse, WeeklyReportResponse
 from mindflow.services.report_service import ReportService
 from mindflow.time_utils import business_today
 
 router = APIRouter(tags=["reports"])
 
 
-@router.get("/reports/daily")
+@router.get("/reports/daily", response_model=DailyReportResponse)
 async def get_daily_report(
     request: Request,
     report_date: date | None = Query(  # noqa: B008
@@ -41,7 +42,7 @@ async def get_daily_report(
     return report
 
 
-@router.get("/reports/weekly")
+@router.get("/reports/weekly", response_model=WeeklyReportResponse)
 async def get_weekly_report(
     request: Request,
     week_start: date | None = Query(  # noqa: B008

@@ -21,7 +21,11 @@ from fastapi import status as http_status
 from mindflow.api.deps import get_analysis_service, get_baseline_repo
 from mindflow.api.errors import ProblemDetail, _not_found
 from mindflow.api.schemas import (
+    BaselineResponse,
+    BehavioralProfileResponse,
     CreateTrainingJobResponse,
+    ModelStatusResponse,
+    PatternsResponse,
     TrainingJobResponse,
     TrainingReadinessResponse,
 )
@@ -44,7 +48,7 @@ from mindflow.services.training_readiness_service import TrainingReadinessServic
 router = APIRouter(tags=["analytics"])
 
 
-@router.get("/analytics/patterns")
+@router.get("/analytics/patterns", response_model=PatternsResponse)
 async def get_patterns(
     days: int = Query(default=14, ge=1, le=90, description="Analysis window in days"),
     analysis: AnalysisService = Depends(get_analysis_service),  # noqa: B008
@@ -61,7 +65,7 @@ async def get_patterns(
     return patterns
 
 
-@router.get("/analytics/baseline")
+@router.get("/analytics/baseline", response_model=BaselineResponse)
 async def get_baseline(
     baseline_repo: BaselineRepository = Depends(get_baseline_repo),  # noqa: B008
 ) -> dict[str, Any]:
@@ -81,7 +85,7 @@ async def get_baseline(
     }
 
 
-@router.get("/analytics/profile")
+@router.get("/analytics/profile", response_model=BehavioralProfileResponse)
 async def get_profile(
     days: int = Query(default=30, ge=1, le=365, description="Profile window in days"),
     analysis: AnalysisService = Depends(get_analysis_service),  # noqa: B008
@@ -102,7 +106,7 @@ async def get_profile(
     return profile
 
 
-@router.get("/analytics/model-status")
+@router.get("/analytics/model-status", response_model=ModelStatusResponse)
 async def get_model_status(
     request: Request,
 ) -> dict[str, Any]:

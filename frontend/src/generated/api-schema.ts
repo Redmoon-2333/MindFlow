@@ -728,11 +728,10 @@ export interface paths {
          * Trigger Intervention
          * @description Manually trigger an intervention (bypasses throttle).
          *
-         *     This uses a lightweight rule-engine assessment of the *current*
-         *     default behavior summary to determine the appropriate intervention
-         *     type.  In production, the assessment is pre-computed by the
-         *     attribution pipeline; this endpoint creates one on the fly for
-         *     on-demand triggers.
+         *     Recent activity is read from the database and compressed into the
+         *     same privacy-preserving behavior summary used by automated checks.
+         *     The summary drives both rule-engine attribution and AI message
+         *     generation, so manual reminders reflect the user's current context.
          *
          *     Args:
          *         intensity: Optional override for intervention intensity.
@@ -1114,6 +1113,33 @@ export interface components {
             newest_timestamp: string | null;
         };
         /**
+         * AttributionAssessment
+         * @description Assessment data inside an attribution response.
+         */
+        AttributionAssessment: {
+            /** Procrastination Types */
+            procrastination_types: string[];
+            /** Type Confidence */
+            type_confidence: {
+                [key: string]: number;
+            };
+            /** Cbt Technique */
+            cbt_technique?: string | null;
+            /** Response Text */
+            response_text: string;
+        };
+        /**
+         * AttributionMeta
+         * @description Degradation metadata.
+         */
+        AttributionMeta: {
+            /**
+             * Degraded
+             * @default false
+             */
+            degraded: boolean;
+        };
+        /**
          * AttributionRequest
          * @description Optional request body for POST /analytics/attribution.
          */
@@ -1131,6 +1157,18 @@ export interface components {
             force: boolean;
         };
         /**
+         * AttributionResponse
+         * @description Attribution result returned by ``POST /analytics/attribution``.
+         */
+        AttributionResponse: {
+            assessment: components["schemas"]["AttributionAssessment"];
+            /** Source */
+            source: string;
+            /** Cached */
+            cached: boolean;
+            meta: components["schemas"]["AttributionMeta"];
+        };
+        /**
          * AutonomyStatus
          * @description Response model for autonomy status.
          */
@@ -1139,6 +1177,42 @@ export interface components {
             enabled: boolean;
             /** Paused Until */
             paused_until?: string | null;
+        };
+        /**
+         * BaselineResponse
+         * @description Personal behaviour baseline summary.
+         */
+        BaselineResponse: {
+            /** User Id */
+            user_id: number;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Total Days */
+            total_days: number;
+            /** Total Samples */
+            total_samples: number;
+            /** Features */
+            features: string[];
+        };
+        /**
+         * BehavioralProfileResponse
+         * @description Behavioural profile returned by ``AnalysisService.behavioral_profile``.
+         */
+        BehavioralProfileResponse: {
+            /** Peak Focus Hours */
+            peak_focus_hours: components["schemas"]["PeakFocusHour"][];
+            /** Top Apps */
+            top_apps: components["schemas"]["TopProfileApp"][];
+            /** Avg Focus Block Min */
+            avg_focus_block_min: number;
+            /** Distraction Triggers */
+            distraction_triggers: components["schemas"]["DistractionTrigger"][];
+            /** Total Events Analysed */
+            total_events_analysed: number;
+            /** Profile Date */
+            profile_date: string;
         };
         /**
          * Blocker
@@ -1281,6 +1355,28 @@ export interface components {
             status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled";
         };
         /**
+         * DailyReportResponse
+         * @description Canonical daily report shape returned by ``ReportService``.
+         */
+        DailyReportResponse: {
+            /** User Id */
+            user_id: number;
+            /** Date */
+            date: string;
+            /** Total Focus Min */
+            total_focus_min: number;
+            /** Total Distraction Min */
+            total_distraction_min: number;
+            /** Focus Score */
+            focus_score: number;
+            /** Top Apps */
+            top_apps?: components["schemas"]["TopAppEntry"][] | null;
+            /** Switch Frequency */
+            switch_frequency: number;
+            /** Pattern Summary */
+            pattern_summary: string;
+        };
+        /**
          * DiagnosticsListResponse
          * @description Paginated list of workflow runs.
          */
@@ -1296,6 +1392,16 @@ export interface components {
             has_more: boolean;
             /** Next Offset */
             next_offset?: number | null;
+        };
+        /**
+         * DistractionTrigger
+         * @description Distraction-trigger application.
+         */
+        DistractionTrigger: {
+            /** App */
+            app: string;
+            /** Count */
+            count: number;
         };
         /**
          * FeedbackLabelSummary
@@ -1327,6 +1433,16 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HighSwitchPeriod
+         * @description Hourly switch-aggregation entry.
+         */
+        HighSwitchPeriod: {
+            /** Hour */
+            hour: number;
+            /** Switch Count */
+            switch_count: number;
         };
         /** InterventionCommandResponse */
         InterventionCommandResponse: {
@@ -1416,6 +1532,30 @@ export interface components {
             skip_reason?: string | null;
         };
         /**
+         * ModelStatusResponse
+         * @description ML model loading and readiness status.
+         */
+        ModelStatusResponse: {
+            /** Loaded */
+            loaded: boolean;
+            /** Ready */
+            ready: boolean;
+            /** Mode */
+            mode: string;
+            /** V2 Mode */
+            v2_mode: string;
+            /** Message */
+            message: string;
+            /** Feature Schema Version */
+            feature_schema_version?: number | null;
+            /** Version */
+            version?: string | null;
+            /** Available Versions */
+            available_versions?: string[] | null;
+            /** Reasons */
+            reasons?: string[] | null;
+        };
+        /**
          * NodeEventSummary
          * @description Sanitised node event: structural metadata only — no prompts or content.
          */
@@ -1472,6 +1612,22 @@ export interface components {
             round: number;
         };
         /**
+         * PatternsResponse
+         * @description Distraction pattern analysis returned by ``AnalysisService.detect_patterns``.
+         */
+        PatternsResponse: {
+            /** High Switch Periods */
+            high_switch_periods: components["schemas"]["HighSwitchPeriod"][];
+            /** Trigger Apps */
+            trigger_apps: components["schemas"]["TriggerApp"][];
+            /** Heatmap */
+            heatmap: number[][];
+            /** Total Sessions */
+            total_sessions: number;
+            /** Distraction Ratio */
+            distraction_ratio: number;
+        };
+        /**
          * PauseRequest
          * @description Request body for POST /api/v1/autonomy/pause.
          */
@@ -1482,6 +1638,16 @@ export interface components {
              * @default 1
              */
             hours: number;
+        };
+        /**
+         * PeakFocusHour
+         * @description Hour entry in the behavioural profile.
+         */
+        PeakFocusHour: {
+            /** Hour */
+            hour: number;
+            /** Avg Score */
+            avg_score: number;
         };
         /**
          * RunDetail
@@ -1559,6 +1725,26 @@ export interface components {
             interaction_retention_days?: number | null;
             /** Activity Retention Days */
             activity_retention_days?: number | null;
+        };
+        /**
+         * TopAppEntry
+         * @description Single application in a daily report's top-apps list.
+         */
+        TopAppEntry: {
+            /** App */
+            app: string;
+            /** Minutes */
+            minutes: number;
+        };
+        /**
+         * TopProfileApp
+         * @description Top productive application in the profile.
+         */
+        TopProfileApp: {
+            /** App */
+            app: string;
+            /** Total Min */
+            total_min: number;
         };
         /**
          * TrainingJobResponse
@@ -1658,6 +1844,16 @@ export interface components {
             current_training_job: components["schemas"]["TrainingJobSummary"] | null;
         };
         /**
+         * TriggerApp
+         * @description Application tied to distraction sessions.
+         */
+        TriggerApp: {
+            /** App */
+            app: string;
+            /** Count */
+            count: number;
+        };
+        /**
          * V2GateCheck
          * @description One of the seven V2 quality-gate checks with honest status.
          */
@@ -1717,6 +1913,72 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WeeklyAverages
+         * @description Weekly average metrics.
+         */
+        WeeklyAverages: {
+            /**
+             * Avg Focus Min
+             * @default 0
+             */
+            avg_focus_min: number;
+            /**
+             * Avg Distraction Min
+             * @default 0
+             */
+            avg_distraction_min: number;
+            /**
+             * Avg Focus Score
+             * @default 0
+             */
+            avg_focus_score: number;
+            /**
+             * Avg Switch Frequency
+             * @default 0
+             */
+            avg_switch_frequency: number;
+        };
+        /**
+         * WeeklyReportResponse
+         * @description Canonical weekly report shape returned by ``ReportService``.
+         */
+        WeeklyReportResponse: {
+            /** Week Start */
+            week_start: string;
+            /** Week End */
+            week_end: string;
+            /** Daily Reports */
+            daily_reports: components["schemas"]["DailyReportResponse"][];
+            averages: components["schemas"]["WeeklyAverages"];
+            trend: components["schemas"]["WeeklyTrend"];
+            /** Week Number */
+            week_number: number;
+            /** Intervention Effectiveness */
+            intervention_effectiveness?: Record<string, never> | null;
+        };
+        /**
+         * WeeklyTrend
+         * @description Week-over-week trend deltas.
+         */
+        WeeklyTrend: {
+            /**
+             * Focus Min Delta Pct
+             * @default 0
+             */
+            focus_min_delta_pct: number;
+            /**
+             * Focus Score Delta
+             * @default 0
+             */
+            focus_score_delta: number;
+            /**
+             * Direction
+             * @default stable
+             * @enum {string}
+             */
+            direction: "up" | "down" | "stable";
         };
     };
     responses: never;
@@ -2405,7 +2667,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["DailyReportResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2437,7 +2699,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["WeeklyReportResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2469,7 +2731,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["PatternsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2498,7 +2760,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["BaselineResponse"];
                 };
             };
         };
@@ -2521,7 +2783,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["BehavioralProfileResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2550,7 +2812,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["ModelStatusResponse"];
                 };
             };
         };
@@ -2676,7 +2938,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["AttributionResponse"];
                 };
             };
             /** @description Validation Error */

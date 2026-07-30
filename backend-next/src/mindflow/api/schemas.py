@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -91,6 +91,169 @@ class InterventionHistoryResponse(BaseModel):
     count: int
     has_more: bool = False
     next_cursor: str | None = None
+
+
+# ── Reports schemas ───────────────────────────────────────────────────
+
+
+class TopAppEntry(BaseModel):
+    """Single application in a daily report's top-apps list."""
+
+    app: str
+    minutes: float
+
+
+class DailyReportResponse(BaseModel):
+    """Canonical daily report shape returned by ``ReportService``."""
+
+    user_id: int
+    date: str
+    total_focus_min: float
+    total_distraction_min: float
+    focus_score: float
+    top_apps: list[TopAppEntry] | None = Field(default_factory=list)
+    switch_frequency: float
+    pattern_summary: str
+
+
+class WeeklyAverages(BaseModel):
+    """Weekly average metrics."""
+
+    avg_focus_min: float = 0.0
+    avg_distraction_min: float = 0.0
+    avg_focus_score: float = 0.0
+    avg_switch_frequency: float = 0.0
+
+
+class WeeklyTrend(BaseModel):
+    """Week-over-week trend deltas."""
+
+    focus_min_delta_pct: float = 0.0
+    focus_score_delta: float = 0.0
+    direction: Literal["up", "down", "stable"] = "stable"
+
+
+class WeeklyReportResponse(BaseModel):
+    """Canonical weekly report shape returned by ``ReportService``."""
+
+    week_start: str
+    week_end: str
+    daily_reports: list[DailyReportResponse]
+    averages: WeeklyAverages
+    trend: WeeklyTrend
+    week_number: int
+    intervention_effectiveness: dict[str, Any] | None = None
+
+
+# ── Analytics schemas ─────────────────────────────────────────────────
+
+
+class HighSwitchPeriod(BaseModel):
+    """Hourly switch-aggregation entry."""
+
+    hour: int
+    switch_count: int
+
+
+class TriggerApp(BaseModel):
+    """Application tied to distraction sessions."""
+
+    app: str
+    count: int
+
+
+class PatternsResponse(BaseModel):
+    """Distraction pattern analysis returned by ``AnalysisService.detect_patterns``."""
+
+    high_switch_periods: list[HighSwitchPeriod]
+    trigger_apps: list[TriggerApp]
+    heatmap: list[list[int]]
+    total_sessions: int
+    distraction_ratio: float
+
+
+class BaselineResponse(BaseModel):
+    """Personal behaviour baseline summary."""
+
+    user_id: int
+    created_at: str
+    updated_at: str
+    total_days: int
+    total_samples: int
+    features: list[str]
+
+
+class PeakFocusHour(BaseModel):
+    """Hour entry in the behavioural profile."""
+
+    hour: int
+    avg_score: float
+
+
+class TopProfileApp(BaseModel):
+    """Top productive application in the profile."""
+
+    app: str
+    total_min: float
+
+
+class DistractionTrigger(BaseModel):
+    """Distraction-trigger application."""
+
+    app: str
+    count: int
+
+
+class BehavioralProfileResponse(BaseModel):
+    """Behavioural profile returned by ``AnalysisService.behavioral_profile``."""
+
+    peak_focus_hours: list[PeakFocusHour]
+    top_apps: list[TopProfileApp]
+    avg_focus_block_min: float
+    distraction_triggers: list[DistractionTrigger]
+    total_events_analysed: int
+    profile_date: str
+
+
+class ModelStatusResponse(BaseModel):
+    """ML model loading and readiness status."""
+
+    loaded: bool
+    ready: bool
+    mode: str
+    v2_mode: str
+    message: str
+    feature_schema_version: int | None = None
+    version: str | None = None
+    available_versions: list[str] | None = None
+    reasons: list[str] | None = None
+
+
+# ── Attribution schemas ───────────────────────────────────────────────
+
+
+class AttributionAssessment(BaseModel):
+    """Assessment data inside an attribution response."""
+
+    procrastination_types: list[str]
+    type_confidence: dict[str, float]
+    cbt_technique: str | None = None
+    response_text: str
+
+
+class AttributionMeta(BaseModel):
+    """Degradation metadata."""
+
+    degraded: bool = False
+
+
+class AttributionResponse(BaseModel):
+    """Attribution result returned by ``POST /analytics/attribution``."""
+
+    assessment: AttributionAssessment
+    source: str
+    cached: bool
+    meta: AttributionMeta
 
 
 # ── AI Diagnostics schemas ──────────────────────────────────────────────

@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from mindflow.api.deps import get_llm_service, get_workflow_port
 from mindflow.api.errors import ProblemDetail
+from mindflow.api.schemas import AttributionResponse
 from mindflow.errors import NoActivityDataError
 from mindflow.ports import AnalysisRequest, AnalysisWorkflowPort
 from mindflow.services.llm_service import LLMService
@@ -46,7 +47,7 @@ class AttributionRequest(BaseModel):
     force: bool = Field(default=False, description="Force re-analysis even if cached.")
 
 
-@router.post("/analytics/attribution")
+@router.post("/analytics/attribution", response_model=AttributionResponse)
 async def post_attribution(
     request: Request,
     payload: AttributionRequest | None = None,
