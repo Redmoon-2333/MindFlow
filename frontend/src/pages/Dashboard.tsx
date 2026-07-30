@@ -3,6 +3,7 @@ import {
   getHealth,
   getCurrentActivity,
   getFocusTrend,
+  getFocusPrediction,
   getModelStatus,
   getInterventionHistory,
   getCollectorStatus,
@@ -13,9 +14,20 @@ import {
   pauseAutonomy,
   getErrorMessage,
 } from "../api";
-import type { ActivityItem, AutonomyStatus, CollectorStatus, FocusTrendResponse, HealthData, InterventionHistoryItem, ModelStatus } from "../api";
+import type { ActivityItem, AutonomyStatus, CollectorStatus, FocusPredictionResponse, FocusTrendResponse, HealthData, InterventionHistoryItem, ModelStatus } from "../api";
 import { realtimeClient } from "../realtime";
 import type { RealtimeStatus } from "../realtime";
+
+const INTERVENTION_TYPE_LABELS: Record<string, string> = {
+  task_breakdown: "任务分解",
+  nudge: "行动提示",
+  environment_optimization: "环境优化",
+  smart_prioritization: "优先级建议",
+};
+
+function getInterventionTypeLabel(interventionType?: string): string {
+  return INTERVENTION_TYPE_LABELS[(interventionType || "").toLowerCase()] || "专注干预";
+}
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
@@ -28,6 +40,7 @@ export default function Dashboard() {
   const [interventions, setInterventions] = useState<InterventionHistoryItem[]>([]);
   const [collector, setCollector] = useState<CollectorStatus | null>(null);
   const [autonomy, setAutonomy] = useState<AutonomyStatus | null>(null);
+  const [focusPrediction, setFocusPrediction] = useState<FocusPredictionResponse | null>(null);
 
   const [collectorLoading, setCollectorLoading] = useState(false);
   const [autonomyLoading, setAutonomyLoading] = useState(false);
@@ -38,9 +51,9 @@ export default function Dashboard() {
     setError(null);
     const results = await Promise.allSettled([
       getHealth(), getModelStatus(), getFocusTrend(7), getCurrentActivity(),
-      getInterventionHistory(7), getCollectorStatus(), getAutonomy(),
+      getInterventionHistory(7), getCollectorStatus(), getAutonomy(), getFocusPrediction(),
     ]);
-    const [h, ms, ft, ca, ih, cs, au] = results;
+    const [h, ms, ft, ca, ih, cs, au, fp] = results;
     if (h.status === "fulfilled") setHealth(h.value);
     if (ms.status === "fulfilled") setModelStatus(ms.value);
     if (ft.status === "fulfilled") setFocusTrend(ft.value);
@@ -48,6 +61,7 @@ export default function Dashboard() {
     if (ih.status === "fulfilled") setInterventions([...ih.value.items].reverse());
     if (cs.status === "fulfilled") setCollector(cs.value);
     if (au.status === "fulfilled") setAutonomy(au.value);
+    if (fp.status === "fulfilled") setFocusPrediction(fp.value);
     const failed = results.filter((result) => result.status === "rejected");
     if (failed.length > 0) setError(`部分数据加载失败（${failed.length} 项），其余内容已显示`);
     setLoading(false);
@@ -69,6 +83,7 @@ export default function Dashboard() {
       id: payload.id, user_id: 1, triggered_at: timestamp, intervention_type: payload.intervention_type,
       cbt_technique: payload.cbt_technique ?? null, context_json: null, user_response: null,
       response_latency_s: null, feedback_rating: null, feedback_comment: null, created_at: timestamp,
+      title: payload.title, message: payload.message,
     };
     setInterventions((current) => [item, ...current.filter((entry) => entry.id !== item.id)]);
   }), []);
@@ -280,6 +295,35 @@ export default function Dashboard() {
             )}
           </div>
 
+          {/* Focus Prediction */}
+          <div className="card mb16">
+            <div className="flex-between mb8">
+              <h3 style={{ marginBottom: 0 }}>ML 专注预测</h3>
+              <span
+                className={`badge ${focusPrediction ? "badge-success" : "badge-info"}`}
+              >
+                {focusPrediction ? "已获取" : "未获取"}
+              </span>
+            </div>
+            {focusPrediction ? (
+              <div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
+                  {(focusPrediction.prediction * 100).toFixed(1)}
+                </div>
+                <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+                  预测来源: {focusPrediction.source}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>
+                  模型版本: {focusPrediction.model_version}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>
+                暂无预测数据
+              </div>
+            )}
+          </div>
+
           {/* Recent Interventions */}
           <div className="card">
             <h3>近期干预记录</h3>
@@ -299,7 +343,7 @@ export default function Dashboard() {
                   >
                     <div className="flex-between">
                       <span style={{ fontSize: 13, fontWeight: 500 }}>
-                        {item.intervention_type || "干预"}
+                        {item.title || getInterventionTypeLabel(item.intervention_type)}
                       </span>
                       <span
                         className={`badge ${
@@ -309,6 +353,20 @@ export default function Dashboard() {
                         {item.user_response ? "已响应" : "待响应"}
                       </span>
                     </div>
+                    {item.message && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--color-text-secondary)",
+                          marginTop: 4,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {item.message}
+                      </div>
+                    )}
                     <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>
                       {new Date(item.triggered_at || item.created_at).toLocaleString("zh-CN")}
                     </div>

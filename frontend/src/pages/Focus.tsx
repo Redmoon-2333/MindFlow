@@ -177,6 +177,14 @@ export default function Focus() {
         </div>
       </div>
 
+      <div className="card mb24" style={{ borderLeft: "3px solid var(--color-primary)", background: "var(--color-primary-light)" }}>
+        <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
+          <strong>自动分析说明：</strong>专注评分由后端 ML 模型自动计算，无需手动反馈。
+          评分基于应用切换频率、专注时长、应用类型等特征。
+          下方的"反馈"功能仅用于收集训练数据以改进模型精度，非必须操作。
+        </div>
+      </div>
+
       <div className="card mb24">
         <h3>7 天专注趋势</h3>
         {trendLoading && <div className="spinner" />}
@@ -266,7 +274,10 @@ export default function Focus() {
               const sessionDate = session.date ?? String(startTime).slice(0, 10);
               const duration = sessionDurationMinutes(session);
               const app = session.dominant_app ?? session.main_app ?? session.app ?? session.app_name ?? "—";
-              const score = session.focus_score ?? session.score;
+                            const score = session.focus_score ?? session.score;
+              const sessionType = score != null ? (score >= 60 ? "focus" : score >= 35 ? "neutral" : "distraction") : null;
+              const sessionTypeLabel = sessionType === "focus" ? "专注" : sessionType === "neutral" ? "中性" : sessionType === "distraction" ? "分心" : null;
+              const sessionTypeClass = sessionType === "focus" ? "badge-success" : sessionType === "neutral" ? "badge-info" : sessionType === "distraction" ? "badge-danger" : "badge-warning";
               const switches = session.switch_count ?? session.switches ?? 0;
               const draft = feedbackDrafts[sessionId] ?? { label: "mixed", score: 3, taskType: "" };
               return (
@@ -289,7 +300,13 @@ export default function Focus() {
                       <span className="badge badge-primary">{app}</span>
                     </div>
                     <div className="flex gap16" style={{ alignItems: "center" }}>
-                      {score != null && <span className={`badge ${score >= 80 ? "badge-success" : score >= 50 ? "badge-warning" : "badge-danger"}`}>{Math.round(score)}分</span>}
+                                            {score != null && <span className={`badge ${score >= 60 ? "badge-success" : score >= 35 ? "badge-info" : "badge-danger"}`}>{Math.round(score)}分</span>}
+                      {sessionTypeLabel && <span className={`badge ${sessionTypeClass}`}>{sessionTypeLabel}</span>}
+                      {(session as any).feedback_label && (
+                        <span className="badge badge-primary" title={`已标记: ${(session as any).feedback_label} (${(session as any).feedback_score}/5)`}>
+                          已标记: {(session as any).feedback_label}
+                        </span>
+                      )}
                       <div style={{ textAlign: "center", minWidth: 60 }}><div style={{ fontSize: 13, fontWeight: 500 }}>{switches}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>切换次数</div></div>
                     </div>
                   </div>

@@ -30,16 +30,18 @@ const INTENSITY_OPTIONS = [
 
 const DAYS_OPTIONS = [7, 14, 30, 90] as const;
 
-const INTENSITY_LABELS: Record<string, string> = {
-  gentle: "温和",
-  standard: "标准",
-  strict: "严格",
+const INTERVENTION_TYPE_LABELS: Record<string, string> = {
+  task_breakdown: "任务分解",
+  nudge: "行动提示",
+  environment_optimization: "环境优化",
+  smart_prioritization: "优先级建议",
 };
 
-const INTENSITY_BADGES: Record<string, string> = {
-  gentle: "badge-info",
-  standard: "badge-warning",
-  strict: "badge-danger",
+const INTERVENTION_TYPE_BADGES: Record<string, string> = {
+  task_breakdown: "badge-primary",
+  nudge: "badge-info",
+  environment_optimization: "badge-success",
+  smart_prioritization: "badge-warning",
 };
 
 const RESPONSE_LABELS: Record<string, string> = {
@@ -169,10 +171,10 @@ export default function Intervention() {
     return <span className="badge badge-info">待响应</span>;
   };
 
-  const getIntensityBadge = (intensity?: string) => {
-    const key = (intensity || "").toLowerCase();
-    const label = INTENSITY_LABELS[key] || intensity;
-    const cls = INTENSITY_BADGES[key] || "badge-primary";
+  const getInterventionTypeBadge = (interventionType?: string) => {
+    const key = (interventionType || "").toLowerCase();
+    const label = INTERVENTION_TYPE_LABELS[key] || "专注干预";
+    const cls = INTERVENTION_TYPE_BADGES[key] || "badge-primary";
     return <span className={`badge ${cls}`}>{label}</span>;
   };
 
@@ -193,6 +195,7 @@ export default function Intervention() {
         <div className="flex gap8">
           {INTENSITY_OPTIONS.map((opt) => (
             <button
+              type="button"
               key={opt.key}
               className={`btn ${opt.key === "strict" ? "btn-danger" : ""}`}
               disabled={triggering}
@@ -211,8 +214,18 @@ export default function Intervention() {
         <div className="card mb24">
           <div className="flex-between mb16">
             <h3 style={{ margin: 0 }}>最新干预</h3>
-            {getIntensityBadge(latest.intervention_type)}
+            {getInterventionTypeBadge(latest.intervention_type)}
           </div>
+          {latest.title && (
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>
+              {latest.title}
+            </div>
+          )}
+          {latest.message && (
+            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 10 }}>
+              {latest.message}
+            </div>
+          )}
           <div style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
             {getStatusBadge(latest)}
             <span style={{ marginLeft: 8 }}>
@@ -221,6 +234,7 @@ export default function Intervention() {
           </div>
           <div className="flex gap8" style={{ marginTop: 12 }}>
             <button
+              type="button"
               className="btn btn-sm"
               disabled={respondingId !== null}
               onClick={() => handleRespond(latest.id, "accepted")}
@@ -231,6 +245,7 @@ export default function Intervention() {
               接受
             </button>
             <button
+              type="button"
               className="btn btn-sm btn-ghost"
               disabled={respondingId !== null}
               onClick={() => handleRespond(latest.id, "ignored")}
@@ -238,6 +253,7 @@ export default function Intervention() {
               忽略
             </button>
             <button
+              type="button"
               className="btn btn-sm btn-danger"
               disabled={respondingId !== null}
               onClick={() => handleRespond(latest.id, "dismissed")}
@@ -254,6 +270,7 @@ export default function Intervention() {
           <div className="tabs">
             {DAYS_OPTIONS.map((d) => (
               <button
+                type="button"
                 key={d}
                 className={`tab ${days === d ? "active" : ""}`}
                 onClick={() => setDays(d)}
@@ -295,7 +312,7 @@ export default function Intervention() {
               <div style={{ flex: 1 }}>
                 <div className="flex-between">
                   <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
-                    {getIntensityBadge(item.intervention_type)}
+                    {getInterventionTypeBadge(item.intervention_type)}
                     {getStatusBadge(item)}
                     {item.response_latency_s != null && (
                       <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
@@ -307,6 +324,17 @@ export default function Intervention() {
                     {formatTime(item.triggered_at || item.created_at || "")}
                   </span>
                 </div>
+
+                {item.title && (
+                  <div style={{ fontSize: 14, fontWeight: 600, marginTop: 6 }}>
+                    {item.title}
+                  </div>
+                )}
+                {item.message && (
+                  <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 2 }}>
+                    {item.message}
+                  </div>
+                )}
 
                 {feedbackId === item.id ? (
                   <div className="mt8" style={{ background: "var(--color-bg-inset)", padding: 12, borderRadius: 8 }}>
@@ -329,6 +357,7 @@ export default function Intervention() {
                     />
                     <div className="flex gap8">
                       <button
+                        type="button"
                         className="btn btn-sm"
                         disabled={submittingFeedback || !feedbackRating}
                         onClick={() => handleFeedback(item.id)}
@@ -339,6 +368,7 @@ export default function Intervention() {
                         提交
                       </button>
                       <button
+                        type="button"
                         className="btn btn-sm btn-ghost"
                         onClick={() => {
                           setFeedbackId(null);
@@ -352,7 +382,7 @@ export default function Intervention() {
                   </div>
                 ) : (
                   canFeedback(item) && (
-                    <button className="btn btn-sm btn-ghost mt8" onClick={() => setFeedbackId(item.id)}>
+                    <button type="button" className="btn btn-sm btn-ghost mt8" onClick={() => setFeedbackId(item.id)}>
                       评价
                     </button>
                   )

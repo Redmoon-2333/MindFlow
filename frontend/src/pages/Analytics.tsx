@@ -185,7 +185,7 @@ export default function Analytics() {
                         fontSize: 13,
                       }}
                     >
-                      <span>{p.period || p.label || `时段 ${i + 1}`}</span>
+                      <span>{p.period || p.label || (p.hour != null ? `${String(p.hour).padStart(2, "0")}:00 - ${String(p.hour + 1).padStart(2, "0")}:00` : `时段 ${i + 1}`)}</span>
                       <span className={`badge ${badgeClass(p.intensity || p.level)}`}>
                         {p.switch_count != null ? `${p.switch_count} 次切换` : p.intensity || p.level}
                       </span>
@@ -214,7 +214,7 @@ export default function Analytics() {
                         fontSize: 13,
                       }}
                     >
-                      <span>{a.app_name || a.name || `应用 ${i + 1}`}</span>
+                      <span>{a.app || a.app_name || a.name || `应用 ${i + 1}`}</span>
                       <span className="badge badge-warning">
                         {a.count != null ? `${a.count} 次` : a.percentage}
                       </span>

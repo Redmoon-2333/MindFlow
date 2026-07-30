@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
 import "./theme.css";
-import { AUTH_REQUIRED_EVENT, hasAuthenticatedSession } from "./api";
-import { realtimeClient } from "./realtime";
+import { AUTH_REQUIRED_EVENT, bootstrapFromFragment, hasAuthenticatedSession } from "./api";
+import { realtimeClient, requestNotificationPermission } from "./realtime";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Focus from "./pages/Focus";
@@ -13,17 +13,22 @@ import Intervention from "./pages/Intervention";
 import Panel from "./pages/Panel";
 import Chat from "./pages/Chat";
 import Settings from "./pages/Settings";
+import Diagnostics from "./pages/Diagnostics";
+import ModelCenter from "./pages/ModelCenter";
+import NotFound from "./pages/NotFound";
 
 const NAV = [
   { to: "/", label: "仪表盘" },
   { to: "/focus", label: "专注分析" },
   { to: "/activities", label: "活动日志" },
   { to: "/analytics", label: "行为洞察" },
+  { to: "/model-center", label: "模型中心" },
   { to: "/reports", label: "报告中心" },
   { to: "/intervention", label: "干预中心" },
   { to: "/panel", label: "专家面板" },
   { to: "/chat", label: "AI 对话" },
   { to: "/settings", label: "系统设置" },
+  { to: "/diagnostics", label: "AI 诊断" },
 ];
 
 function Layout({ children }: { children: React.ReactNode }) {
@@ -56,12 +61,35 @@ function AppRoutes() {
       <Route path="/panel" element={<Panel />} />
       <Route path="/chat" element={<Chat />} />
       <Route path="/settings" element={<Settings />} />
+      <Route path="/diagnostics" element={<Diagnostics />} />
+      <Route path="/model-center" element={<ModelCenter />} />
+      <Route path="*" element={<NotFound />} />
     </Routes>
   );
 }
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(hasAuthenticatedSession);
+  const [bootstrapping, setBootstrapping] = useState(false);
+
+  // Handle bootstrap ticket from URL hash on first load
+  useEffect(() => {
+    if (authenticated) return;
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const ticket = params.get("bootstrap");
+    if (!ticket) return;
+    setBootstrapping(true);
+    bootstrapFromFragment()
+      .then((ok) => {
+        if (ok) {
+          setAuthenticated(true);
+        }
+      })
+      .catch(() => {
+        // ignore — will show login page
+      })
+      .finally(() => setBootstrapping(false));
+  }, [authenticated]);
 
   useEffect(() => {
     const handleAuthRequired = () => setAuthenticated(false);
@@ -69,11 +97,28 @@ export default function App() {
     return () => window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
   }, []);
 
+    // Request browser notification permission for intervention alerts
+  useEffect(() => {
+    if (authenticated) requestNotificationPermission();
+  }, [authenticated]);
+
   useEffect(() => {
     if (!authenticated) return;
     realtimeClient.connect();
     return () => realtimeClient.disconnect();
   }, [authenticated]);
+
+  if (bootstrapping) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: "var(--color-bg)" }}>
+        <div className="card" style={{ width: 440, padding: 40, textAlign: "center" }}>
+          <h1 style={{ fontSize: 28, color: "var(--color-primary)", marginBottom: 8 }}>MindFlow</h1>
+          <p style={{ color: "var(--color-text-secondary)", marginBottom: 24 }}>认证中...</p>
+          <div className="spinner" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <BrowserRouter>

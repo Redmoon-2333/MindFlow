@@ -575,13 +575,106 @@ export interface paths {
          * Get Model Status
          * @description Return ML model loading status and version information.
          *
-         *     Reports whether scikit-learn models (classifier, clustering, HMM) are
-         *     loaded and available for runtime inference.  When models are loaded,
-         *     includes the version tag and available versions for rollback.
+         *     Reports whether V2 feature-schema models (classifier, clustering, HMM)
+         *     are loaded and available for runtime inference.
          */
         get: operations["get_model_status_api_v1_analytics_model_status_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/training-readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Training Readiness
+         * @description Assess whether enough data exists to train a V2 feature-schema model.
+         *
+         *     Matches feature windows to explicit feedback via time overlap using
+         *     the same semantics as train/v2.py:prepare_v2_training_data. Reports
+         *     raw activity events, V2 windows (including matched eligibility),
+         *     feedback label distribution, trainability, evaluability, baseline
+         *     readiness, the seven V2 gate checks, blocker codes, and the
+         *     active/latest training job status.
+         */
+        get: operations["get_training_readiness_api_v1_analytics_training_readiness_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/training-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Training Job
+         * @description Start a V2 model training job.
+         *
+         *     Returns 202 with job id when the readiness check passes (trainable=True).
+         *     Returns 409 if another job is already active.
+         *     Returns 412 if training data is insufficient.
+         */
+        post: operations["create_training_job_api_v1_analytics_training_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/training-jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Training Job
+         * @description Return the lifecycle status and report for a training job.
+         */
+        get: operations["get_training_job_api_v1_analytics_training_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/training-jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Training Job
+         * @description Cancel a pending or preparing training job.
+         *
+         *     Returns the job status.  Once training has started, cancellation is
+         *     rejected (409) because the thread may already write activated artifacts.
+         */
+        post: operations["cancel_training_job_api_v1_analytics_training_jobs__job_id__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -601,9 +694,13 @@ export interface paths {
          * Post Attribution
          * @description Run (or retrieve cached) procrastination attribution for a date.
          *
+         *     When the shared ``AnalysisWorkflowPort`` is available, delegates through
+         *     it with ``origin="api"``.  Otherwise falls back to ``llm_service.analyze``.
+         *
          *     Args:
          *         payload: Optional JSON body. ``date`` defaults to today, ``force`` to False.
-         *         llm_service: Injected LLM service instance.
+         *         llm_service: Injected LLM service instance (fallback path).
+         *         workflow_port: Shared analysis workflow port (primary path).
          *
          *     Returns:
          *         Assessment data with ``source``, ``cached``, and ``meta.degraded``.
@@ -791,6 +888,10 @@ export interface paths {
          *     Falls through to single-expert LLM service on panel unavailability, with
          *     ``meta.degraded=true``.
          *
+         *     When the shared ``AnalysisWorkflowPort`` is available, the analysis is
+         *     delegated through it with ``origin="api"``, converging all entry points
+         *     (scheduler, API, chat, auto-intervention) through a single port instance.
+         *
          *     Returns:
          *         A ``PanelVerdict`` JSON response.
          */
@@ -821,6 +922,52 @@ export interface paths {
          *         A ``PanelVerdict`` JSON response matching the POST shape, or 404.
          */
         get: operations["get_panel_result_api_v1_panel_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ai/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Workflow Runs
+         * @description List recent workflow runs (most-recent-first).
+         *
+         *     Returns allowlisted metadata only — no prompts, chat content,
+         *     evidence values, window titles, or API keys.
+         */
+        get: operations["list_workflow_runs_api_v1_ai_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ai/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Workflow Run
+         * @description Return a single workflow run with sanitised node events.
+         *
+         *     The response is allowlisted — structural metadata only.  Returns
+         *     RFC 9457 ``404 Not Found`` for unknown run IDs.
+         */
+        get: operations["get_workflow_run_api_v1_ai_runs__run_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -953,6 +1100,20 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ActivityEventsSummary
+         * @description Aggregate summary of raw activity events (from activity_events table).
+         */
+        ActivityEventsSummary: {
+            /** Total Events */
+            total_events: number;
+            /** Coverage Days */
+            coverage_days: number;
+            /** Oldest Timestamp */
+            oldest_timestamp: string | null;
+            /** Newest Timestamp */
+            newest_timestamp: string | null;
+        };
+        /**
          * AttributionRequest
          * @description Optional request body for POST /analytics/attribution.
          */
@@ -978,6 +1139,16 @@ export interface components {
             enabled: boolean;
             /** Paused Until */
             paused_until?: string | null;
+        };
+        /**
+         * Blocker
+         * @description A single gate-blocker with machine code and Chinese message.
+         */
+        Blocker: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
         };
         /** BootstrapRequest */
         BootstrapRequest: {
@@ -1095,6 +1266,51 @@ export interface components {
             /** Message */
             message?: string | null;
         };
+        /**
+         * CreateTrainingJobResponse
+         * @description 202 response after a training job is accepted.
+         */
+        CreateTrainingJobResponse: {
+            /** Job Id */
+            job_id: string;
+            /**
+             * Status
+             * @default pending
+             * @enum {string}
+             */
+            status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled";
+        };
+        /**
+         * DiagnosticsListResponse
+         * @description Paginated list of workflow runs.
+         */
+        DiagnosticsListResponse: {
+            /** Items */
+            items: components["schemas"]["RunSummary"][];
+            /** Count */
+            count: number;
+            /**
+             * Has More
+             * @default false
+             */
+            has_more: boolean;
+            /** Next Offset */
+            next_offset?: number | null;
+        };
+        /**
+         * FeedbackLabelSummary
+         * @description Raw explicit feedback distribution from focus_session_feedback table.
+         */
+        FeedbackLabelSummary: {
+            /** Focus */
+            focus: number;
+            /** Distract */
+            distract: number;
+            /** Mixed */
+            mixed: number;
+            /** Total */
+            total: number;
+        };
         /** FocusFeedbackBody */
         FocusFeedbackBody: {
             /**
@@ -1199,6 +1415,24 @@ export interface components {
             /** Skip Reason */
             skip_reason?: string | null;
         };
+        /**
+         * NodeEventSummary
+         * @description Sanitised node event: structural metadata only — no prompts or content.
+         */
+        NodeEventSummary: {
+            /** Node Name */
+            node_name: string;
+            /** Status */
+            status: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Error Category */
+            error_category?: string | null;
+        };
         /** PanelMeta */
         PanelMeta: {
             /** Degraded */
@@ -1249,6 +1483,72 @@ export interface components {
              */
             hours: number;
         };
+        /**
+         * RunDetail
+         * @description Full workflow run with node events — allowlisted, no PII or content.
+         */
+        RunDetail: {
+            /** Run Id */
+            run_id: string;
+            /** Workflow Name */
+            workflow_name: string;
+            /** Status */
+            status: string;
+            /** Graph Version */
+            graph_version?: string | null;
+            /** Source */
+            source?: string | null;
+            /** Origin */
+            origin: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Call Count */
+            call_count?: number | null;
+            /** Token Estimate */
+            token_estimate?: number | null;
+            /**
+             * Degraded
+             * @default false
+             */
+            degraded: boolean;
+            /** Node Events */
+            node_events?: components["schemas"]["NodeEventSummary"][];
+        };
+        /**
+         * RunSummary
+         * @description Abbreviated workflow run for list endpoints.
+         */
+        RunSummary: {
+            /** Run Id */
+            run_id: string;
+            /** Workflow Name */
+            workflow_name: string;
+            /** Status */
+            status: string;
+            /** Graph Version */
+            graph_version?: string | null;
+            /** Source */
+            source?: string | null;
+            /** Origin */
+            origin: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Call Count */
+            call_count?: number | null;
+            /**
+             * Degraded
+             * @default false
+             */
+            degraded: boolean;
+        };
         /** TelemetryPreferencesPatch */
         TelemetryPreferencesPatch: {
             /** Input Telemetry Enabled */
@@ -1259,6 +1559,151 @@ export interface components {
             interaction_retention_days?: number | null;
             /** Activity Retention Days */
             activity_retention_days?: number | null;
+        };
+        /**
+         * TrainingJobResponse
+         * @description Full training-job lifecycle status with optional report/error.
+         */
+        TrainingJobResponse: {
+            /** Job Id */
+            job_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled";
+            /**
+             * Source
+             * @default db
+             */
+            source: string;
+            /**
+             * Model Mode
+             * @default rule_engine_only
+             */
+            model_mode: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Activated
+             * @default false
+             */
+            activated: boolean;
+            /** Version Tag */
+            version_tag?: string | null;
+            /** Feature Schema Version */
+            feature_schema_version?: number | null;
+            /** Quality Gate */
+            quality_gate?: Record<string, never> | null;
+            /** Evaluation */
+            evaluation?: Record<string, never> | null;
+            /** Error */
+            error?: string | null;
+        };
+        /**
+         * TrainingJobSummary
+         * @description Lightweight job summary (used in readiness response).
+         */
+        TrainingJobSummary: {
+            /** Job Id */
+            job_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled";
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+        };
+        /**
+         * TrainingReadinessResponse
+         * @description Complete training readiness assessment for V2 feature-schema models.
+         *
+         *     Reports raw activity events (from activity_events), V2 feature windows
+         *     matched to explicit feedback via time overlap, feedback label
+         *     distribution, trainability (>=10 eligible matched windows with >=2
+         *     unique labels), evaluability (>=10 explicit matched samples with
+         *     enough distinct dates for grouped evaluation), baseline readiness,
+         *     current model mode, the seven V2 gate checks, blocker codes, and
+         *     the active/latest training job status (if any).
+         */
+        TrainingReadinessResponse: {
+            raw_events: components["schemas"]["ActivityEventsSummary"];
+            v2_windows: components["schemas"]["V2WindowsSummary"];
+            feedback_labels: components["schemas"]["FeedbackLabelSummary"];
+            /** Trainable */
+            trainable: boolean;
+            /** Trainable Window Count */
+            trainable_window_count: number;
+            /** Trainable Class Count */
+            trainable_class_count: number;
+            /** Evaluable */
+            evaluable: boolean;
+            /** Evaluable Explicit Count */
+            evaluable_explicit_count: number;
+            /** Evaluable Date Count */
+            evaluable_date_count: number;
+            /** Baseline Ready */
+            baseline_ready: boolean;
+            /** Current Mode */
+            current_mode: string;
+            /** Gates */
+            gates: components["schemas"]["V2GateCheck"][];
+            /** Blockers */
+            blockers: components["schemas"]["Blocker"][];
+            current_training_job: components["schemas"]["TrainingJobSummary"] | null;
+        };
+        /**
+         * V2GateCheck
+         * @description One of the seven V2 quality-gate checks with honest status.
+         */
+        V2GateCheck: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Passed */
+            passed: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "passed" | "failed" | "not_evaluated" | "not_implemented";
+            /** Actual */
+            actual: string;
+            /** Threshold */
+            threshold: string;
+            /** Message */
+            message: string;
+            /** Blocker Code */
+            blocker_code: string;
+        };
+        /**
+         * V2WindowsSummary
+         * @description V2 (24-dim) feature-window summary including matched eligibility.
+         */
+        V2WindowsSummary: {
+            /** Total */
+            total: number;
+            /**
+             * Schema Version
+             * @default 2
+             */
+            schema_version: number;
+            /** Date Range Days */
+            date_range_days: number;
+            /** Eligible Count */
+            eligible_count: number;
+            /** Matched Focus Count */
+            matched_focus_count: number;
+            /** Matched Distract Count */
+            matched_distract_count: number;
+            /** Newest Window Start */
+            newest_window_start: string | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -2110,6 +2555,108 @@ export interface operations {
             };
         };
     };
+    get_training_readiness_api_v1_analytics_training_readiness_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrainingReadinessResponse"];
+                };
+            };
+        };
+    };
+    create_training_job_api_v1_analytics_training_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateTrainingJobResponse"];
+                };
+            };
+        };
+    };
+    get_training_job_api_v1_analytics_training_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrainingJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_training_job_api_v1_analytics_training_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrainingJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_attribution_api_v1_analytics_attribution_post: {
         parameters: {
             query?: never;
@@ -2400,6 +2947,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PanelResponse"];
+                };
+            };
+        };
+    };
+    list_workflow_runs_api_v1_ai_runs_get: {
+        parameters: {
+            query?: {
+                /** @description Max runs to return */
+                limit?: number;
+                /** @description Number of runs to skip */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiagnosticsListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_workflow_run_api_v1_ai_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

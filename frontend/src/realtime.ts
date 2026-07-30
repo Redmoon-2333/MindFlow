@@ -1,4 +1,4 @@
-﻿export type RealtimeStatus = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected";
+export type RealtimeStatus = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected";
 
 export interface ActivityUpdatePayload {
   app_name: string;
@@ -99,8 +99,35 @@ class RealtimeClient {
     if (frame.type !== "activity_update" && frame.type !== "intervention") return;
     if (typeof frame.payload !== "object" || frame.payload === null) return;
     const timestamp = typeof frame.timestamp === "string" ? frame.timestamp : new Date().toISOString();
+
+    // Show desktop notification for intervention events
+    if (frame.type === "intervention") {
+      this.showDesktopNotification(frame.payload as InterventionEventPayload);
+    }
+
     const listeners = this.listeners.get(frame.type);
     listeners?.forEach((listener) => listener(frame.payload as never, timestamp));
+  }
+
+  private showDesktopNotification(payload: InterventionEventPayload): void {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    try {
+      const title = payload.title || "MindFlow 干预提醒";
+      const body = payload.message || "检测到分心行为，建议回到专注状态";
+      const notification = new Notification(title, {
+        body,
+        icon: "/favicon.svg",
+        tag: `intervention-${payload.id}`,
+        requireInteraction: !payload.dismissible,
+      });
+      notification.onclick = () => {
+        window.focus();
+        window.location.hash = "#/intervention";
+        notification.close();
+      };
+    } catch {
+      // Notification API not available or blocked
+    }
   }
 
   private clearTimers(): void {
@@ -113,6 +140,14 @@ class RealtimeClient {
   private setStatus(status: RealtimeStatus): void {
     this.status = status;
     this.statusListeners.forEach((listener) => listener(status));
+  }
+}
+
+/** Request browser notification permission (call once on app mount). */
+export function requestNotificationPermission(): void {
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission === "default") {
+    Notification.requestPermission();
   }
 }
 

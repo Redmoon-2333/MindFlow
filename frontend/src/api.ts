@@ -94,6 +94,8 @@ export interface InterventionHistoryItem {
   feedback_rating: InterventionRating | null;
   feedback_comment: string | null;
   created_at: string;
+  title?: string;
+  message?: string;
 }
 
 export interface InterventionHistoryResponse {
@@ -529,3 +531,90 @@ export const exportData = (fmt: "csv" | "json", start?: string, end?: string) =>
 export const getAutonomy = () => request<AutonomyStatus>("/autonomy");
 export const pauseAutonomy = (hours: number) => request<AutonomyStatus>("/autonomy/pause", { method: "POST", body: JSON.stringify({ hours }) });
 export const resumeAutonomy = () => request<AutonomyStatus>("/autonomy/resume", { method: "POST" });
+
+// ── AI / Diagnostics ──
+
+export interface AIRunItem {
+  run_id: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  source: string;
+  duration_ms: number | null;
+}
+
+export interface AIRunsResponse {
+  items: AIRunItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface NodeEvent {
+  name?: string;
+  type?: string;
+  status?: string;
+  started_at?: string;
+  completed_at?: string;
+  duration_ms?: number;
+  message?: string;
+  [key: string]: unknown;
+}
+
+export interface AIRunDetail extends AIRunItem {
+  node_events: NodeEvent[];
+  error: string | null;
+}
+
+export interface FocusPredictionResponse {
+  prediction: number;
+  source: string;
+  model_version: string;
+  timestamp?: string;
+}
+
+export interface HealthLiveResponse {
+  status: "ok";
+}
+
+export interface HealthReadyResponse {
+  status: "ok";
+  checks: Record<string, unknown>;
+}
+
+export const getAIRuns = (limit?: number, offset?: number) =>
+  request<AIRunsResponse>(`/ai/runs?limit=${limit ?? 20}&offset=${offset ?? 0}`);
+
+export const getAIRunDetail = (runId: string) =>
+  request<AIRunDetail>(`/ai/runs/${encodeURIComponent(runId)}`);
+
+export const getFocusPrediction = () =>
+  request<FocusPredictionResponse>("/telemetry/focus-prediction");
+
+export const getHealthLive = () =>
+  request<HealthLiveResponse>("/health/live");
+
+export const getHealthReady = () =>
+  request<HealthReadyResponse>("/health/ready");
+
+// ── Model Center / Training APIs (types from generated schema) ──
+
+type TrainingSchemas = components["schemas"];
+
+export type JobStatus = TrainingSchemas["CreateTrainingJobResponse"]["status"];
+export type GateStatus = TrainingSchemas["V2GateCheck"]["status"];
+export type TrainingReadinessResponse = TrainingSchemas["TrainingReadinessResponse"];
+export type CreateTrainingJobResponse = TrainingSchemas["CreateTrainingJobResponse"];
+export type TrainingJobResponse = TrainingSchemas["TrainingJobResponse"];
+
+export const getTrainingReadiness = () =>
+  request<TrainingReadinessResponse>("/analytics/training-readiness");
+
+export const createTrainingJob = () =>
+  request<CreateTrainingJobResponse>("/analytics/training-jobs", { method: "POST" });
+
+export const getTrainingJob = (jobId: string) =>
+  request<TrainingJobResponse>(`/analytics/training-jobs/${encodeURIComponent(jobId)}`);
+
+export const cancelTrainingJob = (jobId: string) =>
+  request<TrainingJobResponse>(`/analytics/training-jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });

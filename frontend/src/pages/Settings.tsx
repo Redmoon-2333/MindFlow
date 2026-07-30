@@ -23,7 +23,7 @@ import {
 } from "../api";
 import type { AutonomyStatus, ClassificationRule, ClassificationRuleInput, CollectorStatus, HealthData, Preferences, TelemetryPreferences, TelemetryStatus } from "../api";
 
-const CATEGORY_OPTIONS = ["productive", "neutral", "distracting", "unknown"];
+const CATEGORY_OPTIONS = ["code", "browser_work", "communication", "document", "entertainment", "social", "other"];
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
