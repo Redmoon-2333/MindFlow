@@ -6,182 +6,193 @@
 
 | 层 | 技术 |
 |------|------|
-| 后端 | Python 3.11+ / FastAPI / SQLAlchemy 2.0 / SQLite |
-| 前端 | React 19 / TypeScript / Vite / Ant Design / Recharts |
-| ML | scikit-learn / 弱监督学习 / HMM 状态推断 / Welford 在线基线 |
+| 后端 | Python 3.11+ / FastAPI / SQLAlchemy 2.0 / SQLite / LangGraph |
+| 前端 | React 19 / TypeScript / Vite / react-router-dom / openapi-fetch / plain CSS |
+| ML | scikit-learn / hmmlearn / Welford 在线基线 / 弱监督学习 |
+| 包管理 | **uv**（取代 pip/conda） |
 
 ## 快速开始
 
 ### 环境要求
 
-- Windows 10/11
-- Python 3.11+（推荐 conda 环境）
+- Windows 10/11（采集器支持 macOS/Linux）
+- Python 3.11+
 - 前端需要 Node.js 18+
 
 ### 一键启动（推荐）
 
-双击 `start.bat`，选择"系统托盘模式"。系统托盘图标会出现在任务栏右下角，右键可操作。
+双击 `start.bat`，选择"系统托盘模式"。
 
 ### 手动启动
 
 ```bash
-cd mindflow-app/backend
+cd mindflow-app/backend-next
 
-# 安装依赖
-pip install -r requirements.txt
-
-# 复制配置文件
-cp .env.example .env
+# 安装依赖（dev + ML extras）
+uv sync --extra dev --extra ml
 
 # 启动后端
-uvicorn mindflow.main:app --reload --host 127.0.0.1 --port 8765
+uv run python -m mindflow.main
 
-# 浏览器打开 Dashboard
+# 生成一次性本地登录链接
+uv run python -m mindflow.bootstrap
+
+# 浏览器打开
 # http://localhost:8765/docs
 ```
 
-配置文件 `.env` 可调整采集间隔、空闲阈值等参数。
+启动时 Alembic 迁移和 SQLite 完整性检查必须成功；迁移失败会终止启动。
 
-### 数据采集
+### 前端启动
 
 ```bash
-# 启动采集器
-curl -X POST http://localhost:8765/api/v1/collector/start
-
-# 或在 http://localhost:8765/docs 页面操作
+cd mindflow-app/frontend
+npm install
+npm run dev
+# http://localhost:5173
 ```
+
+## 数据流水线
+
+```
+activity_events（原始活动事件）
+    ↓ 5s 采集 + 心跳合并
+telemetry rollup（V2 特征窗口，schema_version=2）
+    ↓ 时间窗口重叠匹配
+focus_session_feedback（用户显式标注）
+    ↓ join focus_sessions 得到带时间戳的反馈
+prepare_v2_training_data()
+    ↓ 时间重叠过滤 + 显式反馈优先
+V2TrainingData（合格窗口 + 标签）
+    ↓ 质量门禁 7 项检查
+训练 → shadow / ready 模型
+```
+
+**核心概念**：
+- **基线（Baseline）**：Welford 在线统计，日常行为的实时对比基准，非 ML 模型
+- **ML 训练**：批量离线训练（分类器 + 聚类 + HMM），通过模型中心或 CLI 触发
+- **数据存在 ≠ 可训练**：原始事件需先经 telemetry rollup 成 V2 特征窗口；显式反馈的时间必须与窗口范围重叠
 
 ## 项目结构
 
 ```
 mindflow-app/
-├── backend/
-│   ├── mindflow/
-│   │   ├── main.py              # FastAPI 应用入口 + CORS
-│   │   ├── config.py             # Pydantic Settings（从 .env 加载）
-│   │   ├── logging_config.py     # 日志配置（控制台 + 文件轮转）
-│   │   ├── tray.py              # 系统托盘程序
-│   │   ├── models/
-│   │   │   ├── database.py       # SQLAlchemy 引擎 + 会话 + WAL 模式
-│   │   │   └── schemas.py        # ORM 模型：User, ActivityLog, FocusSession, DailyReport
-│   │   ├── collector/
-│   │   │   ├── tracker.py        # Win32 活动窗口 + 空闲检测
-│   │   │   └── scheduler.py      # APScheduler 后台定时采集
-│   │   ├── analyzer/
-│   │   │   ├── features.py       # 专注评分 + 应用排名 + 切换频率
-│   │   │   ├── patterns.py       # 专注会话识别 + 日报生成
-│   │   │   ├── baseline.py       # 个人行为基线（Welford 在线统计）
-│   │   │   ├── deviation.py      # 多特征 Z 分数偏差检测
-│   │   │   ├── data_pipeline.py  # 特征工程 + AppClassifier（三层分类）
-│   │   │   ├── labeling.py       # 弱监督标注（6 信号共识）
-│   │   │   ├── title_analyzer.py # 窗口标题特征提取
-│   │   │   ├── ml_models.py      # DBSCAN/KMeans 聚类 + RF 分类器 + HMM
-│   │   │   ├── context_packer.py # LLM 上下文打包
-│   │   │   └── train.py          # 训练流水线（合成数据 / 真实数据）
-│   │   ├── api/
-│   │   │   ├── routes.py         # 18 个 REST 端点（前缀 /api/v1）
-│   │   │   └── websocket.py      # WebSocket 实时推送（含分析快照）
-│   │   ├── llm/                  # LLM 归因分析（Phase 3）
-│   │   └── intervention/         # 智能干预（Phase 4）
-│   ├── tests/                    # 66 个 pytest 测试
-│   ├── data/
-│   │   ├── mindflow.db           # SQLite 数据库
-│   │   ├── logs/                 # 日志文件
-│   │   └── models/               # 训练好的 ML 模型
-│   └── .env.example
-├── frontend/                     # React Dashboard（待开发）
-├── docs/                         # 设计文档 + 实施计划
-├── start.bat                     # 一键启动脚本
+├── backend-next/               # 当前活动后端（FastAPI + LangGraph）
+│   ├── src/mindflow/
+│   │   ├── main.py             # 入口
+│   │   ├── app.py              # FastAPI 应用工厂
+│   │   ├── api/routes/         # 路由（含 analytics/training-readiness 等）
+│   │   ├── services/           # 业务服务层
+│   │   │   ├── training_readiness_service.py
+│   │   │   └── training_job_service.py
+│   │   ├── train/              # ML 训练流水线
+│   │   └── domain/             # 领域模型
+│   └── tests/                  # pytest 测试套件
+├── frontend/                   # React / Vite / TypeScript
+│   └── src/pages/
+│       └── ModelCenter.tsx     # 模型中心页面（/model-center）
+├── docs/                       # 设计文档 + API 规范 + ADR
+├── start.bat                   # 一键启动
 └── CLAUDE.md
 ```
 
+**注意**：遗留 `backend/` 目录（Phase 0）已删除。`backend-next` 与之零依赖。
+
 ## API 端点一览
 
-### 基础
+### 基础 & 健康
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/v1/health` | 健康检查（DB + 采集器 + 模型状态） |
-| GET | `/api/v1/status` | 采集器状态 + 设置 |
-| GET | `/api/v1/data/summary` | 数据隐私面板（记录数、DB 大小、不云端上传） |
+| GET | `/api/v1/health/live` | 存活检查（免认证） |
+| GET | `/api/v1/health/ready` | 就绪检查（503 表示未就绪） |
+| GET | `/api/v1/health` | 兼容健康检查 |
 
-### 采集
+### 活动采集
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/v1/collector/start` | 启动采集 |
-| POST | `/api/v1/collector/stop` | 停止采集 |
+| GET | `/api/v1/activities` | 活动事件流（分页、过滤） |
 | GET | `/api/v1/activities/current` | 当前活动窗口 |
-| GET | `/api/v1/activities/today` | 今日活动摘要 |
 
 ### 专注分析
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/v1/focus/today` | 今日专注报告 |
-| GET | `/api/v1/focus/trend` | N 天专注趋势（默认 7，最多 90） |
+| GET | `/api/v1/focus` | 专注会话列表 |
+| GET | `/api/v1/focus/trend` | N 天专注趋势 |
+| POST | `/api/v1/focus/{session_id}/feedback` | 提交会话反馈标注 |
+| GET | `/api/v1/reports/daily` | 日报查询/生成 |
 | GET | `/api/v1/reports/weekly` | 周报 |
-| GET | `/api/v1/preferences` | 用户偏好 |
-| PUT | `/api/v1/preferences` | 更新偏好（间隔、阈值等） |
+| GET | `/api/v1/analytics/patterns` | 专注时段分析 |
+| GET | `/api/v1/analytics/profile` | 行为画像 |
+| GET | `/api/v1/analytics/baseline` | 个人行为基线 |
+| GET | `/api/v1/analytics/model-status` | ML 模型状态 |
 
-### ML 分析
+### 模型中心（V2 训练）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/v1/analytics/patterns` | 今日专注时段 |
-| GET | `/api/v1/analytics/deviation` | 行为偏差检测（异常告警） |
-| GET | `/api/v1/analytics/clusters` | 行为模式聚类分布 |
-| GET | `/api/v1/analytics/risk` | 分心风险预测（HMM 状态转移） |
+| GET | `/api/v1/analytics/training-readiness` | 训练就绪评估（含 7 项质量门禁） |
+| POST | `/api/v1/analytics/training-jobs` | 启动训练任务（202 / 409 / 412） |
+| GET | `/api/v1/analytics/training-jobs/{job_id}` | 训练任务状态与报告 |
+| POST | `/api/v1/analytics/training-jobs/{job_id}/cancel` | 取消待定/准备中的任务 |
+
+更多端点详见 [`docs/api/model-training.md`](docs/api/model-training.md) 和 `backend-next/README.md`。
 
 ### WebSocket
 
 | 路径 | 说明 |
 |------|------|
-| `/ws/activities` | 每 2 秒推送当前活动 + 分析快照 |
+| `/api/v1/ws` | 实时 WebSocket（需会话 Cookie） |
 
-### 标准响应格式
+> **响应格式**：成功返回类型化 JSON 模型（无统一信封）；错误遵循 RFC 9457 Problem Details（`type`, `title`, `status`, `detail`, `instance` + 合并的额外字段）。
 
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": { ... },
-  "timestamp": 1709251200
-}
-```
+## 训练 ML 模型
 
-## 用真实数据训练
+### Web UI
+
+访问前端 `/model-center` 页面查看训练就绪状态、质量门禁结果，启动和监控训练任务。
+
+### CLI
 
 ```bash
-# 采集至少半天数据后
-cd backend
-python -m mindflow.analyzer.train --from-db
+cd backend-next
+# 合成数据训练
+uv run python -m mindflow.train --source synthetic_v2
+# 真实数据训练
+uv run python -m mindflow.train --source db
+# 模型版本管理
+uv run python -m mindflow.train --list-versions
 ```
 
-这会从 `activity_logs` 表读取真实数据，走完整流水线：特征提取 → 弱监督标注 → 聚类 → 分类器 → HMM，完成后保存模型到 `data/models/`。
+### 模型模式
+
+| 模式 | 说明 |
+|------|------|
+| `rule_engine_only` | 仅使用规则引擎，无 ML 模型 |
+| `shadow` | 训练完成但不替换活跃模型（评估期） |
+| `ready` | 训练完成且通过质量门禁，替换为当前活跃模型 |
 
 ## 隐私
 
 - **所有数据存储在本地 SQLite 文件**，不会上传到任何服务器
-- 采集的窗口标题可能包含文件名、URL 等信息
-- 可在 `GET /api/v1/data/summary` 查看数据概况
-- 删除 `data/mindflow.db` 即可清除所有数据
+- LLM 分析仅发送聚合后的行为摘要（无窗口标题、文件路径等敏感信息）
+- 用户可通过导出功能获取完整数据副本，通过数据保留设置控制存储周期
 
 ## 架构决策
 
-### 应用分类三层递进
-
-1. **标题特征分析（TitleAnalyzer）**：基于 URL 域名、文件扩展名、会议关键词
-2. **用户标记（UserAppLabel）**：用户在 Dashboard 中手动标记的应用分类
-3. **行为推断（ImplicitSignal）**：基于使用时长、时间段、切换模式自动推断
-
 ### 本地桌面应用
 
-虽然采用前后端分离架构，但本质是本地桌面应用——"后端"是本地分析引擎，"前端"连的是 localhost。系统托盘模式对其进行了封装。
+采用前后端分离架构，但本质是本地桌面应用——"后端"是本地分析引擎，"前端"连的是 localhost。系统托盘模式对其进行了封装。
 
-### 北京时间
+### 双层编排设计
 
-所有时间戳使用系统本地时间（北京时间），不再使用 UTC。
+外层调度器（纯 asyncio + SQLite claims/heartbeats）与内层 LangGraph 分析图分离，通过框架无关端口解耦。详见 [`backend-next/README.md`](backend-next/README.md) 和 ADR-001。
+
+### 时区
+
+所有 datetime 值在内部使用 timezone-aware UTC；业务边界通过 `MINDFLOW_TIMEZONE` 配置（默认 `local` 或 IANA 名称如 `Asia/Shanghai`）转换显示。
 
 ## 团队
 

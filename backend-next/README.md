@@ -17,13 +17,15 @@ MindFlow 是一款桌面端专注力管理工具，通过实时采集电脑使�
 
 | 模块 | 功能 | 状态 |
 |------|------|------|
-| 行为采集 | 主动窗口监测（Win/Mac/Linux），5 秒采集间隔，心跳合并 | Wave 3 |
-| 专注分析 | 会话识别，专注评分，基线偏差检测，拖延类型分类 | Wave 5 |
-| 数据报告 | 日报/周报生成，App 使用统计，趋势分析 | Wave 5 |
-| LLM 分析 | DeepSeek / Ollama 三层降级，CBT 行为分析 | Wave 6 |
-| 智能干预 | 基于规则的干预生成，节流控制，深度工作不打扰 | Wave 7 |
-| 数据导出 | CSV / JSON 导出，日期范围筛选 | Wave 8b |
-| ML 训练 | 合成数据生成，HMM 训练，聚类分析 CLI | Wave 8a |
+| 行为采集 | 主动窗口监测（Win/Mac/Linux），5 秒采集间隔，心跳合并 | stable |
+| 专注分析 | 会话识别，专注评分，基线偏差检测，拖延类型分类 | stable |
+| 数据报告 | 日报/周报生成，App 使用统计，趋势分析 | stable |
+| LLM 分析 | DeepSeek / Ollama 三层降级，CBT 行为分析 | stable |
+| 智能干预 | 基于规则的干预生成，节流控制，深度工作不打扰 | stable |
+| 数据导出 | CSV / JSON 导出，日期范围筛选 | stable |
+| ML 训练 | 合成数据生成，HMM 训练，聚类分析 CLI | stable |
+| AI 诊断 | 工作流运行记录与节点事件查询 (`/api/v1/ai/runs`) | stable |
+| 图编排 | AnalysisGraph (AnalysisWorkflowPort) + ChatGraph + feature flags | active dev |
 
 ---
 
@@ -58,12 +60,16 @@ MindFlow 是一款桌面端专注力管理工具，通过实时采集电脑使�
 
 ### 技术栈
 
-- **运行时**: Python 3.11+, uv icon (async ASGI)
+- **运行时**: Python 3.11+, uvicorn (async ASGI)
 - **Web 框架**: FastAPI 0.115+
 - **数据库**: SQLite + SQLAlchemy (async) + Alembic 迁移
-- **调度**: 纯 asyncio 调度器（本地时区 cron + 持久化任务 claim）
+- **编排**: LangGraph StateGraph (AnalysisGraph, PanelGraph, ChatGraph) + framework-neutral ports via `AnalysisWorkflowPort`
+- **LLM 集成**: ProviderRegistry 管理 DeepSeek / Ollama / RuleEngine 三层降级
+- **调度**: 双层架构 — 外层纯 asyncio Scheduler + SQLite claims/heartbeats，内层 LangGraph reasoning
+- **可观测性**: 本地 OpenTelemetry (SQLite exporter)，无外部导出；工作流运行记录 (`workflow_runs` 表)
 - **ML**: scikit-learn, hmmlearn (本地训练/预测)
 - **打包**: PyInstaller (单文件桌面应用)
+- **包管理**: uv (取代 pip/conda)
 
 ---
 
@@ -72,26 +78,24 @@ MindFlow 是一款桌面端专注力管理工具，通过实时采集电脑使�
 ### 环境准备
 
 ```bash
-# 1. 创建 conda 环境
-conda env create -f environment.yml
-conda activate mindflow
-
-# 2. 安装依赖
+# 1. 安装依赖（Python 3.11+，包管理使用 uv）
 cd backend-next
-pip install -e ".[dev]"
+uv sync --extra dev --extra ml
 
-# 3. 启动服务（生产入口，含崩溃自动重启 watchdog — E2E 实测验证的启动方式）
-python -m mindflow.main
+# 2. 启动服务（生产入口，含崩溃自动重启 watchdog — E2E 实测验证的启动方式）
+uv run python -m mindflow.main
 
-# 4. 另开终端生成一次性本地登录链接
-python -m mindflow.bootstrap
+# 3. 另开终端生成一次性本地登录链接
+uv run python -m mindflow.bootstrap
 
 # 注意：create_app(settings) 是带参工厂，不适用 `uvicorn --factory` 直启。
-# 需要热重载的开发场景，修改代码后 Ctrl+C 重启 python -m mindflow.main 即可（启动 <2s）。
+# 需要热重载的开发场景，修改代码后 Ctrl+C 重启即可（启动 <2s）。
+# Windows 依赖 (psutil, pywin32) 由 uv 通过 pyproject.toml 平台标记自动管理。
 ```
 
 启动时 Alembic 迁移和 SQLite 完整性检查必须成功；迁移失败会终止启动，不会在不兼容
-schema 上降级运行。
+schema 上降级运行。SQLite ALTER TABLE 能力有限，回滚迁移前务必先备份数据库：
+`sqlite3 mindflow.db ".backup mindflow_pre_migration.db"`。
 
 ### 本地认证
 
@@ -102,58 +106,116 @@ schema 上降级运行。
 - 旧的用户名/密码 `/auth/login` 接口已移除；请通过 `python -m mindflow.bootstrap`
   或桌面启动器进入界面。
 
-### 训练 ML 模型
+### 训练 V2 模型
+
+#### Web UI（推荐）
+
+访问前端 `/model-center` 页面。该页面提供四个标签页：
+
+1. **数据准备** — 原始事件数、V2 特征窗口数、反馈分布、可训练性/可评估性指标、7 项质量门禁状态、阻塞项列表
+2. **个人基线** — Welford 在线基线统计（数据天数、样本数、特征维度）
+3. **模型训练** — 启动/监控训练任务，查看训练结果（影子模式/ready 激活）
+4. **模型状态** — V2 ML 模型加载状态、版本、就绪度
+
+#### CLI 训练
 
 ```bash
 # 合成数据端到端（种子 42 可复现）
-python -m mindflow.train --source synthetic
+uv run python -m mindflow.train --source synthetic_v2
 # 真数据训练
-python -m mindflow.train --source db
+uv run python -m mindflow.train --source db
 # 模型版本管理
-python -m mindflow.train --list-versions
-python -m mindflow.train --rollback 20260717
+uv run python -m mindflow.train --list-versions
+uv run python -m mindflow.train --rollback 20260717
 ```
 
-### 多专家智能体会诊（Phase A-C）
+#### V2 训练关键阈值
+
+| 指标 | 阈值 | 说明 |
+|------|------|------|
+| `trainable` | >= 10 个合格窗口 且 >= 2 类标签 | 时间重叠匹配后的显式反馈窗口 |
+| `evaluable` | >= 10 个显式样本 且 >= 3 个不同日期 | GroupKFold 需要至少 3 个日期 |
+| `baseline_ready` | >= 30 个总样本 | Welford 在线基线 |
+| 激活门禁（全部 7 项通过） | — | 见下方 |
+
+#### 7 项激活质量门禁
+
+| 门禁键 | 阈值 | 当前实现状态 |
+|--------|------|-------------|
+| `minimum_days` | >= 1 天 | 正常评估 |
+| `minimum_explicit_feedback` | >= 20 条显式反馈 | 正常评估 |
+| `minimum_class_feedback` | 专注 >= 5 且 分心 >= 5 | 正常评估 |
+| `balanced_accuracy` | >= 0.50 | `not_evaluated`（需训练后才有报告） |
+| `minority_f1` | >= 0.30 | `not_evaluated`（需训练后才有报告） |
+| `calibration_better_than_rule` | 训练报告提供证据 | **`not_implemented`** — 硬编码为通过，不可视为绿色 |
+| `stable_date_folds` | 训练报告提供证据 | **`not_implemented`** — 硬编码为通过，不可视为绿色 |
+
+后两项 `not_implemented` 在 readiness 响应中暴露为 `not_implemented` 状态，不应解释为通过。
+
+#### 训练任务语义
+
+- **数据来源**：从 `telemetry_repo.list_feature_windows()` 获取 V2 窗口，从 `focus_repo.list_all()` + `telemetry_repo.list_focus_feedback()` 获取带时间戳的反馈，执行时间重叠匹配
+- **异步执行**：`TrainingJobService.start_job()` 立即返回 `202 Accepted`，训练在后台 `asyncio.create_task` 中运行
+- **状态机**：`pending` → `preparing_data` → `training` → `succeeded` / `failed` / `cancelled`
+- **取消规则**：仅允许在 `pending` 或 `preparing_data` 阶段取消；进入 `training` 后拒绝（409），因为线程可能已写入激活的模型制品
+- **并发限制**：每个进程最多一个活跃训练任务；已有活跃任务时请求返回 409
+- **状态持久化**：运行时状态在内存中，仅保留当前/最新任务；服务重启后丢失历史任务记录
+- **无自动重训**：调度器不包含训练 cron 任务（已验证 `test_no_auto_scheduler`）
+- **影子模式不替换活跃模型**：`shadow` 训练完成后仅更新 `app.state.v2_training_mode`，不替换已加载的 `v2_model_manager`
+- **Ready 发布失败 = 任务失败**：如果 quality gate 通过但 `_refresh_ready_manager()` 抛出异常，任务状态转为 `failed`（非 `succeeded`）
+- **数据目录**：制品路径从 `settings.models_dir` / `settings.data_dir` 解析；无 `app.state` 时默认到 `data/models/`
+
+### 多专家智能体会诊
 
 ```bash
 # 触发当日会诊（5专家+主持人+批评家, ~6-12次LLM调用）
-curl -X POST -H "Authorization: Bearer $TOKEN" $BASE/panel/today
+curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/panel/today
 
 # 查看最后一次会诊结果
-curl -H "Authorization: Bearer $TOKEN" $BASE/panel
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/panel
 
 # 对话式问答（4工具 agent loop）
 curl -X POST -H "Authorization: Bearer $TOKEN" \
-  -d '{"message":"我今天为什么分心？"}' $BASE/chat
+  -d '{"message":"我今天为什么分心？"}' http://127.0.0.1:8765/api/v1/chat
 
 # 自主行动体开关
-curl -H "Authorization: Bearer $TOKEN" $BASE/autonomy
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/autonomy
 ```
 
-无 API key 时自动降级（panel→单专家→规则引擎，chat→规则式安全回复）。
+无 API key 时自动降级（panel -> 单专家 -> 规则引擎，chat -> 规则式安全回复）。
 
 ### 评估集（单专家 vs 专家团对比）
 
 ```bash
-python -m mindflow.eval --mode both             # mock 模式（确定性回放）
-python -m mindflow.eval --mode both --live --yes  # 真实 LLM（需 key，~180 调用）
+# mock 模式（确定性回放，无需 API key — 默认行为）
+uv run python -m mindflow.eval --mode both
+# 注意：--mode "mock" 是无效参数。--mode both = 规则引擎 + mock panel 管线验证。
+
+# 真实 LLM（需 DeepSeek API key，~180 调用，需 --yes 确认成本）
+uv run python -m mindflow.eval --mode both --live --yes
 ```
 
 ### 运行测试
 
 ```bash
-# 全量测试
-pytest -v
+# 全量测试（1956 passed, 12 skipped, 1 warning as of 2026-07-29）
+uv run python -m pytest tests/ -v
 
 # 带覆盖率报告
-pytest --cov=src/mindflow --cov-report=term-missing
+uv run python -m pytest --cov=src/mindflow --cov-report=term-missing
 
-# 类型检查
-mypy src/mindflow
+# 类型检查（注意：strict mypy 目前有 158 个已知错误，见质量债务说明）
+uv run python -m mypy --strict src/mindflow
 
-# 代码风格
-ruff check src/mindflow
+# 代码风格（注意：Ruff 目前有 94 个已知发现，见质量债务说明）
+uv run python -m ruff check src tests
+
+# 数据库迁移
+uv run alembic history          # 查看迁移链
+uv run alembic upgrade head     # 应用所有待定迁移
+# 回滚警告：SQLite ALTER 能力有限，回滚前务必备份：
+#   sqlite3 mindflow.db ".backup mindflow_pre_migration.db"
+#   alembic downgrade -1
 ```
 
 ---
@@ -165,13 +227,21 @@ ruff check src/mindflow
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/api/v1/health/live` | GET | 存活检查（免认证） |
-| `/api/v1/health/ready` | GET | 就绪检查；迁移、数据库或完整性失败时返回 503 |
-| `/api/v1/health` | GET | 兼容健康检查（始终返回 200） |
+| `/api/v1/health/ready` | GET | 就绪检查；迁移、DB 连接、完整性、checkpoint/run-store 状态（503 表示未就绪） |
+| `/api/v1/health` | GET | 兼容健康检查（始终 200），含采集器/DB/ML/checkpoint/run-store 状态 |
+| `/api/v1/ai/runs` | GET | 工作流运行记录列表（分页，已脱敏 — 不含 prompt/证据/PII，需认证） |
+| `/api/v1/ai/runs/{run_id}` | GET | 单条运行详情（含节点事件，需认证） |
 | `/api/v1/activities` | GET/POST | 活动事件流 |
 | `/api/v1/focus/sessions` | GET | 专注会话列表 |
 | `/api/v1/reports/daily` | GET | 日报查询/生成 |
 | `/api/v1/reports/weekly` | GET | 周报查询 |
 | `/api/v1/analytics/profile` | GET | 行为画像 |
+| `/api/v1/analytics/baseline` | GET | 个人行为基线 |
+| `/api/v1/analytics/model-status` | GET | V2 ML 模型加载状态与版本 |
+| `/api/v1/analytics/training-readiness` | GET | 训练就绪评估（含 7 项质量门禁），[API 文档](../docs/api/model-training.md) |
+| `/api/v1/analytics/training-jobs` | POST | 启动训练任务（202 / 409 / 412） |
+| `/api/v1/analytics/training-jobs/{job_id}` | GET | 训练任务生命周期状态与报告 |
+| `/api/v1/analytics/training-jobs/{job_id}/cancel` | POST | 取消待定/准备中的训练任务 |
 | `/api/v1/intervention/trigger` | POST | 手动触发干预 |
 | `/api/v1/intervention/history` | GET | 干预历史 |
 | `/api/v1/export` | GET | 数据导出（CSV/JSON） |
@@ -208,6 +278,60 @@ ruff check src/mindflow
 
 ---
 
+## 编排架构
+
+### 双层设计 (ADR-001)
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  外层：持久化执行壳 (Scheduler)                           │
+│  拥有：时间、任务 claim、心跳、恢复、运行生命周期           │
+│  技术：纯 asyncio Scheduler + SQLite scheduled_job_runs 表│
+│  不包含 graph/LLM/推理状态                               │
+├──────────────────────────────────────────────────────────┤
+│  内层：分析推理图 (LangGraph StateGraph)                  │
+│  拥有：专家面板逻辑、证据引用、降级链                      │
+│  技术：AnalysisGraph / PanelGraph / PanelOrchestrator      │
+│  不包含任务 claim/心跳/时间管理                            │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 图边界 (ADR-004)
+
+- **AnalysisGraph** (`src/mindflow/graph/analysis_graph.py`): 每日分析组成根，实现 `AnalysisWorkflowPort`
+- **PanelGraph** (`src/mindflow/graph/panel_graph.py`): AnalysisGraph 的显式子图，封装专家审议（分析师 -> 3 路并行归因 -> 校验 -> 调节器 -> 评论家）
+- **ChatGraph** (`src/mindflow/graph/chat_graph.py`): 显式聊天生命周期 StateGraph；默认仍走 legacy `create_agent`，由开关切换
+- **框架无关端口** (`src/mindflow/ports.py`): `AnalysisWorkflowPort`, `WorkflowRunStorePort`, `BudgetReservationPort` — LangGraph 可替换而不影响调度器
+- **ProviderRegistry**: DeepSeek / Ollama / RuleEngine 三层 LLM 降级管理，统一 HTTP 会话池
+- **本地 OTel**: OpenTelemetry 写入本地 SQLite，不导出外部（无 PII 在 span 属性中，ADR-003）
+
+---
+
+## 功能标记 (Feature Flags, ADR-005)
+
+所有标记默认使用**旧路径**，无需代码回滚即可回退。
+
+| 环境变量 | 类型 | 默认值 | 说明 |
+|---------|------|--------|------|
+| `MINDFLOW_GRAPH_VERSION` | int | `1` | 保留的图版本元数据，当前不负责选择实现 |
+| `MINDFLOW_CHECKPOINTING_ENABLED` | bool | `False` | 使用 SQLite 持久化 checkpoint；关闭时使用内存实现 |
+| `MINDFLOW_NEW_ANALYSIS_GRAPH` | bool | `False` | 通过 v2 AnalysisGraph 路由面板分析 |
+| `MINDFLOW_NEW_CHAT_GRAPH` | bool | `False` | 通过 ChatGraph StateGraph 路由聊天 |
+| `MINDFLOW_SHADOW_MODE_CHAT` | bool | `False` | 新旧聊天路径并行运行，返回旧版输出 |
+
+---
+
+## 质量债务
+
+以下命令是**必需的可见性门禁**，但**当前未通过**：
+
+- **Ruff**: 94 个发现（`uv run python -m ruff check src tests`）
+- **Mypy (strict)**: 158 个错误，涉及 16 个文件（`uv run python -m mypy --strict src/mindflow`）
+
+这些是已知债务，而非回归问题。不要声称代码风格或类型检查为绿色。
+
+---
+
 ## 隐私声明
 
 - **本地存储优先**：所有行为数据存储在本地 SQLite 数据库中，不会上传到云端。
@@ -233,28 +357,39 @@ backend-next/
 │   │   ├── config.py        # Pydantic Settings 配置
 │   │   ├── main.py          # 入口文件
 │   │   ├── api/             # API 层
-│   │   │   ├── routes/      # 路由模块
+│   │   │   ├── routes/      # 路由模块（含 health, ai_diagnostics, panel, chat 等）
 │   │   │   ├── middleware/  # 中间件（认证、日志、限流）
 │   │   │   ├── deps.py      # 依赖注入
-│   │   │   └── errors.py    # 错误处理
-│   │   ├── domain/          # 领域模型
-│   │   │   ├── events.py    # 事件溯源模型
-│   │   │   ├── features.py  # 特征计算
+│   │   │   ├── schemas.py   # API 响应模型（含 DiagnosticsListResponse 等）
+│   │   │   └── errors.py    # 错误处理（RFC 9457 ProblemDetail）
+│   │   ├── ports.py          # 框架无关端口协议 (AnalysisWorkflowPort 等)
+│   │   ├── runtime.py        # RuntimeServices 聚合
+│   │   ├── domain/           # 领域模型
+│   │   │   ├── events.py     # 事件溯源模型
+│   │   │   ├── features.py   # 特征计算
 │   │   │   ├── procrastination.py  # 拖延类型分类 + 规则引擎
 │   │   │   └── intervention.py     # 干预模型
-│   │   ├── infrastructure/  # 基础设施
-│   │   │   ├── collectors/  # 平台采集器
+│   │   ├── infrastructure/   # 基础设施
+│   │   │   ├── collectors/   # 平台采集器
 │   │   │   ├── repositories/ # 数据访问层
-│   │   │   ├── llm/         # LLM 集成
-│   │   │   ├── database.py  # 数据库引擎
+│   │   │   ├── llm/          # LLM 集成
+│   │   │   ├── provider_registry.py  # LLM 供应商注册
+│   │   │   ├── checkpointer.py       # LangGraph 检查点
+│   │   │   ├── database.py   # 数据库引擎
 │   │   │   └── notification.py  # 桌面通知
-│   │   └── services/        # 业务服务层
-│   │       ├── analysis_service.py
-│   │       ├── report_service.py
-│   │       ├── intervention_service.py
-│   │       ├── scheduler.py
-│   │       ├── export_service.py
-│   │       └── ...
+│   │   ├── graph/            # 图编排 (AnalysisGraph, PanelGraph, ChatGraph)
+│   │   ├── services/         # 业务服务层
+│   │   │   ├── analysis_service.py
+│   │   │   ├── report_service.py
+│   │   │   ├── intervention_service.py
+│   │   │   ├── scheduler.py
+│   │   │   ├── panel_service.py
+│   │   │   ├── chat_service.py
+│   │   │   ├── export_service.py
+│   │   │   ├── training_readiness_service.py
+│   │   │   ├── training_job_service.py
+│   │   │   └── ...
+│   │   └── telemetry/        # 本地 OpenTelemetry
 │   └── main.py
 └── tests/                   # 测试套件
 ```
@@ -263,10 +398,12 @@ backend-next/
 
 ## 开发规范
 
+- **包管理**：使用 `uv sync --extra dev --extra ml` 安装依赖，不使用 pip/conda/poetry
 - **TDD 驱动**：所有新功能先写测试，再实现
-- **严格类型**：`mypy --strict` 强制类型标注
-- **代码风格**：`ruff` 自动检查（行宽 100，Python 3.11 目标）
+- **严格类型**：`mypy --strict` 强制类型标注（当前 158 个已知错误，见质量债务）
+- **代码风格**：`ruff` 自动检查（行宽 100，Python 3.11 目标，当前 94 个已知发现）
 - **提交规范**：遵循 Conventional Commits（`feat:` / `fix:` / `refactor:`）
+- **回滚安全**：功能标记全部默认关闭（旧路径），无需代码回滚（见 ADR-005）
 
 ---
 
