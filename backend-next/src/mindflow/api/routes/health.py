@@ -52,6 +52,30 @@ async def readiness_check(
     """Report readiness; failed migration, DB, or integrity checks return 503."""
     db_connected = await _database_connected(engine)
     integrity_ok = bool(getattr(request.app.state, "db_integrity_ok", False))
+
+    # Checkpoint store availability (diagnostics / workflow audit).
+    checkpointer = getattr(request.app.state, "checkpointer", None)
+    checkpoint_available = checkpointer is not None and getattr(
+        checkpointer, "_closed", True
+    ) is False
+
+    # Run store availability — verifies the workflow_runs table is queryable.
+    run_store_available = False
+    if db_connected:
+        try:
+            from mindflow.infrastructure.repositories.workflow_runs import (
+                WorkflowRunsRepository,
+            )
+
+            repo = WorkflowRunsRepository(
+                session_factory=request.app.state.session_factory
+            )
+            # Lightweight probe: list with limit=0 to check table existence
+            await repo.list_runs(limit=0, offset=0)
+            run_store_available = True
+        except Exception:
+            run_store_available = False
+
     ready = migration_status and db_connected and integrity_ok
     payload = {
         "status": "ready" if ready else "not_ready",
@@ -62,6 +86,8 @@ async def readiness_check(
             "integrity_ok": integrity_ok,
         },
         "migration": {"applied": migration_status},
+        "checkpoint_store": "available" if checkpoint_available else "unavailable",
+        "run_store": "available" if run_store_available else "unavailable",
     }
     return JSONResponse(content=payload, status_code=200 if ready else 503)
 
@@ -91,6 +117,27 @@ async def health_check(
             "v2_training_mode": getattr(request.app.state, "v2_training_mode", None),
         }
 
+    # Checkpoint / run store availability (same probes as readiness).
+    checkpointer = getattr(request.app.state, "checkpointer", None)
+    checkpoint_available = checkpointer is not None and getattr(
+        checkpointer, "_closed", True
+    ) is False
+
+    run_store_available = False
+    if db_connected:
+        try:
+            from mindflow.infrastructure.repositories.workflow_runs import (
+                WorkflowRunsRepository,
+            )
+
+            repo = WorkflowRunsRepository(
+                session_factory=request.app.state.session_factory
+            )
+            await repo.list_runs(limit=0, offset=0)
+            run_store_available = True
+        except Exception:
+            run_store_available = False
+
     return {
         "status": "ok",
         **_base_payload(),
@@ -104,4 +151,6 @@ async def health_check(
         },
         "migration": {"applied": migration_status},
         "ml": ml_status,
+        "checkpoint_store": "available" if checkpoint_available else "unavailable",
+        "run_store": "available" if run_store_available else "unavailable",
     }

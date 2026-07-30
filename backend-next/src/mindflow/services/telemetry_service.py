@@ -12,7 +12,6 @@ from urllib.parse import urlsplit
 
 import numpy as np
 
-from mindflow.domain.prediction import FocusPrediction
 from mindflow.infrastructure.repositories.activity import SQLAlchemyActivityRepository
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
@@ -439,9 +438,7 @@ class TelemetryService:
             mode = "ready"
         elif prediction.status == "no_model":
             mode = "rule_engine_only"
-        elif prediction.status == "no_data":
-            mode = "ready"
-        elif prediction.status == "stale":
+        elif prediction.status == "no_data" or prediction.status == "stale":
             mode = "ready"
         else:
             mode = "rule_engine_only"
@@ -480,6 +477,12 @@ class TelemetryService:
             score=score,
             task_type=task_type,
         )
+
+    async def get_feedback_for_sessions(
+        self, session_ids: list[str], user_id: int = 1
+    ) -> dict[str, dict[str, Any]]:
+        """Return feedback info keyed by session_id."""
+        return await self._repository.get_feedback_by_session_ids(user_id, session_ids)
 
     async def clear_data(
         self,

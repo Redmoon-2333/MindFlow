@@ -10,13 +10,12 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
-
 from mindflow.infrastructure.schema import (
-    interaction_buckets,
-    browser_segments,
-    focus_session_feedback,
-    browser_tokens,
     behavior_feature_windows,
+    browser_segments,
+    browser_tokens,
+    focus_session_feedback,
+    interaction_buckets,
 )
 
 _FEATURE_UPSERT_BATCH_SIZE = 250
@@ -205,6 +204,30 @@ class TelemetryRepository:
                 .order_by(focus_session_feedback.c.created_at.asc())
             )
             return [dict(row._mapping) for row in result.fetchall()]
+
+    async def get_feedback_by_session_ids(
+        self, user_id: int, session_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Return feedback keyed by session_id for the given session IDs."""
+        if not session_ids:
+            return {}
+        async with self._session_factory() as session:
+            result = await session.execute(
+                sa.select(focus_session_feedback)
+                .where(
+                    focus_session_feedback.c.user_id == user_id,
+                    focus_session_feedback.c.session_id.in_(session_ids),
+                )
+            )
+            out: dict[str, dict[str, Any]] = {}
+            for row in result.fetchall():
+                d = dict(row._mapping)
+                out[d["session_id"]] = {
+                    "feedback_label": d["label"],
+                    "feedback_score": d["score"],
+                    "feedback_task_type": d["task_type"],
+                }
+            return out
 
 
 

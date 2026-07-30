@@ -5,6 +5,7 @@ Provides structured logging with:
   - File output with rotation (10 MB), retention (30 days), and gzip compression
   - JSON format option for production/ELK consumption
   - Request ID binding via context
+  - OpenTelemetry trace ID injection via patcher (privacy-safe: trace IDs only)
 
 All log paths live under platformdirs user data directory.
 """
@@ -20,6 +21,24 @@ import platformdirs
 from mindflow.config import Settings
 
 
+def _patch_trace_id(record: loguru.Record) -> None:
+    """Injects the current OpenTelemetry trace ID into the log record's extra dict.
+
+    Called by loguru before each record is formatted. Fails silently when
+    no span is active or when the telemetry module is not yet loaded.
+    """
+    try:
+        from mindflow.telemetry.tracing import current_trace_id
+
+        trace_id = current_trace_id()
+        if trace_id is not None:
+            record["extra"]["trace_id"] = trace_id
+        else:
+            record["extra"].setdefault("trace_id", "")
+    except Exception:
+        record["extra"].setdefault("trace_id", "")
+
+
 def setup_logging(settings: Settings) -> None:
     """Configure loguru with console and rotating file handlers.
 
@@ -27,10 +46,16 @@ def setup_logging(settings: Settings) -> None:
       1. stderr console handler with colorized format
       2. Rotating file handler with configurable size, retention, and compression
 
+    A trace_id patcher is configured so every log record automatically
+    carries the active OpenTelemetry trace ID when available.
+
     Args:
         settings: Application settings containing log configuration.
     """
     loguru.logger.remove()
+
+    # Inject trace_id into every log record's extra dict (privacy-safe).
+    loguru.logger.configure(patcher=_patch_trace_id)
 
     log_dir = Path(platformdirs.user_data_dir("mindflow", ensure_exists=True)) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -42,8 +67,8 @@ def setup_logging(settings: Settings) -> None:
         format=(
             "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
             "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
-            "<level>{message}</level>"
+            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan>"
+            " | <level>{message}</level>"
         ),
         colorize=True,
         backtrace=True,
@@ -55,7 +80,8 @@ def setup_logging(settings: Settings) -> None:
         log_dir / "mindflow_{time:YYYY-MM-DD}.log",
         level=settings.log.level,
         format=(
-            "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}"
+            "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line}"
+            " | trace_id={extra[trace_id]} | {message}"
         ),
         rotation=settings.log.rotation,
         retention=settings.log.retention,
