@@ -1,6 +1,6 @@
 # MindFlow Frontend Design System
 
-> Extracted from `src/theme.css`, App shell, and adjacent pages.  
+> Extracted from `src/theme.css`, App shell, and adjacent pages.
 > Documents the **current** operational dashboard system — not a redesign.
 
 ---

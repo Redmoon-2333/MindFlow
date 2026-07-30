@@ -351,7 +351,7 @@ class TestReasonerRestriction:
 
 class TestSourceOutcomesPreserved:
     """All four source labels remain representable.
-    
+
     The registry does not own or alter these labels — they flow through
     LLMService and PanelService unchanged. This test documents the
     contract that the registry preserves.
