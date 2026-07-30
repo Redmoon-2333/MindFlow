@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 import mindflow.main as main_module
-from mindflow.main import Watchdog
+from mindflow.main import Watchdog, _run
 
 
 class FakeServer:
@@ -115,3 +115,25 @@ def test_watchdog_backoff_is_linear_and_capped() -> None:
     assert watchdog._backoff_delay() == 1.0
     watchdog._crash_times = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
     assert watchdog._backoff_delay() == 5.0
+
+
+@patch.object(main_module.asyncio, "run")
+def test_run_consumes_keyboard_interrupt(
+    mock_asyncio_run: AsyncMock,
+) -> None:
+    """Regression: Ctrl+C at the entrypoint must not print a traceback
+    after graceful shutdown already completed."""
+    def _interrupt(*_args: object, **_kwargs: object) -> None:
+        # Close any coroutine passed to asyncio.run(main()) so it isn't
+        # garbage-collected unawaited, which emits RuntimeWarning.
+        for a in _args:
+            if hasattr(a, "close"):
+                a.close()  # type: ignore[union-attr]
+        raise KeyboardInterrupt()
+
+    mock_asyncio_run.side_effect = _interrupt
+
+    # Should not raise — _run() is the safety net.
+    _run()
+
+    mock_asyncio_run.assert_called_once()

@@ -11,21 +11,17 @@ from __future__ import annotations
 
 import json
 import math
-import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
 
 # ── Domain imports (read-only — we do NOT modify domain/) ─────────────────────
-from mindflow.domain.baseline import BaselineModel
-from mindflow.domain.events import ActivityEvent, make_event
-from mindflow.domain.labeling import ConsensusLabeler
-from mindflow.train.features import BehaviorFeatureExtractor
+from mindflow.domain.events import ActivityEvent
 from mindflow.train.models import ModelManager
 from mindflow.train.v2 import (
     evaluate_v2_candidates,

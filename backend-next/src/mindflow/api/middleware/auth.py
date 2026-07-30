@@ -1,4 +1,4 @@
-﻿"""Bearer or HttpOnly-cookie authentication middleware for the local API."""
+"""Bearer or HttpOnly-cookie authentication middleware for the local API."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ _EXEMPT_PATHS = frozenset({
     "/api/v1/health/live",
     "/api/v1/health/ready",
     "/api/v1/auth/bootstrap",
+    "/api/v1/auth/bootstrap/ticket",
     "/api/v1/telemetry/browser/pair",
     "/api/v1/telemetry/browser/heartbeat",
     "/docs",

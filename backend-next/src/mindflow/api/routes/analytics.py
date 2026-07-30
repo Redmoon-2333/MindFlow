@@ -4,6 +4,11 @@ Endpoints:
   - GET /analytics/patterns (distraction pattern analysis)
   - GET /analytics/baseline (current baseline summary, placeholder for Wave 6)
   - GET /analytics/profile (behavioural profile)
+  - GET /analytics/model-status (ML model loading and readiness)
+  - GET /analytics/training-readiness (training data availability + gate checks)
+  - POST /analytics/training-jobs (start a new training job)
+  - GET /analytics/training-jobs/{job_id} (job lifecycle status + report)
+  - POST /analytics/training-jobs/{job_id}/cancel (cancel a pending/running job)
 """
 
 from __future__ import annotations
@@ -11,12 +16,30 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
+from fastapi import status as http_status
 
 from mindflow.api.deps import get_analysis_service, get_baseline_repo
-from mindflow.api.errors import _not_found
+from mindflow.api.errors import ProblemDetail, _not_found
+from mindflow.api.schemas import (
+    CreateTrainingJobResponse,
+    TrainingJobResponse,
+    TrainingReadinessResponse,
+)
+from mindflow.infrastructure.repositories.activity import (
+    SQLAlchemyActivityRepository,
+)
 from mindflow.infrastructure.repositories.baseline import BaselineRepository
+from mindflow.infrastructure.repositories.focus import (
+    SQLAlchemyFocusSessionRepository,
+)
+from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.services.analysis_service import AnalysisService
-from mindflow.train.models.manager import ModelManager
+from mindflow.services.training_job_service import (
+    CancelRejectedError,
+    ConcurrencyError,
+    TrainingJobService,
+)
+from mindflow.services.training_readiness_service import TrainingReadinessService
 
 router = APIRouter(tags=["analytics"])
 
@@ -122,3 +145,208 @@ async def get_model_status(
         "reasons": ["v2_models_not_loaded"],
         "message": "V2 ML models not available, running with rule engine only",
     }
+
+
+@router.get(
+    "/analytics/training-readiness",
+    response_model=TrainingReadinessResponse,
+)
+async def get_training_readiness(
+    request: Request,
+) -> TrainingReadinessResponse:
+    """Assess whether enough data exists to train a V2 feature-schema model.
+
+    Matches feature windows to explicit feedback via time overlap using
+    the same semantics as train/v2.py:prepare_v2_training_data. Reports
+    raw activity events, V2 windows (including matched eligibility),
+    feedback label distribution, trainability, evaluability, baseline
+    readiness, the seven V2 gate checks, blocker codes, and the
+    active/latest training job status.
+    """
+    telemetry_repo: TelemetryRepository | None = getattr(
+        request.app.state, "telemetry_repository", None,
+    )
+    focus_repo: SQLAlchemyFocusSessionRepository | None = getattr(
+        request.app.state, "focus_repository", None,
+    )
+    activity_repo: SQLAlchemyActivityRepository | None = getattr(
+        request.app.state, "activity_repository", None,
+    )
+    baseline_repo: BaselineRepository | None = getattr(
+        request.app.state, "baseline_repository", None,
+    )
+    v2_training_mode: str = getattr(
+        request.app.state, "v2_training_mode", "rule_engine_only",
+    )
+    job_service: TrainingJobService | None = getattr(
+        request.app.state, "training_job_service", None,
+    )
+
+    if None in (telemetry_repo, focus_repo, activity_repo, baseline_repo):
+        raise _not_found("训练就绪评估服务（repository 未初始化）")
+
+    assert telemetry_repo is not None
+    assert focus_repo is not None
+    assert activity_repo is not None
+    assert baseline_repo is not None
+
+    service = TrainingReadinessService(
+        telemetry_repo=telemetry_repo,
+        focus_repo=focus_repo,
+        activity_repo=activity_repo,
+        baseline_repo=baseline_repo,
+        v2_training_mode=v2_training_mode,
+    )
+    result = await service.compute()
+
+    # Inject current job status from the training job service.
+    if job_service is not None:
+        result.current_training_job = job_service.current_job
+
+    return result
+
+
+# ── Training job endpoints ──────────────────────────────────────────────────
+
+
+@router.post(
+    "/analytics/training-jobs",
+    response_model=CreateTrainingJobResponse,
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
+async def create_training_job(
+    request: Request,
+) -> CreateTrainingJobResponse:
+    """Start a V2 model training job.
+
+    Returns 202 with job id when the readiness check passes (trainable=True).
+    Returns 409 if another job is already active.
+    Returns 412 if training data is insufficient.
+    """
+    job_service: TrainingJobService | None = getattr(
+        request.app.state, "training_job_service", None,
+    )
+    if job_service is None:
+        raise _not_found("训练任务服务（未初始化）")
+
+    # ── Readiness gate ─────────────────────────────────────────────────
+    # Reuse the same data-loading seam as the readiness endpoint.
+    telemetry_repo: TelemetryRepository | None = getattr(
+        request.app.state, "telemetry_repository", None,
+    )
+    focus_repo: SQLAlchemyFocusSessionRepository | None = getattr(
+        request.app.state, "focus_repository", None,
+    )
+    activity_repo: SQLAlchemyActivityRepository | None = getattr(
+        request.app.state, "activity_repository", None,
+    )
+    baseline_repo: BaselineRepository | None = getattr(
+        request.app.state, "baseline_repository", None,
+    )
+    v2_training_mode: str = getattr(
+        request.app.state, "v2_training_mode", "rule_engine_only",
+    )
+
+    if None in (telemetry_repo, focus_repo, activity_repo, baseline_repo):
+        raise _not_found("训练任务服务（repository 未初始化）")
+
+    assert telemetry_repo is not None
+    assert focus_repo is not None
+    assert activity_repo is not None
+    assert baseline_repo is not None
+
+    readiness = TrainingReadinessService(
+        telemetry_repo=telemetry_repo,
+        focus_repo=focus_repo,
+        activity_repo=activity_repo,
+        baseline_repo=baseline_repo,
+        v2_training_mode=v2_training_mode,
+    )
+    assessment = await readiness.compute()
+
+    if not assessment.trainable:
+        raise ProblemDetail(
+            type_slug="training-not-ready",
+            title="Training Not Ready",
+            status=412,
+            detail="训练数据不足，无法启动训练任务",
+            extra={
+                "trainable": False,
+                "blockers": [
+                    {"code": b.code, "message": b.message}
+                    for b in assessment.blockers
+                ],
+            },
+        )
+
+    try:
+        response = await job_service.start_job(app_state=request.app.state)
+    except ConcurrencyError as exc:
+        raise ProblemDetail(
+            type_slug="training-job-active",
+            title="Training Job Already Active",
+            status=409,
+            detail=str(exc),
+        ) from exc
+
+    return CreateTrainingJobResponse(
+        job_id=response.job_id,
+        status="pending",
+    )
+
+
+@router.get(
+    "/analytics/training-jobs/{job_id}",
+    response_model=TrainingJobResponse,
+)
+async def get_training_job(
+    job_id: str,
+    request: Request,
+) -> TrainingJobResponse:
+    """Return the lifecycle status and report for a training job."""
+    job_service: TrainingJobService | None = getattr(
+        request.app.state, "training_job_service", None,
+    )
+    if job_service is None:
+        raise _not_found("训练任务服务（未初始化）")
+
+    job = job_service.get_job(job_id)
+    if job is None:
+        raise _not_found(f"训练任务（{job_id}）")
+
+    return job
+
+
+@router.post(
+    "/analytics/training-jobs/{job_id}/cancel",
+    response_model=TrainingJobResponse,
+)
+async def cancel_training_job(
+    job_id: str,
+    request: Request,
+) -> TrainingJobResponse:
+    """Cancel a pending or preparing training job.
+
+    Returns the job status.  Once training has started, cancellation is
+    rejected (409) because the thread may already write activated artifacts.
+    """
+    job_service: TrainingJobService | None = getattr(
+        request.app.state, "training_job_service", None,
+    )
+    if job_service is None:
+        raise _not_found("训练任务服务（未初始化）")
+
+    try:
+        result = await job_service.cancel_job(job_id)
+    except CancelRejectedError as exc:
+        raise ProblemDetail(
+            type_slug="training-cancel-rejected",
+            title="Cancel Rejected",
+            status=409,
+            detail=str(exc),
+        ) from exc
+
+    if result is None:
+        raise _not_found(f"训练任务（{job_id}）")
+
+    return result

@@ -6,9 +6,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
-import pytest
 
-from mindflow.domain.prediction import FocusPrediction, STALE_THRESHOLD_S
+from mindflow.domain.prediction import STALE_THRESHOLD_S
 from mindflow.services.prediction_service import FocusPredictionService
 
 

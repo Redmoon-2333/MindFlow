@@ -37,6 +37,7 @@ async def get_today_focus(
     ),
     analysis: AnalysisService = Depends(get_analysis_service),  # noqa: B008
     focus_repo: SQLAlchemyFocusSessionRepository = Depends(get_focus_repo),  # noqa: B008
+    telemetry_service: TelemetryService = Depends(get_telemetry_service),  # noqa: B008
 ) -> dict[str, Any]:
     """Return today's focus sessions (auto-generates if missing)."""
     settings = getattr(request.app.state, "settings", None)
@@ -47,6 +48,10 @@ async def get_today_focus(
     if not sessions:
         logger.debug("No sessions for {}, running identification", target)
         sessions = await analysis.identify_focus_sessions(1, target)
+
+    # Fetch feedback for all sessions in one query
+    session_ids = [s["id"] for s in sessions]
+    feedback_map = await telemetry_service.get_feedback_for_sessions(session_ids)
 
     return {
         "date": target.isoformat(),
@@ -59,6 +64,7 @@ async def get_today_focus(
                 "dominant_app": s["dominant_app"],
                 "focus_score": s["focus_score"],
                 "switch_count": s["switch_count"],
+                **(feedback_map.get(s["id"]) or {}),
             }
             for s in sessions
         ],

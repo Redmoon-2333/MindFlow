@@ -24,9 +24,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
-
 from mindflow.infrastructure.schema import procrastination_analyses
-
 
 # ── Repository ───────────────────────────────────────────────────────
 

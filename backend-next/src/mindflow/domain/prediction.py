@@ -16,7 +16,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-
 FocusPredictionStatus = Literal[
     "ready",
     "no_model",

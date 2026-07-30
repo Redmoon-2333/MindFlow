@@ -164,5 +164,11 @@ async def main() -> None:
     logger.info("MindFlow stopped")
 
 
+def _run() -> None:
+    """Synchronous entrypoint — handles KeyboardInterrupt for clean CLI exit."""
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    _run()

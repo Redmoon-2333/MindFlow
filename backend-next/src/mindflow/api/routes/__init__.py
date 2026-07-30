@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from mindflow.api.routes.activities import router as activities_router
+from mindflow.api.routes.ai_diagnostics import router as ai_diagnostics_router
 from mindflow.api.routes.analytics import router as analytics_router
 from mindflow.api.routes.app_classification import router as app_classification_router
 from mindflow.api.routes.attribution import router as attribution_router
@@ -46,4 +47,5 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(intervention_router, prefix="/api/v1")
     app.include_router(chat_router, prefix="/api/v1")
     app.include_router(panel_router, prefix="/api/v1")
+    app.include_router(ai_diagnostics_router, prefix="/api/v1")
     app.include_router(telemetry_router, prefix="/api/v1")

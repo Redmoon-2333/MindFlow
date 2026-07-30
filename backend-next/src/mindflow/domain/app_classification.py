@@ -25,8 +25,8 @@ from __future__ import annotations
 import re
 from typing import Any, Protocol, cast
 
-from mindflow.domain.features import title_features
 from mindflow.domain.classifier import AppClassifier
+from mindflow.domain.features import title_features
 
 # ── Repository protocol (avoids circular imports) ────────────────────────────
 

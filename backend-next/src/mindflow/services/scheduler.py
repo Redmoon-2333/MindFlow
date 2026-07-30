@@ -37,7 +37,12 @@ from mindflow.infrastructure.llm.summary import build_behavior_summary
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
-from mindflow.ports import ScheduledJobRunsPort
+from mindflow.ports import (
+    AnalysisRequest,
+    AnalysisResult,
+    AnalysisWorkflowPort,
+    ScheduledJobRunsPort,
+)
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.autonomy_service import AutonomyService
 from mindflow.services.intervention_service import InterventionService
@@ -59,6 +64,11 @@ _AUTO_INTERVENTION_MIN_CONFIDENCE: float = 0.5
 # Confidence threshold for escalating to the expert panel for a more
 # precise intervention (see G005 three-tier routing).
 _AUTO_INTERVENTION_PANEL_CONFIDENCE: float = 0.75
+
+# Minimum non-idle activity time (in minutes) before intervention
+# can be considered. Avoids triggering on brief computer use.
+_MIN_NON_IDLE_MINUTES: float = 10.0
+
 _SCHEDULED_JOB_HEARTBEAT_INTERVAL_SECONDS = 10 * 60.0
 _IDENTIFY_COMPLETION_POLL_SECONDS = 1.0
 _STARTUP_RECOVERY_RETRIES = 1
@@ -501,11 +511,12 @@ async def _auto_intervention_check(
     intervention_service: InterventionService,
     rule_engine: RuleEngine | None = None,
     panel_service: PanelService | None = None,
+    workflow_port: AnalysisWorkflowPort | None = None,
     autonomy_service: AutonomyService | None = None,
     telemetry_service: Any | None = None,
     scheduled_job_runs_repository: ScheduledJobRunsPort | None = None,
     user_id: int = 1,
-    window_min: int = 30,
+    window_min: int = 45,
     min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
     panel_confidence: float = _AUTO_INTERVENTION_PANEL_CONFIDENCE,
     timezone: TimezoneLike = "local",
@@ -516,7 +527,8 @@ async def _auto_intervention_check(
       1. Outside 08:00-23:00 local-time-equivalent window.
       2. No events in the look-back window.
       3. All events are idle (user away from computer).
-      4. RuleEngine assessment confidence < 0.5 (no significant pattern).
+      4. Non-idle activity < 10 min (insufficient data for pattern).
+      5. RuleEngine assessment confidence < threshold (no significant pattern).
 
     When triggered, calls ``intervention_service.maybe_intervene()`` which
     applies its own throttle guard — this job does not bypass throttling.
@@ -614,14 +626,29 @@ async def _auto_intervention_check(
     assessment_for_dispatch = assessment
     panel_attempted = False
 
-    if top_confidence >= panel_confidence and panel_service is not None:
+    if top_confidence >= panel_confidence and (
+        panel_service is not None or workflow_port is not None
+    ):
         target_date = business_today(timezone, now_utc=now)
 
         # Claim the run BEFORE awaiting so a concurrent daily-panel cron tick
         # cannot also fire the panel (review C4 race). If we lose the claim,
         # another caller already ran (or is running) today's panel — skip.
         async def _run_panel() -> Any:
-            return await panel_service.run_daily_panel(user_id=user_id, target_date=target_date)
+            if workflow_port is not None:
+                result: AnalysisResult = await workflow_port.run_analysis(
+                    AnalysisRequest(
+                        user_id=user_id,
+                        target_date=target_date,
+                        force=False,
+                        origin="auto_intervention",
+                    )
+                )
+                return result.verdict
+            assert panel_service is not None
+            return await panel_service.run_daily_panel(
+                user_id=user_id, target_date=target_date
+            )
 
         try:
             claimed, verdict = await _run_claimed_job(
@@ -686,6 +713,7 @@ def build_scheduler(
     autonomy_service: AutonomyService | None = None,
     telemetry_service: Any | None = None,
     scheduled_job_runs_repository: ScheduledJobRunsPort | None = None,
+    workflow_port: AnalysisWorkflowPort | None = None,
     event_retention_days: int = 30,
     min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
     panel_confidence: float = _AUTO_INTERVENTION_PANEL_CONFIDENCE,
@@ -750,13 +778,24 @@ def build_scheduler(
             await asyncio.sleep(_IDENTIFY_COMPLETION_POLL_SECONDS)
 
     async def _run_panel_for_date(target_date: date) -> bool:
-        if panel_service is None:
+        if panel_service is None and workflow_port is None:
             return False
         if autonomy_service is not None and not await autonomy_service.is_enabled(user_id=1):
             logger.debug("Daily panel: autonomy disabled, skipping")
             return False
 
         async def _run_panel() -> Any:
+            if workflow_port is not None:
+                result: AnalysisResult = await workflow_port.run_analysis(
+                    AnalysisRequest(
+                        user_id=1,
+                        target_date=target_date,
+                        force=False,
+                        origin="scheduler",
+                    )
+                )
+                return result.verdict
+            assert panel_service is not None
             return await panel_service.run_daily_panel(user_id=1, target_date=target_date)
 
         claimed, _ = await _run_claimed_job(
@@ -809,7 +848,7 @@ def build_scheduler(
         return claimed
 
     # ── 23:30 — Expert panel deliberation ────────────────────────────
-    if panel_service is not None:
+    if panel_service is not None or workflow_port is not None:
 
         async def _run_daily_panel() -> None:
             try:
@@ -896,7 +935,7 @@ def build_scheduler(
                 ),
                 retries=_STARTUP_RECOVERY_RETRIES,
             )
-        if panel_service is not None:
+        if panel_service is not None or workflow_port is not None:
             await _run_recovery_step(
                 f"daily_panel:{complete_date}",
                 lambda: _run_panel_for_date(complete_date),
@@ -922,7 +961,7 @@ def build_scheduler(
             )
 
         current_date = now_local.date()
-        if panel_service is not None and (now_local.hour, now_local.minute) >= (23, 30):
+        if (panel_service is not None or workflow_port is not None) and (now_local.hour, now_local.minute) >= (23, 30):
             await _run_recovery_step(
                 f"daily_panel:{current_date}",
                 lambda: _run_panel_for_date(current_date),
@@ -981,6 +1020,7 @@ def build_scheduler(
                 "activity_repo": activity_repository,
                 "intervention_service": intervention_service,
                 "panel_service": panel_service,
+                "workflow_port": workflow_port,
                 "autonomy_service": autonomy_service,
                 "scheduled_job_runs_repository": scheduled_job_runs_repository,
                 "min_confidence": min_confidence,

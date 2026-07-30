@@ -134,12 +134,27 @@ class Settings(BaseSettings):
 
     # --- Data Retention ---
     event_retention_days: int = Field(default=30, description="Raw event retention in days (7-90)")
+    workflow_retention_days: int = Field(
+        default=30, description="Workflow run retention in days (7-90). Completed/failed/cancelled runs "
+        "older than this are cleaned up. Analyses and chat messages are preserved."
+    )
+    stale_run_timeout_minutes: int = Field(
+        default=60, description="Minutes before a run stuck in 'running' status is marked as 'failed'"
+    )
 
     @field_validator("event_retention_days")
     @classmethod
     def _validate_retention(cls, v: int) -> int:
         if not 7 <= v <= 90:
             msg = f"event_retention_days must be between 7 and 90, got {v}"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("workflow_retention_days")
+    @classmethod
+    def _validate_workflow_retention(cls, v: int) -> int:
+        if not 7 <= v <= 90:
+            msg = f"workflow_retention_days must be between 7 and 90, got {v}"
             raise ValueError(msg)
         return v
 
@@ -177,6 +192,35 @@ class Settings(BaseSettings):
     )
     throttle_annoying_threshold: int = Field(
         default=3, ge=1, le=20, description="Annoying feedback count that reduces type limit"
+    )
+
+    # --- Human Review Interrupt (Todo 10) ---
+    human_review_enabled: bool = Field(
+        default=False,
+        description="Enable human review interrupt on low-confidence/high-disagreement verdicts",
+    )
+    human_review_confidence_threshold: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="Confidence below which human review is triggered",
+    )
+    human_review_disagreement_threshold: float = Field(
+        default=0.3, ge=0.0, le=1.0,
+        description="Disagreement strength above which human review is triggered (1.0 - agreement_strength)",
+    )
+
+    # --- Graph orchestration (ADR-005 — default to legacy paths until cutover) ---
+    graph_version: int = Field(default=1, description="LangGraph version (1=legacy, 2=new)")
+    checkpointing_enabled: bool = Field(
+        default=False, description="Enable LangGraph checkpoint persistence"
+    )
+    new_analysis_graph: bool = Field(
+        default=False, description="Use v2 analysis graph (default: legacy v1)"
+    )
+    new_chat_graph: bool = Field(
+        default=False, description="Use v2 chat graph (default: legacy v1)"
+    )
+    shadow_mode_chat: bool = Field(
+        default=False, description="Run both legacy and new chat paths, compare, return legacy output"
     )
 
     # --- LLM placeholder ---

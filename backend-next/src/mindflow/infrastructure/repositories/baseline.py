@@ -20,9 +20,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.baseline import BaselineModel
-
 from mindflow.infrastructure.schema import baseline_models
-
 
 # ── Repository ────────────────────────────────────────────────────────
 

@@ -270,7 +270,7 @@ class AnalysisService:
                 local_start = start_ts.astimezone(local_timezone)
                 hour = local_start.hour
                 dow = local_start.weekday()  # 0=Monday, 6=Sunday
-                heatmap[hour][dow] += s.get("switch_count", 0)
+                heatmap[hour][dow] += s.get("switch_count") or 0
 
                 if s.get("session_type") == "distraction":
                     distraction_count += 1
@@ -278,8 +278,8 @@ class AnalysisService:
                     if app:
                         trigger_apps[app] += 1
 
-                hourly_switches[hour] += s.get("switch_count", 0)
-            except (ValueError, KeyError):
+                hourly_switches[hour] += s.get("switch_count") or 0
+            except (ValueError, KeyError, TypeError):
                 continue
 
         # Sort high-switch periods
@@ -357,7 +357,7 @@ class AnalysisService:
                         start_ts = start_ts.replace(tzinfo=UTC)
                     local_start = start_ts.astimezone(local_timezone)
                     hour_focus[local_start.hour].append(s.get("focus_score", 0) or 0)
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, TypeError):
                     continue
 
         avg_focus_per_hour = {

@@ -26,9 +26,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
-
 from mindflow.infrastructure.schema import chat_messages
-
 
 # ── Repository ─────────────────────────────────────────────────────────
 

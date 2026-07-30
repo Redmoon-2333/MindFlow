@@ -23,7 +23,9 @@ import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
+import httpx
 from fastapi import FastAPI, Request, Response
 from loguru import logger
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -33,7 +35,6 @@ from starlette.types import Scope
 from mindflow import __version__
 
 # Agent imports (G002, G003)
-from mindflow.agents.llm_gateway import DeepSeekGateway
 from mindflow.agents.orchestrator import PanelOrchestrator
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.middleware import (
@@ -46,6 +47,9 @@ from mindflow.api.routes import register_routes
 from mindflow.api.websocket import broadcast, close_all_connections
 from mindflow.api.websocket import router as websocket_router
 from mindflow.config import Settings
+from mindflow.graph.analysis_graph import AnalysisGraph
+from mindflow.graph.panel_graph import PanelGraph
+from mindflow.infrastructure.checkpointer import create_checkpointer
 from mindflow.infrastructure.collectors.base import EventCollector, create_collector
 from mindflow.infrastructure.database import (
     create_engine,
@@ -54,6 +58,7 @@ from mindflow.infrastructure.database import (
 )
 from mindflow.infrastructure.migrations import run_migrations
 from mindflow.infrastructure.notification import create_notifier
+from mindflow.infrastructure.provider_registry import ProviderRegistry
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
@@ -83,6 +88,10 @@ from mindflow.infrastructure.repositories.report import (
 )
 from mindflow.infrastructure.repositories.scheduled_jobs import ScheduledJobRunsRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.infrastructure.repositories.workflow_runs import (
+    BudgetReservationRepository,
+    WorkflowRunsRepository,
+)
 from mindflow.infrastructure.security.crisis_detector import CrisisDetector
 from mindflow.infrastructure.security.token_manager import (
     BootstrapTicketStore,
@@ -90,6 +99,7 @@ from mindflow.infrastructure.security.token_manager import (
     load_or_create_token,
 )
 from mindflow.logging_config import setup_logging
+from mindflow.ports import AnalysisWorkflowPort
 from mindflow.runtime import RuntimeServices
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.autonomy_service import AutonomyService
@@ -107,6 +117,7 @@ from mindflow.services.prediction_service import FocusPredictionService
 from mindflow.services.report_service import ReportService
 from mindflow.services.scheduler import build_scheduler
 from mindflow.services.telemetry_service import TelemetryService
+from mindflow.services.training_job_service import TrainingJobService
 
 # ── Lifespan ────────────────────────────────────────────────────────────────
 
@@ -167,6 +178,14 @@ async def _shutdown_runtime_services(runtime: RuntimeServices) -> None:
             await runtime.scheduler.shutdown()
         except Exception as exc:
             logger.warning("Scheduler shutdown error: {}", exc)
+    # Close provider registry first — owns all HTTP pools shared across
+    # LLMService, ChatService, and PanelService. Individual service aclose()
+    # calls are no-ops when a registry is injected.
+    if runtime.provider_registry is not None:
+        try:
+            await runtime.provider_registry.shutdown()
+        except Exception as exc:
+            logger.warning("ProviderRegistry shutdown error: {}", exc)
     for name, service in (
         ("PanelService", runtime.panel_service),
         ("ChatService", runtime.chat_service),
@@ -189,6 +208,11 @@ async def _shutdown_runtime_services(runtime: RuntimeServices) -> None:
             logger.warning("Collector stop timed out, forcing")
         except Exception as exc:
             logger.warning("Collector stop error: {}", exc)
+    if runtime.checkpointer is not None:
+        try:
+            await runtime.checkpointer.aclose()
+        except Exception as exc:
+            logger.warning("Checkpointer close error: {}", exc)
     try:
         await asyncio.wait_for(runtime.engine.dispose(), timeout=3.0)
     except TimeoutError:
@@ -225,8 +249,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Database engine ───────────────────────────────────────────────
     engine = create_engine(settings.db_url)
     runtime: RuntimeServices | None = None
+    checkpointer: Any = None
+    checkpointer_ctx: Any = None
     try:
         session_factory = create_session_factory(engine)
+
+        # ── 0b. Checkpointer (LangGraph persistence, same DB file) ──────────
+        checkpointer_ctx = create_checkpointer(settings)
+        checkpointer = await checkpointer_ctx.__aenter__()
+        logger.debug(
+            "Checkpointer created (enabled={})", settings.checkpointing_enabled
+        )
 
         # ── 1. Migrations ─────────────────────────────────────────────────
         migration_applied = await run_migrations(settings.db_url)
@@ -324,7 +357,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         telemetry_preferences = await telemetry_service.get_preferences()
 
         # ── 6. Notifier ───────────────────────────────────────────────────
-        notifier = create_notifier()
+        notification_host = settings.host
+        if notification_host in {"0.0.0.0", "::", ""}:
+            notification_host = "127.0.0.1"
+        if ":" in notification_host and not notification_host.startswith("["):
+            notification_host = f"[{notification_host}]"
+        notifier = create_notifier(
+            api_base_url=f"http://{notification_host}:{settings.port}"
+        )
 
         # ── 7. Wave 7: Effectiveness service (needed by report service) ────
         effectiveness_service = EffectivenessService(
@@ -373,6 +413,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception as exc:
             logger.warning("Failed to load feature schema v2 model: {}", exc)
 
+        # ── 7-ext. Training job service (manual V2 model training) ──────────
+        training_job_service = TrainingJobService(
+            telemetry_repo=telemetry_repository,
+            focus_repo=focus_repository,
+            user_id=1,
+        )
+
         # ── 7a. Wave 5 Services ────────────────────────────────────────────
         analysis_service = AnalysisService(
             activity_repo=activity_repository,
@@ -393,16 +440,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             data_dir=data_dir,
         )
 
-        # ── 7b. Wave 6: LLM service ───────────────────────────────────────
+        # ── 7b. Wave 6: Provider registry + LLM service ───────────────────
+        provider_registry = ProviderRegistry(settings.llm)
         llm_service: LLMService | None = None
         try:
-            from mindflow.infrastructure.llm.client import DeepSeekClient  # noqa: PLC0415
-
-            deepseek = DeepSeekClient(settings.llm) if settings.llm.api_key else None
             llm_service = LLMService(
                 activity_repo=activity_repository,
                 analysis_repo=analysis_repository,
-                deepseek_client=deepseek,
                 ollama_base_url=(
                     settings.llm.ollama_base_url
                     if settings.llm.ollama_enabled
@@ -410,10 +454,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 ),
                 ollama_model=settings.llm.ollama_model,
                 timezone=settings.timezone,
+                provider_registry=provider_registry,
             )
             logger.info(
                 "LLMService created (L1: {}, L2: {})",
-                "yes" if deepseek else "no",
+                "yes" if provider_registry.get_structured_attribution() else "no",
                 settings.llm.ollama_enabled,
             )
         except Exception as exc:
@@ -429,24 +474,43 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             fatigue_daily_limit=settings.throttle_fatigue_daily_limit,
             annoying_threshold=settings.throttle_annoying_threshold,
         )
+
+        # LLM client for AI-generated intervention messages
+        intervention_llm_client: httpx.AsyncClient | None = None
+        intervention_llm_model = "deepseek-chat"
+        if settings.llm.api_key:
+            llm_base_url = (settings.llm.base_url or "https://api.deepseek.com").rstrip("/")
+            intervention_llm_client = httpx.AsyncClient(
+                base_url=llm_base_url,
+                timeout=httpx.Timeout(10.0),
+                headers={
+                    "Authorization": f"Bearer {settings.llm.api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            intervention_llm_model = settings.llm.model or "deepseek-chat"
+            logger.info("Intervention LLM client created for AI message generation")
+        else:
+            logger.info("No LLM API key - intervention messages will use templates")
+
         intervention_service = InterventionService(
             intervention_repo=intervention_repository,
             throttle=intervention_throttle,
             notifier=notifier,
             activity_repo=activity_repository,
             broadcast_fn=broadcast,
+            llm_client=intervention_llm_client,
+            llm_model=intervention_llm_model,
+            auth_token=system_token,
         )
 
         # ── 7d. G003: Panel service ──────────────────────────────────────────
         panel_service: PanelService | None = None
+        analysis_workflow_port: AnalysisWorkflowPort | None = None
+        shared_evidence_builder: EvidenceBundleBuilder | None = None
         if llm_service is not None:
             try:
-                gateway = DeepSeekGateway(
-                    api_key=settings.llm.api_key,
-                    base_url=settings.llm.base_url,
-                    timeout_s=settings.llm.timeout_s,
-                    max_retries=settings.llm.max_retries,
-                )
+                gateway = provider_registry.get_gateway()
                 orchestrator = PanelOrchestrator(gateway=gateway)
                 # Create shared EvidenceBundleBuilder for Panel + Chat
                 shared_evidence_builder = EvidenceBundleBuilder(
@@ -457,6 +521,50 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     baseline_repo=baseline_repository,
                     prediction_service=prediction_service,
                 )
+
+                # ── Create AnalysisGraph (Todo 12) — gated on new_analysis_graph ──
+                # ADR-005: new_analysis_graph controls whether the unified
+                # AnalysisGraph is constructed and injected as the shared
+                # AnalysisWorkflowPort.  When False (default), legacy inline
+                # paths (attribution, scheduler, panel) are used.
+                if settings.new_analysis_graph:
+                    workflow_run_repo: Any = WorkflowRunsRepository(session_factory)
+                    workflow_budget_repo: Any = BudgetReservationRepository(session_factory)
+
+                    # RuleEngine is a lightweight deterministic engine — safe to
+                    # create here (no DB state, no HTTP clients).
+                    from mindflow.domain.procrastination import RuleEngine as _RuleEngine
+
+                    deepseek_client: Any | None = provider_registry.get_structured_attribution()
+
+                    # ── G002: Explicit PanelGraph wired into AnalysisGraph ──
+                    # Shares the same gateway/provider lifecycle as the
+                    # PanelOrchestrator; compiled graph is built lazily on
+                    # first access and reused across all invocations.
+                    panel_graph = PanelGraph(gateway=gateway)
+
+                    analysis_graph = AnalysisGraph(
+                        analysis_repo=analysis_repository,
+                        workflow_run_repo=workflow_run_repo,
+                        budget_repo=workflow_budget_repo,
+                        evidence_builder=shared_evidence_builder,
+                        crisis_detector=CrisisDetector(),
+                        panel_graph=panel_graph,
+                        deepseek_client=deepseek_client,
+                        ollama_base_url=(
+                            settings.llm.ollama_base_url
+                            if settings.llm.ollama_enabled
+                            else None
+                        ),
+                        ollama_model=settings.llm.ollama_model,
+                        rule_engine=_RuleEngine(),
+                        timezone=settings.timezone,
+                    )
+                    analysis_workflow_port = analysis_graph
+                    logger.info("AnalysisGraph created as shared AnalysisWorkflowPort")
+                else:
+                    logger.info("new_analysis_graph=False; legacy analysis paths active")
+
                 panel_service = PanelService(
                     activity_repo=activity_repository,
                     intervention_repo=intervention_repository,
@@ -467,6 +575,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     timezone=settings.timezone,
                     analysis_repository=analysis_repository,
                     evidence_builder=shared_evidence_builder,
+                    workflow_port=analysis_workflow_port,
                 )
                 logger.info("PanelService created with expert panel orchestrator")
             except Exception as exc:
@@ -478,14 +587,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         chat_service: ChatService | None = None
         try:
             crisis_detector = CrisisDetector()
-            chat_gateway = DeepSeekGateway(
-                api_key=settings.llm.api_key,
-                base_url=settings.llm.base_url,
-                timeout_s=settings.llm.timeout_s,
-                max_retries=settings.llm.max_retries,
-            )
+            chat_gateway = provider_registry.get_gateway()
             # Use the shared evidence builder from panel section, or create one
-            shared_evidence = locals().get("shared_evidence_builder")
+            shared_evidence = shared_evidence_builder
             if shared_evidence is None:
                 shared_evidence = EvidenceBundleBuilder(
                     activity_repo=activity_repository,
@@ -506,10 +610,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 chat_repo=chat_repository,
                 max_history_rounds=settings.max_history_rounds,
                 timezone=settings.timezone,
+                model=provider_registry.get_chat_model(),
+                provider_registry=provider_registry,
+                chat_graph=None,
             )
             logger.info("ChatService created for G004 conversational assistant")
         except Exception as exc:
             logger.warning("Failed to create ChatService: {}", exc)
+
+        # ── Extract ChatGraph from ChatService for runtime state ──────────
+        chat_graph = (
+            getattr(chat_service, "_chat_graph", None)
+            if chat_service is not None
+            else None
+        )
+        if chat_graph is not None:
+            logger.info("ChatGraph attached to runtime (new_chat_graph={}, shadow={})",
+                         settings.new_chat_graph, settings.shadow_mode_chat)
 
         # ── 8. Scheduler (Wave 5 cron jobs) ───────────────────────────────
         scheduler = build_scheduler(
@@ -522,6 +639,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             autonomy_service=autonomy_service,
             telemetry_service=telemetry_service,
             scheduled_job_runs_repository=scheduled_job_runs_repository,
+            workflow_port=analysis_workflow_port,
             event_retention_days=settings.event_retention_days,
             min_confidence=settings.auto_intervention_min_confidence,
             panel_confidence=settings.auto_intervention_panel_confidence,
@@ -537,9 +655,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             input_telemetry_service=input_telemetry_service,
             panel_service=panel_service,
             chat_service=chat_service,
+            chat_graph=chat_graph,
             llm_service=llm_service,
             prediction_service=prediction_service,
-            evidence_builder=shared_evidence_builder if panel_service is not None else None,
+            evidence_builder=shared_evidence_builder,
+            provider_registry=provider_registry,
+            workflow_port=analysis_workflow_port,
+            checkpointer=checkpointer,
         )
         await _start_runtime_services(
             runtime,
@@ -583,37 +705,62 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.panel_service = panel_service
         app.state.intervention_repository = intervention_repository
         app.state.intervention_service = intervention_service
+        app.state.intervention_llm_client = intervention_llm_client
         app.state.effectiveness_service = effectiveness_service
         app.state.v2_model_manager = v2_model_manager
         app.state.v2_training_mode = v2_training_mode
+        app.state.training_job_service = training_job_service
         app.state.chat_service = chat_service
+        app.state.chat_graph = chat_graph
         app.state.autonomy_service = autonomy_service
         app.state.prediction_service = prediction_service
-        if panel_service is not None:
-            try:
-                app.state.shared_evidence_builder = shared_evidence_builder
-            except Exception as exc:
-                logger.opt(exception=True).warning(
-                    "Failed to set app.state.shared_evidence_builder: {}", exc
-                )
+        app.state.checkpointer = checkpointer
+        app.state.workflow_port = analysis_workflow_port
+        if shared_evidence_builder is not None:
+            app.state.shared_evidence_builder = shared_evidence_builder
 
         logger.info("MindFlow v{} startup complete", __version__)
 
         yield  # ── Application runs here ──
     finally:
         logger.info("Shutting down MindFlow...")
+        # Cancel any active training job before tearing down services.
+        _ts = getattr(app.state, "training_job_service", None)
+        if _ts is not None:
+            try:
+                await _ts.shutdown()
+            except Exception as exc:
+                logger.warning("Training job service shutdown error: {}", exc)
         if runtime is not None:
             await _shutdown_runtime_services(runtime)
         else:
+            if checkpointer is not None:
+                try:
+                    await checkpointer.aclose()
+                except Exception as exc:
+                    logger.warning("Checkpointer close error during failed startup: {}", exc)
             try:
                 await engine.dispose()
             except Exception as exc:
                 logger.warning("Engine dispose error during failed startup: {}", exc)
+        # Exit the checkpointer async context manager (cleanup the generator).
+        if checkpointer_ctx is not None:
+            try:
+                await checkpointer_ctx.__aexit__(None, None, None)
+            except Exception as exc:
+                logger.warning("Checkpointer ctx exit error: {}", exc)
         try:
             n_closed = await close_all_connections()
             logger.debug("Closed {} active WebSocket connection(s)", n_closed)
         except Exception as exc:
             logger.warning("WebSocket close error: {}", exc)
+        # Close intervention LLM client if created
+        _ilc = getattr(app.state, "intervention_llm_client", None)
+        if _ilc is not None:
+            try:
+                await _ilc.aclose()
+            except Exception as exc:
+                logger.warning("Intervention LLM client close error: {}", exc)
         logger.info("MindFlow shutdown complete")
 
 

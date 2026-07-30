@@ -7,11 +7,92 @@ layer testable and decoupled from persistence details.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal, Protocol
 
+from mindflow.agents.types import PanelVerdict
 from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.intervention import ThrottleStats
+
+# ── Framework-neutral workflow value objects ───────────────────────────
+
+OriginType = Literal["scheduler", "api", "chat", "auto_intervention"]
+RunStatus = Literal["pending", "running", "completed", "failed"]
+
+
+@dataclass(frozen=True)
+class AnalysisRequest:
+    """Request to run an analysis within a workflow.
+
+    Attributes:
+        user_id: The user to analyse.
+        target_date: The date to analyse.
+        force: If True, bypass idempotent cache and re-run.
+        origin: Which entry point triggered this run.
+        idempotency_key: Client-supplied key for exactly-once semantics.
+    """
+
+    user_id: int
+    target_date: date
+    force: bool = False
+    origin: OriginType = "api"
+    idempotency_key: str = ""
+
+
+@dataclass(frozen=True)
+class AnalysisResult:
+    """Result of a single analysis within a workflow.
+
+    Attributes:
+        verdict: The panel verdict produced by the analysis.
+        run_id: Identifier of the workflow run this result belongs to.
+        created_at: When the analysis completed.
+    """
+
+    verdict: PanelVerdict
+    run_id: str = ""
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowRunRequest:
+    """Outer request to trigger an entire workflow run.
+
+    Attributes:
+        user_id: The user to analyse.
+        target_date: The date to analyse.
+        force_refresh: If True, bypass caches and force fresh analysis.
+        origin: Which entry point triggered this run.
+        idempotency_key: Client-supplied key for exactly-once semantics.
+    """
+
+    user_id: int
+    target_date: date
+    force_refresh: bool = False
+    origin: OriginType = "api"
+    idempotency_key: str = ""
+
+
+@dataclass(frozen=True)
+class WorkflowRunResult:
+    """Result of a complete workflow run with status tracking.
+
+    Attributes:
+        run_id: Unique identifier for this workflow run.
+        status: Current run status.
+        analysis_result: The analysis outcome, populated on completion.
+        error_message: Human-readable error if status is ``"failed"``.
+        started_at: When the run began.
+        completed_at: When the run ended (success or failure).
+    """
+
+    run_id: str
+    status: RunStatus
+    analysis_result: AnalysisResult | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
 # ── Scheduled jobs ──────────────────────────────────────────────────────
 
@@ -238,3 +319,75 @@ class TelemetryRepositoryPort(Protocol):
         self, user_id: int,
         scope: Literal["interaction", "browser", "feedback", "all"],
     ) -> int: ...
+
+
+# ── Workflow orchestration ─────────────────────────────────────────────────
+
+
+class AnalysisWorkflowPort(Protocol):
+    """Framework-neutral entry point for running an expert panel analysis.
+
+    Implementations may use LangGraph, a manual state machine, or a
+    lightweight task runner — only the request/result contract matters.
+    """
+
+    async def run_analysis(self, request: AnalysisRequest) -> AnalysisResult: ...
+
+
+# ── Model provider ──────────────────────────────────────────────────────────
+
+
+class ModelProviderPort(Protocol):
+    """Access chat model and structured attribution without framework coupling.
+
+    Hides whether the provider is LangChain, a raw HTTP client, or a local
+    Ollama model. Consumers only see typed inputs and outputs.
+    """
+
+    async def generate(self, system_prompt: str, user_message: str) -> str: ...
+
+    async def structured_attribution(
+        self,
+        summary_json: str,
+    ) -> object: ...
+
+
+# ── Workflow run store ──────────────────────────────────────────────────────
+
+
+class WorkflowRunStorePort(Protocol):
+    """Status tracking and run metadata persistence for workflow runs.
+
+    Separate from ``ScheduledJobRunsPort`` — that port tracks cron attempts
+    per (job_name, local_date); this port tracks individual workflow runs
+    by a generated run ID, supporting idempotency and audit.
+    """
+
+    async def save_run(self, request: WorkflowRunRequest) -> str: ...
+
+    async def get_run(self, run_id: str) -> WorkflowRunResult | None: ...
+
+    async def update_status(
+        self, run_id: str, status: RunStatus, *,
+        result: AnalysisResult | None = None,
+        error: str | None = None,
+    ) -> None: ...
+
+
+# ── Budget reservation ──────────────────────────────────────────────────────
+
+
+class BudgetReservationPort(Protocol):
+    """Atomic budget check-and-reserve for workflow runs.
+
+    Guarantees exactly-once execution for a given idempotency key: the first
+    reservation succeeds, all subsequent reservations for the same key fail
+    instantly (no waiting, no partial state).
+    """
+
+    async def try_reserve(
+        self, idempotency_key: str, *,
+        cost_estimate: float = 1.0,
+    ) -> bool: ...
+
+    async def release(self, idempotency_key: str) -> None: ...

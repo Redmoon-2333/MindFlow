@@ -37,6 +37,9 @@ def test_full_lifespan_starts_and_stops_with_background_roles_disabled(
         assert app.state.scheduler._running is False
         assert app.state.chat_service is not None
         assert app.state.panel_service is not None
+        assert app.state.workflow_port is None, (
+            "workflow_port should be None with default new_analysis_graph=False"
+        )
         assert app.state.panel_service._timezone == "Asia/Shanghai"
         assert app.state.llm_service._timezone == "Asia/Shanghai"
         assert (
@@ -166,6 +169,17 @@ async def test_lifespan_rolls_back_services_after_partial_startup_failure(
         AsyncMock(return_value={"input_telemetry_enabled": True}),
     )
     monkeypatch.setattr(app_module, "close_all_connections", close_websockets)
+
+    # On Windows without optional collector deps (pywin32, psutil),
+    # create_collector() raises CollectorUnavailableError before
+    # CollectorService is instantiated, so collector_start is never
+    # awaited.  Provide a minimal fake collector so CollectorService
+    # construction succeeds and the start/stop rollback is exercised.
+    fake_collector = SimpleNamespace(
+        snapshot=AsyncMock(),
+        idle_seconds=AsyncMock(),
+    )
+    monkeypatch.setattr(app_module, "create_collector", lambda: fake_collector)
 
     app = create_app(
         Settings(

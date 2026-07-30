@@ -34,11 +34,11 @@ from mindflow.infrastructure.repositories.analysis import (
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
 )
+from mindflow.ports import AnalysisRequest, AnalysisWorkflowPort, OriginType
 from mindflow.services.effectiveness_service import EffectivenessService
 from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.llm_service import LLMService
 from mindflow.time_utils import TimezoneLike, business_day_bounds_utc
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Unified verdict conversion
@@ -231,6 +231,9 @@ class PanelService:
         analysis_repository: Repository that persists panel and fallback verdicts.
         effectiveness_service: Effectiveness service for enriching intervention
             records with outcome data (G005 learning loop — optional).
+        workflow_port: Optional framework-neutral workflow port. When set,
+            :meth:`run_daily_panel` delegates through this port instead of
+            executing the panel directly.
     """
 
     def __init__(
@@ -244,6 +247,7 @@ class PanelService:
         effectiveness_service: EffectivenessService | None = None,
         timezone: TimezoneLike = "local",
         evidence_builder: EvidenceBundleBuilder | None = None,
+        workflow_port: AnalysisWorkflowPort | None = None,
     ) -> None:
         # Accept an injected shared EvidenceBundleBuilder, or create one as fallback
         self._builder = evidence_builder or EvidenceBundleBuilder(
@@ -256,24 +260,52 @@ class PanelService:
         self._llm_service = llm_service
         self._analysis_repository = analysis_repository
         self._timezone = timezone
+        self._workflow_port = workflow_port
 
-    async def run_daily_panel(self, user_id: int, target_date: date) -> PanelVerdict:
+    async def run_daily_panel(
+        self, user_id: int, target_date: date, *, origin: OriginType = "scheduler"
+    ) -> PanelVerdict:
         """Run the daily expert panel (or degrade gracefully).
 
-        Attempts the full multi-expert panel. If the panel is unavailable
+        **Compatibility adapter**: When ``workflow_port`` is injected, this
+        method delegates through :class:`~mindflow.ports.AnalysisWorkflowPort`
+        instead of executing the panel directly. The port contract keeps the
+        call-site signature unchanged while allowing the workflow engine to be
+        swapped (LangGraph, state machine, or test fake) without touching
+        route handlers.
+
+        Without a workflow port, the existing behaviour is preserved:
+        attempts the full multi-expert panel. If the panel is unavailable
         (e.g. insufficient valid expert opinions), falls through to the
         existing single-expert LLM service.
 
         Args:
             user_id: The user to analyse.
             target_date: The date to analyse.
+            origin: Which entry point triggered this run
+                (``"scheduler"``, ``"api"``, ``"chat"``, or
+                ``"auto_intervention"``).  Only used when delegating
+                through the workflow port; ignored in the inline path.
 
         Returns:
             A ``PanelVerdict`` — either from the full panel (source="panel")
             or from the deepest successful fallback tier
             (source="single_expert", "ollama", or "rule_engine").
         """
-        # ── Build evidence bundle ──────────────────────────────────────────────
+        # ── Framework-neutral delegation path ──────────────────────────────────
+        workflow_port = getattr(self, "_workflow_port", None)
+        if workflow_port is not None:
+            request = AnalysisRequest(
+                user_id=user_id,
+                target_date=target_date,
+                force=False,
+                origin=origin,
+            )
+            result = await workflow_port.run_analysis(request)
+            return result.verdict
+
+        # ── Existing inline orchestration path ─────────────────────────────────
+        # Build evidence bundle ──────────────────────────────────────────────
         window_start, window_end = business_day_bounds_utc(
             target_date,
             self._timezone,

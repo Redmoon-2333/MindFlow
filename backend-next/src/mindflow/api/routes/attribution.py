@@ -27,9 +27,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request  # noqa: B008
 from pydantic import BaseModel, Field
 
-from mindflow.api.deps import get_llm_service
+from mindflow.api.deps import get_llm_service, get_workflow_port
 from mindflow.api.errors import ProblemDetail
 from mindflow.errors import NoActivityDataError
+from mindflow.ports import AnalysisRequest, AnalysisWorkflowPort
 from mindflow.services.llm_service import LLMService
 from mindflow.time_utils import business_today
 
@@ -50,12 +51,17 @@ async def post_attribution(
     request: Request,
     payload: AttributionRequest | None = None,
     llm_service: LLMService = Depends(get_llm_service),  # noqa: B008
+    workflow_port: AnalysisWorkflowPort | None = Depends(get_workflow_port),  # noqa: B008
 ) -> dict[str, Any]:
     """Run (or retrieve cached) procrastination attribution for a date.
 
+    When the shared ``AnalysisWorkflowPort`` is available, delegates through
+    it with ``origin="api"``.  Otherwise falls back to ``llm_service.analyze``.
+
     Args:
         payload: Optional JSON body. ``date`` defaults to today, ``force`` to False.
-        llm_service: Injected LLM service instance.
+        llm_service: Injected LLM service instance (fallback path).
+        workflow_port: Shared analysis workflow port (primary path).
 
     Returns:
         Assessment data with ``source``, ``cached``, and ``meta.degraded``.
@@ -72,6 +78,35 @@ async def post_attribution(
     )
 
     try:
+        if workflow_port is not None:
+            result = await workflow_port.run_analysis(
+                AnalysisRequest(
+                    user_id=1,
+                    target_date=target_date,
+                    force=req.force,
+                    origin="api",
+                )
+            )
+            verdict = result.verdict
+            return {
+                "assessment": {
+                    "procrastination_types": [t.value for t in verdict.types],
+                    "type_confidence": {
+                        k.value: v for k, v in verdict.confidence.items()
+                    },
+                    "cbt_technique": (
+                        verdict.recommended_technique.value
+                        if verdict.recommended_technique is not None
+                        else None
+                    ),
+                    "response_text": verdict.rationale,
+                },
+                "source": verdict.source,
+                "cached": False,
+                "meta": {
+                    "degraded": verdict.source != "panel",
+                },
+            }
         outcome = await llm_service.analyze(
             user_id=1,
             target_date=target_date,

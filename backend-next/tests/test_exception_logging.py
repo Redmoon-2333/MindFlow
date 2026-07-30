@@ -78,19 +78,21 @@ def test_app_no_locals_get_try_except() -> None:
 # ── Path 3: app.py — shared_evidence_builder state assignment ─────────────
 
 
-def test_shared_evidence_builder_warns_on_error() -> None:
-    """The except clause logs with opt(exception=True), not silent pass."""
+def test_shared_evidence_builder_published_only_when_non_none() -> None:
+    """Structural: shared_evidence_builder is published only when non-None."""
     app_path = Path(__file__).resolve().parent.parent / "src" / "mindflow" / "app.py"
     source = app_path.read_text(encoding="utf-8")
 
-    assert "Failed to set app.state.shared_evidence_builder" in source
-    # Verify the warning line (or nearby) uses opt(exception=True)
-    marker = "Failed to set app.state.shared_evidence_builder"
-    idx = source.index(marker)
-    preceding = source[max(0, idx - 200): idx]
-    assert "opt(exception=True)" in preceding, (
-        "shared_evidence_builder warning must use .opt(exception=True)"
+    # The old warning text was removed with the impossible try/except
+    assert "Failed to set app.state.shared_evidence_builder" not in source, (
+        "Obsolete warning text still present — restore was unguarded"
     )
+    # Must be guarded — fails if None check removed
+    assert "if shared_evidence_builder is not None:" in source, (
+        "Guard missing: assignment would be unconditional"
+    )
+    # The guarded assignment must still exist
+    assert "app.state.shared_evidence_builder = shared_evidence_builder" in source
 
 
 # ── Path 4: eval/adapters.py — _extract_metrics_from_user parse error ─────

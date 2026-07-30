@@ -372,6 +372,52 @@ class SQLAlchemyActivityRepository:
             row = result.fetchone()
 
         return _row_to_event(row) if row is not None else None
+
+    async def get_activity_summary(
+        self, user_id: int,
+    ) -> dict[str, Any]:
+        """Return aggregate activity-event stats in a single query.
+
+        Returns dict with keys: ``total_events``, ``oldest_timestamp``,
+        ``newest_timestamp``, ``coverage_days``.  All timestamp values are
+        ISO-8601 strings; ``None`` when no events exist.
+        """
+        stmt = sa.select(
+            sa.func.count(),
+            sa.func.min(activity_events.c.timestamp),
+            sa.func.max(activity_events.c.timestamp),
+        ).where(activity_events.c.user_id == user_id)
+
+        async with self._session_factory() as session:
+            row = (await session.execute(stmt)).fetchone()
+
+        if row is None or row[0] == 0:
+            return {
+                "total_events": 0,
+                "oldest_timestamp": None,
+                "newest_timestamp": None,
+                "coverage_days": 0,
+            }
+
+        total: int = int(row[0])
+        oldest: str | None = row[1]
+        newest: str | None = row[2]
+        coverage = 0
+        if oldest is not None and newest is not None:
+            try:
+                od = datetime.fromisoformat(oldest)
+                nd = datetime.fromisoformat(newest)
+                coverage = (nd.date() - od.date()).days + 1
+            except (ValueError, TypeError):
+                coverage = 0
+
+        return {
+            "total_events": total,
+            "oldest_timestamp": oldest,
+            "newest_timestamp": newest,
+            "coverage_days": coverage,
+        }
+
     async def compact_history(self, user_id: int = 1) -> dict[str, int]:
         async with self._session_factory() as session, session.begin():
             result = await session.execute(

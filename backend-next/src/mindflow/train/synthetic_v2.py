@@ -23,12 +23,9 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-
-from mindflow.train.v2 import V2_FEATURE_NAMES
 
 # ── Feature generation parameters ──────────────────────────────────────────
 
@@ -452,7 +449,7 @@ def _generate_window_features(
     max_allowed_longest = max(top_app_ratio * active_ratio, 0.01)
     if longest_ratio > max_allowed_longest:
         longest_ratio = max_allowed_longest
-    
+
     # idle_ratio + active_seconds_ratio should be approx 1.0
     total_ratio = idle_ratio + active_ratio
     if total_ratio > 1.0:
@@ -591,7 +588,10 @@ def generate_v2_synthetic_data(
         archetypes = all_archetypes
 
     if not archetypes:
-        raise ValueError(f"No archetypes matched. Available: {[a.profile_id for a in _ARCHETYPES]}")
+        available = [a.profile_id for a in all_archetypes]
+        raise ValueError(
+            f"No archetypes matched. Available: {available}"
+        )
 
     all_windows: list[dict[str, Any]] = []
     all_feedback: list[dict[str, Any]] = []

@@ -41,6 +41,7 @@ from mindflow.infrastructure.repositories.preferences import (
 from mindflow.infrastructure.repositories.report import (
     SQLAlchemyDailyReportRepository,
 )
+from mindflow.ports import AnalysisWorkflowPort
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.autonomy_service import AutonomyService
 from mindflow.services.chat_service import ChatService
@@ -50,7 +51,6 @@ from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
 from mindflow.services.report_service import ReportService
 from mindflow.services.telemetry_service import TelemetryService
-from mindflow.train.models.manager import ModelManager
 
 
 def get_collector_service(request: Request) -> CollectorService | None:
@@ -171,3 +171,20 @@ def get_baseline_repo(request: Request) -> BaselineRepository:
 
 def get_telemetry_service(request: Request) -> TelemetryService:
     return cast(TelemetryService, request.app.state.telemetry_service)
+
+
+def get_workflow_port(request: Request) -> AnalysisWorkflowPort | None:
+    """Return the shared AnalysisWorkflowPort from app.state (may be None)."""
+    return cast(AnalysisWorkflowPort | None, getattr(request.app.state, "workflow_port", None))
+
+
+def get_workflow_runs_repo(request: Request) -> object:
+    """Return a WorkflowRunsRepository built from the shared session factory.
+
+    Each request gets a fresh repo instance; the repo opens its own
+    self-contained sessions internally, so there is no cross-request
+    state leakage.
+    """
+    from mindflow.infrastructure.repositories.workflow_runs import WorkflowRunsRepository
+
+    return WorkflowRunsRepository(session_factory=cast(async_sessionmaker[AsyncSession], request.app.state.session_factory))

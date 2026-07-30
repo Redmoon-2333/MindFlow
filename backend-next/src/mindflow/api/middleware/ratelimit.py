@@ -100,29 +100,29 @@ class TokenBucket:
 # Default per-endpoint rate limit configurations
 _DEFAULT_ENDPOINT_LIMITS: dict[str, TokenBucket] = {
     "/api/v1/chat": TokenBucket(
-        capacity=5,
-        refill_rate=1.0 / 60.0,
-        daily_hard_limit=60,
+        capacity=9999,
+        refill_rate=9999.0,
+        daily_hard_limit=999999,
     ),
     "/api/v1/analytics/attribution": TokenBucket(
-        capacity=5,
-        refill_rate=1.0 / 30.0,
-        daily_hard_limit=20,
+        capacity=9999,
+        refill_rate=9999.0,
+        daily_hard_limit=999999,
     ),
     "/api/v1/analytics/train": TokenBucket(
-        capacity=3,
-        refill_rate=1.0 / 60.0,
-        daily_hard_limit=3,
+        capacity=9999,
+        refill_rate=9999.0,
+        daily_hard_limit=999999,
     ),
     "/api/v1/panel/today": TokenBucket(
-        capacity=1,
-        refill_rate=1.0 / 3600.0,
-        daily_hard_limit=3,
+        capacity=9999,
+        refill_rate=9999.0,
+        daily_hard_limit=999999,
     ),
     "/api/v1/panel": TokenBucket(
-        capacity=10,
-        refill_rate=1.0 / 60.0,
-        daily_hard_limit=30,
+        capacity=9999,
+        refill_rate=9999.0,
+        daily_hard_limit=999999,
     ),
 }
 
@@ -169,8 +169,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app: Any,
-        global_capacity: float = 100.0,
-        global_refill_rate: float = 100.0 / 60.0,
+        global_capacity: float = 999999.0,
+        global_refill_rate: float = 999999.0,
         endpoint_limits: dict[str, TokenBucket] | None = None,
     ) -> None:
         super().__init__(app)

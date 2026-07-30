@@ -30,10 +30,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request  # noqa: B008
 from loguru import logger
 
-from mindflow.api.deps import get_panel_service
+from mindflow.api.deps import get_panel_service, get_workflow_port
 from mindflow.api.errors import ProblemDetail
 from mindflow.api.schemas import PanelResponse
 from mindflow.errors import NoActivityDataError
+from mindflow.ports import AnalysisRequest, AnalysisWorkflowPort
 from mindflow.services.panel_service import PanelService
 from mindflow.time_utils import business_today
 
@@ -88,12 +89,17 @@ def _verdict_to_response(verdict: Any) -> PanelResponse:
 async def post_panel_today(
     request: Request,
     panel_service: PanelService = Depends(get_panel_service),  # noqa: B008
+    workflow_port: AnalysisWorkflowPort | None = Depends(get_workflow_port),  # noqa: B008
 ) -> PanelResponse:
     """Trigger a daily expert panel for today.
 
     Runs the full multi-expert panel (analyst → attribution ×3 → moderator → critic).
     Falls through to single-expert LLM service on panel unavailability, with
     ``meta.degraded=true``.
+
+    When the shared ``AnalysisWorkflowPort`` is available, the analysis is
+    delegated through it with ``origin="api"``, converging all entry points
+    (scheduler, API, chat, auto-intervention) through a single port instance.
 
     Returns:
         A ``PanelVerdict`` JSON response.
@@ -113,7 +119,18 @@ async def post_panel_today(
     logger.info("Triggering daily panel for user 1 on {}", today)
 
     try:
-        verdict = await panel_service.run_daily_panel(user_id=1, target_date=today)
+        if workflow_port is not None:
+            result = await workflow_port.run_analysis(
+                AnalysisRequest(
+                    user_id=1,
+                    target_date=today,
+                    force=False,
+                    origin="api",
+                )
+            )
+            verdict = result.verdict
+        else:
+            verdict = await panel_service.run_daily_panel(user_id=1, target_date=today)
     except (ProblemDetail, NoActivityDataError):
         # The single-expert fallback (llm_service.analyze) raises
         # NoActivityDataError when no events exist — let it reach the

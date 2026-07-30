@@ -187,6 +187,20 @@ class SQLAlchemyFocusSessionRepository:
         """Return all focus sessions for *user_id* on *target_date*."""
         return await self.query_range(user_id, target_date, target_date)
 
+    async def list_all(
+        self,
+        user_id: int,
+    ) -> list[dict[str, Any]]:
+        """Return all focus sessions for *user_id* ordered by start_time."""
+        stmt = (
+            sa.select(focus_sessions)
+            .where(focus_sessions.c.user_id == user_id)
+            .order_by(focus_sessions.c.start_time.asc())
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return [_row_to_dict(row) for row in result.fetchall()]
+
     def __repr__(self) -> str:
         return "<SQLAlchemyFocusSessionRepository>"
 
