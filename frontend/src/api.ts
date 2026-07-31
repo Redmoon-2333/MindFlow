@@ -1,5 +1,7 @@
 import createClient from "openapi-fetch";
 import type { components, paths } from "./generated/api-schema";
+import { parseFocusPrediction } from "./prediction-state";
+import type { FocusPredictionResponse } from "./prediction-state";
 
 const BASE = "/api/v1";
 const AUTH_MARKER = "mindflow_authenticated";
@@ -566,12 +568,7 @@ export interface AIRunDetail extends AIRunItem {
   error: string | null;
 }
 
-export interface FocusPredictionResponse {
-  prediction: number;
-  source: string;
-  model_version: string;
-  timestamp?: string;
-}
+export type { FocusPredictionResponse, FocusPredictionStatus } from "./prediction-state";
 
 export interface HealthLiveResponse {
   status: "ok";
@@ -588,8 +585,8 @@ export const getAIRuns = (limit?: number, offset?: number) =>
 export const getAIRunDetail = (runId: string) =>
   request<AIRunDetail>(`/ai/runs/${encodeURIComponent(runId)}`);
 
-export const getFocusPrediction = () =>
-  request<FocusPredictionResponse>("/telemetry/focus-prediction");
+export const getFocusPrediction = async (): Promise<FocusPredictionResponse> =>
+  parseFocusPrediction(await request<unknown>("/telemetry/focus-prediction"));
 
 export const getHealthLive = () =>
   request<HealthLiveResponse>("/health/live");
