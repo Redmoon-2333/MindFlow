@@ -15,13 +15,14 @@ from loguru import logger
 
 from mindflow.api.deps import get_report_service
 from mindflow.api.errors import _not_found
+from mindflow.api.schemas import DailyReportResponse, WeeklyReportResponse
 from mindflow.services.report_service import ReportService
 from mindflow.time_utils import business_today
 
 router = APIRouter(tags=["reports"])
 
 
-@router.get("/reports/daily")
+@router.get("/reports/daily", response_model=DailyReportResponse)
 async def get_daily_report(
     request: Request,
     report_date: date | None = Query(  # noqa: B008
@@ -41,7 +42,7 @@ async def get_daily_report(
     return report
 
 
-@router.get("/reports/weekly")
+@router.get("/reports/weekly", response_model=WeeklyReportResponse)
 async def get_weekly_report(
     request: Request,
     week_start: date | None = Query(  # noqa: B008
@@ -51,7 +52,9 @@ async def get_weekly_report(
 ) -> dict[str, Any]:
     """Return a weekly report with 7-day trend and week-over-week comparison.
 
-    If *week_start* is omitted, the current ISO week is used.
+    If *week_start* is omitted, the current ISO week is used.  Expected
+    empty/future weeks are typed 200 responses carrying an explicit
+    ``data_state`` — never a 404.
     """
     if week_start:
         start = week_start
@@ -61,8 +64,4 @@ async def get_weekly_report(
         # ISO week start (Monday)
         start = today - timedelta(days=today.weekday())
 
-    report = await report_svc.weekly_report(1, start)
-    if not report or not report.get("daily_reports"):
-        raise _not_found(f"周报 {start.isoformat()} 的数据")
-
-    return report
+    return await report_svc.weekly_report(1, start)
