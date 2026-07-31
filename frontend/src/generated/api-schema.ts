@@ -485,7 +485,9 @@ export interface paths {
          * Get Weekly Report
          * @description Return a weekly report with 7-day trend and week-over-week comparison.
          *
-         *     If *week_start* is omitted, the current ISO week is used.
+         *     If *week_start* is omitted, the current ISO week is used.  Expected
+         *     empty/future weeks are typed 200 responses carrying an explicit
+         *     ``data_state`` — never a 404.
          */
         get: operations["get_weekly_report_api_v1_reports_weekly_get"];
         put?: never;
@@ -527,7 +529,15 @@ export interface paths {
         };
         /**
          * Get Baseline
-         * @description Return the current user's personal behavior baseline.
+         * @description Return the current user's personal behavior baseline (V2 vocabulary).
+         *
+         *     The typed response carries the canonical V2 means
+         *     (``mean_app_switch_count`` / ``mean_active_seconds_ratio`` /
+         *     ``mean_idle_ratio``) plus the compatibility aliases
+         *     ``switch_frequency == mean_app_switch_count`` and
+         *     ``productivity_ratio == mean_active_seconds_ratio``. ``features`` is the
+         *     exact 24-name V2 vocabulary. When no baseline exists the repository is
+         *     empty and this endpoint stays 404.
          */
         get: operations["get_baseline_api_v1_analytics_baseline_get"];
         put?: never;
@@ -1140,6 +1150,43 @@ export interface components {
             paused_until?: string | null;
         };
         /**
+         * BaselineSummary
+         * @description Typed response for ``GET /analytics/baseline``.
+         *
+         *     Carries the canonical V2 means (``mean_app_switch_count``,
+         *     ``mean_active_seconds_ratio``, ``mean_idle_ratio``) computed from the
+         *     persisted per-user baseline, plus one-to-one compatibility aliases for
+         *     frontend consumers that predate the V2 vocabulary: ``switch_frequency``
+         *     is exactly ``mean_app_switch_count`` and ``productivity_ratio`` is
+         *     exactly ``mean_active_seconds_ratio``. ``features`` is the exact V2
+         *     vocabulary. An empty repository stays 404 — no invented values are ever
+         *     returned.
+         */
+        BaselineSummary: {
+            /** User Id */
+            user_id: number;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Total Days */
+            total_days: number;
+            /** Total Samples */
+            total_samples: number;
+            /** Features */
+            features: string[];
+            /** Mean App Switch Count */
+            mean_app_switch_count: number | null;
+            /** Mean Active Seconds Ratio */
+            mean_active_seconds_ratio: number | null;
+            /** Mean Idle Ratio */
+            mean_idle_ratio: number | null;
+            /** Switch Frequency */
+            switch_frequency: number | null;
+            /** Productivity Ratio */
+            productivity_ratio: number | null;
+        };
+        /**
          * Blocker
          * @description A single gate-blocker with machine code and Chinese message.
          */
@@ -1280,6 +1327,54 @@ export interface components {
             status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled";
         };
         /**
+         * DailyReportResponse
+         * @description Typed daily report returned by ``GET /reports/daily``.
+         *
+         *     ``top_apps`` is always a list (possibly empty) — never null.  The
+         *     transient frontend fields (``total_focus_minutes`` /
+         *     ``total_sessions`` / ``total_distractions`` / ``hourly_distribution``)
+         *     and ``data_state`` are attached by the report service on both the
+         *     freshly generated and the cached paths, so every 200 response exposes
+         *     the same canonical field set.
+         */
+        DailyReportResponse: {
+            /** Id */
+            id: string;
+            /** User Id */
+            user_id: number;
+            /** Date */
+            date: string;
+            /** Total Focus Min */
+            total_focus_min: number;
+            /** Total Distraction Min */
+            total_distraction_min: number;
+            /** Focus Score */
+            focus_score: number;
+            /** Top Apps */
+            top_apps?: components["schemas"]["TopAppEntry"][];
+            /** Switch Frequency */
+            switch_frequency: number;
+            /** Pattern Summary */
+            pattern_summary: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Total Focus Minutes */
+            total_focus_minutes: number;
+            /** Total Sessions */
+            total_sessions: number;
+            /** Total Distractions */
+            total_distractions: number;
+            /** Hourly Distribution */
+            hourly_distribution: {
+                [key: string]: number;
+            };
+            /**
+             * Data State
+             * @enum {string}
+             */
+            data_state: "ready" | "no_activity" | "events_only" | "neutral_only" | "no_focus" | "future";
+        };
+        /**
          * DiagnosticsListResponse
          * @description Paginated list of workflow runs.
          */
@@ -1321,6 +1416,30 @@ export interface components {
             score: number;
             /** Task Type */
             task_type?: string | null;
+        };
+        /**
+         * FocusPredictionResponse
+         * @description Canonical typed response for ``GET /telemetry/focus-prediction``.
+         *
+         *     ``focus_probability`` is always present: a number in [0, 1] for
+         *     ``ready``, ``None`` for every non-ready status. ``status`` uses exactly
+         *     the domain's six-value Literal so the API contract cannot drift from
+         *     ``domain/prediction.py``. ``mode`` is preserved as-is (e.g.
+         *     ``"rule_engine_only"``) and ``reason`` carries the human-readable
+         *     explanation.
+         */
+        FocusPredictionResponse: {
+            /** Focus Probability */
+            focus_probability: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "no_model" | "no_data" | "stale" | "schema_mismatch" | "inference_error";
+            /** Mode */
+            mode: string;
+            /** Reason */
+            reason: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1436,6 +1555,13 @@ export interface components {
         PanelMeta: {
             /** Degraded */
             degraded: boolean;
+            source?: string | null;
+            cached?: boolean;
+            degradation_path?: string[];
+            retry_after?: number | null;
+            insufficient_data?: boolean;
+            uncertainty?: number | null;
+            evidence_gaps?: string[];
         };
         /** PanelResponse */
         PanelResponse: {
@@ -1460,6 +1586,11 @@ export interface components {
             /** Degraded */
             degraded: boolean;
             meta: components["schemas"]["PanelMeta"];
+            source?: string | null;
+            cached?: boolean;
+            insufficient_data?: boolean;
+            uncertainty?: number | null;
+            evidence_gaps?: string[];
         };
         /** PanelTranscriptEntry */
         PanelTranscriptEntry: {
@@ -1558,6 +1689,16 @@ export interface components {
             interaction_retention_days?: number | null;
             /** Activity Retention Days */
             activity_retention_days?: number | null;
+        };
+        /**
+         * TopAppEntry
+         * @description An application entry with name and usage duration.
+         */
+        TopAppEntry: {
+            /** App */
+            app: string;
+            /** Minutes */
+            minutes: number;
         };
         /**
          * TrainingJobResponse
@@ -1716,6 +1857,47 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WeeklyReportResponse
+         * @description Typed weekly report returned by ``GET /reports/weekly``.
+         *
+         *     Expected empty/future weeks return 200 with ``daily_reports == []`` and
+         *     an explicit ``data_state`` instead of a 404.  ``daily_summary`` entries
+         *     mirror the canonical per-day totals consumed by the frontend.
+         */
+        WeeklyReportResponse: {
+            /** Week Start */
+            week_start: string;
+            /** Week End */
+            week_end: string;
+            /** Daily Reports */
+            daily_reports?: components["schemas"]["DailyReportResponse"][];
+            /** Averages */
+            averages?: {
+                [key: string]: number;
+            };
+            /** Trend */
+            trend?: Record<string, never>;
+            /** Week Number */
+            week_number: number;
+            /** Intervention Effectiveness */
+            intervention_effectiveness?: Record<string, never> | null;
+            /** Total Focus Minutes */
+            total_focus_minutes: number;
+            /** Total Sessions */
+            total_sessions: number;
+            /** Total Distractions */
+            total_distractions: number;
+            /** Avg Focus Score */
+            avg_focus_score: number;
+            /** Daily Summary */
+            daily_summary?: Record<string, never>[];
+            /**
+             * Data State
+             * @enum {string}
+             */
+            data_state: "ready" | "partial" | "no_activity" | "future";
         };
     };
     responses: never;
@@ -2404,7 +2586,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["DailyReportResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2436,7 +2618,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["WeeklyReportResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2497,7 +2679,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["BaselineSummary"];
                 };
             };
         };
@@ -3050,7 +3232,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["FocusPredictionResponse"];
                 };
             };
         };

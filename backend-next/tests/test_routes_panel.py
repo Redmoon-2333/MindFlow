@@ -101,7 +101,10 @@ class TestPostPanelToday:
         assert response.status_code == 200
         business_today_mock.assert_called_once_with("Asia/Shanghai")
         mock_service.run_daily_panel.assert_awaited_once_with(
-            user_id=1, target_date=date(2026, 7, 26)
+            user_id=1,
+            target_date=date(2026, 7, 26),
+            force=False,
+            retry_if_degraded=False,
         )
 
     def test_degraded(self) -> None:

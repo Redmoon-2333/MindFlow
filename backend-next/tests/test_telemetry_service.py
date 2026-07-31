@@ -57,7 +57,7 @@ async def test_predict_latest_focus_returns_probability_uncertainty_and_top_fact
     assert prediction["mode"] == "ready"
     assert prediction["focus_probability"] == 0.8
     assert prediction["uncertainty"] == 0.4
-    assert prediction["feature_schema_version"] == 2
+    assert prediction["feature_schema_version"] == 3
     assert len(prediction["top_factors"]) == 3
 
 

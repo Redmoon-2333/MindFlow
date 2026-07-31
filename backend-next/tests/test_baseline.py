@@ -137,7 +137,7 @@ class TestV2FeatureVocabulary:
         assert len(BaselineModel.FEATURE_COLS) == 24
 
     def test_feature_schema_version_is_two(self) -> None:
-        assert BaselineModel.FEATURE_SCHEMA_VERSION == 2
+        assert BaselineModel.FEATURE_SCHEMA_VERSION == 3
         assert BaselineModel.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
 
 
@@ -271,7 +271,7 @@ class TestV2Persistence:
 
         restored = BaselineModel.from_dict(model.to_dict())
 
-        assert restored.FEATURE_SCHEMA_VERSION == 2
+        assert restored.FEATURE_SCHEMA_VERSION == 3
         assert restored.timezone == "Asia/Shanghai"
         assert restored.total_samples() == model.total_samples()
         assert restored.get_stats(9, 0) == model.get_stats(9, 0)
@@ -291,7 +291,7 @@ class TestV2Persistence:
 
             loaded = BaselineModel.load(path)
             assert loaded.user_id == 1
-            assert loaded.FEATURE_SCHEMA_VERSION == 2
+            assert loaded.FEATURE_SCHEMA_VERSION == 3
             assert loaded.timezone == "Asia/Shanghai"
             assert loaded.total_days == model.total_days
             assert loaded.has_sufficient_data(1)
@@ -309,7 +309,7 @@ class TestV2Persistence:
         data = model.to_dict()
         parsed = json.loads(json.dumps(data))
         assert parsed["user_id"] == 1
-        assert parsed["feature_schema_version"] == 2
+        assert parsed["feature_schema_version"] == 3
         assert parsed["timezone"] == "Asia/Shanghai"
         assert "stats" in parsed
 
@@ -479,3 +479,37 @@ class TestMalformedPolicy:
         assert stats["app_switch_count"]["n"] == 2
         assert stats["app_switch_count"]["mean"] == 5.0
         assert stats["idle_ratio"]["n"] == 1
+
+    def test_non_finite_feature_skipped(self) -> None:
+        """NaN/Inf feature values are skipped before Welford updates."""
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        start = _shanghai_utc(10, 0)
+        rows = [
+            {"window_start_utc": start, "features_json": json.dumps(
+                {"app_switch_count": float("nan"), "idle_ratio": 0.2})},
+            {"window_start_utc": start, "features_json": json.dumps(
+                {"app_switch_count": float("inf")})},
+            {"window_start_utc": start, "features_json": json.dumps(
+                {"app_switch_count": 4.0})},
+            {"window_start_utc": start, "features_json": json.dumps(
+                {"app_switch_count": 6.0})},
+        ]
+        assert model.update(rows) == 4
+        stats = model.get_stats(10, 0)
+        # Non-finite values contribute nothing; the two valid values are
+        # counted exactly once each (n == 2, not 4) with a finite mean.
+        assert stats["app_switch_count"]["n"] == 2
+        assert stats["app_switch_count"]["mean"] == 5.0
+        assert stats["idle_ratio"]["n"] == 1
+        assert model.overall_mean("app_switch_count") == 5.0
+
+    def test_persisted_non_finite_bucket_mean_returns_none(self) -> None:
+        """A persisted poisoned bucket must not emit a non-finite overall mean."""
+        model = BaselineModel(user_id=1)
+        data = model.to_dict()
+        # Simulate a previously-persisted payload whose Welford state already
+        # holds a non-finite mean (NaN or Infinity).
+        data["stats"]["12"]["0"]["app_switch_count"] = {"n": 5.0, "mean": float("nan"), "M2": 0.0}
+        data["stats"]["13"]["0"]["app_switch_count"] = {"n": 5.0, "mean": float("inf"), "M2": 0.0}
+        restored = BaselineModel.from_dict(data)
+        assert restored.overall_mean("app_switch_count") is None

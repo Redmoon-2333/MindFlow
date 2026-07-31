@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 from loguru import logger
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import balanced_accuracy_score, brier_score_loss, f1_score
 from sklearn.model_selection import GroupKFold
@@ -23,13 +22,20 @@ from sklearn.preprocessing import StandardScaler
 # Single authoritative vocabulary lives in the domain layer so BaselineModel
 # and training can never drift. Re-export keeps ``mindflow.train.v2`` importers
 # (telemetry_service, prediction_service) working unchanged.
-from mindflow.domain.feature_schema import V2_FEATURE_NAMES  # noqa: F401
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES  # noqa: F401
 
 TASK_TYPE_MAP = {
     "coding": 0, "writing": 1, "study": 2, "meeting": 3, "admin": 4,
     "creative": 5, "other": 6, "gaming": 7, "entertainment": 8,
     "browsing": 9, "communication": 10,
 }
+
+# Same class used by ModelManager in production so evaluation and deployment
+# share hyperparameters, scaling, and soft-voting behaviour.
+def make_v2_classifier() -> Any:
+    from mindflow.train.models.ensemble import EnsembleClassifier
+
+    return EnsembleClassifier()
 
 
 @dataclass
@@ -45,6 +51,8 @@ class V2TrainingData:
     explicit_distract_count: int
     distinct_feedback_days: int
     mixed_window_count: int
+    matched_window_count: int
+    label_sources: list[str]
     feature_names: list[str]
 
 
@@ -59,16 +67,18 @@ def prepare_v2_training_data(
         if feedback is not None:
             parsed_feedback.append(feedback)
 
-    # Build feedback intervals for time-overlap matching
-    feedback_intervals: list[tuple[datetime, datetime, int | None, str]] = []
-    for _sid, start, end, _label_name, label, task_type in parsed_feedback:
-        feedback_intervals.append((start, end, label, task_type))
+    # Keep the feedback session id so quality counts are unique sessions,
+    # not the number of overlapping feature windows.
+    feedback_intervals: list[tuple[str, datetime, datetime, int | None, str]] = []
+    for sid, start, end, _label_name, label, task_type in parsed_feedback:
+        feedback_intervals.append((sid, start, end, label, task_type))
 
     explicit_session_ids: set[str] = set()
     focus_sessions: set[str] = set()
     distract_sessions: set[str] = set()
     feedback_days: set[str] = set()
     mixed_count = 0
+    matched_window_count = 0
 
     X_list: list[list[float]] = []
     y_list: list[int] = []
@@ -76,6 +86,7 @@ def prepare_v2_training_data(
     sid_list: list[str] = []
     date_list: list[str] = []
     explicit_list: list[bool] = []
+    source_list: list[str] = []
 
     for row in feature_windows:
         parsed = _parse_window(row)
@@ -88,9 +99,13 @@ def prepare_v2_training_data(
 
         # Match by time overlap with feedback sessions
         matched_label: int | None = None
-        for fb_start, fb_end, fb_label, _fb_task in feedback_intervals:
+        matched_sid: str | None = None
+        matched_start: datetime | None = None
+        for sid, fb_start, fb_end, fb_label, _fb_task in feedback_intervals:
             if _overlap_seconds(start, end, fb_start, fb_end) > 0:
                 matched_label = fb_label
+                matched_sid = sid
+                matched_start = fb_start
                 break
 
         wid = str(row.get("id", ""))
@@ -98,17 +113,22 @@ def prepare_v2_training_data(
             y_list.append(matched_label)
             w_list.append(1.0)
             explicit_list.append(True)
-            explicit_session_ids.add(wid)
-            if matched_label == 1:
-                focus_sessions.add(wid)
-            else:
-                distract_sessions.add(wid)
-            feedback_days.add(start.strftime("%Y-%m-%d"))
+            source_list.append("explicit")
+            matched_window_count += 1
+            if matched_sid is not None:
+                explicit_session_ids.add(matched_sid)
+                if matched_label == 1:
+                    focus_sessions.add(matched_sid)
+                else:
+                    distract_sessions.add(matched_sid)
+                if matched_start is not None:
+                    feedback_days.add(matched_start.strftime("%Y-%m-%d"))
         else:
             weak = _weak_label(features)
             y_list.append(weak)
             w_list.append(0.3)
             explicit_list.append(False)
+            source_list.append("weak")
             if weak == -1:
                 mixed_count += 1
 
@@ -132,14 +152,21 @@ def prepare_v2_training_data(
         explicit_distract_count=len(distract_sessions),
         distinct_feedback_days=len(feedback_days),
         mixed_window_count=mixed_count,
+        matched_window_count=matched_window_count,
+        label_sources=[s for s, v in zip(source_list, valid) if v],
         feature_names=list(V2_FEATURE_NAMES),
     )
 
 
 def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> dict[str, Any]:
+    """Date-grouped cross-validation with the same classifier used in production.
+
+    Rule and logistic baselines are computed inside the same held-out folds;
+    in-sample comparisons are intentionally not reported as evidence.
+    """
     mask = data.explicit_mask
     if mask.sum() < 10:
-        return {"status": "insufficient_data", "candidate": {}, "logistic_baseline": {}, "rule_baseline": {}, "folds": []}
+        return {"status": "insufficient_data", "candidate": {}, "logistic_baseline": {}, "rule_baseline": {}, "folds": [], "fold_stability": {}}
 
     X = data.features[mask]
     y = data.labels[mask]
@@ -147,70 +174,119 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
     unique_dates = sorted(set(dates))
 
     if len(unique_dates) < 3:
-        clf = make_pipeline(StandardScaler(), RandomForestClassifier(
-            n_estimators=100, max_depth=8, min_samples_leaf=2,
-            random_state=random_state, class_weight="balanced"))
-        clf.fit(X, y)
-        y_pred = clf.predict(X)
-        y_proba = clf.predict_proba(X)[:, 1]
-        candidate = _classification_metrics(y, y_pred, y_proba)
-        rule_proba = _rule_probabilities(X)
-        rule_pred = (rule_proba >= 0.5).astype(int)
-        return {
-            "status": "evaluated", "candidate": candidate,
-            "logistic_baseline": candidate,
-            "rule_baseline": _classification_metrics(y, rule_pred, rule_proba), "folds": [],
-        }
+        return {"status": "insufficient_data", "candidate": {}, "logistic_baseline": {}, "rule_baseline": {}, "folds": [], "fold_stability": {"reason": "need >=3 feedback dates"}}
 
     groups = np.array(dates)
     gkf = GroupKFold(n_splits=min(4, len(unique_dates)))
-    clf = make_pipeline(StandardScaler(), RandomForestClassifier(
-        n_estimators=100, max_depth=8, min_samples_leaf=2,
-        random_state=random_state, class_weight="balanced"))
 
-    all_y_true, all_y_pred, all_y_proba = [], [], []
-    folds = []
+    all_y_true: list[int] = []
+    all_candidate_pred: list[int] = []
+    all_candidate_proba: list[float] = []
+    all_logistic_pred: list[int] = []
+    all_logistic_proba: list[float] = []
+    all_rule_pred: list[int] = []
+    all_rule_proba: list[float] = []
+    folds: list[dict[str, Any]] = []
+
     for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(X, y, groups)):
-        clf.fit(X[train_idx], y[train_idx])
+        y_true = y[test_idx]
+        if len(np.unique(y_true)) < 2 or len(y_true) < 5:
+            folds.append({
+                "fold": fold_idx + 1,
+                "train_dates": sorted(set(groups[train_idx])),
+                "test_dates": sorted(set(groups[test_idx])),
+                "balanced_accuracy": 0.0,
+                "reason": "test fold too small for stable metrics",
+            })
+            continue
+
+        clf = make_v2_classifier()
+        clf.fit(X[train_idx], y[train_idx], list(V2_FEATURE_NAMES))
         yp = clf.predict(X[test_idx])
         ypr = clf.predict_proba(X[test_idx])[:, 1]
-        all_y_true.extend(y[test_idx].tolist())
-        all_y_pred.extend(yp.tolist())
-        all_y_proba.extend(ypr.tolist())
-        folds.append({"fold": fold_idx + 1, "train_dates": sorted(set(groups[train_idx])),
-                       "test_dates": sorted(set(groups[test_idx])),
-                       "balanced_accuracy": round(balanced_accuracy_score(y[test_idx], yp), 6)})
 
-    candidate = _classification_metrics(np.array(all_y_true), np.array(all_y_pred), np.array(all_y_proba))
+        lr = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, random_state=random_state, class_weight="balanced"))
+        lr.fit(X[train_idx], y[train_idx])
+        lp = lr.predict(X[test_idx])
+        lpr = lr.predict_proba(X[test_idx])[:, 1]
 
-    lr = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, random_state=random_state, class_weight="balanced"))
-    lr.fit(X, y)
-    logistic = _classification_metrics(y, lr.predict(X), lr.predict_proba(X)[:, 1])
+        rule_proba = _rule_probabilities(X[test_idx])
+        rp = (rule_proba >= 0.5).astype(int)
 
-    rule_proba = _rule_probabilities(X)
-    rule_baseline = _classification_metrics(y, (rule_proba >= 0.5).astype(int), rule_proba)
+        all_y_true.extend(y_true.tolist())
+        all_candidate_pred.extend(yp.tolist())
+        all_candidate_proba.extend(ypr.tolist())
+        all_logistic_pred.extend(lp.tolist())
+        all_logistic_proba.extend(lpr.tolist())
+        all_rule_pred.extend(rp.tolist())
+        all_rule_proba.extend(rule_proba.tolist())
 
-    fold_bas = [f["balanced_accuracy"] for f in folds]
-    candidate["fold_balanced_accuracy_range"] = round(max(fold_bas) - min(fold_bas), 6) if fold_bas else 1.0
+        folds.append({
+            "fold": fold_idx + 1,
+            "train_dates": sorted(set(groups[train_idx])),
+            "test_dates": sorted(set(groups[test_idx])),
+            "balanced_accuracy": round(balanced_accuracy_score(y_true, yp), 6),
+            "test_size": int(len(y_true)),
+        })
 
-    return {"status": "evaluated", "candidate": candidate, "logistic_baseline": logistic,
-            "rule_baseline": rule_baseline, "folds": folds}
+    if not all_y_true:
+        return {"status": "insufficient_data", "candidate": {}, "logistic_baseline": {}, "rule_baseline": {}, "folds": folds, "fold_stability": {"reason": "no valid held-out folds"}}
+
+    y_true_arr = np.array(all_y_true)
+    candidate = _classification_metrics(
+        y_true_arr, np.array(all_candidate_pred), np.array(all_candidate_proba)
+    )
+    logistic = _classification_metrics(
+        y_true_arr, np.array(all_logistic_pred), np.array(all_logistic_proba)
+    )
+    rule_baseline = _classification_metrics(
+        y_true_arr, np.array(all_rule_pred), np.array(all_rule_proba)
+    )
+
+    fold_bas = [f["balanced_accuracy"] for f in folds if "balanced_accuracy" in f]
+    fold_bas = [float(v) for v in fold_bas]
+    min_test_size = min((int(f.get("test_size", 0)) for f in folds), default=0)
+    if fold_bas:
+        candidate["fold_balanced_accuracy_range"] = round(max(fold_bas) - min(fold_bas), 6)
+        candidate["fold_min_balanced_accuracy"] = round(min(fold_bas), 6)
+        fold_stability = {
+            "passed": min(fold_bas) >= 0.50 and (max(fold_bas) - min(fold_bas)) <= 0.35 and min_test_size >= 5,
+            "passed": bool(min(fold_bas) >= 0.50 and (max(fold_bas) - min(fold_bas)) <= 0.35 and min_test_size >= 5),
+            "min_balanced_accuracy": round(min(fold_bas), 6),
+            "range": round(max(fold_bas) - min(fold_bas), 6),
+            "min_test_size": min_test_size,
+        }
+    else:
+        fold_stability = {"passed": False, "reason": "no stable folds"}
+
+    return {
+        "status": "evaluated",
+        "candidate": candidate,
+        "logistic_baseline": logistic,
+        "rule_baseline": rule_baseline,
+        "folds": folds,
+        "fold_stability": fold_stability,
+    }
 
 
 def evaluate_v2_quality_gate(
     evaluation: dict[str, Any], *, explicit_feedback_count: int,
     explicit_focus_count: int, explicit_distract_count: int, distinct_feedback_days: int,
 ) -> dict[str, Any]:
+    """Honest quality gate based on unique feedback sessions and held-out folds."""
     candidate = evaluation.get("candidate", {})
     rule_baseline = evaluation.get("rule_baseline", {})
+    fold_stability = evaluation.get("fold_stability", {}) or {}
+    candidate_brier = float(candidate.get("brier_score", 1.0))
+    rule_brier = float(rule_baseline.get("brier_score", 1.0))
     checks = {
-        "minimum_days": distinct_feedback_days >= 1,
+        "minimum_days": distinct_feedback_days >= 7,
         "minimum_explicit_feedback": explicit_feedback_count >= 20,
         "minimum_class_feedback": explicit_focus_count >= 5 and explicit_distract_count >= 5,
-        "balanced_accuracy": float(candidate.get("balanced_accuracy", 0.0)) >= 0.50,
-        "minority_f1": float(candidate.get("minority_f1", 0.0)) >= 0.30,
-        "calibration_better_than_rule": True,
-        "stable_date_folds": True,
+        "balanced_accuracy": float(candidate.get("balanced_accuracy", 0.0)) >= 0.55,
+        "minority_f1": float(candidate.get("minority_f1", 0.0)) >= 0.40,
+        "calibration_better_than_rule": candidate_brier <= rule_brier + 0.01,
+        "stable_date_folds": bool(fold_stability.get("passed", False)),
     }
     is_passed = evaluation.get("status") == "evaluated" and all(checks.values())
     return {"passed": is_passed, "mode": "ready" if is_passed else "shadow", "checks": checks,
@@ -237,7 +313,7 @@ def _parse_feedback(row: dict[str, Any]) -> tuple[str, datetime, datetime, str, 
 
 def _parse_window(row: dict[str, Any]) -> tuple[datetime, datetime, dict[str, Any]] | None:
     try:
-        if int(row.get("feature_schema_version", 0)) != 2:
+        if int(row.get("feature_schema_version", 0)) != FEATURE_SCHEMA_VERSION:
             return None
         start = _parse_datetime(row["window_start_utc"])
         end = _parse_datetime(row["window_end_utc"])

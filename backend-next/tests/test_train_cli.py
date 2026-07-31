@@ -83,7 +83,7 @@ def test_load_database_v2_data_joins_feedback_sessions(tmp_path: Path) -> None:
             1,
             start.isoformat(),
             (start + timedelta(minutes=5)).isoformat(),
-            2,
+            3,
             json.dumps({"idle_ratio": 0.1}),
             None,
             start.isoformat(),

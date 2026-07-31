@@ -26,6 +26,7 @@ import random
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 # ── Feature generation parameters ──────────────────────────────────────────
 
@@ -295,7 +296,7 @@ def _compute_daily_patterns(
         windows.append({
             "window_start_utc": window_start.isoformat(),
             "window_end_utc": window_end.isoformat(),
-            "feature_schema_version": 2,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "features": feats,
             "label": label,
         })

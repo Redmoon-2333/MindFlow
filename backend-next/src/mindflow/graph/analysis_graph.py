@@ -167,6 +167,19 @@ def build_idempotency_key(
     return f"{origin}:{user_id}:{target_date.isoformat()}:{analysis_kind}"
 
 
+def _cached_analysis_meta(cached: dict[str, Any]) -> tuple[str, bool, list[str]]:
+    """Derive source, degraded, and degradation path from a stored analysis row.
+
+    A cached fallback result must never be re-labelled as a successful panel.
+    """
+    source = str(cached.get("source") or cached.get("llm_model") or "rule_engine")
+    degraded = bool(cached.get("degraded", source != "panel"))
+    path = list(cached.get("degradation_path") or [])
+    if not path:
+        path = [source]
+    return source, degraded, path
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Graph nodes
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -208,6 +221,16 @@ async def cache_idempotency_check_node(
             "assessment": cached,
             "source": cached.get("source", "rule_engine"),
             "degraded": False,
+            "error": None,
+        }
+        source, degraded, path = _cached_analysis_meta(cached)
+        return {
+            "cache_hit": True,
+            "cached_result": cached,
+            "assessment": cached,
+            "source": source,
+            "degraded": degraded,
+            "degradation_path": path,
             "error": None,
         }
 
@@ -255,6 +278,16 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
                     "assessment": cached,
                     "source": cached.get("source", "rule_engine"),
                     "degraded": False,
+                }
+                source, degraded, path = _cached_analysis_meta(cached)
+                return {
+                    "budget_reserved": False,
+                    "cache_hit": True,
+                    "cached_result": cached,
+                    "assessment": cached,
+                    "source": source,
+                    "degraded": degraded,
+                    "degradation_path": path,
                 }
         except Exception:
             pass
@@ -420,6 +453,19 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
     escalated = result.get("escalated", False) if isinstance(result, dict) else False
     call_count = result.get("call_count", 0) if isinstance(result, dict) else 0
 
+    # Persist per-node trace payloads so every panel run is replayable.
+    trace = result.get("trace", []) if isinstance(result, dict) else []
+    if trace and state.get("run_id"):
+        try:
+            for entry in trace:
+                await runtime.workflow_run_repo.save_node_event(
+                    state["run_id"],
+                    str(entry.get("node", "panel")),
+                    payload=entry,
+                )
+        except Exception as exc:
+            logger.warning("Failed to persist panel trace: {}", exc)
+
     if verdict_dict is None or not isinstance(verdict_dict, dict):
         return {
             "panel_succeeded": False,
@@ -524,6 +570,11 @@ async def result_conversion_node(state: AnalysisGraphState) -> dict[str, Any]:
         "call_count": verdict.call_count,
         "source": verdict.source,
         "degraded": degraded,
+        "degradation_path": list(verdict.degradation_path) or list(state.get("degradation_path", []) or []),
+        "cached": bool(state.get("cache_hit", False)),
+        "insufficient_data": verdict.insufficient_data,
+        "uncertainty": verdict.uncertainty,
+        "evidence_gaps": list(verdict.evidence_gaps),
     }
 
     return {
@@ -593,6 +644,11 @@ async def terminal_persistence_node(
                 "dissent": list(verdict_json.get("dissent", [])),
                 "escalated": bool(verdict_json.get("escalated", False)),
                 "call_count": int(verdict_json.get("call_count", 0)),
+                "degradation_path": list(state.get("degradation_path", []) or []),
+                "cached": bool(verdict_json.get("cached", state.get("cache_hit", False))),
+                "insufficient_data": bool(verdict_json.get("insufficient_data", False)),
+                "uncertainty": verdict_json.get("uncertainty"),
+                "evidence_gaps": list(verdict_json.get("evidence_gaps", [])),
             }
     else:
         procrastination_types = list(
@@ -624,6 +680,8 @@ async def terminal_persistence_node(
             analysis_kind=analysis_kind,
             source=source,
             panel_transcript=panel_transcript,
+            degraded=degraded,
+            degradation_path=list(state.get("degradation_path", []) or []),
         )
         logger.info(
             "Analysis persisted for user {} on {} (source={}, kind={})",
@@ -833,7 +891,7 @@ class AnalysisGraph:
         run_request = WorkflowRunRequest(
             user_id=request.user_id,
             target_date=request.target_date,
-            force_refresh=request.force,
+            force_refresh=request.force or request.retry_if_degraded,
             origin=request.origin,
             idempotency_key=idempotency_key,
         )
@@ -861,6 +919,7 @@ class AnalysisGraph:
             "analysis_kind": "daily_attribution",
             "origin": request.origin,
             "force": request.force,
+            "force": request.force or request.retry_if_degraded,
             "idempotency_key": idempotency_key,
             "runtime": runtime,
             "run_id": run_id,

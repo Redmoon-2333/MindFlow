@@ -131,7 +131,7 @@ async def test_feature_windows_bulk_upsert_and_latest_limit_one(
             "user_id": 1,
             "window_start_utc": start,
             "window_end_utc": start + timedelta(minutes=5),
-            "feature_schema_version": 2,
+            "feature_schema_version": 3,
             "features_json": '{"value": 1}',
             "label": None,
         },
@@ -139,7 +139,7 @@ async def test_feature_windows_bulk_upsert_and_latest_limit_one(
             "user_id": 1,
             "window_start_utc": start + timedelta(minutes=5),
             "window_end_utc": start + timedelta(minutes=10),
-            "feature_schema_version": 2,
+            "feature_schema_version": 3,
             "features_json": '{"value": 2}',
             "label": None,
         },
@@ -149,13 +149,13 @@ async def test_feature_windows_bulk_upsert_and_latest_limit_one(
             "user_id": 1,
             "window_start_utc": start + timedelta(minutes=5),
             "window_end_utc": start + timedelta(minutes=10),
-            "feature_schema_version": 2,
+            "feature_schema_version": 3,
             "features_json": '{"value": 3}',
             "label": "focus",
         }
     ])
 
-    latest = await repository.latest_feature_window(1, feature_schema_version=2)
+    latest = await repository.latest_feature_window(1, feature_schema_version=3)
     async with engine.connect() as connection:
         count = await connection.scalar(
             sa.select(sa.func.count()).select_from(behavior_feature_windows)
@@ -269,7 +269,7 @@ async def test_prediction_reads_only_latest_feature_window(tmp_path: Any) -> Non
     assert prediction["focus_probability"] == 0.75
     repository.latest_feature_window.assert_awaited_once_with(
         1,
-        feature_schema_version=2,
+        feature_schema_version=3,
     )
     repository.list_feature_windows.assert_not_awaited()
 

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from loguru import logger
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 from mindflow.api.schemas import JobStatus, TrainingJobResponse, TrainingJobSummary
 from mindflow.infrastructure.repositories.focus import SQLAlchemyFocusSessionRepository
@@ -281,7 +282,7 @@ class TrainingJobService:
 
             uid = self._user_id
             windows = await self._telemetry_repo.list_feature_windows(
-                uid, feature_schema_version=2,
+                uid, feature_schema_version=FEATURE_SCHEMA_VERSION,
             )
             sessions = await self._focus_repo.list_all(uid)
             session_map: dict[str, dict[str, Any]] = {s["id"]: s for s in sessions}

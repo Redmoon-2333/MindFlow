@@ -78,7 +78,7 @@ def _make_feature_window(
         "window_start_utc": window_start.isoformat(),
         "window_end_utc": window_end.isoformat(),
         "features_json": str(features).replace("'", '"'),
-        "feature_schema_version": 2,
+        "feature_schema_version": 3,
     }
 
 
@@ -132,7 +132,7 @@ class TestFocusPredictionService:
         assert result.window_count == 23
         assert len(result.top_factors) == 3
         assert result.model_version == "20260726_v2"
-        assert result.feature_schema_version == 2
+        assert result.feature_schema_version == 3
 
     async def test_predict_range_returns_ready(self):
         """Predict for a specific time range works."""
@@ -181,7 +181,7 @@ class TestFocusPredictionService:
                 "window_start_utc": (now - timedelta(minutes=5 * (24 - i))).isoformat(),
                 "window_end_utc": (now - timedelta(minutes=5 * (24 - i - 1))).isoformat(),
                 "features_json": str(bad_features).replace("'", '"'),
-                "feature_schema_version": 2,
+                "feature_schema_version": 3,
             }
             for i in range(24)
         ]
@@ -201,7 +201,7 @@ class TestFocusPredictionService:
                 "window_start_utc": (now - timedelta(minutes=5)).isoformat(),
                 "window_end_utc": now.isoformat(),
                 "features_json": "not valid json",
-                "feature_schema_version": 2,
+                "feature_schema_version": 3,
             },
         ]
         repo = MagicMock()
@@ -232,7 +232,7 @@ class TestFocusPredictionService:
         assert "model_version" in health
         assert "feature_schema_version" in health
         assert health["status"] == "ready"
-        assert health["feature_schema_version"] == 2
+        assert health["feature_schema_version"] == 3
 
     async def test_predict_range_filters_correctly(self):
         """predict_range only returns windows within the requested range."""
@@ -269,7 +269,7 @@ class TestFocusPredictionStatusContract:
         prediction = FocusPrediction()
         assert prediction.status == "no_model"
         assert prediction.focus_probability is None
-        assert prediction.feature_schema_version == 2
+        assert prediction.feature_schema_version == 3
         assert prediction.window_count == 0
         assert prediction.reason == ""
 
@@ -377,6 +377,6 @@ class TestFocusPredictionStatusContract:
         assert result.focus_probability is not None
         assert 0.0 <= result.focus_probability <= 1.0
         assert result.coverage_ratio <= 1.0
-        assert result.feature_schema_version == 2
+        assert result.feature_schema_version == 3
         assert len(result.top_factors) == 3
         assert result.model_version == "20260726_v2"

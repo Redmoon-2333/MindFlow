@@ -64,6 +64,8 @@ procrastination_analyses = sa.Table(
     ),
     sa.Column("analysis_kind", sa.Text(), nullable=False, default="daily_attribution"),
     sa.Column("source", sa.Text(), nullable=True),
+    sa.Column("degraded", sa.Boolean(), nullable=True),
+    sa.Column("degradation_path_json", sa.Text(), nullable=True),
     sa.PrimaryKeyConstraint("id"),
     sa.UniqueConstraint("user_id", "date", "analysis_kind"),
 )
@@ -231,6 +233,22 @@ behavior_feature_windows = sa.Table(
     sa.UniqueConstraint("user_id", "window_start_utc", "feature_schema_version"),
 )
 
+ml_shadow_predictions = sa.Table(
+    "ml_shadow_predictions",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("window_start_utc", sa.Text(), nullable=False),
+    sa.Column("candidate_version", sa.Text(), nullable=False),
+    sa.Column("active_version", sa.Text(), nullable=True),
+    sa.Column("candidate_proba", sa.Float(), nullable=False),
+    sa.Column("active_proba", sa.Float(), nullable=True),
+    sa.Column("delta", sa.Float(), nullable=True),
+    sa.Column("status", sa.Text(), nullable=False, server_default=sa.text("'shadow'")),
+    sa.Column("created_at", sa.Text(), nullable=False),
+    sa.UniqueConstraint("user_id", "window_start_utc", "candidate_version"),
+)
+
 # ── Workflow orchestration tables (from repositories/workflow_runs.py) ──
 # Matches migration 0013.
 #
@@ -290,6 +308,7 @@ workflow_node_events = sa.Table(
     sa.Column("completed_at", sa.Text(), nullable=True),
     sa.Column("duration_ms", sa.Integer(), nullable=True),
     sa.Column("error_category", sa.Text(), nullable=True),
+    sa.Column("payload_json", sa.Text(), nullable=True),
 )
 
 # ── Intervention daily slot reservations (atomic throttle concurrency) ──

@@ -172,6 +172,11 @@ class TestPanelResponseContract:
             "call_count",
             "degraded",
             "meta",
+            "source",
+            "cached",
+            "insufficient_data",
+            "uncertainty",
+            "evidence_gaps",
         }
         assert props["types"]["type"] == "array"
         assert props["confidence"]["type"] == "object"

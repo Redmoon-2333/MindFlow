@@ -110,6 +110,7 @@ def _make_verdict(**overrides: object) -> PanelVerdict:
         "escalated": False,
         "call_count": 6,
         "source": "panel",
+        "degradation_path": ("panel",),
     }
     defaults.update(overrides)
     return PanelVerdict(**defaults)  # type: ignore[arg-type]

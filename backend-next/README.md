@@ -414,3 +414,12 @@ MIT License © 2026 RedMoon (胡淙煜)
 ---
 
 *MindFlow — 理解你的专注，守护你的效率*
+
+
+## 2026-07-31 ML/LangGraph 实施更新
+
+- 特征 schema v3：`count_confirmed_switches()` 为唯一切换计数实现，默认驻留 10 秒，忽略 `TRANSIENT_PROCESSES`。
+- ML 质量门：唯一反馈会话数、7 个反馈日、日期 GroupKFold、规则基线在折内计算；`make_v2_classifier()` 同时用于评估与生产。
+- Panel：`POST /panel/today` 支持 `retry_if_degraded`；缓存命中保留 `source/degraded/degradation_path`。
+- LangGraph：`PanelGraph` 为唯一活动图；新增确定性 schema 校验、共识强度、`insufficient_data/uncertainty/evidence_gaps` 与 `workflow_node_events` trace。
+- 实验：`python scripts/run_experiments.py`；结果见 `data/experiments/20260731_final/`。

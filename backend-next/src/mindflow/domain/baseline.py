@@ -119,8 +119,8 @@ class BaselineModel:
         Each row is a feature window with ``window_start_utc`` (or the legacy
         ``window_start`` alias) and flattened ``features_json`` carrying the 24
         v2 features. Rows with a malformed timestamp or unparseable JSON are
-        skipped; nonnumeric feature values are skipped per feature. Neither
-        path corrupts existing counts.
+        skipped; nonnumeric and non-finite (NaN/Infinity) feature values are
+        skipped per feature. Neither path corrupts existing counts.
 
         Returns the number of windows processed.
         """
@@ -146,6 +146,10 @@ class BaselineModel:
                 try:
                     val_f = float(val)
                 except (ValueError, TypeError):
+                    continue
+                if not math.isfinite(val_f):
+                    # NaN/Inf would poison Welford state and leak a non-finite
+                    # overall mean into the analytics payload; skip per feature.
                     continue
                 if col not in bucket:
                     bucket[col] = {"n": 0.0, "mean": 0.0, "M2": 0.0}
@@ -234,7 +238,7 @@ class BaselineModel:
         for hour_bucket in self._stats.values():
             for dow_bucket in hour_bucket.values():
                 s = dow_bucket.get(feature)
-                if s is not None and s["n"] > 0:
+                if s is not None and s["n"] > 0 and math.isfinite(s["mean"]):
                     weighted_sum += s["n"] * s["mean"]
                     total_n += s["n"]
         return round(weighted_sum / total_n, 4) if total_n > 0 else None

@@ -10,12 +10,13 @@ import {
   ApiError,
 } from "../api";
 import type {
-  BaselineSummary,
   ModelStatus,
   GateStatus,
   TrainingReadinessResponse,
   TrainingJobResponse,
 } from "../api";
+import { EMPTY_BASELINE_VIEW, reduceBaselineState } from "../baseline-state";
+import type { BaselineViewState } from "../baseline-state";
 import "./model-center.css";
 
 const TABS = ["数据准备", "个人基线", "模型训练", "模型状态"] as const;
@@ -65,8 +66,9 @@ export default function ModelCenter() {
 
   // Data states
   const [rd, setRd] = useState<TrainingReadinessResponse | null>(null);
-  const [baseline, setBaselineLocal] = useState<BaselineSummary | null>(null);
-  const [baselineEmpty, setBaselineEmpty] = useState(false);
+  // Baseline view driven through reduceBaselineState so populated→404 empty
+  // and 404→populated transitions never leave stale state on screen.
+  const [baselineView, setBaselineView] = useState<BaselineViewState>(EMPTY_BASELINE_VIEW);
   const [modelStatus, setModelStatusState] = useState<ModelStatus | null>(null);
   const [activeJob, setActiveJob] = useState<TrainingJobResponse | null>(null);
   // Active job id tracked as state so effects react to it
@@ -111,13 +113,16 @@ export default function ModelCenter() {
   const fetchBaseline = useCallback(async () => {
     setLoading((p) => ({ ...p, baseline: true }));
     try {
-      const data = await getBaseline();
-      setBaselineLocal(data);
-      setBaselineEmpty(false);
+      const state = await getBaseline();
+      if (!state.ok) {
+        // Malformed wire payload — never render misleading values.
+        setError(getErrorMessage(new ApiError("基线数据格式无效", 500), "基线数据加载失败"));
+        return;
+      }
+      setBaselineView((prev) => reduceBaselineState(prev, { kind: "populated", summary: state }));
     } catch (e: unknown) {
       if (e instanceof ApiError && e.status === 404) {
-        setBaselineLocal(null);
-        setBaselineEmpty(true);
+        setBaselineView((prev) => reduceBaselineState(prev, { kind: "empty" }));
       } else {
         setError(getErrorMessage(e, "基线数据加载失败"));
       }
@@ -473,25 +478,25 @@ export default function ModelCenter() {
         <div>
           {renderLoading("baseline")}
 
-          {baseline && !loading.baseline && (
+          {baselineView.summary && !loading.baseline && (
             <div className="card mc-section">
               <h3>个人行为基线</h3>
               <div className="flex gap16" style={{ fontSize: 13, flexWrap: "wrap" }}>
                 <div>
                   <span style={{ color: "var(--color-text-tertiary)" }}>数据天数：</span>
-                  {baseline.total_days}
+                  {baselineView.summary.total_days}
                 </div>
                 <div>
                   <span style={{ color: "var(--color-text-tertiary)" }}>样本数：</span>
-                  {baseline.total_samples}
+                  {baselineView.summary.total_samples}
                 </div>
                 <div>
                   <span style={{ color: "var(--color-text-tertiary)" }}>特征：</span>
-                  {baseline.features?.length ?? 0} 维
+                  {baselineView.summary.features?.length ?? 0} 维
                 </div>
                 <div>
                   <span style={{ color: "var(--color-text-tertiary)" }}>建立时间：</span>
-                  {baseline.created_at ? new Date(baseline.created_at).toLocaleDateString("zh-CN") : "N/A"}
+                  {baselineView.summary.created_at ? new Date(baselineView.summary.created_at).toLocaleDateString("zh-CN") : "N/A"}
                 </div>
               </div>
               <div className="mt16" style={{ fontSize: 12, color: "var(--color-text-tertiary)", borderTop: "1px solid var(--color-border)", paddingTop: 12 }}>
@@ -500,7 +505,7 @@ export default function ModelCenter() {
             </div>
           )}
 
-          {baselineEmpty && !loading.baseline && (
+          {baselineView.empty && !loading.baseline && (
             <div className="card mc-section">
               <h3>个人行为基线</h3>
               <div className="mc-baseline-empty">
@@ -512,7 +517,7 @@ export default function ModelCenter() {
             </div>
           )}
 
-          {!baseline && !baselineEmpty && !loading.baseline && (
+          {!baselineView.summary && !baselineView.empty && !loading.baseline && (
             <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
               暂无数据
             </p>

@@ -33,7 +33,7 @@ Run all from `mindflow-app/backend-next/`:
 
 - **Framework-neutral ports** (`ports.py`): `AnalysisWorkflowPort`, `WorkflowRunStorePort`, `BudgetReservationPort`. LangGraph can be swapped without touching the scheduler.
 - **AnalysisGraph**: Composition root for daily analysis. Implements `AnalysisWorkflowPort`. Contains PanelGraph as subgraph.
-- **PanelGraph**: Explicit expert-deliberation subgraph (Analyst -> 3x parallel attribution -> validation -> Moderator -> Critic). `PanelOrchestrator` is retained for the legacy route.
+- **PanelGraph**: Explicit expert-deliberation subgraph (Analyst -> 3x parallel attribution -> validation -> Moderator -> Critic). `PanelOrchestrator` is a thin compatibility adapter; do not reintroduce its old inline graph.
 - **ChatGraph**: Explicit chat lifecycle StateGraph. The legacy `create_agent` route remains the default while `new_chat_graph=False`.
 - **ProviderRegistry**: LLM provider lifecycle (L1 DeepSeek, L2 Ollama, L3 RuleEngine). Single HTTP session pool.
 - **Scheduler**: No graph. Owns time, claims, heartbeats (`scheduled_job_runs` table). Two-layer design per ADR-001.
@@ -46,6 +46,15 @@ Run all from `mindflow-app/backend-next/`:
 - Do not share sessions across tests. Each test gets its own async session.
 - Mock LLM calls for unit tests. Integration tests use mock gateways.
 - Dirty worktree is fine — do not commit, push, or create PRs unless explicitly asked.
+
+## 2026-07-31 规则（保持这些不变式）
+
+- 特征 schema 当前为 v3（`FEATURE_SCHEMA_VERSION=3`）；不要静默改回 v2，也不要绕过 `count_confirmed_switches()` 手写切换计数。
+- 切换计数必须满足驻留阈值（默认 10 秒）并忽略 `TRANSIENT_PROCESSES`；同一应用内点击不算切换。
+- ML 质量门统计“唯一反馈会话数”，不是重叠窗口数；低于 7 个反馈日时模型只能 shadow。
+- `POST /panel/today` 缓存命中必须保留 `source/degraded/degradation_path`；降级结果重试使用 `retry_if_degraded`。
+- LangGraph 主持人输出必须通过 `validate_verdict_schema()` 后再交给 critic；新增类型必须同步到 `TYPE_ALIASES` 和 `experts.py` 的枚举说明。
+- 实验统一走 `scripts/run_experiments.py`，产物写入 `data/experiments/<run-id>/`；不要在实验目录外留下临时报告。
 
 ## Feature Flags (ADR-005)
 

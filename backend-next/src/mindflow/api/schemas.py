@@ -32,6 +32,13 @@ class PanelTranscriptEntry(BaseModel):
 
 class PanelMeta(BaseModel):
     degraded: bool
+    source: str | None = None
+    cached: bool = False
+    degradation_path: list[str] = Field(default_factory=list)
+    retry_after: int | None = None
+    insufficient_data: bool = False
+    uncertainty: float | None = None
+    evidence_gaps: list[str] = Field(default_factory=list)
 
 
 class PanelResponse(BaseModel):
@@ -45,6 +52,11 @@ class PanelResponse(BaseModel):
     call_count: int
     degraded: bool
     meta: PanelMeta
+    source: str | None = None
+    cached: bool = False
+    insufficient_data: bool = False
+    uncertainty: float | None = None
+    evidence_gaps: list[str] = Field(default_factory=list)
 
 
 InterventionIntensityValue = Literal["gentle", "standard", "strict"]
@@ -276,6 +288,35 @@ class TrainingReadinessResponse(BaseModel):
     gates: list[V2GateCheck]
     blockers: list[Blocker]
     current_training_job: TrainingJobSummary | None
+
+
+# ── Baseline summary schemas ────────────────────────────────────────────
+
+
+class BaselineSummary(BaseModel):
+    """Typed response for ``GET /analytics/baseline``.
+
+    Carries the canonical V2 means (``mean_app_switch_count``,
+    ``mean_active_seconds_ratio``, ``mean_idle_ratio``) computed from the
+    persisted per-user baseline, plus one-to-one compatibility aliases for
+    frontend consumers that predate the V2 vocabulary: ``switch_frequency``
+    is exactly ``mean_app_switch_count`` and ``productivity_ratio`` is
+    exactly ``mean_active_seconds_ratio``. ``features`` is the exact V2
+    vocabulary. An empty repository stays 404 — no invented values are ever
+    returned.
+    """
+
+    user_id: int
+    created_at: str
+    updated_at: str
+    total_days: int
+    total_samples: int
+    features: list[str]
+    mean_app_switch_count: float | None
+    mean_active_seconds_ratio: float | None
+    mean_idle_ratio: float | None
+    switch_frequency: float | None
+    productivity_ratio: float | None
 
 
 # ── Report schemas ────────────────────────────────────────────────────

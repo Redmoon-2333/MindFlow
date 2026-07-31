@@ -37,6 +37,20 @@ MIN_SWITCH_SAMPLES: int = 2
 
 MAX_ACCEPTABLE_SWITCHES_PER_HOUR: float = 30.0
 MAX_COLLECTION_GAP_S: float = 60.0
+
+DEFAULT_SWITCH_MIN_DWELL_S: float = 10.0
+"""Minimum time a new process must stay foreground before counting a switch."""
+
+TRANSIENT_PROCESSES: frozenset[str] = frozenset({
+    "explorer.exe",
+    "ApplicationFrameHost.exe",
+    "ShellHost.exe",
+    "ShellExperienceHost.exe",
+    "DesktopMgr64.exe",
+    "SearchHost.exe",
+    "TextInputHost.exe",
+    "StartMenuExperienceHost.exe",
+})
 """Switches beyond this threshold incur maximum penalty."""
 
 DEFAULT_FOCUS_WEIGHTS: Mapping[str, float] = {
@@ -206,6 +220,68 @@ def _sorted_events(events: list[ActivityEvent]) -> list[ActivityEvent]:
     return sorted(events, key=lambda e: e.timestamp_utc)
 
 
+def count_confirmed_switches(
+    events: list[ActivityEvent],
+    *,
+    min_dwell_s: float = DEFAULT_SWITCH_MIN_DWELL_S,
+    transient_processes: frozenset[str] = TRANSIENT_PROCESSES,
+) -> int:
+    """Count foreground switches that persist long enough to be meaningful.
+
+    Short excursions (under *min_dwell_s*) and system-transient windows are
+    ignored so rapid clicks inside one app cannot inflate the switch count.
+    """
+    active = _sorted_events(_non_idle_events(events))
+    if len(active) < 2:
+        return 0
+
+    current: str | None = None
+    current_dwell = 0.0
+    candidate: str | None = None
+    candidate_dwell = 0.0
+    switches = 0
+
+    for event in active:
+        process = event.data.process_name
+        if not process or process in transient_processes:
+            continue
+        duration = max(0.0, event.duration_s)
+        if current is None:
+            current = process
+            current_dwell = duration
+            continue
+        if process == current:
+            if candidate is not None and candidate_dwell >= min_dwell_s:
+                switches += 1
+                current = candidate
+                current_dwell = candidate_dwell
+                candidate = process
+                candidate_dwell = duration
+            else:
+                candidate = None
+                candidate_dwell = 0.0
+                current_dwell += duration
+        elif process == candidate:
+            candidate_dwell += duration
+            if candidate_dwell >= min_dwell_s:
+                switches += 1
+                current = candidate
+                current_dwell = candidate_dwell
+                candidate = None
+                candidate_dwell = 0.0
+        else:
+            if candidate is not None and candidate_dwell >= min_dwell_s:
+                switches += 1
+                current = candidate
+                current_dwell = candidate_dwell
+            candidate = process
+            candidate_dwell = duration
+
+    if candidate is not None and candidate_dwell >= min_dwell_s:
+        switches += 1
+    return switches
+
+
 def focus_score(
     events: list[ActivityEvent],
     weights: Mapping[str, float] | None = None,
@@ -279,20 +355,18 @@ def app_usage_ranking(
 
 
 def switch_rate_per_hour(events: list[ActivityEvent]) -> float:
-    """Compute process-name switches per observed collection hour."""
+    """Compute confirmed process switches per observed collection hour."""
     active = _sorted_events(_non_idle_events(events))
     if len(active) < MIN_SWITCH_SAMPLES:
         return 0.0
 
-    switches = 0
+    switches = count_confirmed_switches(active)
     observed_seconds = 0.0
     previous = active[0]
     for event in active[1:]:
         gap_s = (event.timestamp_utc - previous.timestamp_utc).total_seconds()
         if 0 < gap_s <= MAX_COLLECTION_GAP_S:
             observed_seconds += gap_s
-            if event.data.process_name != previous.data.process_name:
-                switches += 1
         previous = event
 
     if observed_seconds <= 0:
@@ -304,6 +378,10 @@ def switch_rate_per_hour(events: list[ActivityEvent]) -> float:
 def longest_focus_block_s(events: list[ActivityEvent]) -> float:
     """Return the longest same-app block without idle or collection gaps."""
     sorted_events = _sorted_events(events)
+    sorted_events = [
+        event for event in _sorted_events(events)
+        if event.data.process_name not in TRANSIENT_PROCESSES
+    ]
     longest = 0.0
     current_block = 0.0
     current_app: str | None = None

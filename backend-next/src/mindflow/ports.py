@@ -12,6 +12,7 @@ from datetime import date, datetime
 from typing import Any, Literal, Protocol
 
 from mindflow.agents.types import PanelVerdict
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.intervention import ThrottleStats
 
@@ -38,6 +39,7 @@ class AnalysisRequest:
     force: bool = False
     origin: OriginType = "api"
     idempotency_key: str = ""
+    retry_if_degraded: bool = False
 
 
 @dataclass(frozen=True)
@@ -298,12 +300,16 @@ class TelemetryRepositoryPort(Protocol):
     ) -> None: ...
     async def upsert_feature_windows(
         self, rows: list[dict[str, Any]],
-    ) -> None: ...
+    ) -> list[dict[str, Any]]: ...
     async def latest_feature_window(
-        self, user_id: int, feature_schema_version: int = 2,
+        self, user_id: int, feature_schema_version: int = FEATURE_SCHEMA_VERSION,
     ) -> dict[str, Any] | None: ...
     async def list_feature_windows(
-        self, user_id: int, feature_schema_version: int = 2,
+        self, user_id: int, feature_schema_version: int = FEATURE_SCHEMA_VERSION,
+    ) -> list[dict[str, Any]]: ...
+    async def list_feature_windows_in_range(
+        self, user_id: int, start: datetime, end: datetime,
+        feature_schema_version: int = FEATURE_SCHEMA_VERSION,
     ) -> list[dict[str, Any]]: ...
     async def cleanup_old_telemetry(
         self, interaction_cutoff: datetime,

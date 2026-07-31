@@ -5,14 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 from urllib.parse import urlsplit
 
 import numpy as np
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mindflow.domain.baseline import BaselineModel
 from mindflow.infrastructure.repositories.activity import SQLAlchemyActivityRepository
+from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.services.prediction_service import FocusPredictionService
@@ -20,7 +24,7 @@ from mindflow.services.telemetry_features import (
     FEATURE_SCHEMA_VERSION,
     build_v2_feature_window,
 )
-from mindflow.time_utils import utc_today
+from mindflow.time_utils import TimezoneLike, resolve_timezone, utc_today
 from mindflow.train.v2 import V2_FEATURE_NAMES
 
 _DEFAULTS: dict[str, Any] = {
@@ -31,6 +35,26 @@ _DEFAULTS: dict[str, Any] = {
 }
 
 _PAIRING_CODE_TTL_S = 300
+
+# Conditional baseline backfill horizon: at most this many business days of
+# stored V2 windows feed a rebuild (matches the feature-window retention cut).
+_BASELINE_BACKFILL_DAYS: Final = 180
+
+
+@dataclass(frozen=True, slots=True)
+class BaselineRebuildResult:
+    """Outcome of one conditional baseline backfill run (Todo 9 seam).
+
+    ``rebuilt`` is True only when the baseline row was actually replaced; an
+    existing V2 baseline yields ``skipped_v2`` with ``rebuilt`` False so a
+    caller can never mistake a no-op for a rebuild.
+    """
+
+    rebuilt: bool
+    reason: Literal["missing", "schema_mismatch", "skipped_v2"]
+    windows_loaded: int
+    samples: int
+    cutoff_utc: datetime
 
 
 def _as_utc(value: Any) -> datetime:
@@ -46,6 +70,8 @@ class TelemetryService:
         data_dir: Path,
         activity_repository: SQLAlchemyActivityRepository | None = None,
         prediction_service: FocusPredictionService | None = None,
+        baseline_repository: BaselineRepository | None = None,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._repository = repository
         self._preferences_repository = preferences_repository
@@ -55,6 +81,11 @@ class TelemetryService:
         self._input_watcher: Any = None
         self._model_manager: Any = None
         self._prediction_service = prediction_service
+        # Baseline refresh during rollup is only active when both the
+        # repository and a session factory are wired (the application wires
+        # them; legacy/unit constructions leave the rollup window-only).
+        self._baseline_repository = baseline_repository
+        self._session_factory = session_factory
 
     def attach_input_watcher(self, watcher: Any) -> None:
         self._input_watcher = watcher
@@ -333,8 +364,98 @@ class TelemetryService:
                 })
             window_start = window_end
 
-        await self._repository.upsert_feature_windows(rows)
+        if not rows:
+            return 0
+
+        if self._baseline_repository is not None and self._session_factory is not None:
+            # One explicit transaction boundary: the window upsert and the
+            # baseline refresh commit together. Only rows the upsert actually
+            # inserted are folded into the baseline (Welford counts each window
+            # once even when the same range is rolled repeatedly), and a
+            # baseline failure rolls the windows back too — nothing is left
+            # half-persisted, so a retry is safe and complete.
+            async with self._session_factory() as session, session.begin():
+                inserted = await self._repository.upsert_feature_windows(
+                    rows,
+                    session=session,
+                )
+                if inserted:
+                    baseline = await self._baseline_repository.get_latest(
+                        user_id,
+                        session=session,
+                    )
+                    if baseline is None:
+                        baseline = BaselineModel(user_id=user_id)
+                    baseline.update(inserted)
+                    await self._baseline_repository.upsert(baseline, session=session)
+        else:
+            await self._repository.upsert_feature_windows(rows)
         return len(rows)
+
+    async def rebuild_baseline_if_needed(
+        self,
+        user_id: int = 1,
+        *,
+        timezone: TimezoneLike = "local",
+        now_utc: datetime | None = None,
+    ) -> BaselineRebuildResult:
+        """Conditionally backfill the personal baseline from existing V2 windows.
+
+        Startup seam — wired by Todo 12, deliberately never called from a
+        request path. Loads at most the prior ``_BASELINE_BACKFILL_DAYS``
+        business days of stored V2 windows with one bounded range query and
+        atomically replaces the baseline row with a fresh model, but only when
+        the row is missing or its stored ``feature_schema_version`` is not 2;
+        an existing V2 baseline is left untouched (``skipped_v2``).
+
+        The fresh model is built fully in memory before any write, then
+        persisted with a single upsert inside one caller-owned transaction, so
+        an interruption before that upsert leaves any prior baseline intact.
+        A stored V1 payload is never upgraded in place — it is discarded and
+        replaced only after the complete V2 rebuild succeeds.
+        """
+        if self._baseline_repository is None or self._session_factory is None:
+            msg = (
+                "rebuild_baseline_if_needed requires baseline_repository "
+                "and session_factory wiring"
+            )
+            raise RuntimeError(msg)
+
+        now = now_utc or datetime.now(UTC)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        cutoff = (
+            now.astimezone(resolve_timezone(timezone))
+            - timedelta(days=_BASELINE_BACKFILL_DAYS)
+        ).astimezone(UTC)
+
+        baseline = await self._baseline_repository.get_latest(user_id)
+        if baseline is not None and baseline.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION:
+            return BaselineRebuildResult(
+                rebuilt=False,
+                reason="skipped_v2",
+                windows_loaded=0,
+                samples=0,
+                cutoff_utc=cutoff,
+            )
+        reason = "missing" if baseline is None else "schema_mismatch"
+
+        windows = await self._repository.list_feature_windows_in_range(
+            user_id, cutoff, now
+        )
+        fresh = BaselineModel(user_id=user_id, timezone=timezone)
+        fresh.update(windows)
+
+        async with self._session_factory() as session, session.begin():
+            await self._baseline_repository.upsert(fresh, session=session)
+
+        return BaselineRebuildResult(
+            rebuilt=True,
+            reason=reason,
+            windows_loaded=len(windows),
+            samples=fresh.total_samples(),
+            cutoff_utc=cutoff,
+        )
 
     async def cleanup_retained_data(self, user_id: int = 1) -> int:
         preferences = await self.get_preferences(user_id)

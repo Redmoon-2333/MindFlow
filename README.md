@@ -52,12 +52,22 @@ npm run dev
 # http://localhost:5173
 ```
 
+## 2026-07-31 升级与实验
+
+- 特征 schema 已升级到 v3：应用切换采用“确认切换”计数（默认驻留 10 秒），系统瞬时窗口不计数；历史窗口通过回填脚本重建。
+- ML 质量门改为统计唯一反馈会话数，要求至少 7 个反馈日、20 条唯一反馈、每类 5 条；评估与部署共用同一 EnsembleClassifier，规则基线在日期 GroupKFold 折内计算。
+- `POST /panel/today` 支持 `force` / `retry_if_degraded`；降级结果再次点击会重新尝试 DeepSeek，缓存命中保留真实的 `source/degraded/degradation_path`。
+- LangGraph `PanelGraph` 为唯一活动编排；新增确定性 schema 校验、共识强度注入、`insufficient_data/uncertainty/evidence_gaps` 输出和 `workflow_node_events` trace。
+- 实验与报告：`backend-next/scripts/run_experiments.py` 可一键跑 3 轮 ML 和 3 轮 LangGraph，产物落在 `data/experiments/`。
+- 历史 `docs/optimization-plan-codex-review.md` 已删除，相关结论并入本文档与架构文档。
+
 ## 数据流水线
 
 ```
 activity_events（原始活动事件）
     ↓ 5s 采集 + 心跳合并
 telemetry rollup（V2 特征窗口，schema_version=2）
+telemetry rollup（V3 特征窗口，schema_version=3）
     ↓ 时间窗口重叠匹配
 focus_session_feedback（用户显式标注）
     ↓ join focus_sessions 得到带时间戳的反馈

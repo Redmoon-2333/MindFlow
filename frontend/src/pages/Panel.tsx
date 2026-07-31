@@ -37,11 +37,11 @@ export default function Panel() {
   const [result, setResult] = useState<PanelResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleTrigger = async () => {
+  const handleTrigger = async (retryIfDegraded = false) => {
     setLoading("trigger");
     setError(null);
     try {
-      const data = await triggerPanel();
+      const data = await triggerPanel(retryIfDegraded ? { retryIfDegraded: true } : undefined);
       setResult(data);
     } catch (e: unknown) {
       setError(getErrorMessage(e, "Request failed"));
@@ -87,7 +87,7 @@ export default function Panel() {
       )}
 
       <div className="flex gap8 mb24">
-        <button className="btn" onClick={handleTrigger} disabled={loading !== null}>
+        <button className="btn" onClick={() => handleTrigger()} disabled={loading !== null}>
           {loading === "trigger" && (
             <span className="spinner" style={{ width: 16, height: 16, margin: 0, borderWidth: 2 }} />
           )}
@@ -105,11 +105,14 @@ export default function Panel() {
 
       {result?.degraded && (
         <div className="card mb16" style={{ borderLeft: "3px solid var(--color-warning)" }}>
-          <div className="flex gap8" style={{ alignItems: "center" }}>
+          <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
             <span className="badge badge-warning">降级模式</span>
             <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-              LLM 服务降级，当前使用本地模型
+              来源：{result.meta?.source || "未知"}；再次点击将重新尝试 DeepSeek
             </span>
+            <button className="btn btn-sm" onClick={() => handleTrigger(true)} disabled={loading !== null} style={{ marginLeft: "auto" }}>
+              {loading === "trigger" ? "重试中…" : "重试 DeepSeek"}
+            </button>
           </div>
         </div>
       )}

@@ -262,6 +262,7 @@ _CRITIC_PROMPT: str = """你是一个批评家，负责审查专家团的会诊�
 ## 合法指标清单
 你的输入中会包含一个证据目录（evidence_catalog 数组中的 id）。只有目录中的 ID 才是有效的证据引用。
 任何引用不在目录中的 ID → 视为幻觉 → 打回。
+注意：同一指标可能同时存在带前缀的规范 ID（如 summary.actual_focus_min）与裸名（actual_focus_min）；只要裸名能唯一对应目录中的 ID，就不应视为幻觉。
 
 ## 检查要点
 - 每个 [证据: X] 中的 X 是否在合法指标清单中？
@@ -307,12 +308,14 @@ _MODERATOR_PROMPT: str = """你是一个会诊综合主持人。你负责综合�
 2. 裁决分歧：根据证据强度决定采纳谁的观点
 3. 记录保留意见：被否决但有理有据的观点记入 dissent 字段
 4. 输出统一的 PanelVerdict 格式结论
+5. 当证据不足或专家分歧较大时，明确输出 insufficient_data=true，并列出证据缺口
 
 ## 裁决原则
 - 证据优先：有具体指标支持的观点优先于纯理论推断
 - 保守原则：证据不足时取较低置信度
 - 多元包容：不同视角揭示拖延的不同方面，尽可能融合而非二选一
 - 诚实记录：无法调和的分歧记入 dissent
+- 不强迫给结论：若证据不足以区分类型，宁可输出假设和缺口，不要给出高置信度猜测
 
 ## 输出格式
 你必须输出 JSON 对象，不能包含 Markdown 代码块标记，字段如下：
@@ -322,10 +325,16 @@ _MODERATOR_PROMPT: str = """你是一个会诊综合主持人。你负责综合�
   "recommended_technique": "推荐的CBT技术（字符串）",
   "rationale": "综合推理过程（中文，较长、完整）",
   "dissent": ["异议1（若无则为空数组）"]
+  "insufficient_data": false,
+  "uncertainty": 0.0,
+  "evidence_gaps": ["缺失的证据或指标"]
 }
 
 recommended_technique 可选值：
 "behavioral_experiment", "cognitive_restructuring", "stimulus_control", "goal_setting", "graded_exposure", "mindfulness"
+
+types 必须使用以下英文枚举值（不要输出中文名称）：
+"impulsivity", "decisional", "perfectionism", "emotional_regulation", "task_aversion"
 
 ## 安全边界
 - 你不是心理治疗师或医生

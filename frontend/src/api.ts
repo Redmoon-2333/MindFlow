@@ -2,6 +2,10 @@ import createClient from "openapi-fetch";
 import type { components, paths } from "./generated/api-schema";
 import { parseFocusPrediction } from "./prediction-state";
 import type { FocusPredictionResponse } from "./prediction-state";
+import { parseDailyReport, parseWeeklyReport } from "./report-state";
+import type { DailyReport, WeeklyReport } from "./report-state";
+import { parseBaselineSummary } from "./baseline-state";
+import type { BaselineSummaryState } from "./baseline-state";
 
 const BASE = "/api/v1";
 const AUTH_MARKER = "mindflow_authenticated";
@@ -207,67 +211,6 @@ export interface FocusFeedbackResponse {
   created_at: string;
 }
 
-export interface DailyReport {
-  id?: string;
-  user_id: number;
-  date: string;
-  total_focus_min: number;
-  total_distraction_min: number;
-  focus_score: number;
-  top_apps: Array<{ app: string; minutes: number }>;
-  switch_frequency: number;
-  pattern_summary: string;
-  created_at?: string;
-  updated_at?: string;
-  total_focus_minutes?: number;
-  total_sessions?: number;
-  total_distractions?: number;
-  hourly_distribution?: Record<string, number>;
-  app_usage?: Array<{
-    app?: string;
-    name?: string;
-    duration_minutes?: number;
-    category?: string;
-  }>;
-  distraction_analysis?: Array<{
-    type?: string;
-    name?: string;
-    count?: number;
-    total_duration?: number;
-  }>;
-}
-
-export interface WeeklyReport {
-  week_start: string;
-  week_end: string;
-  daily_reports: DailyReport[];
-  averages: {
-    avg_focus_min?: number;
-    avg_distraction_min?: number;
-    avg_focus_score?: number;
-    avg_switch_frequency?: number;
-  };
-  trend: {
-    focus_min_delta_pct?: number;
-    focus_score_delta?: number;
-    direction?: "up" | "down" | "stable";
-  };
-  week_number: number;
-  intervention_effectiveness?: Record<string, unknown> | null;
-  total_focus_minutes?: number;
-  total_sessions?: number;
-  total_distractions?: number;
-  avg_focus_score?: number;
-  daily_summary?: Array<{
-    date: string;
-    focus_minutes?: number;
-    sessions?: number;
-    distractions?: number;
-    focus_score?: number;
-  }>;
-  week_over_week?: Record<string, number | null | undefined>;
-}
-
 export interface AnalyticsPatterns {
   high_switch_periods: Array<{
     hour: number;
@@ -287,18 +230,6 @@ export interface AnalyticsPatterns {
   heatmap: number[][];
   total_sessions: number;
   distraction_ratio: number;
-}
-
-export interface BaselineSummary {
-  user_id: number;
-  created_at: string;
-  updated_at: string;
-  total_days: number;
-  total_samples: number;
-  features: string[];
-  avg_focus_min?: number;
-  avg_switches_per_day?: number;
-  productivity_score?: number;
 }
 
 export interface BehavioralProfile {
@@ -479,10 +410,13 @@ export async function getCurrentActivity(): Promise<ActivityItem | null> {
 export const getFocusSessions = (date?: string) => request<FocusSessionsResponse>(`/focus${date ? `?date=${date}` : ""}`);
 export const getFocusTrend = (days?: number) => request<FocusTrendResponse>(`/focus/trend${days ? `?days=${days}` : ""}`);
 export const submitFocusFeedback = (sessionId: string, data: FocusFeedbackRequest) => request<FocusFeedbackResponse>(`/focus/${encodeURIComponent(sessionId)}/feedback`, { method: "POST", body: JSON.stringify(data) });
-export const getDailyReport = (date?: string) => request<DailyReport>(`/reports/daily${date ? `?date=${date}` : ""}`);
-export const getWeeklyReport = (weekStart?: string) => request<WeeklyReport>(`/reports/weekly${weekStart ? `?week_start=${weekStart}` : ""}`);
+export const getDailyReport = async (date?: string): Promise<DailyReport> =>
+  parseDailyReport(await request<unknown>(`/reports/daily${date ? `?date=${date}` : ""}`));
+export const getWeeklyReport = async (weekStart?: string): Promise<WeeklyReport> =>
+  parseWeeklyReport(await request<unknown>(`/reports/weekly${weekStart ? `?week_start=${weekStart}` : ""}`));
 export const getAnalyticsPatterns = (days?: number) => request<AnalyticsPatterns>(`/analytics/patterns${days ? `?days=${days}` : ""}`);
-export const getBaseline = () => request<BaselineSummary>("/analytics/baseline");
+export const getBaseline = async (): Promise<BaselineSummaryState> =>
+  parseBaselineSummary(await request<unknown>("/analytics/baseline"));
 export const getProfile = (days?: number) => request<BehavioralProfile>(`/analytics/profile${days ? `?days=${days}` : ""}`);
 export const getModelStatus = () => request<ModelStatus>("/analytics/model-status");
 export const runAttribution = (body?: { date?: string; force?: boolean }) => request<AttributionResponse>("/analytics/attribution", { method: "POST", body: JSON.stringify(body || {}) });
@@ -497,7 +431,8 @@ export async function getChatMessages(sessionId: string): Promise<ChatMessageRec
   return unwrap(await client.GET("/api/v1/chat/{session_id}/messages", { ...requestOptions(), params: { path: { session_id: sessionId } } })) as unknown as ChatMessageRecord[];
 }
 
-export const triggerPanel = async (): Promise<PanelResult> => unwrap(await client.POST("/api/v1/panel/today", requestOptions()));
+export const triggerPanel = async (body?: { force?: boolean; retryIfDegraded?: boolean }): Promise<PanelResult> =>
+  request<PanelResult>("/panel/today", { method: "POST", body: JSON.stringify(body || {}) });
 export const getPanelResult = async (): Promise<PanelResult> => unwrap(await client.GET("/api/v1/panel", requestOptions()));
 
 export async function triggerIntervention(intensity: InterventionIntensity): Promise<InterventionTriggerResponse> {
@@ -569,6 +504,8 @@ export interface AIRunDetail extends AIRunItem {
 }
 
 export type { FocusPredictionResponse, FocusPredictionStatus } from "./prediction-state";
+export type { DailyReport, WeeklyReport } from "./report-state";
+export type { BaselineSummary, BaselineSummaryState } from "./baseline-state";
 
 export interface HealthLiveResponse {
   status: "ok";

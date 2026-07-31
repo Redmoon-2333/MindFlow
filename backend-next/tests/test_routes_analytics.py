@@ -243,7 +243,7 @@ def test_model_status_prefers_ready_v2_model() -> None:
     data = TestClient(app).get("/api/v1/analytics/model-status").json()
 
     assert data["mode"] == "ready"
-    assert data["feature_schema_version"] == 2
+    assert data["feature_schema_version"] == 3
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -323,12 +323,14 @@ def _rows(
 
 
 class TestBaselineWeightedMean:
-    """Baseline route exposes a sample-weighted V2 model.
+    """Baseline route exposes a typed, sample-weighted V2 summary.
 
-    After the V2 migration the persisted vocabulary is exactly the 24
-    V2_FEATURE_NAMES; the legacy ``switch_frequency`` / ``productivity_ratio``
-    route fields are no longer stored features and read as null here. The
-    canonical field rename (``mean_app_switch_count`` etc.) is Todo 10.
+    Todo 10 contract: the response is the Pydantic ``BaselineSummary`` schema
+    carrying the canonical V2 means (``mean_app_switch_count``,
+    ``mean_active_seconds_ratio``, ``mean_idle_ratio``) with one-to-one
+    compatibility aliases only (``switch_frequency == mean_app_switch_count``,
+    ``productivity_ratio == mean_active_seconds_ratio``). ``features`` is
+    exactly the 24-name V2 vocabulary and an empty repository stays 404.
     """
 
     def test_baseline_exposes_v2_feature_vocabulary(
@@ -342,24 +344,73 @@ class TestBaselineWeightedMean:
         assert data["features"] == list(V2_FEATURE_NAMES)
         assert data["total_samples"] == 40 * len(V2_FEATURE_NAMES)
 
-    def test_baseline_legacy_feature_means_are_null_after_v2_migration(
+    def test_baseline_canonical_means_are_sample_weighted(
         self,
         baseline_with_data_app,
     ):
-        """switch_frequency/productivity_ratio are not V2 features → null."""
+        """Canonical V2 means are exposed with the weighted values.
+
+        Weighted app_switch_count = (10*20 + 30*10) / 40 = 12.5 (bucket 9,0
+        has 10 samples with mean 20; bucket 14,3 has 30 samples with mean
+        10), weighted active_seconds_ratio = (10*0.8 + 30*0.4) / 40 = 0.5.
+        ``idle_ratio`` is 0.0 in every fixture row so its mean is 0.0.
+        """
         client = TestClient(baseline_with_data_app)
         resp = client.get("/api/v1/analytics/baseline")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["switch_frequency"] is None
-        assert data["productivity_ratio"] is None
+        assert data["mean_app_switch_count"] == 12.5
+        assert data["mean_app_switch_count"] != 15.0  # not the unweighted mean
+        assert data["mean_active_seconds_ratio"] == 0.5
+        assert data["mean_idle_ratio"] == 0.0
+
+    def test_baseline_compat_aliases_equal_canonical_means(
+        self,
+        baseline_with_data_app,
+    ):
+        """Compatibility aliases are exact copies of the canonical means."""
+        client = TestClient(baseline_with_data_app)
+        resp = client.get("/api/v1/analytics/baseline")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["switch_frequency"] == data["mean_app_switch_count"] == 12.5
+        assert data["productivity_ratio"] == data["mean_active_seconds_ratio"] == 0.5
+
+    def test_baseline_response_matches_typed_schema(
+        self,
+        baseline_with_data_app,
+    ):
+        """The 200 body is exactly the BaselineSummary schema field set.
+
+        No legacy V1 fields (``avg_focus_min``, ``avg_switches_per_day``,
+        ``productivity_score``) leak into the typed contract.
+        """
+        client = TestClient(baseline_with_data_app)
+        resp = client.get("/api/v1/analytics/baseline")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert set(data) == {
+            "user_id",
+            "created_at",
+            "updated_at",
+            "total_days",
+            "total_samples",
+            "features",
+            "mean_app_switch_count",
+            "mean_active_seconds_ratio",
+            "mean_idle_ratio",
+            "switch_frequency",
+            "productivity_ratio",
+        }
+        assert "avg_focus_min" not in data
+        assert "avg_switches_per_day" not in data
+        assert "productivity_score" not in data
 
     def test_baseline_model_weighted_mean_is_not_unweighted(self) -> None:
         """Model-level weighted means stay correct on V2 features.
 
         Weighted app_switch_count = (10*20 + 30*10) / 40 = 12.5, while the
         naive unweighted mean of bucket means would be (20 + 10) / 2 = 15.0.
-        Route exposure of canonical V2 means is wired in Todo 10.
         """
         model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
         model.update([

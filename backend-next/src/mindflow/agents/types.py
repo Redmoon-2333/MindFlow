@@ -125,6 +125,12 @@ class PanelVerdict:
     escalated: bool
     call_count: int
     source: PanelSource
+    degradation_path: tuple[str, ...] = ()
+    cached: bool = False
+    retry_after_s: int | None = None
+    insufficient_data: bool = False
+    uncertainty: float | None = None
+    evidence_gaps: tuple[str, ...] = ()
 
 
 # ── Exception types (degradation chain) ────────────────────────────────────────

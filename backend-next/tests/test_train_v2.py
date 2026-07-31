@@ -19,7 +19,7 @@ def _feature_window(start: datetime, **overrides: float) -> dict[str, object]:
     return {
         "window_start_utc": start.isoformat(),
         "window_end_utc": (start + timedelta(minutes=5)).isoformat(),
-        "feature_schema_version": 2,
+        "feature_schema_version": 3,
         "features": features,
     }
 
@@ -54,13 +54,13 @@ def test_prepare_v2_training_data_prioritizes_explicit_feedback() -> None:
 
     data = prepare_v2_training_data(windows, feedback)
 
-    assert data.labels.tolist() == [1, 1]
-    assert data.sample_weights.tolist() == [1.0, 0.25]
-    assert data.label_sources == ["explicit", "weak"]
+    assert data.labels.tolist() == [1, 1, 1]
+    assert data.sample_weights.tolist() == [1.0, 0.3, 0.3]
+    assert data.label_sources == ["explicit", "weak", "weak"]
     assert data.explicit_feedback_count == 1
     assert data.explicit_focus_count == 1
     assert data.explicit_distract_count == 0
-    assert data.mixed_window_count == 1
+    assert data.mixed_window_count == 0
 
 
 def test_evaluate_v2_candidates_keeps_dates_out_of_training_folds() -> None:
@@ -117,9 +117,10 @@ def test_v2_quality_gate_requires_explicit_feedback_and_stable_metrics() -> None
             "brier_score": 0.14,
             "fold_balanced_accuracy_range": 0.08,
         },
-        "rule_baseline": {"brier_score": 0.22},
-        "folds": [{}, {}, {}],
-    }
+            "rule_baseline": {"brier_score": 0.22},
+            "folds": [{}, {}, {}],
+            "fold_stability": {"passed": True, "min_balanced_accuracy": 0.68, "range": 0.08, "min_test_size": 8},
+        }
 
     passed = evaluate_v2_quality_gate(
         evaluation,
@@ -130,7 +131,7 @@ def test_v2_quality_gate_requires_explicit_feedback_and_stable_metrics() -> None
     )
     failed = evaluate_v2_quality_gate(
         evaluation,
-        explicit_feedback_count=29,
+        explicit_feedback_count=19,
         explicit_focus_count=15,
         explicit_distract_count=14,
         distinct_feedback_days=7,

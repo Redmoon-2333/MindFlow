@@ -1,4 +1,4 @@
-"""Atomic persistence for workflow runs, node events, and budget reservations.
+﻿"""Atomic persistence for workflow runs, node events, and budget reservations.
 
 Implements ``WorkflowRunStorePort`` and ``BudgetReservationPort`` from
 ``mindflow.ports`` against the SQLAlchemy Core tables defined in
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+import json
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -233,6 +234,32 @@ class WorkflowRunsRepository:
                 "error_category": row.error_category,
             })
         return events
+
+    async def save_node_event(
+        self,
+        run_id: str,
+        node_name: str,
+        *,
+        status: str = "completed",
+        payload: dict[str, Any] | None = None,
+        error_category: str | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        """Record one traceable node event with an optional JSON payload."""
+        now = datetime.now(UTC)
+        values: dict[str, object] = {
+            "id": new_id(),
+            "run_id": run_id,
+            "node_name": node_name,
+            "status": status,
+            "started_at": now.isoformat(),
+            "completed_at": now.isoformat(),
+            "duration_ms": duration_ms,
+            "error_category": error_category,
+            "payload_json": json.dumps(payload, ensure_ascii=False) if payload is not None else None,
+        }
+        async with self._session_factory() as session, session.begin():
+            await session.execute(sa.insert(workflow_node_events).values(**values))
 
     async def update_status(
         self,

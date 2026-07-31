@@ -78,36 +78,60 @@ class SQLAlchemyFocusSessionRepository:
         concurrent callers — the last writer wins and the row count for a
         user+date never doubles.
 
-        A UUIDv7 ``id`` is generated for each session automatically.
+        **ID reuse:** An existing row whose ``(date, start_time)`` matches an
+        incoming session keeps its ``id``, so feedback annotations (which
+        reference session ids) stay linked across a recompute while
+        ``end_time`` and statistics are refreshed.  New identities get a
+        UUIDv7 ``id``.
 
         Args:
             user_id: User identifier.
             sessions: Session data dicts (without ``id`` or ``user_id``).
 
         Returns:
-            The inserted row dicts (with generated ``id``).
+            The inserted row dicts (with ``id``).
         """
         # Collect unique dates from session data so we know which rows to
         # replace.  In practice all sessions in one call share the same date,
         # but we handle the general case.
         dates_to_replace = {s["date"] for s in sessions}
 
-        rows = []
-        for s in sessions:
-            sid = new_id()
-            rows.append({
-                "id": sid,
-                "user_id": user_id,
-                "date": s["date"],
-                "start_time": s["start_time"],
-                "end_time": s["end_time"],
-                "session_type": s["session_type"],
-                "dominant_app": s.get("dominant_app"),
-                "focus_score": s.get("focus_score"),
-                "switch_count": s.get("switch_count"),
-            })
-
         async with self._session_factory() as session, session.begin():
+            # Fetch existing rows for the dates being replaced in the same
+            # transaction, keyed by (date, start_time), so a recompute reuses
+            # the id and feedback stays linked.
+            existing_stmt = sa.select(
+                focus_sessions.c.id,
+                focus_sessions.c.date,
+                focus_sessions.c.start_time,
+            ).where(
+                focus_sessions.c.user_id == user_id,
+                focus_sessions.c.date.in_(dates_to_replace),
+            )
+            existing_rows = (await session.execute(existing_stmt)).fetchall()
+            id_by_identity = {
+                (row.date, row.start_time): row.id for row in existing_rows
+            }
+
+            rows = []
+            for s in sessions:
+                # pop consumes the entry so duplicate identities within one
+                # batch cannot collide on the same primary key
+                sid = id_by_identity.pop((s["date"], s["start_time"]), None)
+                if sid is None:
+                    sid = new_id()
+                rows.append({
+                    "id": sid,
+                    "user_id": user_id,
+                    "date": s["date"],
+                    "start_time": s["start_time"],
+                    "end_time": s["end_time"],
+                    "session_type": s["session_type"],
+                    "dominant_app": s.get("dominant_app"),
+                    "focus_score": s.get("focus_score"),
+                    "switch_count": s.get("switch_count"),
+                })
+
             # Delete existing rows for user+date(s) before inserting
             delete_stmt = sa.delete(focus_sessions).where(
                 focus_sessions.c.user_id == user_id,

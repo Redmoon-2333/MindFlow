@@ -83,7 +83,7 @@ def _make_mock_prediction_service(
             coverage_ratio=0.8,
             data_age_s=60.0,
             model_version="20260718_v2",
-            feature_schema_version=2,
+            feature_schema_version=3,
             top_factors=[
                 {"feature": "idle_ratio", "value": 0.05, "importance": 0.3},
                 {"feature": "app_switch_count", "value": 3.0, "importance": 0.25},
@@ -247,7 +247,7 @@ class TestMLInferenceFailureGracefulDegradation:
                 coverage_ratio=0.0,
                 data_age_s=None,
                 model_version=None,
-                feature_schema_version=2,
+                feature_schema_version=3,
                 top_factors=[],
                 explanation_method="",
                 reason="模拟推理失败",
