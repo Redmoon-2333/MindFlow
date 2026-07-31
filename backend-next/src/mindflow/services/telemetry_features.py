@@ -10,7 +10,9 @@ import numpy as np
 
 from mindflow.domain.events import ActivityEvent
 
-FEATURE_SCHEMA_VERSION = 2
+# Single authoritative constant in the domain layer; re-exported here so the
+# ``mindflow.services.telemetry_features`` importers keep working unchanged.
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION  # noqa: F401
 
 
 def build_v2_feature_window(

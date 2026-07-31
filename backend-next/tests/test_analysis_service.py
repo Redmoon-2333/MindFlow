@@ -306,9 +306,15 @@ class TestDetectPatterns:
         assert patterns["trigger_apps"] == []
         assert patterns["distraction_ratio"] == 0.0
 
-    async def test_with_sessions(self, repos, service):
+    async def test_with_sessions(self, repos, service, monkeypatch):
         """Sessions should produce pattern data."""
         _, focus_repo = repos
+
+        monkeypatch.setattr(
+            analysis_service_module,
+            "business_today",
+            lambda _timezone: date(2026, 7, 17),
+        )
 
         await focus_repo.save_sessions(1, [
             {
