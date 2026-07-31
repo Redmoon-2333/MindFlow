@@ -287,7 +287,14 @@ class FocusPredictionService:
 
         # ── Check model feature names ────────────────────────────────────
         model_feature_names = getattr(self._model_manager.classifier, "feature_names_", None)
-        if model_feature_names is not None and isinstance(model_feature_names, (list, tuple)) and list(model_feature_names) != V2_FEATURE_NAMES:
+        # Compare by content: the training pipeline stores feature_names_ as
+        # ``list(V2_FEATURE_NAMES)`` while V2_FEATURE_NAMES itself is a tuple,
+        # so a container-type comparison would reject every real model.
+        if (
+            model_feature_names is not None
+            and isinstance(model_feature_names, (list, tuple))
+            and tuple(model_feature_names) != tuple(V2_FEATURE_NAMES)
+        ):
             return FocusPrediction(
                 status="schema_mismatch",
                 reason="模型特征名称与当前 V2_FEATURE_NAMES 不匹配",
