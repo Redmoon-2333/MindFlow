@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from mindflow.domain.events import ActivityEvent
+from mindflow.domain.features import count_confirmed_switches
 
 # Single authoritative constant in the domain layer; re-exported here so the
 # ``mindflow.services.telemetry_features`` importers keep working unchanged.
@@ -40,6 +41,9 @@ def build_v2_feature_window(
         current[0].data.process_name != previous[0].data.process_name
         for previous, current in zip(active_events, active_events[1:], strict=False)
     )
+    app_switch_count = count_confirmed_switches([
+        event for event, _duration in active_events
+    ])
     longest_segment_s = max((duration for _, duration in active_events), default=0.0)
     app_durations: dict[str, float] = {}
     for event, duration in active_events:

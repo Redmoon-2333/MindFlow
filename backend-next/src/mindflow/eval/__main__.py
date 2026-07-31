@@ -122,43 +122,46 @@ def _save_report(report: Any, path: Path) -> None:
     print(f"  [保存] {path}")
 
 
-async def _run_rule_engine(output_dir: Path) -> Any:
+async def _run_rule_engine(output_dir: Path, scenarios: tuple[Any, ...] = ALL_SCENARIOS, round_name: str = "") -> Any:
     """Run rule engine against all scenarios."""
     print("\n  [规则引擎] 评估中...")
     report = await run_eval(
         rule_engine_analyzer,
-        ALL_SCENARIOS,
+        scenarios,
         analyzer_name="rule_engine",
     )
     _print_summary_report(report, "规则引擎评估结果")
     _print_detail(report)
-    _save_report(report, output_dir / f"report_rule_engine_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json")
+    suffix = f"_{round_name}" if round_name else ""
+    _save_report(report, output_dir / f"report_rule_engine_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}{suffix}.json")
     return report
 
 
-async def _run_panel_mock(output_dir: Path) -> Any:
+async def _run_panel_mock(output_dir: Path, scenarios: tuple[Any, ...] = ALL_SCENARIOS, round_name: str = "") -> Any:
     """Run mock panel against all scenarios."""
     print("\n  [Mock Panel] 评估中...")
     gateway = MockPanelGateway()
     analyzer = panel_analyzer(gateway)
-    report = await run_eval(analyzer, ALL_SCENARIOS, analyzer_name="panel_mock")
+    report = await run_eval(analyzer, scenarios, analyzer_name="panel_mock")
     _print_summary_report(report, "Mock Panel 评估结果")
     _print_detail(report)
-    _save_report(report, output_dir / f"report_panel_mock_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json")
+    suffix = f"_{round_name}" if round_name else ""
+    _save_report(report, output_dir / f"report_panel_mock_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}{suffix}.json")
     return report
 
 
-async def _run_panel_live(output_dir: Path) -> Any:
+async def _run_panel_live(output_dir: Path, scenarios: tuple[Any, ...] = ALL_SCENARIOS, round_name: str = "") -> Any:
     """Run real DeepSeek panel against all scenarios."""
     from mindflow.agents.llm_gateway import DeepSeekGateway
 
     print("\n  [DeepSeek Panel] 评估中（30 场景，预计 180-360 次 API 调用）...")
     gateway = DeepSeekGateway()
     analyzer = panel_analyzer(gateway)
-    report = await run_eval(analyzer, ALL_SCENARIOS, analyzer_name="panel_deepseek")
+    report = await run_eval(analyzer, scenarios, analyzer_name="panel_deepseek")
     _print_summary_report(report, "DeepSeek Panel 评估结果")
     _print_detail(report)
-    _save_report(report, output_dir / f"report_panel_deepseek_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json")
+    suffix = f"_{round_name}" if round_name else ""
+    _save_report(report, output_dir / f"report_panel_deepseek_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}{suffix}.json")
     return report
 
 
@@ -190,6 +193,18 @@ async def main() -> None:
         dest="output_dir",
         help="报告输出目录（默认: data/eval_reports）",
     )
+    parser.add_argument(
+        "--scenario-ids",
+        type=str,
+        default="",
+        help="Comma-separated scenario IDs to run (default: all)",
+    )
+    parser.add_argument(
+        "--round-name",
+        type=str,
+        default="",
+        help="Suffix for report filenames (e.g. r1, r2)",
+    )
 
     args = parser.parse_args()
 
@@ -206,6 +221,11 @@ async def main() -> None:
             print(f"    - {iss}")
     else:
         print(f"\n  [通过] {len(ALL_SCENARIOS)} 个场景验证无误")
+    scenarios = ALL_SCENARIOS
+    if args.scenario_ids:
+        wanted = {s.strip() for s in args.scenario_ids.split(",") if s.strip()}
+        scenarios = tuple(s for s in ALL_SCENARIOS if s.scenario_id in wanted)
+        print(f"  [子集] 运行 {len(scenarios)} 个场景: {', '.join(s.scenario_id for s in scenarios)}")
 
     # Resolve output directory
     cwd = Path.cwd().resolve()
@@ -221,7 +241,7 @@ async def main() -> None:
     if args.live and not args.yes:
         print()
         print("  [成本提示] 使用 DeepSeek --live 模式:")
-        print("    - 30 场景 × ~6-12 次调用/场景 = 180-360 次 API 调用")
+        print(f"    - {len(scenarios)} 场景 × ~6-12 次调用/场景 = {len(scenarios)*6}-{len(scenarios)*12} 次 API 调用")
         print("    - deepseek-chat 约 ¥1/1M tokens")
         print("    - 预估总成本: ¥0.5-2")
         print()
@@ -237,13 +257,13 @@ async def main() -> None:
     panel_live_report = None
 
     if args.mode in ("rule", "both"):
-        rule_report = await _run_rule_engine(output_dir)
+        rule_report = await _run_rule_engine(output_dir, scenarios, args.round_name)
 
     if args.mode in ("panel", "both"):
         if args.live:
-            panel_live_report = await _run_panel_live(output_dir)
+            panel_live_report = await _run_panel_live(output_dir, scenarios, args.round_name)
         else:
-            panel_mock_report = await _run_panel_mock(output_dir)
+            panel_mock_report = await _run_panel_mock(output_dir, scenarios, args.round_name)
 
     # Comparison
     if args.mode == "both" and rule_report is not None:

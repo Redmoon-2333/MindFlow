@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 from mindflow.api.schemas import (
     ActivityEventsSummary,
@@ -205,7 +206,7 @@ class TrainingReadinessService:
 
         # ── 2. V2 feature windows ──────────────────────────────────────
         windows = await self._telemetry_repo.list_feature_windows(
-            uid, feature_schema_version=2,
+            uid, feature_schema_version=FEATURE_SCHEMA_VERSION,
         )
         newest_window_start: str | None = None
         window_dates: set[str] = set()

@@ -252,14 +252,14 @@ class TestSwitchRatePerHour:
             make_event(
                 user_id=1,
                 timestamp_utc=_ts(0),
-                duration_s=5.0,
+                duration_s=10.0,
                 process_name="code.exe",
                 is_idle=False,
             ),
             make_event(
                 user_id=1,
                 timestamp_utc=_ts(1),
-                duration_s=5.0,
+                duration_s=10.0,
                 process_name="chrome.exe",
                 is_idle=False,
             ),

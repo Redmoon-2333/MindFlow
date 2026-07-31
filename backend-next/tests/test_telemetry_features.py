@@ -56,7 +56,7 @@ def test_build_v2_feature_window_combines_activity_input_and_browser() -> None:
 
     features = build_v2_feature_window(events, buckets, browser, start, end)
 
-    assert features["feature_schema_version"] == 2
+    assert features["feature_schema_version"] == 3
     assert features["idle_ratio"] == pytest.approx(0.2)
     assert features["keypress_rate_per_min"] == pytest.approx(6.0)
     assert features["mouse_click_rate_per_min"] == pytest.approx(2.0)

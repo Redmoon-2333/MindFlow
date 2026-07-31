@@ -117,6 +117,75 @@ class TestSaveSessions:
             )
             assert result.scalar() == 1
 
+    async def test_save_reuses_existing_id_for_same_date_and_start(self, repo, engine):
+        """Re-saving the same (date, start_time) reuses the id and updates end_time.
+
+        Feedback annotations reference session ids, so a recompute must keep the
+        id stable while the projection (end_time, statistics) is refreshed.
+        """
+        original = await repo.save_sessions(1, [
+            _session_dict(
+                start_time="2026-07-17T10:00:00",
+                end_time="2026-07-17T10:30:00",
+            )
+        ])
+        original_id = original[0]["id"]
+
+        refreshed = await repo.save_sessions(1, [
+            _session_dict(
+                start_time="2026-07-17T10:00:00",
+                end_time="2026-07-17T11:00:00",
+            )
+        ])
+
+        assert refreshed[0]["id"] == original_id
+        assert refreshed[0]["end_time"] == _utc("2026-07-17T11:00:00").isoformat()
+        # Replaced, not duplicated — one row per identity
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT count(*) FROM focus_sessions WHERE user_id = 1")
+            )
+            assert result.scalar() == 1
+
+    async def test_save_creates_distinct_ids_for_different_starts(self, repo):
+        """Different start_times on the same date must get distinct ids."""
+        first = await repo.save_sessions(1, [
+            _session_dict(start_time="2026-07-17T10:00:00")
+        ])
+        second = await repo.save_sessions(1, [
+            _session_dict(start_time="2026-07-17T14:00:00")
+        ])
+
+        assert first[0]["id"] != second[0]["id"]
+
+    async def test_save_mixed_batch_reuses_only_matching_starts(self, repo):
+        """Only (date, start_time) rows that already exist reuse their id."""
+        original = await repo.save_sessions(1, [
+            _session_dict(start_time="2026-07-17T10:00:00"),
+            _session_dict(start_time="2026-07-17T12:00:00"),
+        ])
+        original_ids = {s["id"] for s in original}
+
+        re_saved = await repo.save_sessions(1, [
+            _session_dict(
+                start_time="2026-07-17T10:00:00",
+                end_time="2026-07-17T11:00:00",
+            ),
+            _session_dict(start_time="2026-07-17T16:00:00"),
+        ])
+
+        reused = next(
+            s for s in re_saved
+            if s["start_time"] == _utc("2026-07-17T10:00:00").isoformat()
+        )
+        fresh = next(
+            s for s in re_saved
+            if s["start_time"] == _utc("2026-07-17T16:00:00").isoformat()
+        )
+        assert reused["id"] in original_ids
+        assert fresh["id"] not in original_ids
+        assert reused["end_time"] == _utc("2026-07-17T11:00:00").isoformat()
+
 
 class TestQueryRange:
     """Time-range query semantics."""

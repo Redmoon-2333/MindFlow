@@ -126,7 +126,7 @@ class TestIdentifyFocusSessions:
         """The final daily analysis must replace a provisional session."""
         activity_repo, focus_repo = repos
         target = date(2026, 7, 17)
-        await focus_repo.save_sessions(1, [{
+        provisional = await focus_repo.save_sessions(1, [{
             "date": target.isoformat(),
             "start_time": _BASE.isoformat(),
             "end_time": _BASE.isoformat(),
@@ -135,6 +135,7 @@ class TestIdentifyFocusSessions:
             "focus_score": 100.0,
             "switch_count": 0,
         }])
+        provisional_id = provisional[0]["id"]
         for i in range(60):
             await activity_repo.append_event(
                 make_event(
@@ -151,6 +152,9 @@ class TestIdentifyFocusSessions:
 
         assert len(sessions) == 1
         assert persisted[0]["id"] == sessions[0]["id"]
+        # Same (date, start_time) as the provisional row → its id is reused,
+        # so existing feedback stays linked while end_time is refreshed.
+        assert persisted[0]["id"] == provisional_id
         assert persisted[0]["end_time"] != persisted[0]["start_time"]
 
     async def test_refresh_removes_existing_sessions_when_no_block_remains(
@@ -272,7 +276,7 @@ class TestIdentifyFocusSessions:
         sessions = await service.identify_focus_sessions(1, target)
 
         assert len(sessions) == 1
-        assert sessions[0]["switch_count"] == 2
+        assert sessions[0]["switch_count"] == 0
 
     async def test_skips_idle_events(self, repos, service):
         """Idle events should not contribute to sessions."""

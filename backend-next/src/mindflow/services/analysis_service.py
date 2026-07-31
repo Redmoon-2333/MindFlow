@@ -23,6 +23,7 @@ from mindflow.domain.events import ActivityEvent
 from mindflow.domain.features import (
     _non_idle_events,
     app_usage_ranking,
+    count_confirmed_switches,
 )
 from mindflow.domain.features import (
     focus_score as compute_focus_score,
@@ -161,6 +162,7 @@ class AnalysisService:
                     if window_events[k].data.process_name
                     != window_events[k - 1].data.process_name
                 )
+                local_switches = count_confirmed_switches(window_events)
                 session_start = window_events[0].timestamp_utc
                 session_end = max(
                     event.timestamp_utc

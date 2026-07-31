@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Any
+from dataclasses import replace
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -205,7 +206,28 @@ def analysis_dict_to_panel_verdict(
             final_source = "rule_engine"
         else:
             final_source = "single_expert"
-
+    # ── Parse new metadata ──────────────────────────────────────────────
+    panel_data = assessment.get("panel_transcript", {})
+    if not isinstance(panel_data, dict):
+        panel_data = {}
+    path_raw = assessment.get("degradation_path")
+    if not isinstance(path_raw, list):
+        path_raw = panel_data.get("degradation_path", [])
+    degradation_path = tuple(str(p) for p in path_raw if isinstance(p, str))
+    if not degradation_path:
+        degradation_path = (final_source,)
+    cached = bool(assessment.get("cached", panel_data.get("cached", False)))
+    retry_after_s = assessment.get("retry_after_s")
+    if not isinstance(retry_after_s, int) or isinstance(retry_after_s, bool):
+        retry_after_s = None
+    insufficient_data = bool(assessment.get("insufficient_data", panel_data.get("insufficient_data", False)))
+    uncertainty = assessment.get("uncertainty")
+    if not isinstance(uncertainty, (int, float)) or isinstance(uncertainty, bool):
+        uncertainty = None
+    gaps_raw = assessment.get("evidence_gaps")
+    if not isinstance(gaps_raw, list):
+        gaps_raw = panel_data.get("evidence_gaps", [])
+    evidence_gaps = tuple(str(g) for g in gaps_raw if isinstance(g, str))
     return PanelVerdict(
         types=tuple(parsed_types),
         confidence=confidence,
@@ -216,6 +238,12 @@ def analysis_dict_to_panel_verdict(
         escalated=final_escalated,
         call_count=final_call_count,
         source=final_source,
+        degradation_path=degradation_path,
+        cached=cached,
+        retry_after_s=retry_after_s,
+        insufficient_data=insufficient_data,
+        uncertainty=uncertainty,
+        evidence_gaps=evidence_gaps,
     )
 
 
@@ -263,7 +291,13 @@ class PanelService:
         self._workflow_port = workflow_port
 
     async def run_daily_panel(
-        self, user_id: int, target_date: date, *, origin: OriginType = "scheduler"
+        self,
+        user_id: int,
+        target_date: date,
+        *,
+        origin: OriginType = "scheduler",
+        force: bool = False,
+        retry_if_degraded: bool = False,
     ) -> PanelVerdict:
         """Run the daily expert panel (or degrade gracefully).
 
@@ -298,8 +332,9 @@ class PanelService:
             request = AnalysisRequest(
                 user_id=user_id,
                 target_date=target_date,
-                force=False,
                 origin=origin,
+                force=force,
+                retry_if_degraded=retry_if_degraded,
             )
             result = await workflow_port.run_analysis(request)
             return result.verdict
@@ -346,7 +381,14 @@ class PanelService:
                     "dissent": list(verdict.dissent),
                     "escalated": verdict.escalated,
                     "call_count": verdict.call_count,
+                    "degradation_path": list(verdict.degradation_path),
+                    "cached": verdict.cached,
+                    "insufficient_data": verdict.insufficient_data,
+                    "uncertainty": verdict.uncertainty,
+                    "evidence_gaps": list(verdict.evidence_gaps),
                 },
+                degraded=False,
+                degradation_path=list(verdict.degradation_path),
             )
             logger.info(
                 "Panel succeeded for user {} on {} ({} calls, escalated={})",
@@ -381,6 +423,11 @@ class PanelService:
         )
 
         return self._outcome_to_verdict(outcome)
+        verdict = self._outcome_to_verdict(outcome)
+        path = list(getattr(verdict, "degradation_path", ()) or [])
+        if not path:
+            path = ["panel", str(getattr(outcome, "source", "rule_engine"))]
+        return replace(verdict, degradation_path=tuple(path), cached=False)
 
     async def get_stored_verdict(self, user_id: int, target_date: date) -> PanelVerdict | None:
         """Return the most recent stored analysis as a verdict, or None.

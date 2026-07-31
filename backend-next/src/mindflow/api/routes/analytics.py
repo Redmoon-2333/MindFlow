@@ -14,6 +14,7 @@ Endpoints:
 from __future__ import annotations
 
 from typing import Any
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 from fastapi import status as http_status
@@ -21,6 +22,7 @@ from fastapi import status as http_status
 from mindflow.api.deps import get_analysis_service, get_baseline_repo
 from mindflow.api.errors import ProblemDetail, _not_found
 from mindflow.api.schemas import (
+    BaselineSummary,
     CreateTrainingJobResponse,
     TrainingJobResponse,
     TrainingReadinessResponse,
@@ -61,26 +63,40 @@ async def get_patterns(
     return patterns
 
 
-@router.get("/analytics/baseline")
+@router.get("/analytics/baseline", response_model=BaselineSummary)
 async def get_baseline(
     baseline_repo: BaselineRepository = Depends(get_baseline_repo),  # noqa: B008
-) -> dict[str, Any]:
-    """Return the current user's personal behavior baseline."""
+) -> BaselineSummary:
+    """Return the current user's personal behavior baseline (V2 vocabulary).
+
+    The typed response carries the canonical V2 means
+    (``mean_app_switch_count`` / ``mean_active_seconds_ratio`` /
+    ``mean_idle_ratio``) plus the compatibility aliases
+    ``switch_frequency == mean_app_switch_count`` and
+    ``productivity_ratio == mean_active_seconds_ratio``. ``features`` is the
+    exact 24-name V2 vocabulary. When no baseline exists the repository is
+    empty and this endpoint stays 404.
+    """
     baseline = await baseline_repo.get_latest(user_id=1)
 
     if baseline is None:
         raise _not_found("基线模型（暂无训练数据）")
 
-    return {
-        "user_id": baseline.user_id,
-        "created_at": baseline.created_at.isoformat(),
-        "updated_at": baseline.updated_at.isoformat(),
-        "total_days": baseline.total_days,
-        "total_samples": baseline.total_samples(),
-        "features": baseline.FEATURE_COLS,
-        "switch_frequency": baseline.overall_mean("switch_frequency"),
-        "productivity_ratio": baseline.overall_mean("productivity_ratio"),
-    }
+    mean_app_switch_count = baseline.overall_mean("app_switch_count")
+    mean_active_seconds_ratio = baseline.overall_mean("active_seconds_ratio")
+    return BaselineSummary(
+        user_id=baseline.user_id,
+        created_at=baseline.created_at.isoformat(),
+        updated_at=baseline.updated_at.isoformat(),
+        total_days=baseline.total_days,
+        total_samples=baseline.total_samples(),
+        features=baseline.FEATURE_COLS,
+        mean_app_switch_count=mean_app_switch_count,
+        mean_active_seconds_ratio=mean_active_seconds_ratio,
+        mean_idle_ratio=baseline.overall_mean("idle_ratio"),
+        switch_frequency=mean_app_switch_count,
+        productivity_ratio=mean_active_seconds_ratio,
+    )
 
 
 @router.get("/analytics/profile")
@@ -152,7 +168,7 @@ async def get_model_status(
             "loaded": True,
             "ready": is_ready,
             "mode": "ready" if is_ready else "rule_engine_only",
-            "feature_schema_version": 2,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "v2_mode": "ready" if is_ready else v2_training_mode,
             "version": v2_model_manager.current_version_tag,
             "available_versions": v2_model_manager.list_versions(),

@@ -44,7 +44,12 @@ class BaselineRepository:
     ) -> None:
         self._session_factory = session_factory
 
-    async def upsert(self, model: BaselineModel) -> None:
+    async def upsert(
+        self,
+        model: BaselineModel,
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
         """Insert or update the single baseline row for ``model.user_id``.
 
         The first write creates the row; every later write updates it via
@@ -54,48 +59,63 @@ class BaselineRepository:
         re-upsert never rewrites the user's baseline birth time. ``model_json``
         and ``updated_at`` follow the model and move forward on each update.
 
+        When *session* is provided, the write runs inside that caller-owned
+        transaction (used to persist windows and the baseline atomically);
+        otherwise a transaction is opened and committed here.
+
         ``model_json`` is serialized inside the transaction: a model that
         cannot be JSON-encoded raises and rolls the whole write back,
         leaving any previously persisted row untouched.
         """
         payload = model.to_dict()
+        model_json = json.dumps(payload, ensure_ascii=False)
+        stmt = sqlite_upsert(baseline_models).values(
+            id=new_id(),
+            user_id=model.user_id,
+            model_json=model_json,
+            training_events_count=model.total_samples(),
+            created_at=model.created_at.isoformat(),
+            updated_at=model.updated_at.isoformat(),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id"],
+            set_={
+                "model_json": stmt.excluded.model_json,
+                "training_events_count": stmt.excluded.training_events_count,
+                "updated_at": stmt.excluded.updated_at,
+                # created_at intentionally absent: the first-insert time
+                # is the row's birth and must survive re-upserts.
+            },
+        )
+        if session is not None:
+            await session.execute(stmt)
+            return
         async with self._session_factory() as session, session.begin():
-            model_json = json.dumps(payload, ensure_ascii=False)
-            stmt = sqlite_upsert(baseline_models).values(
-                id=new_id(),
-                user_id=model.user_id,
-                model_json=model_json,
-                training_events_count=model.total_samples(),
-                created_at=model.created_at.isoformat(),
-                updated_at=model.updated_at.isoformat(),
-            )
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["user_id"],
-                set_={
-                    "model_json": stmt.excluded.model_json,
-                    "training_events_count": stmt.excluded.training_events_count,
-                    "updated_at": stmt.excluded.updated_at,
-                    # created_at intentionally absent: the first-insert time
-                    # is the row's birth and must survive re-upserts.
-                },
-            )
             await session.execute(stmt)
 
-    async def get_latest(self, user_id: int) -> BaselineModel | None:
+    async def get_latest(
+        self,
+        user_id: int,
+        *,
+        session: AsyncSession | None = None,
+    ) -> BaselineModel | None:
         """Return the baseline row for *user_id*, or None.
 
         The table is unique per ``user_id``, so the matching row is the
         user's baseline. Returns None when no baseline exists or the stored
-        JSON is malformed.
+        JSON is malformed. When *session* is provided, the read uses that
+        caller-owned session instead of opening its own.
         """
         stmt = (
             sa.select(baseline_models.c.model_json)
             .where(baseline_models.c.user_id == user_id)
             .limit(1)
         )
-        async with self._session_factory() as session:
-            result = await session.execute(stmt)
-            row = result.fetchone()
+        if session is not None:
+            row = (await session.execute(stmt)).fetchone()
+        else:
+            async with self._session_factory() as session:
+                row = (await session.execute(stmt)).fetchone()
 
         if row is None:
             return None

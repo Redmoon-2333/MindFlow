@@ -626,6 +626,7 @@ def make_moderator_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
                 analyst,
                 state["attribution_opinions"],  # type: ignore[typeddict-item]
                 conflict,
+                state.get("disagreement_summary"),
             )
 
         logger.info(
@@ -787,6 +788,22 @@ def critic_verdict(state: PanelGraphState) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+async def verdict_schema_validation_node(state: PanelGraphState) -> dict[str, Any]:
+    """Deterministically validate moderator JSON before the critic LLM call."""
+    from mindflow.agents.orchestrator import validate_verdict_schema  # noqa: PLC0415
+
+    verdict = state.get("moderator_verdict")  # type: ignore[typeddict-item]
+    if verdict is None:
+        return {}
+    issues = validate_verdict_schema(verdict)
+    if issues:
+        raise PanelUnavailableError(
+            reason="主持人输出 schema 校验失败：" + "; ".join(issues),
+            call_count=state.get("call_count", 0),  # type: ignore[typeddict-item]
+        )
+    return {}
+
+
 async def human_review_interrupt_node(state: PanelGraphState) -> dict[str, Any]:
     """Optional human review gate — disabled by default."""
     from langgraph.types import interrupt as lg_interrupt  # noqa: PLC0415
@@ -836,6 +853,19 @@ async def human_review_interrupt_node(state: PanelGraphState) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _opinion_trace(opinion: Any) -> dict[str, Any]:
+    """Convert an ExpertOpinion into a JSON-safe trace entry."""
+    return {
+        "role": getattr(opinion, "role", ""),
+        "perspective": getattr(opinion, "perspective", ""),
+        "attribution_types": list(getattr(opinion, "attribution_types", ())),
+        "confidence": dict(getattr(opinion, "confidence", {})),
+        "evidence_citations": list(getattr(opinion, "evidence_citations", ())),
+        "argument": getattr(opinion, "argument", ""),
+        "raw_json": getattr(opinion, "raw_json", None),
+        "skipped": bool(getattr(opinion, "skipped", False)),
+    }
+
 class PanelGraph:
     """Build and hold a compiled LangGraph StateGraph for panel deliberation.
 
@@ -868,6 +898,7 @@ class PanelGraph:
         graph.add_node("conflict_detection", conflict_detection_node)
         graph.add_node("rebuttal", make_rebuttal_node(self._gateway))
         graph.add_node("moderator", make_moderator_node(self._gateway))
+        graph.add_node("verdict_schema_validation", verdict_schema_validation_node)
         graph.add_node("human_review_interrupt", human_review_interrupt_node)
         graph.add_node("critic", make_critic_node(self._gateway))
 
@@ -920,6 +951,8 @@ class PanelGraph:
 
         # Moderator → human_review_interrupt → critic
         graph.add_edge("moderator", "human_review_interrupt")
+        graph.add_edge("moderator", "verdict_schema_validation")
+        graph.add_edge("verdict_schema_validation", "human_review_interrupt")
         graph.add_edge("human_review_interrupt", "critic")
 
         # Critic routing (retry→moderator on rejection, exhaust at redo_count≥2)
@@ -1004,6 +1037,18 @@ class PanelGraph:
         if isinstance(result, dict):
             result["call_count"] = runtime.call_count
             result["transcript"] = tuple(runtime.transcript)
+            trace: list[dict[str, Any]] = []
+            analyst = result.get("analyst_opinion")
+            if analyst is not None:
+                trace.append({"node": "analyst", "type": "opinion", **(_opinion_trace(analyst))})
+            for opinion in result.get("attribution_opinions", ()):
+                trace.append({"node": "attribution", "type": "opinion", **(_opinion_trace(opinion))})
+            if result.get("moderator_verdict") is not None:
+                trace.append({"node": "moderator", "type": "verdict", "payload": result["moderator_verdict"]})
+            if result.get("critic_result") is not None:
+                critic = result["critic_result"]
+                trace.append({"node": "critic", "type": "critic", "approved": bool(critic.approved), "issues": list(critic.issues)})
+            result["trace"] = trace
 
         return result
 

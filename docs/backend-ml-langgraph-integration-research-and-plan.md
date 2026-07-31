@@ -1,6 +1,9 @@
 # MindFlow 后端全链路研究文档与 ML 接入方案
 
-> **版本**: v1.0  
+> **版本**: v1.0
+
+> **2026-07-31 实施更新**: 特征 schema 已升级到 v3；切换计数统一使用 `count_confirmed_switches()`；ML 质量门改为唯一反馈会话统计并在日期折内计算基线；`PanelGraph` 为唯一活动面板图，`PanelOrchestrator` 保留为兼容适配器；`POST /panel/today` 支持降级重试；实验与报告见 `data/experiments/20260731_final/`。
+
 > **日期**: 2026-07-26  
 > **范围**: 后端 `backend-next/` 全链路，涵盖数据采集、特征工程、ML 训练、LangGraph 面板、API 服务、反馈闭环  
 > **状态**: 研究完成 | 待实施  

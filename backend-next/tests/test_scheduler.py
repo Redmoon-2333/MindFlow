@@ -8,18 +8,27 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+import asyncio
+import io
+from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
+import mindflow.services.scheduler as scheduler_module
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 from mindflow.services.scheduler import (
+    AsyncioScheduler,
     _auto_intervention_check,
     _CronTrigger,
     _IntervalTrigger,
     _next_daily_run_utc,
     build_scheduler,
 )
+
+
+def _job_coro(scheduler: AsyncioScheduler, name: str):
+    return next(job["coro"] for job in scheduler._jobs if job["name"] == name)
 
 
 def _make_assessment(
@@ -159,6 +168,15 @@ class TestBuildScheduler:
         runs.claim.side_effect = [1, None]
         runs.mark_succeeded.return_value = True
         telemetry = MagicMock()
+        telemetry.rebuild_baseline_if_needed = AsyncMock(
+            return_value=SimpleNamespace(
+                rebuilt=False,
+                reason="skipped_v2",
+                windows_loaded=0,
+                samples=0,
+                cutoff_utc=datetime(2026, 7, 26, 11, 30, tzinfo=UTC),
+            )
+        )
         telemetry.rollup_feature_windows = AsyncMock()
         telemetry.cleanup_retained_data = AsyncMock()
         scheduler = build_scheduler(
@@ -171,9 +189,17 @@ class TestBuildScheduler:
         await scheduler.run_startup_recovery(now_utc=startup_time)
         await scheduler.run_startup_recovery(now_utc=startup_time)
 
-        telemetry.rollup_feature_windows.assert_awaited_once_with(
+        # The complete-day yesterday rollup is claimed once (never repeated)
+        # and still runs after the Todo 12 current-day catch-up.
+        telemetry.rollup_feature_windows.assert_any_await(
             datetime(2026, 7, 24, 16, 0, tzinfo=UTC),
             datetime(2026, 7, 25, 16, 0, tzinfo=UTC),
+        )
+        # Todo 12 current-day catch-up: bounded [now-2h, now] derived from the
+        # captured startup time, re-run on each recovery invocation.
+        assert any(
+            call.args == (startup_time - timedelta(hours=2), startup_time)
+            for call in telemetry.rollup_feature_windows.await_args_list
         )
         telemetry.cleanup_retained_data.assert_awaited_once_with()
         runs.claim.assert_any_await(
@@ -722,13 +748,12 @@ class TestDailyPanelRunClaim:
 
 
 class TestSchedulerJobRegistrationContract:
-    """Characterization: pin today's full job registration surface.
+    """Characterization: pin the full job registration surface.
 
-    Locks the complete job set — including ``daily_panel`` and
-    ``telemetry_rollup``, which earlier tests omit — and the fact that the
-    only interval job today is the 30-minute intervention check.  Later
-    scheduler work (e.g. a 15-minute recent rollup) must extend this set
-    deliberately.
+    Locks the complete job set — including ``daily_panel``,
+    ``telemetry_rollup`` and the 15-minute ``telemetry_rollup_recent``
+    interval, which earlier tests omit.  Later scheduler work must extend
+    this set deliberately.
     """
 
     async def test_telemetry_rollup_job_at_0245(self) -> None:
@@ -749,7 +774,7 @@ class TestSchedulerJobRegistrationContract:
         assert str(trigger.fields[5]) == "23"
         assert str(trigger.fields[6]) == "30"
 
-    async def test_full_service_set_registers_seven_jobs(self) -> None:
+    async def test_full_service_set_registers_eight_jobs(self) -> None:
         scheduler = build_scheduler(
             analysis_service=MagicMock(),
             report_service=MagicMock(),
@@ -768,9 +793,12 @@ class TestSchedulerJobRegistrationContract:
             "daily_backup",
             "auto_intervention_check",
             "telemetry_rollup",
+            "telemetry_rollup_recent",
         }
 
-    async def test_only_interval_job_is_auto_intervention_30min(self) -> None:
+    async def test_interval_jobs_are_intervention_30min_and_recent_rollup_15min(
+        self,
+    ) -> None:
         scheduler = build_scheduler(
             analysis_service=MagicMock(),
             report_service=MagicMock(),
@@ -785,4 +813,296 @@ class TestSchedulerJobRegistrationContract:
             trigger = job.trigger
             if isinstance(trigger, _IntervalTrigger):
                 interval_jobs.append((job.id, trigger.interval.total_seconds()))
-        assert interval_jobs == [("auto_intervention_check", 1800.0)]
+        assert interval_jobs == [
+            ("auto_intervention_check", 1800.0),
+            ("telemetry_rollup_recent", 900.0),
+        ]
+
+
+class TestRecentTelemetryRollup:
+    """Todo 11: the 15-minute bounded recent-window telemetry rollup.
+
+    Reuses the Todo 8 idempotent seam (``rollup_feature_windows`` window
+    upsert + baseline folded from newly inserted rows only), so overlapping
+    two-hour windows rolled every 15 minutes are safe. No per-date claim:
+    the window shifts continuously and the interval loop's catch-and-log
+    keeps later invocations alive after a failure.
+    """
+
+    async def test_registered_once_with_15min_interval_trigger(self) -> None:
+        telemetry = MagicMock()
+        telemetry.rollup_feature_windows = AsyncMock(return_value=0)
+        scheduler = build_scheduler(telemetry_service=telemetry, timezone="UTC")
+
+        jobs = [j for j in scheduler.get_jobs() if j.id == "telemetry_rollup_recent"]
+        assert len(jobs) == 1
+        assert isinstance(jobs[0].trigger, _IntervalTrigger)
+        assert jobs[0].trigger.interval == timedelta(minutes=15)
+
+    async def test_invocation_rolls_two_hour_window_with_fixed_clock(self) -> None:
+        telemetry = MagicMock()
+        telemetry.rollup_feature_windows = AsyncMock(return_value=0)
+        scheduler = build_scheduler(telemetry_service=telemetry, timezone="UTC")
+        fixed_now = datetime(2026, 7, 26, 12, 34, 56, tzinfo=UTC)
+
+        with patch("mindflow.services.scheduler.datetime") as mock_datetime:
+            mock_datetime.now.return_value = fixed_now
+            await _job_coro(scheduler, "telemetry_rollup_recent")()
+
+        # One aware UTC now captured per invocation; both bounds derive from it.
+        telemetry.rollup_feature_windows.assert_awaited_once_with(
+            fixed_now - timedelta(hours=2),
+            fixed_now,
+            user_id=1,
+        )
+
+    async def test_coexists_with_daily_yesterday_rollup(self) -> None:
+        telemetry = MagicMock()
+        telemetry.rollup_feature_windows = AsyncMock(return_value=0)
+        telemetry.cleanup_retained_data = AsyncMock(return_value=0)
+        scheduler = build_scheduler(
+            telemetry_service=telemetry,
+            scheduled_job_runs_repository=AsyncMock(),
+            timezone="UTC",
+        )
+
+        daily = scheduler.get_job("telemetry_rollup")
+        assert daily is not None
+        assert isinstance(daily.trigger, _CronTrigger)
+        assert str(daily.trigger.fields[5]) == "2"
+        assert str(daily.trigger.fields[6]) == "45"
+
+        recent = [j for j in scheduler.get_jobs() if j.id == "telemetry_rollup_recent"]
+        assert len(recent) == 1
+        assert isinstance(recent[0].trigger, _IntervalTrigger)
+
+    async def test_failure_is_logged_and_later_invocation_still_runs(self) -> None:
+        telemetry = MagicMock()
+        telemetry.rollup_feature_windows = AsyncMock(
+            side_effect=[RuntimeError("boom"), 3]
+        )
+        scheduler = build_scheduler(telemetry_service=telemetry, timezone="UTC")
+        scheduler._running = True
+        sleep_count = 0
+
+        async def _fake_sleep(_: float) -> None:
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count >= 3:
+                scheduler._running = False
+
+        log_buffer = io.StringIO()
+        sink_id = scheduler_module.logger.add(
+            log_buffer, format="{message}", level="ERROR"
+        )
+        try:
+            with patch(
+                "mindflow.services.scheduler.asyncio.sleep", side_effect=_fake_sleep
+            ):
+                await scheduler._run_interval(
+                    15,
+                    _job_coro(scheduler, "telemetry_rollup_recent"),
+                    None,
+                    "telemetry_rollup_recent",
+                )
+        finally:
+            scheduler_module.logger.remove(sink_id)
+
+        # First call raised and was swallowed by the interval boundary; the
+        # second call still ran on the next tick — no sleep involved.
+        assert telemetry.rollup_feature_windows.await_count == 2
+        assert "telemetry_rollup_recent failed" in log_buffer.getvalue()
+
+
+class TestStartupRecoveryTelemetryCatchUp:
+    """Todo 12: startup recovery composes the conditional V2 baseline backfill
+    then the bounded current recent-window catch-up ending at the single
+    captured startup ``now_utc``, reusing the existing ``_startup_recovery``
+    callback (no second lifecycle engine).
+
+    The complete-day telemetry rollup for the previous business day remains a
+    separate step; the new current-day catch-up is bounded by the same
+    two-hour policy as the 15-minute interval job, not a full-day recompute.
+    """
+
+    @staticmethod
+    def _telemetry() -> MagicMock:
+        telemetry = MagicMock()
+        telemetry.rebuild_baseline_if_needed = AsyncMock(
+            return_value=SimpleNamespace(
+                rebuilt=False,
+                reason="skipped_v2",
+                windows_loaded=0,
+                samples=0,
+                cutoff_utc=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
+            )
+        )
+        telemetry.rollup_feature_windows = AsyncMock(return_value=0)
+        telemetry.cleanup_retained_data = AsyncMock(return_value=0)
+        return telemetry
+
+    async def test_backfill_runs_before_bounded_recent_catch_up(self) -> None:
+        """Given: a telemetry-wired scheduler. When: startup recovery runs with
+        a fixed aware UTC now. Then: the baseline backfill is invoked first,
+        then the current-day catch-up rolls exactly [now-2h, now] for user 1 —
+        both deriving from the same captured ``now_utc``."""
+        calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+        async def _backfill(
+            user_id: int = 1,
+            *,
+            timezone: str = "",
+            now_utc: datetime | None = None,
+        ) -> object:
+            calls.append(
+                ("backfill", (user_id,), {"timezone": timezone, "now_utc": now_utc})
+            )
+            return SimpleNamespace(
+                rebuilt=False,
+                reason="skipped_v2",
+                windows_loaded=0,
+                samples=0,
+                cutoff_utc=now_utc,
+            )
+
+        async def _rollup(start: datetime, end: datetime, user_id: int = 1) -> int:
+            calls.append(("rollup", (start, end, user_id), {}))
+            return 0
+
+        telemetry = self._telemetry()
+        telemetry.rebuild_baseline_if_needed = AsyncMock(side_effect=_backfill)
+        telemetry.rollup_feature_windows = AsyncMock(side_effect=_rollup)
+        telemetry.cleanup_retained_data = AsyncMock(
+            side_effect=lambda: calls.append(("cleanup", (), {}))
+        )
+        scheduler = build_scheduler(telemetry_service=telemetry, timezone="Asia/Shanghai")
+        startup_time = datetime(2026, 7, 26, 12, 0, 0, tzinfo=UTC)
+
+        await scheduler.run_startup_recovery(now_utc=startup_time)
+
+        # Exact order: conditional baseline backfill, then recent catch-up.
+        assert [name for name, _, _ in calls][:2] == ["backfill", "rollup"]
+        # Backfill receives the configured timezone and the exact captured now.
+        assert calls[0] == (
+            "backfill",
+            (1,),
+            {"timezone": "Asia/Shanghai", "now_utc": startup_time},
+        )
+        # Bounded two-hour recent window ending at the same captured now.
+        assert calls[1] == (
+            "rollup",
+            (startup_time - timedelta(hours=2), startup_time, 1),
+            {},
+        )
+        # The complete-day yesterday rollup and cleanup still follow.
+        assert calls[2] == (
+            "rollup",
+            (
+                datetime(2026, 7, 24, 16, 0, tzinfo=UTC),
+                datetime(2026, 7, 25, 16, 0, tzinfo=UTC),
+                1,
+            ),
+            {},
+        )
+        assert calls[3] == ("cleanup", (), {})
+
+    async def test_recovery_introduces_no_wall_clock_sleeps(self) -> None:
+        """Given: a healthy telemetry-wired recovery. When: it runs to
+        completion. Then: no ``asyncio.sleep`` is issued anywhere — the
+        success path never sleeps, only inter-attempt retries would."""
+        telemetry = self._telemetry()
+        scheduler = build_scheduler(telemetry_service=telemetry, timezone="UTC")
+        sleeps: list[float] = []
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        with patch(
+            "mindflow.services.scheduler.asyncio.sleep", side_effect=_fake_sleep
+        ):
+            await scheduler.run_startup_recovery(
+                now_utc=datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+            )
+
+        assert sleeps == []
+
+    async def test_backfill_result_is_surfaced_in_logs(self) -> None:
+        """Given: a rebuild that actually replaces the baseline. When: startup
+        recovery runs. Then: the backfill outcome (rebuilt, reason, counts,
+        cutoff) is logged — a no-op is never mistaken for a rebuild."""
+        result = SimpleNamespace(
+            rebuilt=True,
+            reason="missing",
+            windows_loaded=5,
+            samples=120,
+            cutoff_utc=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
+        )
+        telemetry = self._telemetry()
+        telemetry.rebuild_baseline_if_needed = AsyncMock(return_value=result)
+        scheduler = build_scheduler(telemetry_service=telemetry, timezone="UTC")
+        log_buffer = io.StringIO()
+        sink_id = scheduler_module.logger.add(
+            log_buffer, format="{message}", level="INFO"
+        )
+        try:
+            await scheduler.run_startup_recovery(
+                now_utc=datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+            )
+        finally:
+            scheduler_module.logger.remove(sink_id)
+
+        logged = log_buffer.getvalue()
+        assert "baseline backfill" in logged
+        assert "rebuilt=True" in logged
+        assert "reason=missing" in logged
+        assert "windows_loaded=5" in logged
+        assert "samples=120" in logged
+
+    async def test_backfill_failure_logged_and_recovery_continues(self) -> None:
+        """Given: the baseline backfill raises. When: startup recovery runs.
+        Then: the existing step boundary logs the failure (never falsely claims
+        completion, never raises) and the recent catch-up still runs."""
+        telemetry = self._telemetry()
+        telemetry.rebuild_baseline_if_needed = AsyncMock(
+            side_effect=RuntimeError("baseline unavailable")
+        )
+        scheduler = build_scheduler(telemetry_service=telemetry, timezone="UTC")
+        log_buffer = io.StringIO()
+        sink_id = scheduler_module.logger.add(
+            log_buffer, format="{message}", level="ERROR"
+        )
+        try:
+            await scheduler.run_startup_recovery(
+                now_utc=datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+            )
+        finally:
+            scheduler_module.logger.remove(sink_id)
+
+        assert "baseline_backfill failed" in log_buffer.getvalue()
+        telemetry.rollup_feature_windows.assert_awaited()
+
+    async def test_built_scheduler_shutdown_cancels_recovery_and_all_tasks(
+        self,
+    ) -> None:
+        """Given: a built scheduler whose startup recovery has completed.
+        When: shutdown() runs. Then: the recovery task and all job tasks are
+        cancelled and cleared — no leaked tasks."""
+        telemetry = self._telemetry()
+        scheduler = build_scheduler(telemetry_service=telemetry, timezone="UTC")
+        recovery_done = asyncio.Event()
+        real_recover = scheduler._startup_recovery
+        assert real_recover is not None
+
+        async def _tracking_recover(now_utc: datetime) -> None:
+            await real_recover(now_utc)
+            recovery_done.set()
+
+        scheduler._startup_recovery = _tracking_recover
+        scheduler.start()
+        await asyncio.wait_for(recovery_done.wait(), timeout=2.0)
+        tasks = list(scheduler._tasks)
+
+        await scheduler.shutdown()
+
+        assert tasks and all(task.done() for task in tasks)
+        assert scheduler._tasks == []

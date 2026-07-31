@@ -352,6 +352,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             data_dir=data_dir,
             activity_repository=activity_repository,
             prediction_service=prediction_service,
+            baseline_repository=baseline_repository,
+            session_factory=session_factory,
         )
         telemetry_service.attach_input_watcher(input_telemetry_service)
         telemetry_preferences = await telemetry_service.get_preferences()

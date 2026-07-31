@@ -499,9 +499,10 @@ async def test_repeated_recovery_with_real_claim_does_not_repeat_panel(
             TranscriptEntry(role="数据分析师", content="模式分析完成", round=0),
         ),
         escalated=False,
-        call_count=6,
-        source="panel",
-    )
+            call_count=6,
+            source="panel",
+            degradation_path=("panel",),
+        )
     panel_service._orchestrator.run.return_value = expected
     scheduler = build_scheduler(
         panel_service=panel_service,
@@ -602,3 +603,165 @@ async def test_startup_recovery_continues_current_panel_after_report_failure() -
         date(2026, 7, 25),
         date(2026, 7, 26),
     ]
+
+
+async def test_startup_recovery_interrupted_after_backfill_reruns_stable_counts(
+    engine,
+    session_factory,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Todo 12 real-surface probe: interrupt the composed startup recovery
+    right after the conditional V2 baseline backfill (before the current
+    recent-window catch-up), then rerun it to completion against a real temp
+    SQLite database.
+
+    Exactly one V2 baseline row persists, the recent-window windows are rolled
+    only once, and a further rerun leaves windows and the baseline byte-stable.
+    """
+    import json
+    from datetime import timedelta
+
+    import sqlalchemy as sa
+
+    from mindflow.domain.events import make_event
+    from mindflow.domain.feature_schema import V2_FEATURE_NAMES
+    from mindflow.infrastructure.repositories.activity import (
+        SQLAlchemyActivityRepository,
+        activity_events,
+    )
+    from mindflow.infrastructure.repositories.baseline import (
+        BaselineRepository,
+        baseline_models,
+    )
+    from mindflow.infrastructure.repositories.preferences import (
+        PreferencesRepository,
+        user_preferences,
+    )
+    from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+    from mindflow.infrastructure.schema import behavior_feature_windows, metadata
+    from mindflow.services.telemetry_service import TelemetryService
+
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+        await connection.run_sync(activity_events.metadata.create_all)
+        await connection.run_sync(user_preferences.metadata.create_all)
+
+    activity_repository = SQLAlchemyActivityRepository(session_factory)
+    telemetry_repository = TelemetryRepository(session_factory)
+    baseline_repository = BaselineRepository(session_factory)
+    service = TelemetryService(
+        telemetry_repository,
+        PreferencesRepository(session_factory),
+        data_dir=tmp_path,
+        activity_repository=activity_repository,
+        baseline_repository=baseline_repository,
+        session_factory=session_factory,
+    )
+    startup_now = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+
+    def _features(app_switch_count: float) -> dict[str, float]:
+        features = {name: 0.0 for name in V2_FEATURE_NAMES}
+        features["app_switch_count"] = app_switch_count
+        features["active_seconds_ratio"] = 0.5
+        return features
+
+    # Pre-existing V2 windows just outside the two-hour recent window: only the
+    # conditional backfill sees them (seeded as if rolled by an earlier run).
+    await telemetry_repository.upsert_feature_windows([
+        {
+            "user_id": 1,
+            "window_start_utc": startup_now - timedelta(hours=3),
+            "window_end_utc": startup_now - timedelta(hours=3, minutes=-5),
+            "feature_schema_version": 3,
+            "features_json": json.dumps(_features(10.0)),
+            "label": None,
+        },
+        {
+            "user_id": 1,
+            "window_start_utc": startup_now - timedelta(hours=4),
+            "window_end_utc": startup_now - timedelta(hours=4, minutes=-5),
+            "feature_schema_version": 3,
+            "features_json": json.dumps(_features(12.0)),
+            "label": None,
+        },
+    ])
+    # One activity event inside the recent window that only the startup
+    # catch-up will roll into new windows.
+    await activity_repository.append_event(
+        make_event(
+            user_id=1,
+            timestamp_utc=startup_now - timedelta(hours=1),
+            duration_s=600,
+            process_name="code.exe",
+            is_idle=False,
+        )
+    )
+
+    scheduler = build_scheduler(telemetry_service=service, timezone="UTC")
+
+    async def _baseline_row_json() -> str | None:
+        stmt = (
+            sa.select(baseline_models.c.model_json)
+            .where(baseline_models.c.user_id == 1)
+        )
+        async with session_factory() as session:
+            return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def _baseline_count() -> int:
+        stmt = (
+            sa.select(sa.func.count())
+            .select_from(baseline_models)
+            .where(baseline_models.c.user_id == 1)
+        )
+        async with session_factory() as session:
+            return int((await session.execute(stmt)).scalar() or 0)
+
+    # Interrupt the run right after the backfill completes: the recent-window
+    # catch-up is gated so the recovery task can be cancelled in flight.
+    recent_catch_up_started = asyncio.Event()
+    release_recent = asyncio.Event()
+    real_rollup = service.rollup_feature_windows
+
+    async def _gated_rollup(start, end, user_id=1):
+        recent_catch_up_started.set()
+        await release_recent.wait()
+        return await real_rollup(start, end, user_id)
+
+    monkeypatch.setattr(service, "rollup_feature_windows", _gated_rollup)
+
+    recovery_task = asyncio.create_task(
+        scheduler.run_startup_recovery(now_utc=startup_now)
+    )
+    await asyncio.wait_for(recent_catch_up_started.wait(), timeout=2.0)
+    recovery_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await recovery_task
+
+    # After the interruption: exactly one V2 baseline (from the backfill) and
+    # the recent windows were never rolled (the catch-up never completed).
+    assert await _baseline_count() == 1
+    baseline = await baseline_repository.get_latest(1)
+    assert baseline is not None
+    assert baseline.FEATURE_SCHEMA_VERSION == 3
+    assert baseline.total_samples() == 2 * len(V2_FEATURE_NAMES)
+    assert len(await telemetry_repository.list_feature_windows(1)) == 2
+
+    # Rerun to completion: the backfill skips the existing V2 baseline and the
+    # catch-up rolls the recent window exactly once (folded into the baseline).
+    release_recent.set()
+    await scheduler.run_startup_recovery(now_utc=startup_now)
+
+    assert await _baseline_count() == 1
+    baseline = await baseline_repository.get_latest(1)
+    assert baseline is not None
+    assert baseline.FEATURE_SCHEMA_VERSION == 3
+    assert baseline.total_samples() == 4 * len(V2_FEATURE_NAMES)
+    assert len(await telemetry_repository.list_feature_windows(1)) == 4
+    row_after_rerun = await _baseline_row_json()
+
+    # Rerun once more: byte-stable windows and baseline row — idempotent.
+    await scheduler.run_startup_recovery(now_utc=startup_now)
+    assert await _baseline_count() == 1
+    assert await _baseline_row_json() == row_after_rerun
+    assert len(await telemetry_repository.list_feature_windows(1)) == 4

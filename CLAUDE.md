@@ -152,7 +152,7 @@ See full API contracts in [`docs/api/model-training.md`](docs/api/model-training
 
 ## V2 Training Architecture Caveats
 
-- **Data presence != trainability**: raw activity events must roll up into V2 feature windows (schema_version=2) via telemetry; explicit feedback timestamps must overlap window ranges.
+- **Data presence != trainability**: raw activity events must roll up into V3 feature windows (schema_version=3) via telemetry; explicit feedback timestamps must overlap window ranges.
 - **Baseline and ML share one UI route** (`/model-center`) but remain separate backend lifecycles: baseline is Welford online incremental, ML is batch offline.
 - **Job state is in-memory**: `TrainingJobService` holds `_current: _JobState | None`; restart loses job observation. No SQLite persistence for training job state.
 - **One job per process**: `asyncio.Lock` guards creation; duplicate `start_job` returns 409.
@@ -160,7 +160,7 @@ See full API contracts in [`docs/api/model-training.md`](docs/api/model-training
 - **Shadow never replaces active**: `shadow` model_mode updates `app.state.v2_training_mode` only; `v2_model_manager` and attached services unchanged.
 - **Ready publication failure == job failure**: if quality gate passes but `_refresh_ready_manager()` raises, job.status = `failed`, not `succeeded`.
 - **No auto-retraining**: scheduler has no training cron (hardened by test).
-- **Two gates hardcoded as not_implemented**: `calibration_better_than_rule` and `stable_date_folds` are `_NotImplementedGate`; they expose `not_implemented` status in readiness and should not be interpreted as green passes.
+- **Quality gates now implemented (2026-07-31)**: `calibration_better_than_rule` and `stable_date_folds` are real checks; readiness no longer reports them as `not_implemented`.
 
 ## Focused Verification: Model Center / Training (2026-07-30)
 
@@ -175,6 +175,14 @@ The following verification was run after the model-center implementation, not as
 - **Frontend lint**: 3 pre-existing warnings in old E2E files (unrelated to model center)
 - **Endpoints verified against source**: training-readiness (200 with full schema), training-jobs (202/409/412), training-jobs/{id} (200/404), training-jobs/{id}/cancel (200/404/409), baseline (200/404), model-status (200)
 - **OpenAPI schema**: matches Pydantic models for all request/response bodies
+
+## 2026-07-31 ML/LangGraph 升级摘要
+
+- Feature schema 已升级到 v3；切换计数必须使用 `count_confirmed_switches()`（驻留 10 秒 + 瞬时进程忽略）。
+- ML 质量门使用唯一反馈会话数（>=20 条）、7 个反馈日、每类 >=5 条；日期 GroupKFold 内计算 rule baseline 与校准。
+- `POST /panel/today` 支持 `force`/`retry_if_degraded`，缓存命中保留降级元数据。
+- `PanelGraph` 是唯一活动面板图；`PanelOrchestrator` 仅作为兼容适配器。
+- 实验统一使用 `scripts/run_experiments.py`，最终报告见 `data/experiments/20260731_final/`。
 
 ## Quality Debt (Transparent)
 

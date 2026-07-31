@@ -22,6 +22,7 @@ import numpy.typing as npt
 
 # ── Domain imports (read-only — we do NOT modify domain/) ─────────────────────
 from mindflow.domain.events import ActivityEvent
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.train.models import ModelManager
 from mindflow.train.v2 import (
     evaluate_v2_candidates,
@@ -54,6 +55,7 @@ class TrainingReport:
     saved_models: dict[str, str] = field(default_factory=dict)
     version_tag: str | None = None
     feature_schema_version: int = 1
+    feature_schema_version: int = FEATURE_SCHEMA_VERSION
     model_mode: str = "rule_engine_only"
     evaluation: dict[str, Any] = field(default_factory=dict)
 
@@ -163,7 +165,7 @@ def _run_v2_training(
         source=source,
         total_records=len(feature_windows),
         windows_extracted=len(feature_windows),
-        feature_schema_version=2,
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
     )
     training_data = prepare_v2_training_data(feature_windows, feedback_sessions)
     report.filtered_windows = len(feature_windows) - len(training_data.features)
@@ -189,6 +191,7 @@ def _run_v2_training(
     v2_models_path.mkdir(parents=True, exist_ok=True)
     if len(training_data.features) >= 10 and len(np.unique(training_data.labels)) >= 2:
         manager = ModelManager(models_dir=v2_models_path, use_ensemble=False)
+        manager = ModelManager(models_dir=v2_models_path, use_ensemble=True)
         summary = manager.train_all(
             training_data.features,
             training_data.feature_names,

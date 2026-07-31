@@ -34,6 +34,7 @@ from mindflow.domain.prediction import (
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.train.models.manager import ModelManager
 from mindflow.train.v2 import V2_FEATURE_NAMES
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 # How many seconds of feature windows to fetch per ``predict_latest`` call
 _LATEST_LOOKBACK_S: float = 7200.0  # 2 hours
@@ -115,7 +116,7 @@ class FocusPredictionService:
         try:
             all_windows = await self._telemetry_repo.list_feature_windows(
                 user_id=user_id,
-                feature_schema_version=2,
+                feature_schema_version=FEATURE_SCHEMA_VERSION,
             )
         except Exception as exc:
             logger.warning("FocusPredictionService: DB query failed: {}", exc)
@@ -173,7 +174,7 @@ class FocusPredictionService:
         try:
             all_windows = await self._telemetry_repo.list_feature_windows(
                 user_id=user_id,
-                feature_schema_version=2,
+                feature_schema_version=FEATURE_SCHEMA_VERSION,
             )
         except Exception as exc:
             logger.warning("FocusPredictionService: range DB query failed: {}", exc)
@@ -398,7 +399,7 @@ class FocusPredictionService:
             coverage_ratio=round(coverage_ratio, 4),
             data_age_s=round(data_age_s, 1) if data_age_s is not None else None,
             model_version=model_version,
-            feature_schema_version=2,
+            feature_schema_version=FEATURE_SCHEMA_VERSION,
             newest_window_start_utc=newest_window_start,
             top_factors=top_3,
             explanation_method="global_importance_times_observation",
@@ -426,7 +427,7 @@ class FocusPredictionService:
         return {
             "status": "ready" if is_ready else "no_model",
             "model_version": model_version,
-            "feature_schema_version": 2,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
         }
 
 

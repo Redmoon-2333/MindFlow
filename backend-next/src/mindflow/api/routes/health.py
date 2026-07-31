@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -110,7 +111,7 @@ async def health_check(
         try:
             ml_status = await prediction_service.check_health()
         except Exception:
-            ml_status = {"status": "error", "model_version": None, "feature_schema_version": 2}
+            ml_status = {"status": "error", "model_version": None, "feature_schema_version": FEATURE_SCHEMA_VERSION}
     else:
         ml_status = {
             "status": "no_service",

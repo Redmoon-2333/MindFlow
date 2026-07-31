@@ -10,7 +10,7 @@ Data is written by ``services/llm_service.py`` and
 ``services/panel_service.py``, and read for cache checks
 and historical lookup.
 
-Table schema matches Alembic migrations 0001, 0002, and 0011.
+Table schema matches Alembic migrations 0001, 0002, 0011, and 0015.
 """
 
 from __future__ import annotations
@@ -97,6 +97,8 @@ class SQLAlchemyProcrastinationAnalysisRepository:
         panel_transcript: dict[str, Any] | None = None,
         analysis_kind: str = "daily_attribution",
         source: str | None = None,
+        degraded: bool | None = None,
+        degradation_path: list[str] | None = None,
     ) -> None:
         """Insert or update a procrastination analysis record.
 
@@ -121,6 +123,8 @@ class SQLAlchemyProcrastinationAnalysisRepository:
                 ``"ml"``, or ``"legacy_unknown"``.
             source: Degradation source — ``"panel"``, ``"single_expert"``,
                 ``"ollama"``, or ``"rule_engine"``.
+            degraded: Whether the analysis was produced by a degraded fallback tier.
+            degradation_path: Ordered degradation tiers attempted.
         """
         stmt = sqlite_upsert(procrastination_analyses).values(
             id=new_id(),
@@ -140,6 +144,12 @@ class SQLAlchemyProcrastinationAnalysisRepository:
             ),
             analysis_kind=analysis_kind,
             source=source,
+            degraded=degraded,
+            degradation_path_json=(
+                json.dumps(degradation_path, ensure_ascii=False)
+                if degradation_path is not None
+                else None
+            ),
         )
 
         # On conflict, update the existing row. SQLite dialect requires
@@ -158,6 +168,8 @@ class SQLAlchemyProcrastinationAnalysisRepository:
                 "panel_transcript_json": stmt.excluded.panel_transcript_json,
                 "analysis_kind": stmt.excluded.analysis_kind,
                 "source": stmt.excluded.source,
+                "degraded": stmt.excluded.degraded,
+                "degradation_path_json": stmt.excluded.degradation_path_json,
             },
         )
 
@@ -225,5 +237,15 @@ def _row_to_analysis(row: sa.Row[Any]) -> dict[str, Any]:
         result["panel_transcript"] = json.loads(row.panel_transcript_json)
     if row.analysis_kind:
         result["analysis_kind"] = row.analysis_kind
+
+    degraded = getattr(row, "degraded", None)
+    if degraded is not None:
+        result["degraded"] = bool(degraded)
+    path_raw = getattr(row, "degradation_path_json", None)
+    if path_raw:
+        try:
+            result["degradation_path"] = json.loads(path_raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            result["degradation_path"] = []
 
     return result

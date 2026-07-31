@@ -235,7 +235,7 @@ def test_v2_training_stays_shadow_when_feedback_gate_fails(work_dir: Path) -> No
         feature_windows.append({
             "window_start_utc": session_start.isoformat(),
             "window_end_utc": (session_start + timedelta(minutes=5)).isoformat(),
-            "feature_schema_version": 2,
+            "feature_schema_version": 3,
             "features": {
                 "idle_ratio": 0.02 if is_focus else 0.6,
                 "longest_segment_ratio": 0.9 if is_focus else 0.1,
@@ -268,7 +268,7 @@ def test_v2_training_stays_shadow_when_feedback_gate_fails(work_dir: Path) -> No
         feedback_sessions=feedback_sessions,
     )
 
-    assert report.feature_schema_version == 2
+    assert report.feature_schema_version == 3
     assert report.model_mode == "shadow"
     assert report.activated is False
     assert report.quality_gate["checks"]["minimum_explicit_feedback"] is False
@@ -288,7 +288,7 @@ def test_v2_training_activates_only_after_all_gates_pass(work_dir: Path) -> None
             feature_windows.append({
                 "window_start_utc": session_start.isoformat(),
                 "window_end_utc": (session_start + timedelta(minutes=5)).isoformat(),
-                "feature_schema_version": 2,
+                "feature_schema_version": 3,
                 "features": {
                     "idle_ratio": 0.01 if is_focus else 0.7,
                     "longest_segment_ratio": 0.98 if is_focus else 0.05,

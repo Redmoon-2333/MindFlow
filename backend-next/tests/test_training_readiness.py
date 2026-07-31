@@ -66,7 +66,7 @@ def _v2_window(
         "user_id": user_id,
         "window_start_utc": start,
         "window_end_utc": end,
-        "feature_schema_version": 2,
+        "feature_schema_version": 3,
         "features_json": _V2_FEATURES_JSON,
         "label": None,
     }

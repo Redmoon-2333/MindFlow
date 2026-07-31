@@ -10,6 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.schema import (
     behavior_feature_windows,
     browser_segments,
@@ -270,10 +271,39 @@ class TelemetryRepository:
     async def upsert_feature_windows(
         self,
         rows: list[dict[str, Any]],
-    ) -> None:
-        """Bulk UPSERT feature windows in one transaction."""
+        *,
+        session: AsyncSession | None = None,
+    ) -> list[dict[str, Any]]:
+        """Bulk UPSERT feature windows and return the rows that were inserted.
+
+        The ``(user_id, window_start_utc, feature_schema_version)`` unique
+        constraint keeps the upsert idempotent. The return value is the
+        *truthful* set of rows that did not exist before this call: a caller
+        (the telemetry rollup) uses it to fold only genuinely new windows into
+        the personal baseline, which prevents Welford double counting when the
+        same range is rolled more than once. Detection is a single key-presence
+        SELECT inside the same transaction — no N+1 lookups, no ambiguous
+        ``rowcount``.
+
+        When *session* is provided, the work runs inside that caller-owned
+        transaction (used to persist windows and the baseline atomically);
+        otherwise a transaction is opened and committed here.
+
+        Returns:
+            The normalized rows that were inserted (never previously stored).
+        """
         if not rows:
-            return
+            return []
+        if session is not None:
+            return await self._upsert_feature_windows_in_session(session, rows)
+        async with self._session_factory() as session, session.begin():
+            return await self._upsert_feature_windows_in_session(session, rows)
+
+    async def _upsert_feature_windows_in_session(
+        self,
+        session: AsyncSession,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat()
         values = [
             {
@@ -288,29 +318,60 @@ class TelemetryRepository:
             }
             for row in rows
         ]
-        async with self._session_factory() as session, session.begin():
-            for index in range(0, len(values), _FEATURE_UPSERT_BATCH_SIZE):
-                batch = values[index:index + _FEATURE_UPSERT_BATCH_SIZE]
-                statement = sqlite_insert(behavior_feature_windows).values(batch)
-                statement = statement.on_conflict_do_update(
-                    index_elements=[
-                        behavior_feature_windows.c.user_id,
-                        behavior_feature_windows.c.window_start_utc,
-                        behavior_feature_windows.c.feature_schema_version,
-                    ],
-                    set_={
-                        "window_end_utc": statement.excluded.window_end_utc,
-                        "features_json": statement.excluded.features_json,
-                        "label": statement.excluded.label,
-                        "created_at": statement.excluded.created_at,
-                    },
-                )
-                await session.execute(statement)
+
+        # One batched key-presence probe for the whole payload: which of these
+        # keys already exist, before this call's writes are visible.
+        existing_stmt = sa.select(
+            behavior_feature_windows.c.user_id,
+            behavior_feature_windows.c.window_start_utc,
+            behavior_feature_windows.c.feature_schema_version,
+        ).where(
+            sa.or_(
+                *[
+                    sa.and_(
+                        behavior_feature_windows.c.user_id == value["user_id"],
+                        behavior_feature_windows.c.window_start_utc == value["window_start_utc"],
+                        behavior_feature_windows.c.feature_schema_version
+                        == value["feature_schema_version"],
+                    )
+                    for value in values
+                ]
+            )
+        )
+        existing_keys = {
+            (row.user_id, row.window_start_utc, row.feature_schema_version)
+            for row in (await session.execute(existing_stmt)).fetchall()
+        }
+
+        for index in range(0, len(values), _FEATURE_UPSERT_BATCH_SIZE):
+            batch = values[index:index + _FEATURE_UPSERT_BATCH_SIZE]
+            statement = sqlite_insert(behavior_feature_windows).values(batch)
+            statement = statement.on_conflict_do_update(
+                index_elements=[
+                    behavior_feature_windows.c.user_id,
+                    behavior_feature_windows.c.window_start_utc,
+                    behavior_feature_windows.c.feature_schema_version,
+                ],
+                set_={
+                    "window_end_utc": statement.excluded.window_end_utc,
+                    "features_json": statement.excluded.features_json,
+                    "label": statement.excluded.label,
+                    "created_at": statement.excluded.created_at,
+                },
+            )
+            await session.execute(statement)
+
+        return [
+            value
+            for value in values
+            if (value["user_id"], value["window_start_utc"], value["feature_schema_version"])
+            not in existing_keys
+        ]
 
     async def latest_feature_window(
         self,
         user_id: int,
-        feature_schema_version: int = 2,
+        feature_schema_version: int = FEATURE_SCHEMA_VERSION,
     ) -> dict[str, Any] | None:
         statement = (
             sa.select(behavior_feature_windows)
@@ -329,7 +390,7 @@ class TelemetryRepository:
     async def list_feature_windows(
         self,
         user_id: int,
-        feature_schema_version: int = 2,
+        feature_schema_version: int = FEATURE_SCHEMA_VERSION,
     ) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
             result = await session.execute(
@@ -338,6 +399,36 @@ class TelemetryRepository:
                     behavior_feature_windows.c.user_id == user_id,
                     behavior_feature_windows.c.feature_schema_version
                     == feature_schema_version,
+                )
+                .order_by(behavior_feature_windows.c.window_start_utc.asc())
+            )
+            return [dict(row._mapping) for row in result.fetchall()]
+
+    async def list_feature_windows_in_range(
+        self,
+        user_id: int,
+        start: datetime,
+        end: datetime,
+        feature_schema_version: int = FEATURE_SCHEMA_VERSION,
+    ) -> list[dict[str, Any]]:
+        """Bounded feature windows within the half-open [start, end).
+
+        One range query used by the conditional baseline backfill so it never
+        loads the user's entire window history (no per-row lookups).
+        ``window_start_utc`` is stored as UTC ISO text, so both bounds are
+        normalized to UTC before comparison; results come back ascending.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                sa.select(behavior_feature_windows)
+                .where(
+                    behavior_feature_windows.c.user_id == user_id,
+                    behavior_feature_windows.c.feature_schema_version
+                    == feature_schema_version,
+                    behavior_feature_windows.c.window_start_utc
+                    >= start.astimezone(UTC).isoformat(),
+                    behavior_feature_windows.c.window_start_utc
+                    < end.astimezone(UTC).isoformat(),
                 )
                 .order_by(behavior_feature_windows.c.window_start_utc.asc())
             )

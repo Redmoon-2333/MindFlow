@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 FocusPredictionStatus = Literal[
     "ready",
@@ -60,7 +61,7 @@ class FocusPrediction:
     coverage_ratio: float = 0.0
     data_age_s: float | None = None
     model_version: str | None = None
-    feature_schema_version: int = 2
+    feature_schema_version: int = FEATURE_SCHEMA_VERSION
     top_factors: list[dict[str, float | str]] = ()
     explanation_method: str = ""
     reason: str = ""

@@ -12,6 +12,8 @@ Registered jobs (cron and working hours use the configured local timezone):
   - 04:00  — ``daily_backup``: crash-consistent VACUUM INTO snapshot.
   - every 30 min — ``auto_intervention_check``: assess recent behavior
     and intervene if significant procrastination detected (08:00-23:00).
+  - every 15 min — ``telemetry_rollup_recent``: roll up the trailing
+    two-hour window of feature windows (idempotent — overlaps are safe).
 
 Jobs are idempotent — if a target date already has sessions or reports,
 the service skips recomputation.
@@ -75,6 +77,14 @@ _STARTUP_RECOVERY_RETRIES = 1
 # Startup recovery intentionally covers only the latest completed business day
 # so a long offline period cannot trigger an unexpected burst of LLM spend.
 _STARTUP_RECOVERY_COMPLETE_DAYS = 1
+
+# Todo 11: bounded recent-window rollup. The interval bounds are one fixed
+# ``now`` captured per invocation so [now-2h, now] is a single window, and the
+# 15-minute cadence re-rolls a shifting two-hour range whose overlaps are safe
+# because ``rollup_feature_windows`` upserts windows idempotently and folds the
+# baseline only from newly inserted rows (Todo 8 seam).
+_RECENT_ROLLUP_INTERVAL_MINUTES = 15
+_RECENT_ROLLUP_WINDOW_HOURS = 2
 
 # Compatibility fallback for direct unit use without the persistent repository.
 _DAILY_PANEL_RUN_DATES: set[str] = set()
@@ -954,6 +964,50 @@ def build_scheduler(
                     complete_date,
                 )
         if telemetry_service is not None:
+            # ── Todo 12: conditional V2 baseline backfill, then the bounded
+            # current recent-window catch-up ending at the single captured
+            # startup ``now_utc``, then the complete-day yesterday rollup.
+            #
+            # The backfill runs FIRST so an existing window history can seed
+            # the baseline before any rollup creates a partial one; the recent
+            # catch-up then folds only newly inserted windows through the
+            # Todo 8 idempotent seam. The catch-up bound reuses the two-hour
+            # recent-rollup policy, not an unbounded full-day recompute.
+            # A rerun after interruption skips the backfill (V2 baseline
+            # exists) and re-upserts the same windows, so one V2 baseline and
+            # stable counts persist. Both new steps use the existing step
+            # boundary (log-and-continue, never falsely claiming completion).
+
+            async def _backfill_baseline() -> None:
+                result = await telemetry_service.rebuild_baseline_if_needed(
+                    user_id=1,
+                    timezone=timezone,
+                    now_utc=now_utc,
+                )
+                logger.info(
+                    "Startup recovery baseline backfill: rebuilt={} reason={} "
+                    "windows_loaded={} samples={} cutoff_utc={}",
+                    result.rebuilt,
+                    result.reason,
+                    result.windows_loaded,
+                    result.samples,
+                    result.cutoff_utc,
+                )
+
+            await _run_recovery_step(
+                "baseline_backfill",
+                _backfill_baseline,
+                retries=_STARTUP_RECOVERY_RETRIES,
+            )
+            await _run_recovery_step(
+                "telemetry_rollup_recent:startup",
+                lambda: telemetry_service.rollup_feature_windows(
+                    now_utc - timedelta(hours=_RECENT_ROLLUP_WINDOW_HOURS),
+                    now_utc,
+                    user_id=1,
+                ),
+                retries=_STARTUP_RECOVERY_RETRIES,
+            )
             await _run_recovery_step(
                 f"telemetry_rollup:{complete_date}",
                 lambda: _run_telemetry_for_date(complete_date),
@@ -1041,6 +1095,26 @@ def build_scheduler(
             minute=45,
             coro=_rollup_telemetry,
             name="telemetry_rollup",
+        )
+
+        # ── Every 15 min — Recent-window telemetry rollup ────────────────
+        # Rolls the trailing [now-2h, now] window through the Todo 8
+        # idempotent seam, so overlapping re-rolls just re-upsert the same
+        # windows and the baseline folds only newly inserted rows. No
+        # per-date claim (the window shifts continuously); the interval
+        # boundary's catch-and-log keeps later invocations alive.
+        async def _rollup_recent_telemetry() -> None:
+            now = datetime.now(UTC)
+            await telemetry_service.rollup_feature_windows(
+                now - timedelta(hours=_RECENT_ROLLUP_WINDOW_HOURS),
+                now,
+                user_id=1,
+            )
+
+        scheduler.interval_minutes(
+            minutes=_RECENT_ROLLUP_INTERVAL_MINUTES,
+            coro=_rollup_recent_telemetry,
+            name="telemetry_rollup_recent",
         )
 
     logger.info(

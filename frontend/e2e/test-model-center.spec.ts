@@ -145,7 +145,7 @@ function jobResponse(status: string, jobId = "job-e2e-001") {
     completed_at: status === "succeeded" ? "2026-07-29T10:30:00" : null,
     activated: status === "succeeded",
     version_tag: status === "succeeded" ? "v2.1.0" : null,
-    feature_schema_version: 2,
+    feature_schema_version: 3,
     quality_gate: null,
     evaluation: null,
     error: null,
@@ -155,7 +155,7 @@ function jobResponse(status: string, jobId = "job-e2e-001") {
 function modelStatusResponse() {
   return {
     loaded: true, ready: true, mode: "rule_engine_only",
-    v2_mode: "rule_engine_only", feature_schema_version: 2,
+    v2_mode: "rule_engine_only", feature_schema_version: 3,
     version: null, available_versions: [], reasons: ["v2_models_not_loaded"],
     message: "V2 ML models not available, running with rule engine only",
     model_name: null, last_updated: null,

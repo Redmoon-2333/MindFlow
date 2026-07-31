@@ -10,6 +10,7 @@ layer stays lightweight and import-free of the ML stack.
 from __future__ import annotations
 
 FEATURE_SCHEMA_VERSION = 2
+FEATURE_SCHEMA_VERSION = 3
 
 V2_FEATURE_NAMES: tuple[str, ...] = (
     "app_switch_count",

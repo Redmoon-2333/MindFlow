@@ -637,6 +637,12 @@ class TestGoldenTopology:
             "escalated",
             "call_count",
             "source",
+            "degradation_path",
+            "cached",
+            "retry_after_s",
+            "insufficient_data",
+            "uncertainty",
+            "evidence_gaps",
         }
         assert fields == expected
 

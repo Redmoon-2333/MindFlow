@@ -134,7 +134,7 @@ async def test_upsert_round_trip_preserves_v2_state(engine, session_factory) -> 
     reloaded = await repository.get_latest(user_id=7)
     assert reloaded is not None
     assert reloaded.user_id == 7
-    assert reloaded.FEATURE_SCHEMA_VERSION == 2
+    assert reloaded.FEATURE_SCHEMA_VERSION == 3
     assert reloaded.timezone == "Asia/Shanghai"
     assert reloaded.total_days == 1
     assert reloaded.total_samples() == 2 * len(V2_FEATURE_NAMES)

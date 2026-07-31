@@ -1,4 +1,4 @@
-"""PanelOrchestrator — the expert panel deliberation kernel.
+﻿"""PanelOrchestrator — the expert panel deliberation kernel.
 
 Implements the full orchestration flow from 07-agent-upgrade-design.md §2 and §4,
 now using LangGraph StateGraph internally:
@@ -59,6 +59,7 @@ from mindflow.agents.types import (
     _contains_forbidden_words,
 )
 from mindflow.domain.evidence import EvidenceBundle, to_prompt_json
+from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
 
 # ── Parsing helpers ────────────────────────────────────────────────────────────
@@ -159,6 +160,66 @@ def validate_citations(
             unresolved.add(cite)
 
     return tuple(sorted(unresolved))
+
+
+def validate_verdict_schema(verdict: dict[str, Any]) -> list[str]:
+    """Deterministically validate a moderator verdict before the critic call."""
+    issues: list[str] = []
+    verdict = normalize_verdict_types(verdict)
+    valid_types = {t.value for t in ProcrastinationType}
+    valid_techniques = {t.value for t in CBTTechnique}
+
+    types_raw = verdict.get("types")
+    if not isinstance(types_raw, list):
+        issues.append("types 必须为数组")
+    else:
+        if len(types_raw) > 3:
+            issues.append("types 最多 3 个")
+        for t in types_raw:
+            if str(t) not in valid_types:
+                issues.append(f"未知拖延类型: {t}")
+
+    confidence = verdict.get("confidence")
+    if not isinstance(confidence, dict):
+        issues.append("confidence 必须为对象")
+    else:
+        for key, value in confidence.items():
+            if str(key) not in valid_types:
+                issues.append(f"置信度键不是合法类型: {key}")
+            try:
+                number = float(value)
+                if not 0.0 <= number <= 1.0:
+                    issues.append(f"置信度越界: {key}={value}")
+            except (TypeError, ValueError):
+                issues.append(f"置信度不是数字: {key}={value}")
+
+    technique = verdict.get("recommended_technique")
+    if technique is not None and str(technique) not in valid_techniques:
+        issues.append(f"未知 CBT 技术: {technique}")
+    return issues
+
+
+TYPE_ALIASES: dict[str, str] = {
+    "决策性拖延": "decisional",
+    "任务价值感知不足型拖延": "task_aversion",
+    "冲动型拖延": "impulsivity",
+    "完美主义拖延": "perfectionism",
+    "情绪调节型拖延": "emotional_regulation",
+}
+
+
+def normalize_verdict_types(verdict: dict[str, Any]) -> dict[str, Any]:
+    """Map Chinese/verbose moderator labels back to canonical enum values."""
+    normalized = dict(verdict)
+    raw_types = normalized.get("types")
+    if isinstance(raw_types, list):
+        normalized["types"] = [TYPE_ALIASES.get(str(t), str(t)) for t in raw_types]
+    raw_conf = normalized.get("confidence")
+    if isinstance(raw_conf, dict):
+        normalized["confidence"] = {
+            TYPE_ALIASES.get(str(k), str(k)): v for k, v in raw_conf.items()
+        }
+    return normalized
 
 
 def _parse_expert_opinion(
@@ -281,6 +342,7 @@ def _parse_verdict(raw: str) -> dict[str, Any] | None:
         "dissent": parsed.dissent,
     }
     return result
+    return normalize_verdict_types(result)
 
 
 def _parse_critic(raw: str) -> CriticResult:
@@ -336,6 +398,7 @@ def _build_moderator_user_prompt(
     analyst: ExpertOpinion,
     attribution_opinions: Sequence[ExpertOpinion],
     conflict: ConflictReport,
+    disagreement_summary: Any | None = None,
 ) -> str:
     """Build the moderator's user prompt with all expert opinions."""
     parts: list[str] = [
@@ -364,6 +427,15 @@ def _build_moderator_user_prompt(
             conflict.details,
             "",
         ])
+
+    if disagreement_summary is not None:
+        parts.extend([
+            "## 共识强度",
+            f"agreement_strength={disagreement_summary.agreement_strength:.3f}, stability={disagreement_summary.stability}",
+            "共识强度低时请降低置信度，或设置 insufficient_data=true。",
+            "",
+        ])
+
 
     return "\n".join(parts)
 
@@ -714,6 +786,7 @@ class PanelOrchestrator:
             else:
                 round_num = 2 if not state["escalated"] else 3
                 prompt = _build_moderator_user_prompt(state["bundle_json"], analyst, state["attribution_opinions"], conflict)
+                prompt = _build_moderator_user_prompt(state["bundle_json"], analyst, state["attribution_opinions"], conflict, state.get("disagreement_summary"))
             logger.info("Panel round {}: Moderator (redo_count={})", round_num, state["moderator_redo_count"])
             raw = await self._call_with_budget(rt, MODERATOR, prompt)
             verdict = _parse_verdict(raw)

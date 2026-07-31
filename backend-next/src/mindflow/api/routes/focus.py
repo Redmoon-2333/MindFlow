@@ -39,15 +39,25 @@ async def get_today_focus(
     focus_repo: SQLAlchemyFocusSessionRepository = Depends(get_focus_repo),  # noqa: B008
     telemetry_service: TelemetryService = Depends(get_telemetry_service),  # noqa: B008
 ) -> dict[str, Any]:
-    """Return today's focus sessions (auto-generates if missing)."""
-    settings = getattr(request.app.state, "settings", None)
-    target = date_param or business_today(getattr(settings, "timezone", "local"))
+    """Return focus sessions for *target* date (auto-generates if missing).
 
-    # Ensure sessions exist
-    sessions = await focus_repo.get_by_date(1, target)
-    if not sessions:
-        logger.debug("No sessions for {}, running identification", target)
-        sessions = await analysis.identify_focus_sessions(1, target)
+    The current business day is recomputed from the latest activity events on
+    every call (``refresh=True``) so the response never serves a stale
+    projection; ``save_sessions`` reuses session ids for matching
+    ``(date, start_time)``, so existing feedback stays linked.  Past dates
+    read the persisted projection and only generate when none exists.
+    """
+    settings = getattr(request.app.state, "settings", None)
+    today = business_today(getattr(settings, "timezone", "local"))
+    target = date_param or today
+
+    if target == today:
+        sessions = await analysis.identify_focus_sessions(1, target, refresh=True)
+    else:
+        sessions = await focus_repo.get_by_date(1, target)
+        if not sessions:
+            logger.debug("No sessions for {}, running identification", target)
+            sessions = await analysis.identify_focus_sessions(1, target)
 
     # Fetch feedback for all sessions in one query
     session_ids = [s["id"] for s in sessions]
@@ -58,6 +68,7 @@ async def get_today_focus(
         "sessions": [
             {
                 "id": s["id"],
+                "date": s["date"],
                 "start_time": s["start_time"],
                 "end_time": s["end_time"],
                 "session_type": s["session_type"],

@@ -30,6 +30,7 @@ from pathlib import Path
 import platformdirs
 
 from mindflow.domain.events import ActivityEvent
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.train.models import ModelManager
 from mindflow.train.pipeline import run_training
 
@@ -123,7 +124,7 @@ def load_database_v2_data(
         window_rows = connection.execute(
             "SELECT window_start_utc, window_end_utc, feature_schema_version, "
             "features_json, label FROM behavior_feature_windows "
-            "WHERE user_id = ? AND feature_schema_version = 2 "
+            "WHERE user_id = ? AND feature_schema_version = " + str(FEATURE_SCHEMA_VERSION) + " "
             "ORDER BY window_start_utc",
             (user_id,),
         ).fetchall()

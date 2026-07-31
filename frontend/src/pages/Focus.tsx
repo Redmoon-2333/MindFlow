@@ -69,6 +69,7 @@ export default function Focus() {
   const [feedbackDrafts, setFeedbackDrafts] = useState<Record<string, FeedbackDraft>>({});
   const [feedbackSaving, setFeedbackSaving] = useState<string | null>(null);
   const [feedbackSaved, setFeedbackSaved] = useState<Set<string>>(new Set());
+  const [savedFeedback, setSavedFeedback] = useState<Record<string, FeedbackDraft>>({});
 
   const loadSessions = useCallback(async (d: string) => {
     setLoading(true);
@@ -128,6 +129,7 @@ export default function Focus() {
         task_type: draft.taskType || undefined,
       });
       setFeedbackSaved((current) => new Set(current).add(sessionId));
+      setSavedFeedback((current) => ({ ...current, [sessionId]: draft }));
     } catch (e: unknown) {
       setError(getErrorMessage(e, "反馈保存失败"));
     } finally {
@@ -280,6 +282,13 @@ export default function Focus() {
               const sessionTypeClass = sessionType === "focus" ? "badge-success" : sessionType === "neutral" ? "badge-info" : sessionType === "distraction" ? "badge-danger" : "badge-warning";
               const switches = session.switch_count ?? session.switches ?? 0;
               const draft = feedbackDrafts[sessionId] ?? { label: "mixed", score: 3, taskType: "" };
+              const savedDraft = savedFeedback[sessionId];
+              const feedbackLabel =
+                savedDraft?.label ??
+                ("feedback_label" in session && typeof session.feedback_label === "string" ? session.feedback_label : undefined);
+              const feedbackScore =
+                savedDraft?.score ??
+                ("feedback_score" in session && typeof session.feedback_score === "number" ? session.feedback_score : undefined);
               return (
                 <div
                   key={sessionId}
@@ -302,14 +311,19 @@ export default function Focus() {
                     <div className="flex gap16" style={{ alignItems: "center" }}>
                                             {score != null && <span className={`badge ${score >= 60 ? "badge-success" : score >= 35 ? "badge-info" : "badge-danger"}`}>{Math.round(score)}分</span>}
                       {sessionTypeLabel && <span className={`badge ${sessionTypeClass}`}>{sessionTypeLabel}</span>}
-                      {(session as any).feedback_label && (
-                        <span className="badge badge-primary" title={`已标记: ${(session as any).feedback_label} (${(session as any).feedback_score}/5)`}>
-                          已标记: {(session as any).feedback_label}
+                      {feedbackLabel && (
+                        <span className="badge badge-primary" title={`已标记: ${feedbackLabel} (${feedbackScore}/5)`}>
+                          已标记: {feedbackLabel}
                         </span>
                       )}
                       <div style={{ textAlign: "center", minWidth: 60 }}><div style={{ fontSize: 13, fontWeight: 500 }}>{switches}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>切换次数</div></div>
                     </div>
                   </div>
+                   {feedbackSaved.has(sessionId) ? (
+                    <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "var(--color-bg-secondary)", fontSize: 13, color: "var(--color-text-secondary)" }}>
+                      已保存反馈：{feedbackLabel} ({feedbackScore}/5)
+                    </div>
+                  ) : (
                   <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "var(--color-bg-secondary)" }}>
                     <div className="flex flex-between" style={{ gap: 12, flexWrap: "wrap", alignItems: "end" }}>
                       <div className="form-group" style={{ margin: 0, minWidth: 150 }}><label>这次状态</label><select value={draft.label} onChange={(event) => setFeedbackDrafts((current) => ({ ...current, [sessionId]: { ...draft, label: event.target.value as FeedbackDraft["label"] } }))}><option value="focus">专注</option><option value="distracted">分心</option><option value="mixed">混合</option></select></div>
@@ -319,6 +333,7 @@ export default function Focus() {
                     </div>
                     <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 8 }}>1–2 分用于分心标签，4–5 分用于专注标签，3 分或混合只用于不确定性评估。</div>
                   </div>
+                  )}
                 </div>
               );
             })}

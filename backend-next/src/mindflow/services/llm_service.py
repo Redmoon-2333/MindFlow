@@ -61,6 +61,7 @@ class AttributionOutcome:
     cached: bool = False
     degraded: bool = False
     crisis_detected: bool = False
+    degradation_path: tuple[str, ...] = ()
 
 
 _LLM_NOT_CONFIGURED_HINT = (
@@ -227,7 +228,7 @@ class LLMService:
         summary_json = serialize_summary(summary)
 
         # ── 5-7. Three-tier degradation ───────────────────────────────
-        assessment, source, degraded = await self._run_degradation_chain(summary, summary_json)
+        assessment, source, degraded, degradation_path = await self._run_degradation_chain(summary, summary_json)
 
         # ── 8. Persist ────────────────────────────────────────────────
         await self._persist_assessment(
@@ -236,12 +237,15 @@ class LLMService:
             assessment=assessment,
             source=source,
             analysis_kind=analysis_kind,
+            degraded=degraded,
+            degradation_path=list(degradation_path),
         )
 
         return AttributionOutcome(
             assessment=assessment,
             source=source,
             degraded=degraded,
+            degradation_path=degradation_path,
         )
 
     async def _persist_assessment(
@@ -252,6 +256,8 @@ class LLMService:
         assessment: dict[str, Any],
         source: SourceType,
         analysis_kind: str = "daily_attribution",
+        degraded: bool | None = None,
+        degradation_path: list[str] | None = None,
     ) -> None:
         await self._analysis_repo.upsert(
             user_id=user_id,
@@ -266,6 +272,8 @@ class LLMService:
             llm_model=source,
             analysis_kind=analysis_kind,
             source=source,
+            degraded=degraded,
+            degradation_path=degradation_path,
         )
 
     # ── Degradation chain ─────────────────────────────────────────────
@@ -274,7 +282,7 @@ class LLMService:
         self,
         summary: BehaviorSummary,
         summary_json: str,
-    ) -> tuple[dict[str, Any], SourceType, bool]:
+    ) -> tuple[dict[str, Any], SourceType, bool, list[str]]:
         """Execute L1 → L2 → L3, returning (assessment, source, degraded).
 
         Delegates to typed fallback nodes (graph/fallback_nodes.py) so
@@ -283,7 +291,7 @@ class LLMService:
         transport) are preserved exactly.
 
         Returns:
-            A tuple of (assessment_dict, source_string, was_degraded).
+            A tuple of (assessment_dict, source_string, was_degraded, degradation_path).
         """
         from datetime import date as _date
 
@@ -328,6 +336,7 @@ class LLMService:
                 ds_update["current_result"],
                 ds_update.get("source", "deepseek"),
                 ds_update.get("degraded", False),
+                list(ds_update.get("degradation_path") or ["deepseek"]),
             )
 
         # L2: Ollama
@@ -338,6 +347,7 @@ class LLMService:
                 os_update["current_result"],
                 os_update.get("source", "ollama"),
                 os_update.get("degraded", True),
+                list(os_update.get("degradation_path") or ["deepseek", "ollama"]),
             )
 
         # L3: RuleEngine (never fails)
@@ -347,6 +357,7 @@ class LLMService:
             re_update.get("current_result", {}),
             re_update.get("source", "rule_engine"),
             re_update.get("degraded", True),
+            list(re_update.get("degradation_path") or ["deepseek", "ollama", "rule_engine"]),
         )
 
     # ── Ollama helper ─────────────────────────────────────────────────

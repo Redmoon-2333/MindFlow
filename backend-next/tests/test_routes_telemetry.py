@@ -193,7 +193,7 @@ class TestFocusPredictionResponseContract:
                 "reason": "未加载 ML 模型",
                 "uncertainty": 1.0,
                 "top_factors": [],
-                "feature_schema_version": 2,
+                "feature_schema_version": 3,
                 "window_count": 0,
                 "window_start_utc": None,
                 "coverage_ratio": 0.0,

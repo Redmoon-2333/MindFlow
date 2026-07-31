@@ -6,6 +6,7 @@ import {
   getModelStatus,
   runAttribution,
   getErrorMessage,
+  ApiError,
 } from "../api";
 import type {
   AnalyticsPatterns,
@@ -62,8 +63,14 @@ export default function Analytics() {
   const fetchBaseline = useCallback(async () => {
     setLoading((p) => ({ ...p, baseline: true }));
     try {
-      const data = await getBaseline();
-      setBaseline(data);
+      const state = await getBaseline();
+      if (!state.ok) {
+        // Malformed wire payload — hide the comparison card, surface the error.
+        setBaseline(null);
+        setError(getErrorMessage(new ApiError("基线数据格式无效", 500), "基线数据加载失败"));
+        return;
+      }
+      setBaseline(state);
     } catch (e: unknown) {
       setError(getErrorMessage(e, "基线数据加载失败"));
     } finally {
@@ -234,16 +241,16 @@ export default function Analytics() {
               <h3>基线对比</h3>
               <div className="flex gap16" style={{ fontSize: 13 }}>
                 <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>平均专注时长：</span>
-                  {baseline.avg_focus_min != null ? `${baseline.avg_focus_min} 分钟` : "N/A"}
+                  <span style={{ color: "var(--color-text-tertiary)" }}>平均切换次数：</span>
+                  {baseline.mean_app_switch_count != null ? baseline.mean_app_switch_count : "N/A"}
                 </div>
                 <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>日均切换次数：</span>
-                  {baseline.avg_switches_per_day != null ? baseline.avg_switches_per_day : "N/A"}
+                  <span style={{ color: "var(--color-text-tertiary)" }}>活跃时间占比：</span>
+                  {baseline.mean_active_seconds_ratio != null ? `${(baseline.mean_active_seconds_ratio * 100).toFixed(1)}%` : "N/A"}
                 </div>
                 <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>效率评分：</span>
-                  {baseline.productivity_score != null ? baseline.productivity_score : "N/A"}
+                  <span style={{ color: "var(--color-text-tertiary)" }}>空闲时间占比：</span>
+                  {baseline.mean_idle_ratio != null ? `${(baseline.mean_idle_ratio * 100).toFixed(1)}%` : "N/A"}
                 </div>
               </div>
             </div>

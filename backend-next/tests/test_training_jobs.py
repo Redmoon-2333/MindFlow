@@ -70,7 +70,7 @@ def _v2_window(user_id: int, start: datetime, end: datetime) -> dict[str, Any]:
         "user_id": user_id,
         "window_start_utc": start,
         "window_end_utc": end,
-        "feature_schema_version": 2,
+        "feature_schema_version": 3,
         "features_json": _V2_FEATURES_JSON,
         "label": None,
     }
@@ -686,7 +686,7 @@ class TestTerminalSuccess:
             assert final.completed_at is not None
             assert final.source == "db"
             if final.status == "succeeded":
-                assert final.feature_schema_version == 2
+                assert final.feature_schema_version == 3
                 assert final.quality_gate is not None
                 assert final.evaluation is not None
 
