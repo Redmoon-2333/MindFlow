@@ -8,7 +8,9 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import json
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
@@ -16,7 +18,9 @@ from fastapi.testclient import TestClient
 
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes.analytics import router as analytics_router
+from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.events import make_event
+from mindflow.domain.feature_schema import V2_FEATURE_NAMES
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
     activity_events,
@@ -29,6 +33,7 @@ from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
     focus_sessions,
 )
+from mindflow.services import analysis_service as analysis_service_module
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.train.models import ModelManager
 
@@ -120,8 +125,13 @@ async def empty_app(engine, session_factory) -> FastAPI:
 class TestPatterns:
     """Pattern analysis endpoint tests."""
 
-    def test_patterns_success(self, seeded_app):
+    def test_patterns_success(self, seeded_app, monkeypatch):
         """GET /analytics/patterns should return pattern data."""
+        monkeypatch.setattr(
+            analysis_service_module,
+            "business_today",
+            lambda _timezone: date(2026, 7, 17),
+        )
         client = TestClient(seeded_app)
         resp = client.get("/api/v1/analytics/patterns")
         assert resp.status_code == 200
@@ -234,3 +244,128 @@ def test_model_status_prefers_ready_v2_model() -> None:
 
     assert data["mode"] == "ready"
     assert data["feature_schema_version"] == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Baseline weighted-mean route tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+async def baseline_with_data_app(engine, session_factory) -> FastAPI:
+    """Test app with a persisted baseline containing unequal bucket counts."""
+    async with engine.begin() as conn:
+        await conn.run_sync(baseline_models.metadata.create_all)
+
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(analytics_router, prefix="/api/v1")
+    app.state.collector_service = None
+
+    # Build a BaselineModel with two unequal V2 buckets:
+    #   bucket (9, 0): 10 samples, app_switch_count mean=20, active_seconds_ratio mean=0.8
+    #   bucket (14, 3): 30 samples, app_switch_count mean=10, active_seconds_ratio mean=0.4
+    # Weighted app_switch_count = (10*20 + 30*10) / 40 = 12.5
+    # Weighted active_seconds_ratio = (10*0.8 + 30*0.4) / 40 = 0.5
+    model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+    model.update([
+        *_rows(10, hour=9, dow=0, app_switch_count=20.0, active_seconds_ratio=0.8),
+        *_rows(30, hour=14, dow=3, app_switch_count=10.0, active_seconds_ratio=0.4),
+    ])
+
+    app.state.baseline_repository = BaselineRepository(session_factory=session_factory)
+
+    # Persist the baseline directly into the DB
+    import sqlalchemy as sa
+
+    async with session_factory() as session:
+        await session.execute(
+            sa.insert(baseline_models).values(
+                id="test-baseline-1",
+                user_id=1,
+                model_json=json.dumps(model.to_dict(), ensure_ascii=False),
+                training_events_count=40,
+                created_at=model.created_at.isoformat(),
+                updated_at=model.updated_at.isoformat(),
+            )
+        )
+        await session.commit()
+
+    return app
+
+
+def _rows(
+    n: int,
+    hour: int,
+    dow: int,
+    app_switch_count: float = 15.0,
+    active_seconds_ratio: float = 0.5,
+) -> list[dict]:
+    """Generate *n* V2 feature-window rows bucketed at local (hour, dow).
+
+    ``window_start_utc`` is chosen so the Asia/Shanghai local time is
+    (hour, dow); ``features_json`` carries the flattened V2 vocabulary.
+    """
+    local = datetime.combine(
+        date(2026, 7, 27), time(hour=hour), tzinfo=ZoneInfo("Asia/Shanghai"),
+    )
+    shift = (dow - local.weekday()) % 7
+    start = (local + timedelta(days=shift)).astimezone(UTC)
+    features = {name: 0.0 for name in V2_FEATURE_NAMES}
+    features.update({
+        "app_switch_count": app_switch_count,
+        "active_seconds_ratio": active_seconds_ratio,
+    })
+    return [
+        {"window_start_utc": start, "features_json": json.dumps(features)}
+        for _ in range(n)
+    ]
+
+
+class TestBaselineWeightedMean:
+    """Baseline route exposes a sample-weighted V2 model.
+
+    After the V2 migration the persisted vocabulary is exactly the 24
+    V2_FEATURE_NAMES; the legacy ``switch_frequency`` / ``productivity_ratio``
+    route fields are no longer stored features and read as null here. The
+    canonical field rename (``mean_app_switch_count`` etc.) is Todo 10.
+    """
+
+    def test_baseline_exposes_v2_feature_vocabulary(
+        self,
+        baseline_with_data_app,
+    ):
+        client = TestClient(baseline_with_data_app)
+        resp = client.get("/api/v1/analytics/baseline")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["features"] == list(V2_FEATURE_NAMES)
+        assert data["total_samples"] == 40 * len(V2_FEATURE_NAMES)
+
+    def test_baseline_legacy_feature_means_are_null_after_v2_migration(
+        self,
+        baseline_with_data_app,
+    ):
+        """switch_frequency/productivity_ratio are not V2 features → null."""
+        client = TestClient(baseline_with_data_app)
+        resp = client.get("/api/v1/analytics/baseline")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["switch_frequency"] is None
+        assert data["productivity_ratio"] is None
+
+    def test_baseline_model_weighted_mean_is_not_unweighted(self) -> None:
+        """Model-level weighted means stay correct on V2 features.
+
+        Weighted app_switch_count = (10*20 + 30*10) / 40 = 12.5, while the
+        naive unweighted mean of bucket means would be (20 + 10) / 2 = 15.0.
+        Route exposure of canonical V2 means is wired in Todo 10.
+        """
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        model.update([
+            *_rows(10, hour=9, dow=0, app_switch_count=20.0, active_seconds_ratio=0.8),
+            *_rows(30, hour=14, dow=3, app_switch_count=10.0, active_seconds_ratio=0.4),
+        ])
+        assert model.overall_mean("app_switch_count") == 12.5
+        assert model.overall_mean("app_switch_count") != 15.0
+        assert model.overall_mean("active_seconds_ratio") == 0.5
