@@ -15,6 +15,7 @@ import {
   getErrorMessage,
 } from "../api";
 import type { ActivityItem, AutonomyStatus, CollectorStatus, FocusPredictionResponse, FocusTrendResponse, HealthData, InterventionHistoryItem, ModelStatus } from "../api";
+import { toFocusPredictionView } from "../prediction-state";
 import { realtimeClient } from "../realtime";
 import type { RealtimeStatus } from "../realtime";
 
@@ -135,6 +136,8 @@ export default function Dashboard() {
       </div>
     );
   }
+
+  const predictionView = focusPrediction ? toFocusPredictionView(focusPrediction) : null;
 
   return (
     <div>
@@ -300,21 +303,18 @@ export default function Dashboard() {
             <div className="flex-between mb8">
               <h3 style={{ marginBottom: 0 }}>ML 专注预测</h3>
               <span
-                className={`badge ${focusPrediction ? "badge-success" : "badge-info"}`}
+                className={`badge ${predictionView ? (predictionView.ready ? "badge-success" : "badge-warning") : "badge-info"}`}
               >
-                {focusPrediction ? "已获取" : "未获取"}
+                {predictionView ? predictionView.statusLabel : "未获取"}
               </span>
             </div>
-            {focusPrediction ? (
+            {predictionView ? (
               <div>
                 <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
-                  {(focusPrediction.prediction * 100).toFixed(1)}
+                  {predictionView.display}
                 </div>
                 <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-                  预测来源: {focusPrediction.source}
-                </div>
-                <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-                  模型版本: {focusPrediction.model_version}
+                  {predictionView.reason || `预测模式: ${predictionView.mode}`}
                 </div>
               </div>
             ) : (

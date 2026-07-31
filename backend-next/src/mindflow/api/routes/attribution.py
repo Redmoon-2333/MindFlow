@@ -88,12 +88,12 @@ async def post_attribution(
                 )
             )
             verdict = result.verdict
-            return {
+            types_list = [t.value for t in verdict.types]
+            conf_map = {k.value: v for k, v in verdict.confidence.items()}
+            result = {
                 "assessment": {
-                    "procrastination_types": [t.value for t in verdict.types],
-                    "type_confidence": {
-                        k.value: v for k, v in verdict.confidence.items()
-                    },
+                    "procrastination_types": types_list,
+                    "type_confidence": conf_map,
                     "cbt_technique": (
                         verdict.recommended_technique.value
                         if verdict.recommended_technique is not None
@@ -106,7 +106,17 @@ async def post_attribution(
                 "meta": {
                     "degraded": verdict.source != "panel",
                 },
+                # Frontend aliases (Analytics.tsx reads these)
+                "confidence": max(conf_map.values()) if conf_map else None,
+                "procrastination_type": types_list[0] if types_list else None,
+                "cbt_technique": (
+                    verdict.recommended_technique.value
+                    if verdict.recommended_technique is not None
+                    else None
+                ),
+                "evidence": verdict.rationale,
             }
+            return result
         outcome = await llm_service.analyze(
             user_id=1,
             target_date=target_date,
@@ -122,11 +132,19 @@ async def post_attribution(
 
         raise _internal_error() from None
 
+    assessment = outcome.assessment or {}
+    types_list = assessment.get("procrastination_types", [])
+    conf_map = assessment.get("type_confidence", {})
     return {
-        "assessment": outcome.assessment,
+        "assessment": assessment,
         "source": outcome.source,
         "cached": outcome.cached,
         "meta": {
             "degraded": outcome.degraded,
         },
+        # Frontend aliases
+        "confidence": max(conf_map.values()) if conf_map else None,
+        "procrastination_type": types_list[0] if types_list else None,
+        "cbt_technique": assessment.get("cbt_technique"),
+        "evidence": assessment.get("response_text"),
     }

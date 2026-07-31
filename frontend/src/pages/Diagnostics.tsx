@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { getAIRuns, getAIRunDetail, getFocusPrediction, getHealthLive, getHealthReady, getErrorMessage } from "../api";
 import type { AIRunItem, AIRunDetail, FocusPredictionResponse, HealthLiveResponse, HealthReadyResponse } from "../api";
+import { toFocusPredictionView } from "../prediction-state";
 
 function statusBadgeClass(status: string): string {
   const s = status.toLowerCase();
@@ -74,6 +75,8 @@ export default function Diagnostics() {
     getHealthReady().then(setReady).catch(() => {});
   }, [fetchRuns]);
 
+  const predictionView = prediction ? toFocusPredictionView(prediction) : null;
+
   const handleRowClick = (runId: string) => {
     if (openRunId === runId) {
       setOpenRunId(null);
@@ -133,16 +136,20 @@ export default function Diagnostics() {
         <div className="stat-card">
           <div className="label">专注预测分数</div>
           <div className="value">
-            {prediction != null ? (prediction.prediction * 100).toFixed(1) : "--"}
+            {predictionView ? predictionView.display : "--"}
           </div>
           <div className="sub">
-            {prediction?.source ?? ""}
+            {predictionView
+              ? predictionView.reason
+                ? `${predictionView.statusLabel} · ${predictionView.reason}`
+                : `预测模式: ${predictionView.mode}`
+              : ""}
           </div>
         </div>
         <div className="stat-card">
-          <div className="label">模型版本</div>
+          <div className="label">预测模式</div>
           <div className="value" style={{ fontSize: 22 }}>
-            {prediction?.model_version ?? "--"}
+            {prediction?.mode ?? "--"}
           </div>
           <div className="sub">运行记录: {totalRuns} 条</div>
         </div>

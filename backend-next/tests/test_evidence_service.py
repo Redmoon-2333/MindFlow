@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 import sqlalchemy as sa
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.events import make_event
+from mindflow.domain.feature_schema import V2_FEATURE_NAMES
 from mindflow.domain.features import MAX_ACCEPTABLE_SWITCHES_PER_HOUR
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
@@ -44,6 +46,35 @@ from mindflow.services.evidence_service import (
 
 def _utc(iso: str) -> datetime:
     return datetime.fromisoformat(iso).replace(tzinfo=UTC)
+
+
+def _local_utc(hour: int, dow: int, day: int) -> datetime:
+    """UTC instant whose Asia/Shanghai local time is (hour, dow) on July *day*."""
+    local = datetime(2026, 7, day, hour, tzinfo=ZoneInfo("Asia/Shanghai"))
+    shift = (dow - local.weekday()) % 7
+    return (local + timedelta(days=shift)).astimezone(UTC)
+
+
+def _v2_row(
+    start_utc: datetime,
+    *,
+    app_switch_count: float = 10.0,
+    idle_ratio: float = 0.05,
+    active_seconds_ratio: float = 0.5,
+    process_name: str = "code.exe",
+) -> dict[str, Any]:
+    """V2 feature-window row at the given UTC window start."""
+    features = {name: 0.0 for name in V2_FEATURE_NAMES}
+    features.update({
+        "app_switch_count": app_switch_count,
+        "idle_ratio": idle_ratio,
+        "active_seconds_ratio": active_seconds_ratio,
+    })
+    return {
+        "window_start_utc": start_utc,
+        "features_json": json.dumps(features),
+        "process_name": process_name,
+    }
 
 
 _BASE_TS = _utc("2026-07-18T08:00:00")
@@ -159,52 +190,27 @@ async def _insert_events(
 
 
 def _train_baseline() -> BaselineModel:
-    """Create a baseline model with sufficient data at hour=8, dow=5 (Saturday).
+    """Create a V2 baseline model with sufficient data at local Sat 08:00.
 
-    Includes process_name in training rows so baseline has known apps.
+    Local Sat 08:00 in Asia/Shanghai == 00:00 UTC on 2026-07-11, which maps
+    to the (8, 5) bucket the evidence service scores (it reads the UTC hour).
+    Includes process_name in training rows so the baseline has known apps.
     """
-    model = BaselineModel(user_id=1)
-    # Train hour=8, dow=5 with multiple samples for deviation detection
+    model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+    saturday = _local_utc(hour=8, dow=5, day=11)
     for i in range(10):
-        rows = [{
-            "hour_of_day": 8,
-            "day_of_week": 5,
-            "switch_frequency": 10.0 + (i % 3) * 2.0,
-            "unique_app_count": 4.0 + (i % 2),
-            "max_app_duration": 600.0,
-            "idle_ratio": 0.05,
-            "productivity_ratio": 0.5,
-            "entertainment_ratio": 0.2,
-            "social_ratio": 0.1,
-            "title_code_ratio": 0.0,
-            "title_doc_ratio": 0.0,
-            "title_url_ratio": 0.0,
-            "title_meeting_ratio": 0.0,
-            "title_entertainment_ratio": 0.0,
-            "process_name": "code.exe",
-            "window_start": f"2026-07-{11 + (i % 7):02d}T08:00:00",
-        }]
-        model.update(rows)
+        model.update([_v2_row(
+            saturday,
+            app_switch_count=10.0 + (i % 3) * 2.0,
+            active_seconds_ratio=0.5,
+        )])
     # Ensure total_days >= MIN_BASELINE_DAYS by adding other-dated rows
+    # (14:00 local == 06:00 UTC).
     for d in range(7):
-        model.update([{
-            "hour_of_day": 14,
-            "day_of_week": d,
-            "switch_frequency": 12.0,
-            "unique_app_count": 4.0,
-            "max_app_duration": 600.0,
-            "idle_ratio": 0.05,
-            "productivity_ratio": 0.5,
-            "entertainment_ratio": 0.2,
-            "social_ratio": 0.1,
-            "title_code_ratio": 0.0,
-            "title_doc_ratio": 0.0,
-            "title_url_ratio": 0.0,
-            "title_meeting_ratio": 0.0,
-            "title_entertainment_ratio": 0.0,
-            "process_name": "code.exe",
-            "window_start": f"2026-07-{11 + d:02d}T14:00:00",
-        }])
+        model.update([_v2_row(
+            datetime(2026, 7, 11 + d, 6, 0, tzinfo=UTC),
+            app_switch_count=12.0,
+        )])
     return model
 
 
@@ -406,24 +412,9 @@ class TestInsufficientBaseline:
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         """Insufficient baseline data → info item with '还需N天' message."""
-        # Insert a baseline with very few samples
-        model = BaselineModel(user_id=1)
-        model.update([{
-            "hour_of_day": 8,
-            "day_of_week": 5,
-            "switch_frequency": 10.0,
-            "unique_app_count": 3.0,
-            "max_app_duration": 500.0,
-            "idle_ratio": 0.05,
-            "productivity_ratio": 0.5,
-            "entertainment_ratio": 0.2,
-            "social_ratio": 0.1,
-            "title_code_ratio": 0.0,
-            "title_doc_ratio": 0.0,
-            "title_url_ratio": 0.0,
-            "title_meeting_ratio": 0.0,
-            "title_entertainment_ratio": 0.0,
-        }])
+        # Insert a baseline with very few samples (1 V2 row == 24 samples).
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        model.update([_v2_row(_local_utc(hour=8, dow=5, day=11), app_switch_count=10.0)])
         await _insert_baseline(session_factory, model)
 
         events = _make_events(count=15)
@@ -693,41 +684,14 @@ class TestNoveltyDetection:
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         """App not in baseline top apps → flagged as novel."""
-        # Baseline with known apps
-        model = BaselineModel(user_id=1)
-        model.update([{
-            "hour_of_day": 8,
-            "day_of_week": 5,
-            "switch_frequency": 10.0,
-            "unique_app_count": 3.0,
-            "max_app_duration": 500.0,
-            "idle_ratio": 0.05,
-            "productivity_ratio": 0.5,
-            "entertainment_ratio": 0.2,
-            "social_ratio": 0.1,
-            "title_code_ratio": 0.0,
-            "title_doc_ratio": 0.0,
-            "title_url_ratio": 0.0,
-            "title_meeting_ratio": 0.0,
-            "title_entertainment_ratio": 0.0,
-            "process_name": "code.exe",
-        }, {
-            "hour_of_day": 8,
-            "day_of_week": 5,
-            "switch_frequency": 12.0,
-            "unique_app_count": 4.0,
-            "max_app_duration": 600.0,
-            "idle_ratio": 0.05,
-            "productivity_ratio": 0.5,
-            "entertainment_ratio": 0.2,
-            "social_ratio": 0.1,
-            "title_code_ratio": 0.0,
-            "title_doc_ratio": 0.0,
-            "title_url_ratio": 0.0,
-            "title_meeting_ratio": 0.0,
-            "title_entertainment_ratio": 0.0,
-            "process_name": "terminal.exe",
-        }])
+        # Baseline with known apps (V2 rows carrying process_name).
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        model.update([
+            _v2_row(_local_utc(hour=8, dow=5, day=11), app_switch_count=10.0,
+                    process_name="code.exe"),
+            _v2_row(_local_utc(hour=8, dow=5, day=11), app_switch_count=12.0,
+                    process_name="terminal.exe"),
+        ])
         # Manually ensure some data so has_sufficient_data passes
         # We need to also check total_days — the baseline has it via update
         await _insert_baseline(session_factory, model)

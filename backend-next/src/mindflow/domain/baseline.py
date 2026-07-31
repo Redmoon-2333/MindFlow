@@ -2,51 +2,72 @@
 
 Learns what is "normal" for each user by tracking feature distributions
 across time-of-day and day-of-week buckets. Updates incrementally using
-Welford's online algorithm. No external dependencies beyond stdlib.
+Welford's online algorithm.
+
+Consumes v2 feature windows: each row carries ``window_start_utc`` and a
+flattened ``features_json`` (the 24-feature vocabulary from
+``domain/feature_schema``). Bucketing into local (hour, weekday) and the
+unique local dates used for ``total_days`` happen in the configured business
+timezone. No external dependencies beyond stdlib.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
-from datetime import UTC, datetime
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Any
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
+from mindflow.time_utils import TimezoneLike, resolve_timezone
+
+
+def _timezone_key(value: TimezoneLike) -> str:
+    """Stable serialization key for a timezone (IANA name, or tzname fallback)."""
+    if not isinstance(value, str):
+        key = getattr(value, "key", None)
+        if key:
+            return str(key)
+        name = getattr(value, "tzname", None)
+        if name is not None:
+            return str(name(None)) or "UTC"
+        return "UTC"
+    return value
+
+
+def _parse_datetime(value: Any) -> datetime:
+    """Parse a window timestamp; naive datetimes are assumed UTC."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+    s = str(value).replace("Z", "+00:00")
+    dt = datetime.fromisoformat(s)
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
 
 class BaselineModel:
-    """Per-user behavior baseline with time-aware statistics.
+    """Per-user behavior baseline with time-aware bucket statistics.
 
-    For each (hour_of_day, day_of_week) bucket, tracks:
-    - count, mean, variance for each numeric feature
-    - top process names and their frequency
-    - total observation count
-
-    Persistable as JSON and reloadable.
+    Persistable as JSON and reloadable. ``timezone`` is an explicit concern
+    (an IANA name or ``tzinfo``) used to derive local (hour, weekday) buckets
+    and unique local dates from UTC window starts.
     """
 
-    FEATURE_COLS = [
-        "unique_app_count",
-        "switch_frequency",
-        "productivity_ratio",
-        "entertainment_ratio",
-        "social_ratio",
-        "max_app_duration",
-        "idle_ratio",
-        "title_code_ratio",
-        "title_doc_ratio",
-        "title_url_ratio",
-        "title_meeting_ratio",
-        "title_entertainment_ratio",
-    ]
+    FEATURE_COLS = list(V2_FEATURE_NAMES)
     GROUP_COLS = ["hour_of_day", "day_of_week"]
+    FEATURE_SCHEMA_VERSION = FEATURE_SCHEMA_VERSION
 
-    def __init__(self, user_id: int) -> None:
+    def __init__(self, user_id: int, timezone: TimezoneLike = "local") -> None:
         self.user_id = user_id
+        self.timezone: TimezoneLike = timezone
+        self._tz: tzinfo = resolve_timezone(timezone)
         self.created_at = datetime.now(UTC)
         self.updated_at = self.created_at
         self.total_days: int = 0
+        # Local calendar dates seen across all updates — the exact source for
+        # total_days. Kept as a set so disjoint batches never lose days.
+        self._local_dates: set[str] = set()
 
         # stats[hour][dow][feature] = {"n": int, "mean": float, "M2": float}
         self._stats: dict[int, dict[int, dict[str, dict[str, float]]]] = {}
@@ -63,30 +84,63 @@ class BaselineModel:
                 self._stats[hour][dow] = {}
                 self._top_apps[hour][dow] = {}
 
-    def update(self, rows: list[Mapping[str, Any]]) -> int:
-        """Incrementally update baseline with new feature windows.
+    def _window_start_local(self, row: Mapping[str, Any]) -> datetime | None:
+        """UTC window start bucketed into the configured business timezone.
 
-        Uses Welford's online algorithm for mean and variance.
+        Returns None for a missing/malformed timestamp so the row is skipped
+        without corrupting counts (same boundary policy as train/v2.py).
+        """
+        raw = row.get("window_start_utc") or row.get("window_start")
+        if raw is None:
+            return None
+        try:
+            dt = _parse_datetime(raw)
+        except (ValueError, TypeError):
+            return None
+        return dt.astimezone(self._tz)
 
-        Args:
-            rows: List of feature dicts, each containing FEATURE_COLS
-                  columns plus hour_of_day, day_of_week, and optionally
-                  process_name.
+    @staticmethod
+    def _features(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """Parse the flattened ``features_json`` (string or dict) payload."""
+        raw = row.get("features") or row.get("features_json")
+        if raw is None:
+            return {}
+        if isinstance(raw, Mapping):
+            return raw
+        try:
+            parsed = json.loads(str(raw))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return None
+        return parsed if isinstance(parsed, Mapping) else None
 
-        Returns:
-            Number of windows processed.
+    def update(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Incrementally update with new v2 feature windows (Welford's algorithm).
+
+        Each row is a feature window with ``window_start_utc`` (or the legacy
+        ``window_start`` alias) and flattened ``features_json`` carrying the 24
+        v2 features. Rows with a malformed timestamp or unparseable JSON are
+        skipped; nonnumeric feature values are skipped per feature. Neither
+        path corrupts existing counts.
+
+        Returns the number of windows processed.
         """
         if not rows:
             return 0
 
         processed = 0
         for row in rows:
-            hour = int(row.get("hour_of_day", 12))
-            dow = int(row.get("day_of_week", 0))
+            local = self._window_start_local(row)
+            if local is None:
+                continue
+            hour = local.hour
+            dow = local.weekday()
+            features = self._features(row)
+            if features is None:
+                continue
             bucket = self._stats[hour][dow]
 
             for col in self.FEATURE_COLS:
-                val = row.get(col)
+                val = features.get(col)
                 if val is None:
                     continue
                 try:
@@ -108,17 +162,15 @@ class BaselineModel:
 
             processed += 1
 
-        # Track unique dates for total_days estimate
-        unique_dates: set[str] = set()
-        for row in rows:
-            date_val = row.get("date") or row.get("window_start")
-            if date_val is not None:
-                if isinstance(date_val, str):
-                    unique_dates.add(date_val[:10])
-                else:
-                    unique_dates.add(str(date_val)[:10])
-        self.total_days = max(self.total_days, len(unique_dates))
-        self.updated_at = datetime.now(UTC)
+        if processed:
+            # Track unique local dates for the total_days estimate. Only rows
+            # with a valid timestamp contribute, so malformed rows can't inflate it.
+            for row in rows:
+                local = self._window_start_local(row)
+                if local is not None:
+                    self._local_dates.add(local.date().isoformat())
+            self.total_days = max(self.total_days, len(self._local_dates))
+            self.updated_at = datetime.now(UTC)
 
         return processed
 
@@ -149,12 +201,7 @@ class BaselineModel:
         return [{"app": a, "count": c} for a, c in sorted_apps]
 
     def has_sufficient_data(self, min_samples: int = 30) -> bool:
-        """Check if baseline has enough data overall to be reliable.
-
-        Note: counts samples across ALL (hour, dow) buckets. A True here does
-        not guarantee any specific bucket is well-populated — use
-        has_bucket_sufficient_data() for per-bucket checks.
-        """
+        """Check if baseline has enough total samples to be reliable."""
         total = self.total_samples()
         return total >= min_samples
 
@@ -168,22 +215,39 @@ class BaselineModel:
         return total
 
     def has_bucket_sufficient_data(self, hour: int, dow: int, min_samples: int = 2) -> bool:
-        """Check if a specific (hour, dow) bucket has enough samples.
-
-        Complements has_sufficient_data(): deviation scoring for a given time
-        window needs the matching bucket populated, not just the model overall.
-        """
+        """Check if a specific (hour, dow) bucket has enough samples."""
         bucket = self._stats.get(hour, {}).get(dow, {})
         if not bucket:
             return False
         return all(int(s.get("n", 0)) >= min_samples for s in bucket.values())
 
+    def overall_mean(self, feature: str) -> float | None:
+        """Sample-weighted mean of *feature* across all (hour, dow) buckets.
+
+        Uses each bucket's n and mean so that larger buckets carry more weight.
+        Returns None when *feature* is not a valid FEATURE_COL or has no data.
+        """
+        if feature not in self.FEATURE_COLS:
+            return None
+        total_n = 0.0
+        weighted_sum = 0.0
+        for hour_bucket in self._stats.values():
+            for dow_bucket in hour_bucket.values():
+                s = dow_bucket.get(feature)
+                if s is not None and s["n"] > 0:
+                    weighted_sum += s["n"] * s["mean"]
+                    total_n += s["n"]
+        return round(weighted_sum / total_n, 4) if total_n > 0 else None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "user_id": self.user_id,
+            "feature_schema_version": self.FEATURE_SCHEMA_VERSION,
+            "timezone": _timezone_key(self.timezone),
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "total_days": self.total_days,
+            "local_dates": sorted(self._local_dates),
             "stats": {
                 str(h): {
                     str(d): {
@@ -204,10 +268,20 @@ class BaselineModel:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BaselineModel:
-        model = cls(user_id=data["user_id"])
+        model = cls(
+            user_id=data["user_id"],
+            timezone=data.get("timezone", "local"),
+        )
         model.created_at = datetime.fromisoformat(data["created_at"])
         model.updated_at = datetime.fromisoformat(data["updated_at"])
         model.total_days = data.get("total_days", 0)
+        # Restore the exact local-date set for V2 payloads; legacy V1 payloads
+        # predate it and keep only the stored count (they get rebuilt anyway).
+        model._local_dates = set(data.get("local_dates", ()))
+        # Stored schema version is preserved verbatim (defaults to 1 for legacy
+        # V1 payloads without the field) so a mismatch stays detectable — there
+        # is deliberately no V1 compatibility mapper.
+        model.FEATURE_SCHEMA_VERSION = int(data.get("feature_schema_version", 1))
 
         for h_str, hour_bucket in data.get("stats", {}).items():
             h = int(h_str)

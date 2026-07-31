@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
+import pytest
+from test_prediction_service import _make_feature_window, _make_mock_model_manager
 
+from mindflow.services.prediction_service import FocusPredictionService
 from mindflow.services.telemetry_service import TelemetryService
 from mindflow.train.v2 import V2_FEATURE_NAMES
 
@@ -159,3 +162,142 @@ async def test_create_pairing_code_bulk_1000_cleanup(tmp_path) -> None:
     new_code = result["code"]
     assert new_code in service._pairing_codes
     assert service._pairing_codes[new_code] > now
+
+
+# ── predict_latest_focus normalization (real FocusPredictionService) ────────
+
+_MISSING = MagicMock()  # sentinel: replaced with a real mock model manager
+
+
+def _prediction_service_for(
+    windows: list[dict],
+    *,
+    focus_proba: float = 0.75,
+    model_manager: MagicMock | None = _MISSING,
+    classifier_overrides: dict | None = None,
+) -> FocusPredictionService:
+    """Wire a real ``FocusPredictionService`` against a mocked telemetry repo."""
+    repository = AsyncMock()
+    repository.list_feature_windows.return_value = windows
+    if model_manager is _MISSING:
+        model_manager = _make_mock_model_manager(focus_proba=focus_proba)
+    if model_manager is not None and classifier_overrides:
+        for key, value in classifier_overrides.items():
+            setattr(model_manager.classifier, key, value)
+    return FocusPredictionService(
+        telemetry_repository=repository,
+        model_manager=model_manager,
+    )
+
+
+class TestPredictLatestFocusNormalization:
+    """Real FocusPredictionService -> ``TelemetryService.predict_latest_focus``.
+
+    The telemetry service is the single boundary that maps the domain result
+    to the API payload: ``focus_probability`` is numeric only for ``ready``,
+    present-and-null for every non-ready status, while ``status``/``mode``/
+    ``reason`` pass through unchanged.
+    """
+
+    async def _predict_latest(
+        self,
+        tmp_path,
+        *,
+        windows: list[dict] | None = None,
+        **kwargs,
+    ) -> dict:
+        prediction_service = _prediction_service_for(windows or [], **kwargs)
+        service = TelemetryService(
+            repository=AsyncMock(),
+            preferences_repository=AsyncMock(),
+            data_dir=tmp_path,
+            prediction_service=prediction_service,
+        )
+        return await service.predict_latest_focus()
+
+    async def test_ready_returns_numeric_probability(self, tmp_path) -> None:
+        now = datetime.now(UTC)
+        windows = [
+            _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
+        ]
+
+        payload = await self._predict_latest(tmp_path, windows=windows)
+
+        assert payload["status"] == "ready"
+        assert payload["focus_probability"] == pytest.approx(0.75)
+        assert payload["mode"] == "ready"
+        assert payload["reason"] == ""
+
+    async def test_old_window_stale_returns_null_probability(self, tmp_path) -> None:
+        now = datetime.now(UTC)
+        base = now - timedelta(minutes=150)
+        windows = [
+            _make_feature_window(base + timedelta(minutes=5 * i)) for i in range(24)
+        ]
+
+        payload = await self._predict_latest(tmp_path, windows=windows)
+
+        assert payload["status"] == "stale"
+        assert payload["focus_probability"] is None
+        assert payload["mode"] == "ready"
+        assert payload["reason"], "stale must keep its human-readable reason"
+
+    async def test_low_coverage_stale_returns_null_probability(self, tmp_path) -> None:
+        now = datetime.now(UTC)
+        windows = [_make_feature_window(now - timedelta(minutes=5))]
+
+        payload = await self._predict_latest(tmp_path, windows=windows)
+
+        assert payload["status"] == "stale"
+        assert payload["focus_probability"] is None
+        assert payload["reason"], "stale must keep its human-readable reason"
+
+    async def test_schema_mismatch_returns_null_probability(self, tmp_path) -> None:
+        now = datetime.now(UTC)
+        windows = [
+            _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
+        ]
+
+        payload = await self._predict_latest(
+            tmp_path,
+            windows=windows,
+            classifier_overrides={"feature_names_": ["old_feature"]},
+        )
+
+        assert payload["status"] == "schema_mismatch"
+        assert payload["focus_probability"] is None
+        assert payload["mode"] == "rule_engine_only"
+        assert payload["reason"]
+
+    async def test_inference_error_returns_null_probability(self, tmp_path) -> None:
+        now = datetime.now(UTC)
+        windows = [
+            _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
+        ]
+        model_manager = _make_mock_model_manager()
+        model_manager.classifier.predict_proba.side_effect = RuntimeError("model crash")
+
+        payload = await self._predict_latest(
+            tmp_path, windows=windows, model_manager=model_manager
+        )
+
+        assert payload["status"] == "inference_error"
+        assert payload["focus_probability"] is None
+        assert payload["mode"] == "rule_engine_only"
+        assert payload["reason"]
+
+    async def test_no_data_returns_null_probability(self, tmp_path) -> None:
+        payload = await self._predict_latest(tmp_path, windows=[])
+
+        assert payload["status"] == "no_data"
+        assert payload["focus_probability"] is None
+        assert payload["mode"] == "ready"
+        assert payload["reason"]
+
+    async def test_no_model_returns_null_probability(self, tmp_path) -> None:
+        payload = await self._predict_latest(tmp_path, windows=[], model_manager=None)
+
+        assert payload["status"] == "no_model"
+        assert payload["focus_probability"] is None
+        assert payload["mode"] == "rule_engine_only"
+        assert payload["reason"]

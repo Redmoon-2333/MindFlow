@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from mindflow.domain.prediction import FocusPredictionStatus
+
 
 class CollectorStatusResponse(BaseModel):
     status: str
@@ -274,3 +276,96 @@ class TrainingReadinessResponse(BaseModel):
     gates: list[V2GateCheck]
     blockers: list[Blocker]
     current_training_job: TrainingJobSummary | None
+
+
+# ── Report schemas ────────────────────────────────────────────────────
+
+
+class TopAppEntry(BaseModel):
+    """An application entry with name and usage duration."""
+
+    app: str
+    minutes: float
+
+
+# Exact data-state vocabularies shared by the service and the API contract.
+DailyDataState = Literal[
+    "ready",
+    "no_activity",
+    "events_only",
+    "neutral_only",
+    "no_focus",
+    "future",
+]
+WeeklyDataState = Literal["ready", "partial", "no_activity", "future"]
+
+
+class DailyReportResponse(BaseModel):
+    """Typed daily report returned by ``GET /reports/daily``.
+
+    ``top_apps`` is always a list (possibly empty) — never null.  The
+    transient frontend fields (``total_focus_minutes`` /
+    ``total_sessions`` / ``total_distractions`` / ``hourly_distribution``)
+    and ``data_state`` are attached by the report service on both the
+    freshly generated and the cached paths, so every 200 response exposes
+    the same canonical field set.
+    """
+
+    id: str
+    user_id: int
+    date: str
+    total_focus_min: float
+    total_distraction_min: float
+    focus_score: float
+    top_apps: list[TopAppEntry] = Field(default_factory=list)
+    switch_frequency: float
+    pattern_summary: str
+    created_at: str | None = None
+    total_focus_minutes: float
+    total_sessions: int
+    total_distractions: int
+    hourly_distribution: dict[str, float]
+    data_state: DailyDataState
+
+
+class WeeklyReportResponse(BaseModel):
+    """Typed weekly report returned by ``GET /reports/weekly``.
+
+    Expected empty/future weeks return 200 with ``daily_reports == []`` and
+    an explicit ``data_state`` instead of a 404.  ``daily_summary`` entries
+    mirror the canonical per-day totals consumed by the frontend.
+    """
+
+    week_start: str
+    week_end: str
+    daily_reports: list[DailyReportResponse] = Field(default_factory=list)
+    averages: dict[str, float] = Field(default_factory=dict)
+    trend: dict[str, Any] = Field(default_factory=dict)
+    week_number: int
+    intervention_effectiveness: dict[str, Any] | None = None
+    total_focus_minutes: float
+    total_sessions: int
+    total_distractions: int
+    avg_focus_score: float
+    daily_summary: list[dict[str, Any]] = Field(default_factory=list)
+    data_state: WeeklyDataState
+
+
+# ── Focus prediction schemas ─────────────────────────────────────────────
+
+
+class FocusPredictionResponse(BaseModel):
+    """Canonical typed response for ``GET /telemetry/focus-prediction``.
+
+    ``focus_probability`` is always present: a number in [0, 1] for
+    ``ready``, ``None`` for every non-ready status. ``status`` uses exactly
+    the domain's six-value Literal so the API contract cannot drift from
+    ``domain/prediction.py``. ``mode`` is preserved as-is (e.g.
+    ``"rule_engine_only"``) and ``reason`` carries the human-readable
+    explanation.
+    """
+
+    focus_probability: float | None = Field(ge=0.0, le=1.0)
+    status: FocusPredictionStatus
+    mode: str
+    reason: str

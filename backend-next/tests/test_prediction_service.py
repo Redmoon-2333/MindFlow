@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
+import pytest
 
-from mindflow.domain.prediction import STALE_THRESHOLD_S
+from mindflow.domain.prediction import (
+    MIN_COVERAGE_RATIO,
+    STALE_THRESHOLD_S,
+    FocusPrediction,
+    FocusPredictionStatus,
+)
 from mindflow.services.prediction_service import FocusPredictionService
+from mindflow.train.v2 import V2_FEATURE_NAMES
 
 
 def _make_mock_model_manager(focus_proba: float = 0.75) -> MagicMock:
@@ -246,3 +254,129 @@ class TestFocusPredictionService:
             now=now,
         )
         assert result.window_count == 2
+
+
+class TestFocusPredictionStatusContract:
+    """Characterization: pin the six-status FocusPrediction contract.
+
+    Locks the domain Literal set and the service's per-status payload
+    semantics (probability null for non-ready/coerced paths, numeric for
+    ready/stale) so later contract work cannot silently add or re-map
+    status values.
+    """
+
+    def test_domain_defaults(self) -> None:
+        prediction = FocusPrediction()
+        assert prediction.status == "no_model"
+        assert prediction.focus_probability is None
+        assert prediction.feature_schema_version == 2
+        assert prediction.window_count == 0
+        assert prediction.reason == ""
+
+    def test_all_six_statuses_constructible(self) -> None:
+        statuses: list[FocusPredictionStatus] = [
+            "ready",
+            "no_model",
+            "no_data",
+            "stale",
+            "schema_mismatch",
+            "inference_error",
+        ]
+        for status in statuses:
+            prediction = FocusPrediction(status=status)
+            assert prediction.status == status
+
+    def test_domain_is_frozen(self) -> None:
+        prediction = FocusPrediction()
+        with pytest.raises(FrozenInstanceError):
+            prediction.__setattr__("status", "ready")
+
+    async def test_predict_proba_failure_is_inference_error(self) -> None:
+        now = datetime.now(UTC)
+        windows = [
+            _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
+        ]
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock(return_value=windows)
+        mm = _make_mock_model_manager()
+        mm.classifier.predict_proba.side_effect = RuntimeError("model crash")
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_latest(user_id=1, now=now)
+        assert result.status == "inference_error"
+        assert result.focus_probability is None
+        assert result.window_count == 23
+
+    async def test_db_query_failure_is_inference_error(self) -> None:
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock(side_effect=RuntimeError("db down"))
+        mm = _make_mock_model_manager()
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_latest(user_id=1)
+        assert result.status == "inference_error"
+        assert result.focus_probability is None
+
+    async def test_model_feature_names_mismatch_is_schema_mismatch(self) -> None:
+        now = datetime.now(UTC)
+        windows = [
+            _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
+        ]
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock(return_value=windows)
+        mm = _make_mock_model_manager()
+        mm.classifier.feature_names_ = ["old_feature"]
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_latest(user_id=1, now=now)
+        assert result.status == "schema_mismatch"
+        assert result.focus_probability is None
+        assert result.window_count == 23
+
+    async def test_low_coverage_returns_stale_with_probability(self) -> None:
+        now = datetime.now(UTC)
+        # One window ending exactly at now -> coverage 1/24 below the 0.3 floor.
+        windows = [_make_feature_window(now - timedelta(minutes=5))]
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock(return_value=windows)
+        mm = _make_mock_model_manager(focus_proba=0.75)
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_latest(user_id=1, now=now)
+        assert result.status == "stale"
+        assert result.coverage_ratio < MIN_COVERAGE_RATIO
+        assert result.focus_probability is not None
+
+    async def test_realistic_list_feature_names_is_ready(self) -> None:
+        """A classifier storing ``feature_names_`` as a list must be ready.
+
+        The training pipeline passes ``list(V2_FEATURE_NAMES)`` (a list) to
+        ``FocusClassifier.fit``, so the in-memory attribute is a list. The
+        schema guard must compare names by content, not by container type.
+        """
+        now = datetime.now(UTC)
+        windows = [
+            _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
+        ]
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock(return_value=windows)
+        mm = _make_mock_model_manager()
+        mm.classifier.feature_names_ = list(V2_FEATURE_NAMES)
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_latest(user_id=1, now=now)
+        assert result.status == "ready"
+        assert result.focus_probability is not None
+
+    async def test_ready_payload_field_contract(self) -> None:
+        now = datetime.now(UTC)
+        windows = [
+            _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
+        ]
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock(return_value=windows)
+        mm = _make_mock_model_manager(focus_proba=0.82)
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_latest(user_id=1, now=now)
+        assert result.status == "ready"
+        assert result.focus_probability is not None
+        assert 0.0 <= result.focus_probability <= 1.0
+        assert result.coverage_ratio <= 1.0
+        assert result.feature_schema_version == 2
+        assert len(result.top_factors) == 3
+        assert result.model_version == "20260726_v2"

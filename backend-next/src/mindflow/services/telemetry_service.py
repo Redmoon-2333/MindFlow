@@ -446,9 +446,15 @@ class TelemetryService:
         # Backward-compat: always provide uncertainty (0.0 is valid)
         uncertainty = prediction.uncertainty if prediction.uncertainty is not None else 1.0
 
+        # Canonical boundary mapping: only ``ready`` may carry a numeric
+        # probability. Every non-ready status (no_model, no_data, stale,
+        # schema_mismatch, inference_error) must be present-and-null so the
+        # API contract never leaks an ML value for an unavailable state.
         return {
             "mode": mode,
-            "focus_probability": prediction.focus_probability,
+            "focus_probability": (
+                prediction.focus_probability if prediction.status == "ready" else None
+            ),
             "uncertainty": uncertainty,
             "top_factors": top_factors,
             "feature_schema_version": FEATURE_SCHEMA_VERSION,

@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 from mindflow.services.scheduler import (
     _auto_intervention_check,
+    _CronTrigger,
+    _IntervalTrigger,
     _next_daily_run_utc,
     build_scheduler,
 )
@@ -297,7 +299,6 @@ class TestBuildScheduler:
             (1, date(2026, 7, 25)),
             (1, date(2026, 7, 26)),
         ]
-
 
 class TestAutoInterventionCheck:
     """_auto_intervention_check logic tests.
@@ -718,3 +719,70 @@ class TestDailyPanelRunClaim:
 
         # Claim released → date is NOT stuck as "already run".
         assert "2026-07-17" not in _DAILY_PANEL_RUN_DATES
+
+
+class TestSchedulerJobRegistrationContract:
+    """Characterization: pin today's full job registration surface.
+
+    Locks the complete job set — including ``daily_panel`` and
+    ``telemetry_rollup``, which earlier tests omit — and the fact that the
+    only interval job today is the 30-minute intervention check.  Later
+    scheduler work (e.g. a 15-minute recent rollup) must extend this set
+    deliberately.
+    """
+
+    async def test_telemetry_rollup_job_at_0245(self) -> None:
+        scheduler = build_scheduler(telemetry_service=MagicMock())
+        job = scheduler.get_job("telemetry_rollup")
+        assert job is not None
+        trigger = job.trigger
+        assert isinstance(trigger, _CronTrigger)
+        assert str(trigger.fields[5]) == "2"
+        assert str(trigger.fields[6]) == "45"
+
+    async def test_daily_panel_job_at_2330(self) -> None:
+        scheduler = build_scheduler(panel_service=MagicMock())
+        job = scheduler.get_job("daily_panel")
+        assert job is not None
+        trigger = job.trigger
+        assert isinstance(trigger, _CronTrigger)
+        assert str(trigger.fields[5]) == "23"
+        assert str(trigger.fields[6]) == "30"
+
+    async def test_full_service_set_registers_seven_jobs(self) -> None:
+        scheduler = build_scheduler(
+            analysis_service=MagicMock(),
+            report_service=MagicMock(),
+            maintenance_service=MagicMock(),
+            intervention_service=MagicMock(),
+            activity_repository=MagicMock(),
+            panel_service=MagicMock(),
+            telemetry_service=MagicMock(),
+        )
+        job_ids = {j.id for j in scheduler.get_jobs()}
+        assert job_ids == {
+            "daily_panel",
+            "identify_sessions",
+            "daily_report",
+            "event_cleanup",
+            "daily_backup",
+            "auto_intervention_check",
+            "telemetry_rollup",
+        }
+
+    async def test_only_interval_job_is_auto_intervention_30min(self) -> None:
+        scheduler = build_scheduler(
+            analysis_service=MagicMock(),
+            report_service=MagicMock(),
+            maintenance_service=MagicMock(),
+            intervention_service=MagicMock(),
+            activity_repository=MagicMock(),
+            panel_service=MagicMock(),
+            telemetry_service=MagicMock(),
+        )
+        interval_jobs: list[tuple[str, float]] = []
+        for job in scheduler.get_jobs():
+            trigger = job.trigger
+            if isinstance(trigger, _IntervalTrigger):
+                interval_jobs.append((job.id, trigger.interval.total_seconds()))
+        assert interval_jobs == [("auto_intervention_check", 1800.0)]

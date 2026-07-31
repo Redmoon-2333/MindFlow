@@ -20,16 +20,10 @@ from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-V2_FEATURE_NAMES: tuple[str, ...] = (
-    "app_switch_count", "domain_switch_count", "longest_segment_ratio",
-    "idle_ratio", "keypress_rate_per_min", "mouse_click_rate_per_min",
-    "scroll_rate_per_min", "mouse_distance_per_min", "input_active_ratio",
-    "interaction_bursts_per_min", "click_key_ratio", "browser_ratio",
-    "audible_browser_ratio", "active_seconds_ratio", "top_app_ratio",
-    "top_domain_ratio", "interaction_interval_mean_s",
-    "interaction_interval_std_s", "interaction_interval_cv",
-    "hour_sin", "hour_cos", "weekday_sin", "weekday_cos", "task_type_code",
-)
+# Single authoritative vocabulary lives in the domain layer so BaselineModel
+# and training can never drift. Re-export keeps ``mindflow.train.v2`` importers
+# (telemetry_service, prediction_service) working unchanged.
+from mindflow.domain.feature_schema import V2_FEATURE_NAMES  # noqa: F401
 
 TASK_TYPE_MAP = {
     "coding": 0, "writing": 1, "study": 2, "meeting": 3, "admin": 4,

@@ -728,11 +728,10 @@ export interface paths {
          * Trigger Intervention
          * @description Manually trigger an intervention (bypasses throttle).
          *
-         *     This uses a lightweight rule-engine assessment of the *current*
-         *     default behavior summary to determine the appropriate intervention
-         *     type.  In production, the assessment is pre-computed by the
-         *     attribution pipeline; this endpoint creates one on the fly for
-         *     on-demand triggers.
+         *     Recent activity is read from the database and compressed into the
+         *     same privacy-preserving behavior summary used by automated checks.
+         *     The summary drives both rule-engine attribution and AI message
+         *     generation, so manual reminders reflect the user's current context.
          *
          *     Args:
          *         intensity: Optional override for intervention intensity.

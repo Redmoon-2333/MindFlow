@@ -78,6 +78,8 @@ async def get_baseline(
         "total_days": baseline.total_days,
         "total_samples": baseline.total_samples(),
         "features": baseline.FEATURE_COLS,
+        "switch_frequency": baseline.overall_mean("switch_frequency"),
+        "productivity_ratio": baseline.overall_mean("productivity_ratio"),
     }
 
 
@@ -99,6 +101,32 @@ async def get_profile(
     if profile["total_events_analysed"] == 0:
         raise _not_found("行为画像数据（暂无活动事件）")
 
+    # Frontend aliases (Analytics.tsx reads these field names)
+    if "peak_focus" not in profile:
+        hours = profile.get("peak_focus_hours", [])
+        if hours:
+            top = hours[0]
+            profile["peak_focus"] = "{}:00 (avg {:.0f})".format(top["hour"], top["avg_score"])
+        else:
+            profile["peak_focus"] = None
+    if "productivity_apps" not in profile:
+        profile["productivity_apps"] = [
+            a["app"] for a in profile.get("top_apps", [])[:5]
+        ]
+    if "trigger_apps" not in profile:
+        profile["trigger_apps"] = [
+            t["app"] for t in profile.get("distraction_triggers", [])[:5]
+        ]
+    if "details" not in profile:
+        profile["details"] = {
+            "avg_focus_block_min": profile.get("avg_focus_block_min"),
+            "total_events": profile.get("total_events_analysed"),
+            "distraction_ratio": round(
+                sum(t["count"] for t in profile.get("distraction_triggers", []))
+                / max(profile.get("total_events_analysed", 1), 1),
+                3,
+            ),
+        }
     return profile
 
 
