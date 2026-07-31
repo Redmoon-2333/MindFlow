@@ -236,9 +236,11 @@ class PreferencesRepositoryPort(Protocol):
 
 
 class BaselineRepositoryPort(Protocol):
-    """Read-only access to the user's behaviour baseline model."""
+    """Persistence for the user's behaviour baseline model (one row per user)."""
 
     async def get_latest(self, user_id: int) -> BaselineModel | None: ...
+
+    async def upsert(self, model: BaselineModel) -> None: ...
 
 
 # ── App classification rules ────────────────────────────────────────────────
