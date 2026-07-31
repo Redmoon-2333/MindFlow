@@ -21,6 +21,7 @@ from typing import Any
 
 from loguru import logger
 
+from mindflow.domain.events import ActivityEvent
 from mindflow.domain.features import (
     MAX_ACCEPTABLE_SWITCHES_PER_HOUR,
     app_usage_ranking,
@@ -41,7 +42,195 @@ from mindflow.infrastructure.repositories.report import (
 from mindflow.services.effectiveness_service import (
     EffectivenessService,
 )
-from mindflow.time_utils import business_day_bounds_utc, business_today
+from mindflow.time_utils import (
+    TimezoneLike,
+    business_day_bounds_utc,
+    business_today,
+    resolve_timezone,
+)
+
+
+def _compute_daily_data_state(
+    target_date: date,
+    sessions: list[dict[str, Any]],
+    events: list[ActivityEvent],
+    today: date,
+) -> str:
+    """Classify one business day into the canonical daily data-state enum.
+
+    ``future`` takes precedence (nothing can exist after business today);
+    then ``no_activity`` (no sessions and no events), ``events_only``
+    (events without sessions), ``neutral_only`` (sessions with neither a
+    focus nor a distraction type), ``no_focus`` (distraction without
+    focus), and finally ``ready`` once at least one focus session exists.
+    """
+    if target_date > today:
+        return "future"
+    if not sessions and not events:
+        return "no_activity"
+    if not sessions:
+        return "events_only"
+    has_focus = any(s.get("session_type") == "focus" for s in sessions)
+    has_distraction = any(s.get("session_type") == "distraction" for s in sessions)
+    if has_focus:
+        return "ready"
+    if has_distraction:
+        return "no_focus"
+    return "neutral_only"
+
+
+def _decorate_daily_report(
+    report: dict[str, Any],
+    sessions: list[dict[str, Any]],
+    events: list[ActivityEvent],
+    target_date: date,
+    timezone: TimezoneLike,
+    today: date,
+) -> dict[str, Any]:
+    """Decorate a daily report dict with the canonical transient field set.
+
+    One assembly point shared by the freshly generated and the cached
+    paths: the DB stores ``total_focus_min`` / ``total_distraction_min``
+    but every 200 response exposes ``total_focus_minutes`` /
+    ``total_sessions`` / ``total_distractions`` / ``hourly_distribution``
+    (from the live single-day read, never hard-coded zeros) plus the
+    explicit ``data_state``.  ``top_apps`` is normalized to a list so the
+    typed schema never sees null.
+    """
+    if report.get("top_apps") is None:
+        report["top_apps"] = []
+    if "total_focus_minutes" not in report:
+        report["total_focus_minutes"] = report.get("total_focus_min", 0)
+    report["total_sessions"] = len(sessions)
+    report["total_distractions"] = sum(
+        1 for s in sessions if s.get("session_type") == "distraction"
+    )
+    report["hourly_distribution"] = _compute_hourly_distribution(
+        sessions, target_date, timezone
+    )
+    report["data_state"] = _compute_daily_data_state(
+        target_date, sessions, events, today
+    )
+    return report
+
+
+def _parse_session_interval(
+    session: dict[str, Any],
+) -> tuple[datetime, datetime] | None:
+    """Parse a session's start/end into aware UTC datetimes, or None.
+
+    Returns None for unparseable, missing, or inverted timestamps so the
+    caller can treat the session as contributing zero minutes.
+    """
+    try:
+        start_ts = datetime.fromisoformat(session["start_time"])
+        end_ts = datetime.fromisoformat(session["end_time"])
+    except (ValueError, TypeError, KeyError):
+        return None
+    if start_ts.tzinfo is None:
+        start_ts = start_ts.replace(tzinfo=UTC)
+    if end_ts.tzinfo is None:
+        end_ts = end_ts.replace(tzinfo=UTC)
+    if end_ts <= start_ts:
+        return None
+    return start_ts, end_ts
+
+
+def _compute_hourly_distribution(
+    sessions: list[dict[str, Any]],
+    target_date: date,
+    timezone: TimezoneLike,
+) -> dict[str, float]:
+    """Return ``{hour: rounded_focus_minutes}`` for one local business day.
+
+    Only ``focus`` sessions contribute.  Each session is first clipped to
+    the business-day UTC bounds (so a session spilling past local midnight
+    stops at the day boundary), then its minutes are split across the local
+    hour buckets it overlaps.  Hour boundaries follow the local wall clock,
+    so DST-observed timezones (skipped/repeated hours) map sessions to the
+    hour their local time actually shows.  All keys ``"0"``..``"23"`` are
+    always present so chart consumers never see a missing hour.
+    """
+    day_start, day_end = business_day_bounds_utc(target_date, timezone)
+    local_tz = resolve_timezone(timezone)
+    bucket_minutes = [0.0] * 24
+
+    for session in sessions:
+        if session.get("session_type") != "focus":
+            continue
+        interval = _parse_session_interval(session)
+        if interval is None:
+            continue
+        start_ts, end_ts = interval
+        clipped_start = max(start_ts, day_start)
+        clipped_end = min(end_ts, day_end)
+        if clipped_end <= clipped_start:
+            continue
+
+        cursor = clipped_start
+        while cursor < clipped_end:
+            cursor_local = cursor.astimezone(local_tz)
+            hour = cursor_local.hour
+            # The next local-hour boundary from the current instant.  Using
+            # the wall-clock floor keeps DST transitions exact (the skipped
+            # spring hour never appears; the repeated fall hour advances by
+            # its own UTC offset).
+            hour_floor = cursor_local.replace(minute=0, second=0, microsecond=0)
+            next_hour_utc = (hour_floor + timedelta(hours=1)).astimezone(UTC)
+            chunk_end = min(clipped_end, next_hour_utc)
+            bucket_minutes[hour] += (chunk_end - cursor).total_seconds() / 60.0
+            cursor = chunk_end
+
+    return {str(hour): round(bucket_minutes[hour], 1) for hour in range(24)}
+
+
+def _future_daily_report(user_id: int, target_date: date) -> dict[str, Any]:
+    """Build the typed empty payload for a business day that hasn't happened.
+
+    Empty arrays/objects rather than fabricated bars; never persisted.
+    """
+    return {
+        "id": "",
+        "user_id": user_id,
+        "date": target_date.isoformat(),
+        "total_focus_min": 0.0,
+        "total_distraction_min": 0.0,
+        "focus_score": 0.0,
+        "top_apps": [],
+        "switch_frequency": 0.0,
+        "pattern_summary": "",
+        "created_at": None,
+        "total_focus_minutes": 0.0,
+        "total_sessions": 0,
+        "total_distractions": 0,
+        "hourly_distribution": {str(hour): 0.0 for hour in range(24)},
+        "data_state": "future",
+    }
+
+
+def _compute_weekly_data_state(
+    week_start: date,
+    today: date,
+    week_end: date,
+    daily_reports: list[dict[str, Any]],
+) -> str:
+    """Classify one week into the canonical weekly data-state enum.
+
+    ``future`` when the week starts after business today; ``no_activity``
+    when every produced day is ``no_activity`` (takes precedence over the
+    in-progress check); ``partial`` when the week is current/incomplete
+    (today still inside the week) or any produced day is non-ready; else
+    ``ready``.
+    """
+    if week_start > today:
+        return "future"
+    if not daily_reports:
+        return "no_activity"
+    if all(d.get("data_state") == "no_activity" for d in daily_reports):
+        return "no_activity"
+    if any(d.get("data_state") != "ready" for d in daily_reports) or today <= week_end:
+        return "partial"
+    return "ready"
 
 
 class ReportService:
@@ -100,6 +289,12 @@ class ReportService:
         Returns:
             The persisted report dict.
         """
+        today = business_today(self._timezone)
+        # Nothing can exist for a business day after today — return the
+        # typed empty payload without persisting a placeholder row.
+        if target_date > today:
+            return _future_daily_report(user_id, target_date)
+
         # Reports created before the business day ended are provisional.
         existing = await self._report_repo.get_by_date(user_id, target_date)
         if existing is not None and not refresh:
@@ -115,17 +310,20 @@ class ReportService:
                 logger.info(
                     "Daily report already exists for {} user {}", target_date, user_id
                 )
-                return existing
+                # Cached summaries still need the transient fields and the
+                # explicit data state, computed from the live single-day
+                # sessions + events read — never hard-coded zeros.
+                sessions, events = await self._read_day_data(user_id, target_date)
+                return _decorate_daily_report(
+                    existing,
+                    sessions,
+                    events,
+                    target_date,
+                    self._timezone,
+                    today,
+                )
 
-        # Sessions and same-day events are independent reads (no data
-        # dependency) — fetch concurrently. Both run only after the
-        # idempotency check above short-circuits.
-        start_dt, end_dt = business_day_bounds_utc(target_date, self._timezone)
-
-        sessions, events = await asyncio.gather(
-            self._focus_repo.get_by_date(user_id, target_date),
-            self._activity_repo.query_range(user_id, start_dt, end_dt),
-        )
+        sessions, events = await self._read_day_data(user_id, target_date)
 
         # Aggregate session-based metrics
         total_focus_min = 0.0
@@ -181,7 +379,28 @@ class ReportService:
             target_date,
             score,
         )
-        return result
+        # One shared assembly point: the same transient field set (aliases,
+        # hourly_distribution, data_state) the cached path decorates.
+        return _decorate_daily_report(
+            result, sessions, events, target_date, self._timezone, today
+        )
+
+    async def _read_day_data(
+        self,
+        user_id: int,
+        target_date: date,
+    ) -> tuple[list[dict[str, Any]], list[ActivityEvent]]:
+        """Read one business day's sessions and events concurrently.
+
+        Sessions and same-day events are independent reads (no data
+        dependency) shared by fresh generation and cached decoration.
+        """
+        start_dt, end_dt = business_day_bounds_utc(target_date, self._timezone)
+        sessions, events = await asyncio.gather(
+            self._focus_repo.get_by_date(user_id, target_date),
+            self._activity_repo.query_range(user_id, start_dt, end_dt),
+        )
+        return sessions, events
 
     # ── Weekly report ────────────────────────────────────────────────
 
@@ -206,7 +425,8 @@ class ReportService:
               - ``week_number``: ISO week number.
         """
         week_end = week_start + timedelta(days=6)
-        generation_end = min(week_end, business_today(self._timezone))
+        today = business_today(self._timezone)
+        generation_end = min(week_end, today)
 
         # Build ordered date list, then generate all reports concurrently
         days: list[date] = []
@@ -227,6 +447,15 @@ class ReportService:
                 "averages": {},
                 "trend": {},
                 "week_number": week_start.isocalendar()[1],
+                "intervention_effectiveness": None,
+                "total_focus_minutes": 0.0,
+                "total_sessions": 0,
+                "total_distractions": 0,
+                "avg_focus_score": 0.0,
+                "daily_summary": [],
+                "data_state": _compute_weekly_data_state(
+                    week_start, today, week_end, daily
+                ),
             }
 
         # Weekly averages
@@ -298,6 +527,26 @@ class ReportService:
             "trend": trend,
             "week_number": week_start.isocalendar()[1],
             "intervention_effectiveness": intervention_effectiveness,
+            # Frontend aliases
+            "total_focus_minutes": round(avg_focus, 1),
+            "total_sessions": len(daily),
+            "total_distractions": sum(
+                d.get("total_distractions", 0) for d in daily
+            ),
+            "avg_focus_score": round(avg_score, 1),
+            "daily_summary": [
+                {
+                    "date": d.get("date"),
+                    "focus_minutes": d.get("total_focus_minutes", d.get("total_focus_min", 0)),
+                    "sessions": d.get("total_sessions", 0),
+                    "distractions": d.get("total_distractions", 0),
+                    "focus_score": d.get("focus_score"),
+                }
+                for d in daily
+            ],
+            "data_state": _compute_weekly_data_state(
+                week_start, today, week_end, daily
+            ),
         }
 
     # ── Scheduler convenience ─────────────────────────────────────────
