@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from mindflow.api.deps import get_telemetry_service
 from mindflow.api.errors import ProblemDetail
+from mindflow.api.schemas import FocusPredictionResponse
 from mindflow.services.telemetry_service import TelemetryService
 
 router = APIRouter(tags=["telemetry"])
@@ -42,7 +43,7 @@ async def get_telemetry_status(
     return await service.get_status()
 
 
-@router.get("/telemetry/focus-prediction")
+@router.get("/telemetry/focus-prediction", response_model=FocusPredictionResponse)
 async def get_focus_prediction(
     service: TelemetryService = Depends(get_telemetry_service),  # noqa: B008
 ) -> dict[str, Any]:
