@@ -59,8 +59,8 @@ from mindflow.agents.types import (
     _contains_forbidden_words,
 )
 from mindflow.domain.evidence import EvidenceBundle, to_prompt_json
-from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
+from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 
 # ── Parsing helpers ────────────────────────────────────────────────────────────
 
@@ -340,8 +340,10 @@ def _parse_verdict(raw: str) -> dict[str, Any] | None:
         "recommended_technique": parsed.recommended_technique,
         "rationale": parsed.rationale,
         "dissent": parsed.dissent,
+        "insufficient_data": parsed.insufficient_data,
+        "uncertainty": parsed.uncertainty,
+        "evidence_gaps": list(parsed.evidence_gaps),
     }
-    return result
     return normalize_verdict_types(result)
 
 

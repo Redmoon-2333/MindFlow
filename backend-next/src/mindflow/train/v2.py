@@ -12,9 +12,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
-from loguru import logger
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import balanced_accuracy_score, brier_score_loss, f1_score
+from sklearn.metrics import (
+    average_precision_score,
+    balanced_accuracy_score,
+    brier_score_loss,
+    confusion_matrix,
+    f1_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -23,6 +29,7 @@ from sklearn.preprocessing import StandardScaler
 # and training can never drift. Re-export keeps ``mindflow.train.v2`` importers
 # (telemetry_service, prediction_service) working unchanged.
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES  # noqa: F401
+from mindflow.train.config import TRAIN_CONFIG
 
 TASK_TYPE_MAP = {
     "coding": 0, "writing": 1, "study": 2, "meeting": 3, "admin": 4,
@@ -144,8 +151,8 @@ def prepare_v2_training_data(
     valid = y >= 0
     return V2TrainingData(
         features=X[valid], labels=y[valid], sample_weights=w[valid],
-        session_ids=[s for s, v in zip(sid_list, valid) if v],
-        dates=[d for d, v in zip(date_list, valid) if v],
+        session_ids=[s for s, v in zip(sid_list, valid, strict=True) if v],
+        dates=[d for d, v in zip(date_list, valid, strict=True) if v],
         explicit_mask=explicit_mask[valid],
         explicit_feedback_count=len(explicit_session_ids),
         explicit_focus_count=len(focus_sessions),
@@ -153,7 +160,7 @@ def prepare_v2_training_data(
         distinct_feedback_days=len(feedback_days),
         mixed_window_count=mixed_count,
         matched_window_count=matched_window_count,
-        label_sources=[s for s, v in zip(source_list, valid) if v],
+        label_sources=[s for s, v in zip(source_list, valid, strict=True) if v],
         feature_names=list(V2_FEATURE_NAMES),
     )
 
@@ -170,7 +177,7 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
 
     X = data.features[mask]
     y = data.labels[mask]
-    dates = [d for d, m in zip(data.dates, mask) if m]
+    dates = [d for d, m in zip(data.dates, mask, strict=True) if m]
     unique_dates = sorted(set(dates))
 
     if len(unique_dates) < 3:
@@ -178,6 +185,8 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
 
     groups = np.array(dates)
     gkf = GroupKFold(n_splits=min(4, len(unique_dates)))
+    weights = data.sample_weights[mask]
+    gkf = GroupKFold(n_splits=min(TRAIN_CONFIG.group_folds, len(unique_dates)))
 
     all_y_true: list[int] = []
     all_candidate_pred: list[int] = []
@@ -201,12 +210,21 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
             continue
 
         clf = make_v2_classifier()
-        clf.fit(X[train_idx], y[train_idx], list(V2_FEATURE_NAMES))
+        clf.fit(
+            X[train_idx],
+            y[train_idx],
+            list(V2_FEATURE_NAMES),
+            sample_weight=weights[train_idx],
+        )
         yp = clf.predict(X[test_idx])
         ypr = clf.predict_proba(X[test_idx])[:, 1]
 
         lr = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, random_state=random_state, class_weight="balanced"))
-        lr.fit(X[train_idx], y[train_idx])
+        lr.fit(
+            X[train_idx],
+            y[train_idx],
+            logisticregression__sample_weight=weights[train_idx],
+        )
         lp = lr.predict(X[test_idx])
         lpr = lr.predict_proba(X[test_idx])[:, 1]
 
@@ -250,7 +268,6 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
         candidate["fold_balanced_accuracy_range"] = round(max(fold_bas) - min(fold_bas), 6)
         candidate["fold_min_balanced_accuracy"] = round(min(fold_bas), 6)
         fold_stability = {
-            "passed": min(fold_bas) >= 0.50 and (max(fold_bas) - min(fold_bas)) <= 0.35 and min_test_size >= 5,
             "passed": bool(min(fold_bas) >= 0.50 and (max(fold_bas) - min(fold_bas)) <= 0.35 and min_test_size >= 5),
             "min_balanced_accuracy": round(min(fold_bas), 6),
             "range": round(max(fold_bas) - min(fold_bas), 6),
@@ -376,4 +393,39 @@ def _classification_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.
         brier = brier_score_loss(y_true, y_proba)
     except Exception:
         brier = 1.0
-    return {"balanced_accuracy": round(float(ba), 6), "minority_f1": round(float(minority_f1), 6), "brier_score": round(float(brier), 6)}
+    result: dict[str, Any] = {
+        "balanced_accuracy": round(float(ba), 6),
+        "minority_f1": round(float(minority_f1), 6),
+        "brier_score": round(float(brier), 6),
+    }
+    if len(unique) == 2:
+        try:
+            result["roc_auc"] = round(float(roc_auc_score(y_true, y_proba)), 6)
+            result["average_precision"] = round(float(average_precision_score(y_true, y_proba)), 6)
+        except ValueError:
+            pass
+        result["confusion_matrix"] = confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist()
+    result["calibration"] = _calibration_bins(y_true, y_proba)
+    return result
+
+
+def _calibration_bins(y_true: np.ndarray, y_proba: np.ndarray) -> list[dict[str, float]]:
+    """Return binned predicted-vs-observed calibration for held-out data."""
+    if len(y_proba) == 0:
+        return []
+    edges = np.linspace(0.0, 1.0, TRAIN_CONFIG.calibration_bins + 1)
+    bins: list[dict[str, float]] = []
+    for i in range(TRAIN_CONFIG.calibration_bins):
+        lo, hi = float(edges[i]), float(edges[i + 1])
+        mask_bin = (y_proba >= lo) & (y_proba <= hi)
+        count = int(mask_bin.sum())
+        if count == 0:
+            continue
+        bins.append({
+            "bin_low": round(lo, 4),
+            "bin_high": round(hi, 4),
+            "count": count,
+            "mean_prediction": round(float(np.mean(y_proba[mask_bin])), 4),
+            "fraction_positive": round(float(np.mean(y_true[mask_bin])), 4),
+        })
+    return bins

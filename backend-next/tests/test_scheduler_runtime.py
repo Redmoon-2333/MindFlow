@@ -21,6 +21,14 @@ from mindflow.services.panel_service import PanelService
 from mindflow.services.scheduler import AsyncioScheduler, _run_claimed_job, build_scheduler
 
 
+async def test_scheduler_tracks_heartbeat_after_job_run() -> None:
+    """Scheduler heartbeat is exposed for /health freshness checks."""
+    scheduler = AsyncioScheduler(timezone="UTC")
+    assert scheduler.last_heartbeat_at is None
+    scheduler._touch_heartbeat()  # noqa: SLF001
+    assert scheduler.last_heartbeat_at is not None
+
+
 def _job_coro(scheduler: AsyncioScheduler, name: str):
     return next(job["coro"] for job in scheduler._jobs if job["name"] == name)
 
@@ -639,7 +647,7 @@ async def test_startup_recovery_interrupted_after_backfill_reruns_stable_counts(
         user_preferences,
     )
     from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
-    from mindflow.infrastructure.schema import behavior_feature_windows, metadata
+    from mindflow.infrastructure.schema import metadata
     from mindflow.services.telemetry_service import TelemetryService
 
     async with engine.begin() as connection:

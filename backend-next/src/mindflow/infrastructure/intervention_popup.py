@@ -130,8 +130,8 @@ class InterventionPopup:
         root.update_idletasks()
         width = 520
         height = max(220, root.winfo_reqheight())
-        x = max(0, (root.winfo_screenwidth() - width) // 2)
-        y = max(0, (root.winfo_screenheight() - height) // 2)
+        x = max(0, root.winfo_screenwidth() - width - 20)
+        y = max(0, root.winfo_screenheight() - height - 20)
         root.geometry(f"{width}x{height}+{x}+{y}")
         root.deiconify()
         root.lift()

@@ -611,6 +611,29 @@ class TelemetryService:
         """Return feedback info keyed by session_id."""
         return await self._repository.get_feedback_by_session_ids(user_id, session_ids)
 
+    async def save_intervention_check(
+        self,
+        user_id: int,
+        checked_at: str,
+        reason: str,
+        source: str = "rule_engine",
+        confidence: float | None = None,
+        intervention_type: str | None = None,
+        throttle_reason: str | None = None,
+        ml_status: str | None = None,
+    ) -> None:
+        """Persist one auto-intervention audit row."""
+        await self._repository.save_intervention_check(
+            user_id=user_id,
+            checked_at=checked_at,
+            reason=reason,
+            source=source,
+            confidence=confidence,
+            intervention_type=intervention_type,
+            throttle_reason=throttle_reason,
+            ml_status=ml_status,
+        )
+
     async def clear_data(
         self,
         scope: Literal["interaction", "browser", "feedback", "all"],

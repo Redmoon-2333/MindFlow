@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 from typing import Literal, Protocol, runtime_checkable
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -94,6 +95,7 @@ class PanelLLMGateway(Protocol):
 _DEFAULT_TIMEOUT_S: int = 30
 _MAX_RETRIES: int = 1
 _BACKOFF_CAP_S: float = 60.0
+_LLM_TEMPERATURE: float = 0.2
 
 
 def _compute_backoff(attempt: int) -> float:
@@ -165,6 +167,7 @@ class LangChainGateway:
                     timeout=self._timeout_s,
                     max_retries=0,
                     model_kwargs={"response_format": {"type": "json_object"}},
+                    temperature=_LLM_TEMPERATURE,
                 )
             return self._chat_model
 
@@ -176,6 +179,7 @@ class LangChainGateway:
                 base_url=self._base_url,
                 timeout=self._timeout_s,
                 max_retries=0,
+                temperature=_LLM_TEMPERATURE,
             )
         return self._reasoner_model
 
@@ -214,12 +218,17 @@ class LangChainGateway:
 
         chat = self._get_model(model_id)
         messages = [SystemMessage(content=system), HumanMessage(content=user)]
+        started_at = time.perf_counter()
 
         last_exc: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
             try:
                 result = await chat.ainvoke(messages)
+                logger.debug(
+                    "LangChain gateway complete model={} latency_ms={:.1f}",
+                    model_id, (time.perf_counter() - started_at) * 1000.0,
+                )
             except Exception as exc:
                 logger.warning("LangChain gateway error (attempt {}): {}", attempt + 1, exc)
                 last_exc = exc

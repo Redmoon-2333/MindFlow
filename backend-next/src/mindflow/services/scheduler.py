@@ -67,6 +67,9 @@ _AUTO_INTERVENTION_MIN_CONFIDENCE: float = 0.5
 # precise intervention (see G005 three-tier routing).
 _AUTO_INTERVENTION_PANEL_CONFIDENCE: float = 0.75
 
+# Auto-intervention check cadence (minutes). Throttle still limits dispatch.
+_AUTO_INTERVENTION_INTERVAL_MINUTES: int = 5
+
 # Minimum non-idle activity time (in minutes) before intervention
 # can be considered. Avoids triggering on brief computer use.
 _MIN_NON_IDLE_MINUTES: float = 10.0
@@ -167,6 +170,11 @@ class AsyncioScheduler:
         self._running = False
         self._startup_recovery: Callable[[datetime], Awaitable[None]] | None = None
         self.timezone = resolve_timezone(timezone)
+        self.last_heartbeat_at: datetime | None = None
+
+    def _touch_heartbeat(self) -> None:
+        """Record that a scheduler job ran; exposed via /health."""
+        self.last_heartbeat_at = datetime.now(UTC)
 
     @property
     def timezone(self) -> tzinfo:
@@ -321,6 +329,8 @@ class AsyncioScheduler:
                         await coro()
                 except Exception:
                     logger.exception("Scheduler catch-up job {} failed", name)
+                finally:
+                    self._touch_heartbeat()
         while self._running:
             now = datetime.now(UTC)
             target = _next_daily_run_utc(now, hour=hour, minute=minute, timezone=self.timezone)
@@ -338,6 +348,8 @@ class AsyncioScheduler:
                     await coro()
             except Exception:
                 logger.exception("Scheduler job {} failed", name)
+            finally:
+                self._touch_heartbeat()
 
     async def _run_interval(
         self,
@@ -360,6 +372,8 @@ class AsyncioScheduler:
                     await coro()
             except Exception:
                 logger.exception("Scheduler job {} failed", name)
+            finally:
+                self._touch_heartbeat()
 
 
 _JobResult = TypeVar("_JobResult")
@@ -560,19 +574,60 @@ async def _auto_intervention_check(
     now = datetime.now(UTC)
     now_local = now.astimezone(resolve_timezone(timezone))
 
+    # ML is a secondary signal: it can veto a rule-based reminder, but it
+    # never blocks the rule path when data/model are unavailable.
+    ml_status = "unavailable"
+    ml_probability: float | None = None
+    if telemetry_service is not None:
+        try:
+            prediction = await telemetry_service.predict_latest_focus(user_id=user_id)
+            if isinstance(prediction, dict):
+                ml_status = prediction.get("status", "unknown") or "unknown"
+                ml_probability = prediction.get("focus_probability")
+        except Exception as exc:
+            logger.debug("Auto-intervention: ML prediction failed: {}", exc)
+            ml_status = "error"
+
+    async def _record(
+        reason: str,
+        *,
+        confidence: float | None = None,
+        intervention_type: str | None = None,
+        throttle_reason: str | None = None,
+        source: str = "rule_engine",
+    ) -> None:
+        if telemetry_service is None:
+            return
+        try:
+            await telemetry_service.save_intervention_check(
+                user_id=user_id,
+                checked_at=datetime.now(UTC).isoformat(),
+                reason=reason,
+                confidence=confidence,
+                intervention_type=intervention_type,
+                throttle_reason=throttle_reason,
+                source=source,
+                ml_status=ml_status,
+            )
+        except Exception as exc:
+            logger.debug("Auto-intervention: failed to record check: {}", exc)
+
     # ── Autonomy guard: user-level kill switch (§7 safety boundary) ──
     if autonomy_service is not None:
         try:
             if not await autonomy_service.is_enabled(user_id):
+                await _record("autonomy_disabled")
                 logger.debug("Auto-intervention: autonomy disabled, skipping")
                 return
         except Exception as exc:
             logger.error("Auto-intervention: autonomy check failed: {}", exc)
+            await _record("autonomy_error")
             return
 
     # ── Time-of-day guard: only 08:00-23:00 ─────────────────────────
     hour = now_local.hour
     if hour < 8 or hour >= 23:
+        await _record("outside_hours")
         logger.debug("Auto-intervention: outside working hours ({:02d}:00), skipping", hour)
         return
 
@@ -582,25 +637,43 @@ async def _auto_intervention_check(
         events: list[ActivityEvent] = await activity_repo.query_range(user_id, start, now)
     except Exception as exc:
         logger.error("Auto-intervention: failed to query events: {}", exc)
+        await _record("event_query_error")
         return
 
     # ── Guard: no events or all idle ────────────────────────────────
     if not events:
+        await _record("no_events")
         logger.debug("Auto-intervention: no events in last {}min, skipping", window_min)
         return
 
     if all(ev.data.is_idle for ev in events):
+        await _record("all_idle")
         logger.debug("Auto-intervention: all events idle, skipping")
+        return
+
+    # ── Guard: insufficient non-idle activity ──────────────────────────
+    # Avoids triggering on brief computer use — the user must have been
+    # actively working for at least ``_MIN_NON_IDLE_MINUTES`` in the window.
+    non_idle_s = sum(max(0.0, ev.duration_s) for ev in events if not ev.data.is_idle)
+    if non_idle_s < _MIN_NON_IDLE_MINUTES * 60:
+        await _record("insufficient_non_idle")
+        logger.debug(
+            "Auto-intervention: non-idle activity {:.0f}s < {:.0f}min, skipping",
+            non_idle_s,
+            _MIN_NON_IDLE_MINUTES,
+        )
         return
 
     # ── Build behavior summary ──────────────────────────────────────
     try:
         summary = build_behavior_summary(events)
     except ValueError:
+        await _record("summary_error")
         logger.debug("Auto-intervention: cannot build summary from empty events")
         return
     except Exception as exc:
         logger.error("Auto-intervention: failed to build summary: {}", exc)
+        await _record("summary_error")
         return
 
     # ── Assess with RuleEngine (L3, no LLM cost) ────────────────────
@@ -608,20 +681,31 @@ async def _auto_intervention_check(
         assessment = engine.assess(summary)
     except Exception as exc:
         logger.error("Auto-intervention: rule engine assessment failed: {}", exc)
+        await _record("assessment_error")
         return
 
     # ── Confidence guard ────────────────────────────────────────────
     if not assessment.types:
+        await _record("no_types")
         logger.debug("Auto-intervention: no types detected, skipping")
         return
 
     top_type = assessment.types[0]
     top_confidence = assessment.confidence.get(top_type, 0.0)
     if top_confidence < min_confidence:
+        await _record("low_confidence", confidence=top_confidence)
         logger.debug(
             "Auto-intervention: confidence {:.2f} < {:.2f}, skipping",
             top_confidence,
             min_confidence,
+        )
+        return
+
+    # ML veto: if a ready model says the user is focused, do not interrupt.
+    if ml_status == "ready" and ml_probability is not None and ml_probability >= 0.5:
+        await _record("ml_disagrees", confidence=top_confidence)
+        logger.debug(
+            "Auto-intervention: ML probability {:.2f} >= 0.5, skipping", ml_probability
         )
         return
 
@@ -698,12 +782,33 @@ async def _auto_intervention_check(
             user_id=user_id,
         )
         if result.skipped:
+            await _record(
+                "skipped",
+                confidence=top_confidence,
+                intervention_type=
+                str(result.intervention.intervention_type)
+                if result.intervention
+                else None,
+                throttle_reason=
+                str(result.throttle_decision.reason)
+                if result.throttle_decision
+                else None,
+            )
             logger.info(
                 "Auto-intervention: skipped ({}) — {}",
                 result.skip_reason,
                 result.throttle_decision or "",
             )
         else:
+            await _record(
+                "dispatched",
+                confidence=top_confidence,
+                intervention_type=
+                str(result.intervention.intervention_type)
+                if result.intervention
+                else None,
+                source="panel" if panel_attempted else "rule_engine",
+            )
             logger.info(
                 "Auto-intervention: dispatched {} to user {}",
                 result.intervention.id if result.intervention else "?",
@@ -711,6 +816,7 @@ async def _auto_intervention_check(
             )
     except Exception as exc:
         logger.error("Auto-intervention: dispatch failed: {}", exc)
+        await _record("dispatch_error", confidence=top_confidence)
 
 
 def build_scheduler(
@@ -1065,10 +1171,10 @@ def build_scheduler(
             catch_up=scheduled_job_runs_repository is not None,
         )
 
-    # ── Every 30 min — Auto intervention check ──────────────────────────
+    # ── Every 5 min — Auto intervention check ───────────────────────────
     if intervention_service is not None and activity_repository is not None:
         scheduler.interval_minutes(
-            minutes=30,
+            minutes=_AUTO_INTERVENTION_INTERVAL_MINUTES,
             coro=_auto_intervention_check,
             kwargs={
                 "activity_repo": activity_repository,

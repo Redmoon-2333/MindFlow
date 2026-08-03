@@ -18,6 +18,7 @@ import pytest
 from mindflow.domain.intervention import (
     INTENSITY_TEMPLATES,
     INTERVENTION_TYPE_LABELS,
+    TITLE_VARIANTS,
     Intervention,
     InterventionIntensity,
     InterventionResponse,
@@ -178,3 +179,47 @@ class TestTypeLabels:
         """No unexpected keys in labels dict."""
         for key in INTERVENTION_TYPE_LABELS:
             assert key in self.VALID_TYPES, f"Unexpected key: {key}"
+
+
+class TestTitleVariants:
+    """TITLE_VARIANTS — template fallback title pool."""
+
+    FORBIDDEN = {"诊断", "治疗", "患者", "处方"}
+    RAW_ENUMS = {"task_breakdown", "nudge", "environment_optimization", "smart_prioritization"}
+
+    def test_all_intensities_have_at_least_three_variants(self) -> None:
+        for intensity in InterventionIntensity:
+            assert len(TITLE_VARIANTS[intensity]) >= 3, f"intensity={intensity}"
+
+    def test_variants_no_forbidden_terms(self) -> None:
+        for intensity, variants in TITLE_VARIANTS.items():
+            for variant in variants:
+                for term in self.FORBIDDEN:
+                    assert term not in variant, f"Forbidden '{term}' in {intensity}: {variant}"
+
+    def test_variants_never_expose_raw_enums(self) -> None:
+        for intensity, variants in TITLE_VARIANTS.items():
+            for variant in variants:
+                for raw in self.RAW_ENUMS:
+                    assert raw not in variant, f"Raw enum '{raw}' in {intensity}: {variant}"
+
+    def test_standard_variants_keep_mindflow_anchor(self) -> None:
+        """Every standard variant keeps the MindFlow anchor (E2E asserts it)."""
+        for variant in TITLE_VARIANTS[InterventionIntensity.STANDARD]:
+            assert "MindFlow" in variant
+
+    def test_strict_variants_keep_focus_anchor(self) -> None:
+        """Every strict variant keeps the 专注提醒 anchor (history fallback asserts it)."""
+        for variant in TITLE_VARIANTS[InterventionIntensity.STRICT]:
+            assert "专注提醒" in variant
+
+    def test_gentle_variants_keep_tip_anchor(self) -> None:
+        """Every gentle variant keeps the 小提示 anchor."""
+        for variant in TITLE_VARIANTS[InterventionIntensity.GENTLE]:
+            assert "小提示" in variant
+
+    def test_at_least_one_gentle_variant_uses_type_label(self) -> None:
+        assert any(
+            "{type_label}" in variant
+            for variant in TITLE_VARIANTS[InterventionIntensity.GENTLE]
+        )

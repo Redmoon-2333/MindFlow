@@ -73,8 +73,8 @@ class TestBuildScheduler:
         assert "daily_backup" in job_ids
         assert "auto_intervention_check" in job_ids
 
-    async def test_auto_intervention_check_is_interval_30min(self) -> None:
-        """auto_intervention_check should be an interval job at 30 minutes."""
+    async def test_auto_intervention_check_is_interval_5min(self) -> None:
+        """auto_intervention_check should be an interval job at 5 minutes."""
         scheduler = build_scheduler(
             intervention_service=MagicMock(),
             activity_repository=MagicMock(),
@@ -83,7 +83,7 @@ class TestBuildScheduler:
         assert job is not None
 
         trigger = job.trigger
-        assert trigger.interval.total_seconds() == 1800  # 30 min
+        assert trigger.interval.total_seconds() == 300  # 5 min
 
     async def test_registers_4_jobs_without_intervention(self) -> None:
         """Without intervention service, only 4 jobs should be registered."""
@@ -402,6 +402,40 @@ class TestAutoInterventionCheck:
             mock_repo.query_range.assert_awaited_once()
             mock_svc.maybe_intervene.assert_not_called()
 
+    async def test_skips_when_non_idle_below_minimum(self) -> None:
+        """Fewer than 10 minutes of non-idle activity should skip."""
+        from mindflow.domain.events import make_event
+
+        mock_repo = AsyncMock()
+        events = [
+            make_event(
+                user_id=1,
+                timestamp_utc=datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC),
+                duration_s=300.0,
+                process_name="Code.exe",
+                app_name="Code.exe",
+            ),
+            make_event(
+                user_id=1,
+                timestamp_utc=datetime(2026, 7, 17, 14, 5, 0, tzinfo=UTC),
+                duration_s=60.0,
+                process_name="Code.exe",
+                app_name="Code.exe",
+            ),
+        ]
+        mock_repo.query_range = AsyncMock(return_value=events)
+        mock_svc = MagicMock()
+
+        with patch("mindflow.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC)
+            mock_dt.UTC = UTC
+            mock_dt.timedelta = __import__("datetime").timedelta
+
+            await _auto_intervention_check(mock_repo, mock_svc)
+
+            mock_repo.query_range.assert_awaited_once()
+            mock_svc.maybe_intervene.assert_not_called()
+
     async def test_skips_on_low_confidence(self) -> None:
         """Low confidence assessment should skip."""
         from mindflow.domain.events import make_event
@@ -411,7 +445,7 @@ class TestAutoInterventionCheck:
             make_event(
                 user_id=1,
                 timestamp_utc=datetime(2026, 7, 17, 14, 0, 0, tzinfo=UTC),
-                duration_s=10.0,
+                duration_s=600.0,
                 process_name="Code.exe",
                 app_name="Code.exe",
             )
@@ -515,7 +549,7 @@ class TestAutoInterventionCheckThreeTier:
             make_event(
                 user_id=1,
                 timestamp_utc=base,
-                duration_s=10.0,
+                duration_s=600.0,
                 process_name="Code.exe",
                 app_name="Code.exe",
             ),
@@ -641,7 +675,7 @@ class TestDailyPanelRunClaim:
             make_event(
                 user_id=1,
                 timestamp_utc=base,
-                duration_s=10.0,
+                duration_s=600.0,
                 process_name="Code.exe",
                 app_name="Code.exe",
             ),
@@ -814,7 +848,7 @@ class TestSchedulerJobRegistrationContract:
             if isinstance(trigger, _IntervalTrigger):
                 interval_jobs.append((job.id, trigger.interval.total_seconds()))
         assert interval_jobs == [
-            ("auto_intervention_check", 1800.0),
+            ("auto_intervention_check", 300.0),
             ("telemetry_rollup_recent", 900.0),
         ]
 

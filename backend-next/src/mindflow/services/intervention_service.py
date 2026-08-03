@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import httpx
 from loguru import logger
@@ -39,6 +39,7 @@ from mindflow.domain.intervention import (
     CBT_TECHNIQUE_LABELS_ZH,
     INTENSITY_TEMPLATES,
     INTERVENTION_TYPE_LABELS,
+    TITLE_VARIANTS,
     Intervention,
     InterventionIntensity,
     InterventionType,
@@ -49,7 +50,7 @@ from mindflow.domain.procrastination import (
     ProcrastinationType,
 )
 from mindflow.infrastructure.llm.summary import serialize_summary
-from mindflow.infrastructure.notification import NotificationService
+from mindflow.infrastructure.notification import NotificationService, Urgency
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
 )
@@ -60,23 +61,25 @@ from mindflow.services.intervention_throttle import (
 )
 
 # ── Type -> detail/suggestion templates (Chinese, NF-S7 compliant) ───────
+# All suggestions are desktop actions — MindFlow is a desktop assistant,
+# so no phone/lying-down/leaving-the-desk wording.
 
 _TYPE_TEMPLATES: dict[str, dict[str, str]] = {
     "task_breakdown": {
         "detail": "面临的任务较大，可能感到难以着手",
-        "suggestion": "将任务拆解为 3-5 个小步骤，每次完成一个小目标",
+        "suggestion": "在文档或编辑器中把任务拆解为 3-5 个小步骤，逐个完成",
     },
     "nudge": {
         "detail": "似乎有些分心或延迟启动",
-        "suggestion": "设定一个 5 分钟计时器，先开始一小步",
+        "suggestion": "关闭无关的应用窗口，用系统计时器设定 5 分钟，先完成一小步",
     },
     "environment_optimization": {
         "detail": "工作环境中存在较多干扰源",
-        "suggestion": "关闭无关标签页，将手机调至勿扰模式",
+        "suggestion": "关闭无关的浏览器标签页，退出娱乐类应用，开启系统勿扰模式",
     },
     "smart_prioritization": {
         "detail": "同时处理多个任务，注意力可能分散",
-        "suggestion": "按优先级排序，先完成最重要的一个任务",
+        "suggestion": "整理桌面窗口，按优先级只保留最核心的一个任务",
     },
 }
 
@@ -107,15 +110,26 @@ _LLM_SYSTEM_PROMPT: str = (
     "- 语气温暖但不啰嗦，像朋友提醒而非说教\n"
     "- 基于具体数据给出建议，不要泛泛而谈\n"
     "- 不要使用\"诊断\"、\"治疗\"、\"患者\"、\"处方\"等医疗用语\n"
+    "- 用户在**桌面电脑**前工作，所有建议必须是桌面操作"
+    "（关闭标签页、退出应用、整理桌面、使用系统勿扰模式等），"
+    "不得提及手机、躺下、离开书桌等非桌面语境\n"
     "- 不要解释你的分析过程，直接给出提醒内容\n\n"
     "输出 JSON 格式：\n"
-    '  "title": 提醒标题(6字以内)\n'
+    '  "title": 提醒标题(14字以内，有温度、有变化，避免千篇一律的"整理环境"式标题)\n'
     '  "message": 提醒正文(100字以内，包含具体建议)\n'
     '  "urgency": 紧急程度("low"/"medium"/"high")\n'
     "只输出 JSON，不要其他内容。"
 )
 
 _LLM_TIMEOUT_S: float = 10.0
+_OLLAMA_TIMEOUT_S: float = 60.0
+
+# Intensity -> desktop-notification urgency (B3)
+_URGENCY_BY_INTENSITY: Final[dict[InterventionIntensity, Urgency]] = {
+    InterventionIntensity.GENTLE: "low",
+    InterventionIntensity.STANDARD: "normal",
+    InterventionIntensity.STRICT: "critical",
+}
 
 
 class InterventionResult:
@@ -176,6 +190,7 @@ def _render_template_message(
     intervention_type: InterventionType,
     intensity: InterventionIntensity,
     cbt_technique: str | None = None,
+    variant_index: int | None = None,
 ) -> tuple[str, str]:
     """Render notification title and body from templates (fallback).
 
@@ -183,6 +198,9 @@ def _render_template_message(
         intervention_type: Type of intervention.
         intensity: Tone/intensity level.
         cbt_technique: Optional CBT technique to include.
+        variant_index: Deterministic index into the title variant pool.
+            Defaults to a day-based rotation so fallback titles vary
+            day to day instead of being identical every time.
 
     Returns:
         A (title, body) tuple.
@@ -196,12 +214,71 @@ def _render_template_message(
         cbt_label = CBT_TECHNIQUE_LABELS_ZH.get(cbt_technique, cbt_technique)
         suggestion = f"{suggestion}（可尝试 {cbt_label} 方法）"
 
-    title_tmpl, body_tmpl = INTENSITY_TEMPLATES[intensity]
+    variants = TITLE_VARIANTS[intensity]
+    if variant_index is None:
+        variant_index = datetime.now(UTC).day % len(variants)
+    title = variants[variant_index].format(type_label=type_label)
 
-    title = title_tmpl.format(type_label=type_label)
+    _, body_tmpl = INTENSITY_TEMPLATES[intensity]
     body = body_tmpl.format(detail=detail, suggestion=suggestion)
 
     return title, body
+
+
+def _build_message_user_content(
+    summary_json: str,
+    intervention_type: str,
+    intensity: str,
+    cbt_technique: str | None = None,
+) -> str:
+    """Build the user-content context lines shared by DeepSeek and Ollama."""
+    context_parts = [
+        f"行为数据: {summary_json}",
+        f"干预类型: {INTERVENTION_TYPE_LABELS.get(intervention_type, intervention_type)}",
+        f"提醒强度: {intensity}",
+    ]
+    if cbt_technique:
+        cbt_label = CBT_TECHNIQUE_LABELS_ZH.get(cbt_technique, cbt_technique)
+        context_parts.append(f"建议方法: {cbt_label}")
+    return "\n".join(context_parts)
+
+
+def _parse_message_response(content: str) -> tuple[str, str] | None:
+    """Parse the LLM's JSON ``{title, message, urgency}`` response.
+
+    Strips markdown code fences if present, then enforces the length
+    contract shared with the prompt: title prompt ≤14字 / code hard-cap 15,
+    message prompt ≤100字 / code hard-cap 200.
+
+    Returns:
+        (title, message) on success, None on parse failure.
+    """
+    content = content.strip()
+    if content.startswith("```"):
+        lines = content.split("\n")
+        # Remove first line (```json or ```) and last line (```)
+        content = "\n".join(lines[1:-1]).strip()
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        logger.warning("LLM intervention message: parse error: {}", exc)
+        return None
+
+    title = str(parsed.get("title", "")).strip()
+    message = str(parsed.get("message", "")).strip()
+
+    if not title or not message:
+        logger.warning("LLM intervention message: missing title or message")
+        return None
+
+    # Enforce length limits (14字 prompt / 15 hard cap, 100字 prompt / 200 cap)
+    if len(title) > 15:
+        title = title[:15]
+    if len(message) > 200:
+        message = message[:197] + "..."
+
+    return title, message
 
 
 async def _generate_llm_message(
@@ -212,7 +289,7 @@ async def _generate_llm_message(
     intensity: str,
     cbt_technique: str | None = None,
 ) -> tuple[str, str] | None:
-    """Generate intervention message via LLM (primary path).
+    """Generate intervention message via DeepSeek (L1, primary path).
 
     Feeds recent behavior data directly to the LLM and asks for a
     short, warm intervention message. No chain-of-thought — just
@@ -221,16 +298,9 @@ async def _generate_llm_message(
     Returns:
         (title, message) on success, None on any failure.
     """
-    context_parts = [
-        f"行为数据: {summary_json}",
-        f"干预类型: {INTERVENTION_TYPE_LABELS.get(intervention_type, intervention_type)}",
-        f"提醒强度: {intensity}",
-    ]
-    if cbt_technique:
-        cbt_label = CBT_TECHNIQUE_LABELS_ZH.get(cbt_technique, cbt_technique)
-        context_parts.append(f"建议方法: {cbt_label}")
-
-    user_content = "\n".join(context_parts)
+    user_content = _build_message_user_content(
+        summary_json, intervention_type, intensity, cbt_technique
+    )
 
     try:
         response = await llm_client.post(
@@ -257,38 +327,82 @@ async def _generate_llm_message(
             logger.warning("LLM intervention message: empty response")
             return None
 
-        # Strip markdown code fences if present (some models wrap JSON in ```...```)
-        content = content.strip()
-        if content.startswith("```"):
-            lines = content.split("\n")
-            # Remove first line (```json or ```) and last line (```)
-            content = "\n".join(lines[1:-1]).strip()
-
-        parsed = json.loads(content)
-        title = str(parsed.get("title", "")).strip()
-        message = str(parsed.get("message", "")).strip()
-
-        if not title or not message:
-            logger.warning("LLM intervention message: missing title or message")
-            return None
-
-        # Enforce length limits
-        if len(title) > 15:
-            title = title[:15]
-        if len(message) > 200:
-            message = message[:197] + "..."
-
-        logger.debug("LLM generated intervention message: title={!r}", title)
-        return title, message
+        result = _parse_message_response(content)
+        if result is not None:
+            logger.debug("LLM generated intervention message: title={!r}", result[0])
+        return result
 
     except httpx.TimeoutException:
         logger.warning("LLM intervention message: timeout ({}s)", _LLM_TIMEOUT_S)
         return None
-    except (json.JSONDecodeError, KeyError, IndexError) as exc:
-        logger.warning("LLM intervention message: parse error: {}", exc)
+    except (KeyError, IndexError) as exc:
+        logger.warning("LLM intervention message: malformed response: {}", exc)
         return None
     except Exception as exc:
         logger.warning("LLM intervention message: unexpected error: {}", exc)
+        return None
+
+
+async def _generate_ollama_message(
+    ollama_base_url: str,
+    model: str,
+    summary_json: str,
+    intervention_type: str,
+    intensity: str,
+    cbt_technique: str | None = None,
+) -> tuple[str, str] | None:
+    """Generate intervention message via Ollama (L2 fallback).
+
+    Uses the same system prompt and user-content context as the DeepSeek
+    path, POSTing to Ollama's OpenAI-compatible ``/v1/chat/completions``.
+    Returns None on any failure so the caller falls back to templates.
+
+    Returns:
+        (title, message) on success, None on any failure.
+    """
+    user_content = _build_message_user_content(
+        summary_json, intervention_type, intensity, cbt_technique
+    )
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _LLM_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "stream": False,
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=ollama_base_url,
+            timeout=httpx.Timeout(_OLLAMA_TIMEOUT_S),
+        ) as client:
+            response = await client.post("/v1/chat/completions", json=payload)
+
+        if response.status_code != 200:
+            logger.warning("Ollama intervention message: HTTP {}", response.status_code)
+            return None
+
+        body = response.json()
+        content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not content:
+            logger.warning("Ollama intervention message: empty response")
+            return None
+
+        result = _parse_message_response(content)
+        if result is not None:
+            logger.debug("Ollama generated intervention message: title={!r}", result[0])
+        return result
+
+    except httpx.TimeoutException:
+        logger.warning("Ollama intervention message: timeout ({}s)", _OLLAMA_TIMEOUT_S)
+        return None
+    except (KeyError, IndexError) as exc:
+        logger.warning("Ollama intervention message: malformed response: {}", exc)
+        return None
+    except Exception as exc:
+        logger.warning("Ollama intervention message: unexpected error: {}", exc)
         return None
 
 
@@ -342,8 +456,11 @@ class InterventionService:
         broadcast_fn: Async callable for WebSocket broadcast.
             Signature: ``async broadcast(message: dict) -> int``.
         llm_client: Optional httpx.AsyncClient for LLM message generation.
-            When provided, intervention messages are AI-generated.
+            When provided, intervention messages are AI-generated (L1).
         llm_model: The LLM model name to use for message generation.
+        ollama_base_url: Optional Ollama base URL for L2 fallback. When set,
+            Ollama is tried if DeepSeek is unavailable or has no API key.
+        ollama_model: Ollama model name for L2 fallback.
     """
 
     def __init__(  # noqa: PLR0913 — service wiring
@@ -356,6 +473,8 @@ class InterventionService:
         llm_client: httpx.AsyncClient | None = None,
         llm_model: str = "deepseek-chat",
         auth_token: str | None = None,
+        ollama_base_url: str | None = None,
+        ollama_model: str = "qwen3:8b",
     ) -> None:
         self._repo = intervention_repo
         self._throttle = throttle
@@ -365,6 +484,8 @@ class InterventionService:
         self._llm_client = llm_client
         self._llm_model = llm_model
         self._auth_token = auth_token
+        self._ollama_base_url = ollama_base_url
+        self._ollama_model = ollama_model
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -375,7 +496,6 @@ class InterventionService:
         *,
         bypass_throttle: bool = False,
         bypass_deep_work_guard: bool = False,
-        enhance_with_llm: bool = False,
         recent_events: list[ActivityEvent] | None = None,
         user_id: int = 1,
     ) -> InterventionResult:
@@ -388,8 +508,6 @@ class InterventionService:
                 (for manual trigger).
             bypass_deep_work_guard: If True, keep recent events as message
                 context but do not suppress an explicitly requested reminder.
-            enhance_with_llm: Reserved for future LLM enhancement
-                (currently ignored — always False).
             recent_events: Recent activity events for deep-work detection.
             user_id: User identifier.
 
@@ -439,8 +557,9 @@ class InterventionService:
         # ── 5. Generate message (AI primary, template fallback) ────────
         title: str
         message: str
+        message_source: str = "template"
 
-        if self._llm_client is not None:
+        if self._llm_client is not None or self._ollama_base_url is not None:
             # Build summary JSON from recent events for LLM context
             summary_json = "{}"
             if recent_events:
@@ -452,17 +571,30 @@ class InterventionService:
                 except Exception as exc:
                     logger.debug("Could not build summary for LLM: {}", exc)
 
-            llm_result = await _generate_llm_message(
-                llm_client=self._llm_client,
-                model=self._llm_model,
-                summary_json=summary_json,
-                intervention_type=intervention_type,
-                intensity=str(intensity.value),
-                cbt_technique=cbt_technique,
-            )
+            # L1 DeepSeek → L2 Ollama → L3 template fallback
+            llm_result = None
+            if self._llm_client is not None:
+                llm_result = await _generate_llm_message(
+                    llm_client=self._llm_client,
+                    model=self._llm_model,
+                    summary_json=summary_json,
+                    intervention_type=intervention_type,
+                    intensity=str(intensity.value),
+                    cbt_technique=cbt_technique,
+                )
+            if llm_result is None and self._ollama_base_url is not None:
+                llm_result = await _generate_ollama_message(
+                    ollama_base_url=self._ollama_base_url,
+                    model=self._ollama_model,
+                    summary_json=summary_json,
+                    intervention_type=intervention_type,
+                    intensity=str(intensity.value),
+                    cbt_technique=cbt_technique,
+                )
 
             if llm_result is not None:
                 title, message = llm_result
+                message_source = "llm"
             else:
                 logger.debug("LLM message generation failed, using template fallback")
                 title, message = _render_template_message(
@@ -493,7 +625,7 @@ class InterventionService:
                 "confidence": {str(t): round(c, 3) for t, c in assessment.confidence.items()},
                 "intensity": str(intensity),
                 "bypass_throttle": bypass_throttle,
-                "message_source": "llm" if self._llm_client is not None else "template",
+                "message_source": message_source,
                 "title": title,
                 "message": message,
             }
@@ -518,7 +650,7 @@ class InterventionService:
         await self._notifier.send(
             title=intervention.title,
             body=intervention.message,
-            urgency="normal",
+            urgency=_URGENCY_BY_INTENSITY[intensity],
             intervention_id=intervention.id,
             auth_token=self._auth_token,
         )

@@ -28,12 +28,30 @@ def _run_migrations_sync(db_url: str) -> None:
         db_url: Synchronous SQLite URL for Alembic's sync engine.
     """
     from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import create_engine, text
 
     from alembic import command
 
     cfg = Config(str(BASE_DIR / "alembic.ini"))
     cfg.set_main_option("sqlalchemy.url", db_url)
     command.upgrade(cfg, "head")
+
+    # Verify the DB really reached the script head. A missing migration file
+    # or a partial chain otherwise fails loudly later; catch it here with a
+    # readable reason instead.
+    script_dir = ScriptDirectory.from_config(cfg)
+    expected_head = script_dir.get_current_head()
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            applied = conn.scalar(text("SELECT version_num FROM alembic_version"))
+    finally:
+        engine.dispose()
+    if applied != expected_head:
+        raise RuntimeError(
+            f"Migration head mismatch: DB is at {applied!r}, expected {expected_head!r}"
+        )
 
 
 async def run_migrations(async_db_url: str) -> bool:

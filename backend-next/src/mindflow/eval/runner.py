@@ -66,6 +66,7 @@ class EvalReport:
     total: int = 0
     hits: int = 0
     misses: int = 0
+    per_type: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Use object.__setattr__ because frozen dataclass
@@ -172,6 +173,21 @@ async def run_eval(
     top1_accuracy = hits / total if total > 0 else 0.0
     mean_jaccard = sum(r.jaccard for r in results) / total if total > 0 else 0.0
     technique_accuracy = sum(1 for r in results if r.technique_match) / total if total > 0 else 0.0
+    all_types = {t for r in results for t in (*r.expected_types, *r.predicted_types)}
+    per_type: dict[str, dict[str, float]] = {}
+    for t in all_types:
+        tp = sum(t in r.predicted_types and t in r.expected_types for r in results)
+        fp = sum(t in r.predicted_types and t not in r.expected_types for r in results)
+        fn = sum(t not in r.predicted_types and t in r.expected_types for r in results)
+        precision = tp / (tp + fp) if tp + fp else 0.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        per_type[t.value] = {
+            "precision": round(float(precision), 4),
+            "recall": round(float(recall), 4),
+            "f1": round(float(f1), 4),
+            "support": int(sum(t in r.expected_types for r in results)),
+        }
 
     return EvalReport(
         analyzer_name=analyzer_name,
@@ -183,6 +199,7 @@ async def run_eval(
         total=total,
         hits=hits,
         misses=total - hits,
+        per_type=per_type,
     )
 
 

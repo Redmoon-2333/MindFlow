@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   triggerIntervention,
   getInterventionHistory,
@@ -8,6 +8,7 @@ import {
 } from "../api";
 import type { InterventionIntensity, InterventionRating, InterventionResponse } from "../api";
 import { realtimeClient } from "../realtime";
+import { INTERVENTION_TYPE_LABELS, INTERVENTION_TYPE_BADGES } from "../lib/intervention-labels";
 
 interface InterventionItem {
   id: string;
@@ -29,20 +30,6 @@ const INTENSITY_OPTIONS = [
 ];
 
 const DAYS_OPTIONS = [7, 14, 30, 90] as const;
-
-const INTERVENTION_TYPE_LABELS: Record<string, string> = {
-  task_breakdown: "任务分解",
-  nudge: "行动提示",
-  environment_optimization: "环境优化",
-  smart_prioritization: "优先级建议",
-};
-
-const INTERVENTION_TYPE_BADGES: Record<string, string> = {
-  task_breakdown: "badge-primary",
-  nudge: "badge-info",
-  environment_optimization: "badge-success",
-  smart_prioritization: "badge-warning",
-};
 
 const RESPONSE_LABELS: Record<string, string> = {
   accept: "已接受",
@@ -85,6 +72,7 @@ export default function Intervention() {
   const [feedbackRating, setFeedbackRating] = useState<InterventionRating | "">("");
   const [feedbackComment, setFeedbackComment] = useState("");
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const shownAtRef = useRef<number>(0);
 
   const loadHistory = useCallback(async () => {
     setLoading(true);
@@ -93,7 +81,9 @@ export default function Intervention() {
       const data = await getInterventionHistory(days);
       const items = [...data.items].reverse();
       setHistory(items);
-      setLatest(items[0] ?? null);
+      const nextLatest = items[0] ?? null;
+      setLatest(nextLatest);
+      if (nextLatest) shownAtRef.current = performance.now();
     } catch (e: unknown) {
       setError(getErrorMessage(e, "加载干预历史失败"));
     } finally {
@@ -108,6 +98,7 @@ export default function Intervention() {
   useEffect(() => realtimeClient.subscribe("intervention", (payload, timestamp) => {
     const item: InterventionItem = { ...payload, created_at: timestamp };
     setLatest(item);
+    shownAtRef.current = performance.now();
     setHistory((current) => [item, ...current.filter((entry) => entry.id !== item.id)]);
   }), []);
 
@@ -129,7 +120,10 @@ export default function Intervention() {
     setRespondingId(id);
     setError(null);
     try {
-      await respondIntervention(id, response);
+      const latencyS = id === latest?.id && shownAtRef.current > 0
+        ? (performance.now() - shownAtRef.current) / 1000
+        : 0;
+      await respondIntervention(id, response, latencyS);
       await loadHistory();
     } catch (e: unknown) {
       setError(getErrorMessage(e, "操作失败"));
@@ -344,9 +338,9 @@ export default function Intervention() {
                       style={{ marginBottom: 8 }}
                     >
                       <option value="">选择评分</option>
-                      <option value="effective">有用</option>
+                      <option value="helpful">有用</option>
                       <option value="neutral">一般</option>
-                      <option value="ineffective">无效</option>
+                      <option value="annoying">无效</option>
                     </select>
                     <textarea
                       placeholder="补充评论（可选）"

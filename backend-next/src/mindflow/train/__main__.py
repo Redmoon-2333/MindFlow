@@ -121,6 +121,20 @@ def load_database_v2_data(
         }
         if not required.issubset(table_names):
             return [], []
+        feedback_columns = {
+            str(row[0]) for row in connection.execute(
+                "PRAGMA table_info(focus_session_feedback)"
+            ).fetchall()
+        }
+        if (
+            "session_start_utc" in feedback_columns and "session_end_utc" in feedback_columns
+        ):
+            time_select = (
+                "COALESCE(f.session_start_utc, s.start_time) AS start_time,"
+                " COALESCE(f.session_end_utc, s.end_time) AS end_time"
+            )
+        else:
+            time_select = "s.start_time, s.end_time"
         window_rows = connection.execute(
             "SELECT window_start_utc, window_end_utc, feature_schema_version, "
             "features_json, label FROM behavior_feature_windows "
@@ -129,8 +143,8 @@ def load_database_v2_data(
             (user_id,),
         ).fetchall()
         feedback_rows = connection.execute(
-            "SELECT f.session_id, f.label, f.score, f.task_type, f.created_at, "
-            "s.start_time, s.end_time FROM focus_session_feedback AS f "
+            f"SELECT f.session_id, f.label, f.score, f.task_type, f.created_at, {time_select} "
+            "FROM focus_session_feedback AS f "
             "JOIN focus_sessions AS s ON s.id = f.session_id AND s.user_id = f.user_id "
             "WHERE f.user_id = ? ORDER BY f.created_at",
             (user_id,),

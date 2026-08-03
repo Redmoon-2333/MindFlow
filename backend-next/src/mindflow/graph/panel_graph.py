@@ -31,7 +31,6 @@ from typing import Annotated, Any, TypedDict, cast
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Send
 from loguru import logger
 
 from mindflow.agents.conflict import ConflictReport, detect_conflict
@@ -738,17 +737,6 @@ def make_critic_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def attribution_fanout(state: PanelGraphState) -> list[Send]:
-    """Fan out to three parallel attribution expert nodes via Send.
-
-    Each Send passes ``_expert_index`` so the target node knows
-    which expert to call.  Results accumulate via the
-    ``_reduce_attribution_opinions`` reducer.
-    """
-    return [
-        Send("attribution_call", {"_expert_index": i})
-        for i in range(len(ATTRIBUTION_EXPERTS))
-    ]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -950,7 +938,6 @@ class PanelGraph:
         graph.add_edge("rebuttal", "parse_validation")
 
         # Moderator → human_review_interrupt → critic
-        graph.add_edge("moderator", "human_review_interrupt")
         graph.add_edge("moderator", "verdict_schema_validation")
         graph.add_edge("verdict_schema_validation", "human_review_interrupt")
         graph.add_edge("human_review_interrupt", "critic")

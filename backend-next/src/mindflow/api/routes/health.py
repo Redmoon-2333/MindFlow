@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from mindflow import __version__
@@ -16,6 +16,7 @@ from mindflow.api.deps import (
     get_engine,
     get_migration_status,
 )
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.services.collector_service import CollectorService
 
 router = APIRouter(tags=["health"])
@@ -117,6 +118,10 @@ async def health_check(
             "status": "no_service",
             "v2_training_mode": getattr(request.app.state, "v2_training_mode", None),
         }
+    if ml_status is not None:
+        ml_status.setdefault(
+            "v2_training_mode", getattr(request.app.state, "v2_training_mode", None),
+        )
 
     # Checkpoint / run store availability (same probes as readiness).
     checkpointer = getattr(request.app.state, "checkpointer", None)
@@ -139,6 +144,32 @@ async def health_check(
         except Exception:
             run_store_available = False
 
+    # Freshness probe: the same values a user needs to debug "why no reminder".
+    last_activity_at: str | None = None
+    last_intervention_at: str | None = None
+    db_scheduler_heartbeat_at: str | None = None
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if db_connected and session_factory is not None:
+        try:
+            async with session_factory() as session:
+                last_activity_at = await session.scalar(
+                    text("SELECT MAX(timestamp) FROM activity_events WHERE user_id = 1")
+                )
+                last_intervention_at = await session.scalar(
+                    text("SELECT MAX(triggered_at) FROM intervention_logs WHERE user_id = 1")
+                )
+                db_scheduler_heartbeat_at = await session.scalar(
+                    text("SELECT MAX(heartbeat_at) FROM scheduled_job_runs")
+                )
+        except Exception:
+            last_activity_at = None
+            last_intervention_at = None
+            db_scheduler_heartbeat_at = None
+    scheduler = getattr(request.app.state, "scheduler", None)
+    scheduler_heartbeat_at = getattr(scheduler, "last_heartbeat_at", None)
+    if scheduler_heartbeat_at is None:
+        scheduler_heartbeat_at = db_scheduler_heartbeat_at
+
     return {
         "status": "ok",
         **_base_payload(),
@@ -152,6 +183,12 @@ async def health_check(
         },
         "migration": {"applied": migration_status},
         "ml": ml_status,
+        "observability": {
+            "last_activity_at": last_activity_at,
+            "last_intervention_at": last_intervention_at,
+            "scheduler_heartbeat_at": scheduler_heartbeat_at,
+            "ml_mode": getattr(request.app.state, "v2_training_mode", None),
+        },
         "checkpoint_store": "available" if checkpoint_available else "unavailable",
         "run_store": "available" if run_store_available else "unavailable",
     }

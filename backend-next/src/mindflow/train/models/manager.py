@@ -10,18 +10,19 @@ next time the app calls ``joblib.load``.
 from __future__ import annotations
 
 import json
+import re
+import secrets
 import warnings
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import joblib
 import numpy as np
 import numpy.typing as npt
 from loguru import logger
 from sklearn.exceptions import InconsistentVersionWarning
-from sklearn.model_selection import train_test_split
 
 from mindflow.train.models.classifier import FocusClassifier
 from mindflow.train.models.clustering import BehaviorClustering
@@ -46,51 +47,6 @@ class ModelSignatureError(Exception):
     does not exist.
     """
 
-
-def _safe_split(
-    X: npt.NDArray[Any],
-    y: npt.NDArray[Any],
-    sw: npt.NDArray[Any],
-    test_size: float,
-    random_state: int,
-) -> tuple[
-    npt.NDArray[Any],
-    npt.NDArray[Any],
-    npt.NDArray[Any],
-    npt.NDArray[Any],
-    npt.NDArray[Any],
-    npt.NDArray[Any],
-]:
-    """Train/test split with graceful fallback when stratification fails."""
-    try:
-        return cast(
-            tuple[
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-            ],
-            train_test_split(
-                X, y, sw, test_size=test_size, random_state=random_state, stratify=y
-            ),
-        )
-    except ValueError:
-        logger.warning("Stratified split failed — falling back to non-stratified split")
-        return cast(
-            tuple[
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-                npt.NDArray[Any],
-            ],
-            train_test_split(
-                X, y, sw, test_size=test_size, random_state=random_state
-            ),
-        )
 
 
 class ModelManager:
@@ -141,6 +97,12 @@ class ModelManager:
     @property
     def _today_tag(self) -> str:
         return datetime.now(UTC).strftime("%Y%m%d")
+
+    @property
+    def _new_version_tag(self) -> str:
+        """Timestamp + short random suffix so same-day runs never overwrite."""
+        stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        return f"{stamp}_{secrets.token_hex(3)}"
 
     # ── Training ──────────────────────────────────────────────────────────
 
@@ -201,31 +163,18 @@ class ModelManager:
         low_conf_count = int((~high_conf_mask).sum())
 
         if len(np.unique(y_high)) >= 2 and len(X_high) >= 10:
-            svw = (
-                sw_high
-                if sw_high is not None
-                else np.ones(len(X_high))
-            )
-            X_train, X_test, y_train, y_test, sw_train, _ = _safe_split(
-                X_high, y_high, svw, test_size=0.2, random_state=42
-            )
             self.classifier.fit(
-                X_train,
-                y_train,
+                X_high,
+                y_high,
                 feature_names,
-                sample_weight=sw_train if sample_weight is not None else None,
+                sample_weight=sw_high if sample_weight is not None else None,
             )
-            eval_metrics = self.classifier.evaluate(X_test, y_test)
             summary_classifier = {
-                "accuracy": eval_metrics.get("accuracy", 0.0),
-                "precision": eval_metrics.get("precision", 0.0),
-                "recall": eval_metrics.get("recall", 0.0),
-                "f1": eval_metrics.get("f1", 0.0),
-                "cv_mean": eval_metrics.get("cv_mean", 0.0),
-                "cv_std": eval_metrics.get("cv_std", 0.0),
                 "feature_importance": self.classifier.get_feature_importance(),
-                "high_confidence_samples": len(X_high),
+                "high_confidence_samples": int(len(X_high)),
                 "filtered_low_confidence": low_conf_count,
+                "n_samples": int(len(X_high)),
+                "n_classes": int(len(np.unique(y_high))),
             }
         else:
             summary_classifier = {
@@ -279,13 +228,18 @@ class ModelManager:
 
     # ── Versioned persistence ─────────────────────────────────────────────
 
-    def save_all(self, *, activate: bool = True) -> dict[str, str]:
-        """Save all models with date-stamped filenames and update latest.json.
+    def save_all(
+        self,
+        *,
+        activate: bool = True,
+        manifest: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        """Save all models with versioned filenames and a manifest.
 
         Returns:
             Dict mapping model names to their saved filenames.
         """
-        tag = self._today_tag
+        tag = self._new_version_tag
 
         names: dict[str, str] = {
             "clustering": f"clustering-{tag}.pkl",
@@ -317,6 +271,16 @@ class ModelManager:
         signing_key = _load_or_create_signing_key(self.models_dir)
         for path in (clustering_path, classifier_path, hmm_path):
             sign_model_file(path, signing_key)
+
+        manifest_data: dict[str, Any] = {
+            "version": tag,
+            "created_at": datetime.now(UTC).isoformat(),
+            "files": names,
+        }
+        manifest_data.update(manifest or {})
+        (self.models_dir / "manifest.json").write_text(
+            json.dumps(manifest_data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
         if activate:
             self._write_latest(names)
@@ -386,10 +350,10 @@ class ModelManager:
             exist, newest first.
         """
         tags: set[str] = set()
-        for f in self.models_dir.glob("*.pkl"):
-            parts = f.stem.split("-")
-            if len(parts) >= 2 and len(parts[-1]) == 8 and parts[-1].isdigit():
-                tags.add(parts[-1])
+        for f in self.models_dir.glob("clustering-*.pkl"):
+            match = re.match(r"^clustering-(.+?)\.pkl$", f.name)
+            if match:
+                tags.add(match.group(1))
 
         valid: list[str] = []
         for tag in sorted(tags, reverse=True):

@@ -20,7 +20,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 from mindflow.api.schemas import (
     ActivityEventsSummary,
@@ -32,6 +31,7 @@ from mindflow.api.schemas import (
     V2WindowsSummary,
 )
 from mindflow.domain.baseline import BaselineModel
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
@@ -244,12 +244,14 @@ class TrainingReadinessService:
         for fb in feedback_raw:
             sid = fb["session_id"]
             fcs = session_map.get(sid)
-            if fcs is None:
+            start_time = fb.get("session_start_utc") or (fcs or {}).get("start_time")
+            end_time = fb.get("session_end_utc") or (fcs or {}).get("end_time")
+            if not start_time or not end_time:
                 continue
             feedback_with_times.append({
                 "session_id": sid,
-                "start_time": fcs["start_time"],
-                "end_time": fcs["end_time"],
+                "start_time": start_time,
+                "end_time": end_time,
                 "label": fb["label"],
                 "score": fb["score"],
                 "task_type": fb.get("task_type"),

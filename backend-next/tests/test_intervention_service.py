@@ -30,6 +30,8 @@ from mindflow.services.intervention_service import (
     InterventionService,
     _deep_work_guard,
     _enrich_history_item,
+    _generate_ollama_message,
+    _parse_message_response,
     _render_template_message,
     _select_intervention_type,
 )
@@ -120,22 +122,34 @@ class TestRenderMessage:
     """_render_template_message template rendering."""
 
     def test_gentle_intensity(self) -> None:
-        title, body = _render_template_message("nudge", InterventionIntensity.GENTLE)
+        title, body = _render_template_message(
+            "nudge", InterventionIntensity.GENTLE, variant_index=0
+        )
         assert "小提示" in title
         assert "行动提示" in title
         assert "分心" in body or "延迟" in body
 
     def test_standard_intensity(self) -> None:
-        title, body = _render_template_message("task_breakdown", InterventionIntensity.STANDARD)
+        title, body = _render_template_message(
+            "task_breakdown", InterventionIntensity.STANDARD, variant_index=0
+        )
         assert "MindFlow" in title
         assert "拆解" in body
 
     def test_strict_intensity(self) -> None:
         title, body = _render_template_message(
-            "environment_optimization", InterventionIntensity.STRICT
+            "environment_optimization", InterventionIntensity.STRICT, variant_index=0
         )
         assert "专注提醒" in title
         assert "干扰" in body
+
+    def test_title_variants_rotate_by_index(self) -> None:
+        """Different variant_index yields different titles (deterministic)."""
+        titles = {
+            _render_template_message("nudge", InterventionIntensity.GENTLE, variant_index=i)[0]
+            for i in range(3)
+        }
+        assert len(titles) == 3
 
     def test_with_cbt_technique(self) -> None:
         title, body = _render_template_message(
@@ -338,6 +352,89 @@ class TestInterventionService:
         assert not result.skipped
         assert result.intervention is not None
 
+    # ── Notification urgency (B3) ────────────────────────────────────
+
+    async def test_notification_urgency_maps_intensity(
+        self, service, assessment, mock_notifier
+    ) -> None:
+        """Notification urgency follows intensity: gentle→low, standard→normal, strict→critical."""
+        expected = {
+            InterventionIntensity.GENTLE: "low",
+            InterventionIntensity.STANDARD: "normal",
+            InterventionIntensity.STRICT: "critical",
+        }
+        for intensity, urgency in expected.items():
+            mock_notifier.send.reset_mock()
+            result = await service.maybe_intervene(
+                assessment=assessment, intensity=intensity
+            )
+            assert result.intervention is not None
+            kwargs = mock_notifier.send.await_args.kwargs
+            assert kwargs["urgency"] == urgency, f"intensity={intensity}"
+
+    # ── L1→L2→L3 degradation chain (C2) ─────────────────────────────
+
+    async def test_ollama_fallback_when_no_llm_client(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast, assessment, monkeypatch
+    ) -> None:
+        """No DeepSeek key → Ollama is tried directly (L2)."""
+        svc = InterventionService(
+            intervention_repo=mock_repo,
+            throttle=mock_throttle,
+            notifier=mock_notifier,
+            broadcast_fn=mock_broadcast,
+            ollama_base_url="http://localhost:11434",
+            ollama_model="qwen3:8b",
+        )
+
+        async def fake_ollama(**kwargs: object) -> tuple[str, str]:
+            return ("Ollama标题", "Ollama消息")
+
+        monkeypatch.setattr(
+            "mindflow.services.intervention_service._generate_ollama_message",
+            fake_ollama,
+        )
+        result = await svc.maybe_intervene(assessment=assessment)
+        assert result.intervention is not None
+        assert result.intervention.title == "Ollama标题"
+        assert result.intervention.message == "Ollama消息"
+        # Persisted context records the LLM as the message source
+        mock_repo.log_triggered.assert_awaited_once()
+        ctx = mock_repo.log_triggered.await_args.kwargs["context"]
+        assert ctx["message_source"] == "llm"
+
+    async def test_ollama_fallback_when_deepseek_fails(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast, assessment, monkeypatch
+    ) -> None:
+        """DeepSeek (L1) fails → Ollama (L2) is tried."""
+        svc = InterventionService(
+            intervention_repo=mock_repo,
+            throttle=mock_throttle,
+            notifier=mock_notifier,
+            broadcast_fn=mock_broadcast,
+            llm_client=MagicMock(),  # non-None L1 client; _generate_llm_message is stubbed
+            ollama_base_url="http://localhost:11434",
+            ollama_model="qwen3:8b",
+        )
+
+        async def fake_llm(**kwargs: object) -> tuple[str, str] | None:
+            return None
+
+        async def fake_ollama(**kwargs: object) -> tuple[str, str]:
+            return ("Ollama标题", "Ollama消息")
+
+        monkeypatch.setattr(
+            "mindflow.services.intervention_service._generate_llm_message",
+            fake_llm,
+        )
+        monkeypatch.setattr(
+            "mindflow.services.intervention_service._generate_ollama_message",
+            fake_ollama,
+        )
+        result = await svc.maybe_intervene(assessment=assessment)
+        assert result.intervention is not None
+        assert result.intervention.title == "Ollama标题"
+
     # ── Record response ──────────────────────────────────────────────
 
     async def test_record_response(self, service, mock_repo) -> None:
@@ -518,3 +615,127 @@ class TestEnrichHistoryItem:
             assert itype not in str(result["message"]), (
                 f"message should not contain raw enum {itype!r}"
             )
+
+
+class _FakeResponse:
+    """Minimal stand-in for an httpx.Response in Ollama tests."""
+
+    status_code = 200
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+
+    def json(self) -> dict[str, object]:
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
+class _FakeClient:
+    """Async context manager that records the Ollama POST."""
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+        self.url: str | None = None
+        self.json_payload: dict[str, object] | None = None
+
+    async def __aenter__(self) -> _FakeClient:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    async def post(self, url: str, json: dict[str, object]) -> _FakeResponse:
+        self.url = url
+        self.json_payload = json
+        return _FakeResponse(self._content)
+
+
+class TestParseMessageResponse:
+    """_parse_message_response — JSON parsing and length caps."""
+
+    def test_strips_code_fences(self) -> None:
+        content = (
+            '```json\n{"title": "专注一下", "message": "建议这样做", '
+            '"urgency": "medium"}\n```'
+        )
+        title, message = _parse_message_response(content)
+        assert title == "专注一下"
+        assert message == "建议这样做"
+
+    def test_plain_json(self) -> None:
+        title, message = _parse_message_response(
+            '{"title": "专注一下", "message": "建议这样做"}'
+        )
+        assert title == "专注一下"
+        assert message == "建议这样做"
+
+    def test_enforces_title_hard_cap(self) -> None:
+        content = '{"title": "' + "长" * 30 + '", "message": "ok"}'
+        title, _ = _parse_message_response(content)
+        assert len(title) == 15
+
+    def test_enforces_message_cap(self) -> None:
+        content = '{"title": "t", "message": "' + "x" * 250 + '"}'
+        _, message = _parse_message_response(content)
+        assert len(message) == 200  # 197 + "..."
+        assert message.endswith("...")
+
+    def test_missing_title_returns_none(self) -> None:
+        assert _parse_message_response('{"message": "m"}') is None
+
+    def test_missing_message_returns_none(self) -> None:
+        assert _parse_message_response('{"title": "t"}') is None
+
+    def test_invalid_json_returns_none(self) -> None:
+        assert _parse_message_response("not json") is None
+
+
+class TestGenerateOllamaMessage:
+    """_generate_ollama_message — L2 fallback HTTP shape and parsing."""
+
+    async def test_posts_to_v1_chat_completions(self, monkeypatch) -> None:
+        content = '{"title": "专注一下", "message": "建议这样做", "urgency": "medium"}'
+        fake = _FakeClient(content)
+        monkeypatch.setattr(
+            "mindflow.services.intervention_service.httpx.AsyncClient",
+            lambda *args, **kwargs: fake,
+        )
+        result = await _generate_ollama_message(
+            ollama_base_url="http://localhost:11434",
+            model="qwen3:8b",
+            summary_json="{}",
+            intervention_type="nudge",
+            intensity="standard",
+            cbt_technique=None,
+        )
+        assert result == ("专注一下", "建议这样做")
+        assert fake.url == "/v1/chat/completions"
+        assert fake.json_payload is not None
+        assert fake.json_payload["model"] == "qwen3:8b"
+        assert fake.json_payload["stream"] is False
+
+    async def test_non_200_returns_none(self, monkeypatch) -> None:
+        async def fail_post(url: str, json: dict[str, object]) -> _FakeResponse:
+            resp = _FakeResponse("{}")
+            resp.status_code = 500
+            return resp
+
+        class _FailingClient(_FakeClient):
+            def __init__(self) -> None:
+                super().__init__("{}")
+
+            async def post(self, url: str, json: dict[str, object]) -> _FakeResponse:
+                return await fail_post(url, json)
+
+        fake = _FailingClient()
+        monkeypatch.setattr(
+            "mindflow.services.intervention_service.httpx.AsyncClient",
+            lambda *args, **kwargs: fake,
+        )
+        result = await _generate_ollama_message(
+            ollama_base_url="http://localhost:11434",
+            model="qwen3:8b",
+            summary_json="{}",
+            intervention_type="nudge",
+            intensity="standard",
+        )
+        assert result is None

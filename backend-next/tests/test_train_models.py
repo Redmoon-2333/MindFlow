@@ -272,7 +272,7 @@ class TestModelManager:
 
         versions = manager.list_versions()
         assert len(versions) >= 1
-        assert all(len(v) == 8 and v.isdigit() for v in versions)
+        assert all(len(v) >= 8 for v in versions)
 
     def test_load_version(self, sample_features: np.ndarray, model_dir: Path) -> None:
         """load_version should load a specific tag."""
@@ -322,7 +322,7 @@ class TestModelManager:
 
         tag = manager.current_version_tag
         assert tag is not None
-        assert len(tag) == 8
+        assert len(tag) >= 8
 
     def test_latest_json_structure(self, sample_features: np.ndarray, model_dir: Path) -> None:
         """latest.json should have clustering, classifier, hmm keys."""

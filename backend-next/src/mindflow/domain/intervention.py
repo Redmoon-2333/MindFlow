@@ -72,6 +72,30 @@ INTENSITY_TEMPLATES: Final[dict[InterventionIntensity, tuple[str, str]]] = {
     InterventionIntensity.STRICT: (_INTENSITY_STRICT_TITLE, _INTENSITY_STRICT_BODY),
 }
 
+# ── Intensity -> title variant pool (template fallback) ───────────────────
+# When no LLM is available, ``_render_template_message`` picks one of these
+# deterministically (day-based rotation) so fallback titles aren't identical
+# every time. ``{type_label}`` is a runtime placeholder where sensible.
+# Values are Chinese and NF-S7 compliant (never 诊断/治疗/患者/处方).
+
+TITLE_VARIANTS: Final[dict[InterventionIntensity, tuple[str, ...]]] = {
+    InterventionIntensity.GENTLE: (
+        "小提示：{type_label}",
+        "小提示，换个方式试试",
+        "小提示：先完成一小步",
+    ),
+    InterventionIntensity.STANDARD: (
+        "来自 MindFlow 的提醒",
+        "来自 MindFlow 的专注提示",
+        "MindFlow 提醒你：专注当下",
+    ),
+    InterventionIntensity.STRICT: (
+        "专注提醒",
+        "专注提醒：立即行动",
+        "重要专注提醒，请留意",
+    ),
+}
+
 # ── Type → Chinese labels for template rendering ────────────────────────
 
 INTERVENTION_TYPE_LABELS: Final[dict[str, str]] = {

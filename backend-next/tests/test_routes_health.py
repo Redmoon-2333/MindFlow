@@ -114,3 +114,9 @@ class TestCompatibleHealthEndpoint:
         assert data["database"]["connected"] is True
         assert data["migration"]["applied"] is True
         assert "timestamp" in data
+
+    def test_health_contains_observability_fields(self, client: TestClient) -> None:
+        data = client.get("/api/v1/health").json()
+        obs = data["observability"]
+        expected = {"last_activity_at", "last_intervention_at", "scheduler_heartbeat_at", "ml_mode"}
+        assert expected <= set(obs)

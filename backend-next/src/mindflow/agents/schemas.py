@@ -89,6 +89,17 @@ class ModeratorOutput(BaseModel):
         default_factory=list,
         description="Recorded dissenting opinions",
     )
+    insufficient_data: bool = Field(
+        default=False,
+        description="True when evidence is insufficient for a confident verdict",
+    )
+    uncertainty: float | None = Field(
+        default=None, ge=0, le=1, description="Overall verdict uncertainty in [0, 1]",
+    )
+    evidence_gaps: list[str] = Field(
+        default_factory=list,
+        description="Missing evidence categories that prevent a stronger conclusion",
+    )
 
 
 class CriticOutput(BaseModel):

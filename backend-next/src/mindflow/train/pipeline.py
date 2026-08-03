@@ -31,6 +31,13 @@ from mindflow.train.v2 import (
 )
 
 
+def _tag_from_filename(filename: str) -> str:
+    """Extract the version tag from e.g. ``classifier-20260731_120000_ab12.pkl``."""
+    if "-" not in filename:
+        return ""
+    return filename.removesuffix(".pkl").split("-", 1)[1]
+
+
 @dataclass
 class TrainingReport:
     """Full report from one training pipeline run.
@@ -168,14 +175,15 @@ def _run_v2_training(
         feature_schema_version=FEATURE_SCHEMA_VERSION,
     )
     training_data = prepare_v2_training_data(feature_windows, feedback_sessions)
+    # Evaluation and deployment use the same explicit-only, weighted samples.
+    explicit_mask = training_data.explicit_mask
+    train_X = training_data.features[explicit_mask]
+    train_y = training_data.labels[explicit_mask]
+    train_w = training_data.sample_weights[explicit_mask]
     report.filtered_windows = len(feature_windows) - len(training_data.features)
-    report.n_focus = int(np.sum(training_data.labels == 1))
-    report.n_distract = int(np.sum(training_data.labels == 0))
-    report.avg_confidence = (
-        round(float(np.mean(training_data.sample_weights)), 4)
-        if len(training_data.sample_weights)
-        else 0.0
-    )
+    report.n_focus = int(np.sum(train_y == 1))
+    report.n_distract = int(np.sum(train_y == 0))
+    report.avg_confidence = round(float(np.mean(train_w)), 4) if len(train_w) else 0.0
     evaluation = evaluate_v2_candidates(training_data)
     report.evaluation = evaluation
     report.quality_gate = evaluate_v2_quality_gate(
@@ -189,32 +197,37 @@ def _run_v2_training(
 
     v2_models_path = models_path / "v2"
     v2_models_path.mkdir(parents=True, exist_ok=True)
-    if len(training_data.features) >= 10 and len(np.unique(training_data.labels)) >= 2:
-        manager = ModelManager(models_dir=v2_models_path, use_ensemble=False)
+    if len(train_X) >= 10 and len(np.unique(train_y)) >= 2:
         manager = ModelManager(models_dir=v2_models_path, use_ensemble=True)
         summary = manager.train_all(
-            training_data.features,
+            train_X,
             training_data.feature_names,
-            training_data.labels,
-            sample_weight=training_data.sample_weights,
+            train_y,
+            sample_weight=train_w,
             min_confidence=0.0,
-        )
-        manager.classifier.fit(
-            training_data.features,
-            training_data.labels,
-            training_data.feature_names,
-            sample_weight=training_data.sample_weights,
         )
         report.clustering = summary.clustering
         report.classifier = {**summary.classifier, "grouped_evaluation": evaluation}
+        if evaluation.get("candidate", {}).get("balanced_accuracy") is not None:
+            report.classifier["balanced_accuracy"] = evaluation["candidate"]["balanced_accuracy"]
         report.hmm = summary.hmm
         should_activate = bool(report.quality_gate["passed"])
-        saved = manager.save_all(activate=should_activate)
+        saved = manager.save_all(
+            activate=should_activate,
+            manifest={
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
+                "feature_names": list(training_data.feature_names),
+                "explicit_feedback_count": training_data.explicit_feedback_count,
+                "distinct_feedback_days": training_data.distinct_feedback_days,
+                "quality_gate": report.quality_gate,
+                "evaluation": evaluation,
+                "source": source,
+            },
+        )
         report.saved_models = saved
         report.activated = should_activate
         report.model_mode = "ready" if should_activate else "shadow"
-        first_filename = next(iter(saved.values()), "")
-        report.version_tag = first_filename.removesuffix(".pkl").rsplit("-", 1)[-1] or None
+        report.version_tag = _tag_from_filename(saved.get("classifier", "")) or None
 
     report_path = v2_models_path / "training_report.json"
     report_path.write_text(

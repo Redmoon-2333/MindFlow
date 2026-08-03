@@ -18,17 +18,7 @@ import type { ActivityItem, AutonomyStatus, CollectorStatus, FocusPredictionResp
 import { toFocusPredictionView } from "../prediction-state";
 import { realtimeClient } from "../realtime";
 import type { RealtimeStatus } from "../realtime";
-
-const INTERVENTION_TYPE_LABELS: Record<string, string> = {
-  task_breakdown: "任务分解",
-  nudge: "行动提示",
-  environment_optimization: "环境优化",
-  smart_prioritization: "优先级建议",
-};
-
-function getInterventionTypeLabel(interventionType?: string): string {
-  return INTERVENTION_TYPE_LABELS[(interventionType || "").toLowerCase()] || "专注干预";
-}
+import { getInterventionTypeLabel } from "../lib/intervention-labels";
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);

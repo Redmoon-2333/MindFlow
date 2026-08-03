@@ -765,7 +765,7 @@ test.describe("MindFlow Full E2E", () => {
       // Select rating
       const ratingSelect = page.locator("select").last();
       if (await ratingSelect.isVisible({ timeout: 1000 }).catch(() => false)) {
-        await ratingSelect.selectOption("effective");
+        await ratingSelect.selectOption("helpful");
         await page.waitForTimeout(500);
       }
 

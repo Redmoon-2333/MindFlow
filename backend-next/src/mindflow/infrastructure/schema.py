@@ -206,6 +206,8 @@ focus_session_feedback = sa.Table(
     sa.Column("task_type", sa.Text(), nullable=True),
     sa.Column("created_at", sa.Text(), nullable=False),
     sa.UniqueConstraint("user_id", "session_id"),
+    sa.Column("session_start_utc", sa.Text(), nullable=True),
+    sa.Column("session_end_utc", sa.Text(), nullable=True),
 )
 
 browser_tokens = sa.Table(
@@ -247,6 +249,26 @@ ml_shadow_predictions = sa.Table(
     sa.Column("status", sa.Text(), nullable=False, server_default=sa.text("'shadow'")),
     sa.Column("created_at", sa.Text(), nullable=False),
     sa.UniqueConstraint("user_id", "window_start_utc", "candidate_version"),
+)
+
+intervention_checks = sa.Table(
+    "intervention_checks",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("checked_at", sa.Text(), nullable=False),
+    sa.Column("reason", sa.Text(), nullable=False),
+    sa.Column("confidence", sa.Float(), nullable=True),
+    sa.Column("intervention_type", sa.Text(), nullable=True),
+    sa.Column("throttle_reason", sa.Text(), nullable=True),
+    sa.Column("source", sa.Text(), nullable=False),
+    sa.Column("ml_status", sa.Text(), nullable=True),
+    sa.Column(
+        "created_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
 )
 
 # ── Workflow orchestration tables (from repositories/workflow_runs.py) ──

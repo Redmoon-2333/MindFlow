@@ -9,14 +9,15 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mindflow.domain.ids import new_id
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
+from mindflow.domain.ids import new_id
 from mindflow.infrastructure.schema import (
     behavior_feature_windows,
     browser_segments,
     browser_tokens,
     focus_session_feedback,
     interaction_buckets,
+    intervention_checks,
 )
 
 _FEATURE_UPSERT_BATCH_SIZE = 250
@@ -164,14 +165,36 @@ class TelemetryRepository:
         task_type: str | None,
     ) -> dict[str, Any]:
         now = datetime.now(UTC).isoformat()
+        from mindflow.infrastructure.repositories.focus import focus_sessions
+
         async with self._session_factory() as session, session.begin():
+            try:
+                session_row = (await session.execute(
+                    sa.select(focus_sessions.c.start_time, focus_sessions.c.end_time)
+                    .where(
+                        focus_sessions.c.user_id == user_id,
+                        focus_sessions.c.id == session_id,
+                    )
+                )).first()
+            except Exception:
+                # Older test/schema setups may lack focus_sessions; snapshots are best-effort.
+                session_row = None
+            session_start = session_row.start_time if session_row else None
+            session_end = session_row.end_time if session_row else None
             row_id = await session.scalar(
                 sa.update(focus_session_feedback)
                 .where(
                     focus_session_feedback.c.user_id == user_id,
                     focus_session_feedback.c.session_id == session_id,
                 )
-                .values(label=label, score=score, task_type=task_type, created_at=now)
+                .values(
+                    label=label,
+                    score=score,
+                    task_type=task_type,
+                    session_start_utc=session_start,
+                    session_end_utc=session_end,
+                    created_at=now,
+                )
                 .returning(focus_session_feedback.c.id)
             )
             if row_id is None:
@@ -184,6 +207,8 @@ class TelemetryRepository:
                         label=label,
                         score=score,
                         task_type=task_type,
+                        session_start_utc=session_start,
+                        session_end_utc=session_end,
                         created_at=now,
                     )
                 )
@@ -194,8 +219,38 @@ class TelemetryRepository:
             "label": label,
             "score": score,
             "task_type": task_type,
+            "session_start_utc": session_start,
+            "session_end_utc": session_end,
             "created_at": now,
         }
+
+    async def save_intervention_check(
+        self,
+        user_id: int,
+        checked_at: str,
+        reason: str,
+        source: str = "rule_engine",
+        confidence: float | None = None,
+        intervention_type: str | None = None,
+        throttle_reason: str | None = None,
+        ml_status: str | None = None,
+    ) -> None:
+        """Persist one auto-intervention audit row (why a reminder fired/skipped)."""
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                intervention_checks.insert().values(
+                    id=new_id(),
+                    user_id=user_id,
+                    checked_at=checked_at,
+                    reason=reason,
+                    confidence=confidence,
+                    intervention_type=intervention_type,
+                    throttle_reason=throttle_reason,
+                    source=source,
+                    ml_status=ml_status,
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+            )
 
     async def list_focus_feedback(self, user_id: int) -> list[dict[str, Any]]:
         async with self._session_factory() as session:

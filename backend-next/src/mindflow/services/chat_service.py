@@ -68,13 +68,13 @@ _MAX_HISTORY_ROUNDS: int = 10
 """Maximum conversation rounds (1 round = user + assistant) kept verbatim."""
 
 _LLM_DOWN_REPLY: str = (
-    "当前 AI 对话不可用，你可以查看今日报告 /api/v1/focus 了解你的专注情况。"
+    "当前 AI 对话不可用，你可以查看「专注分析」页面了解你的专注情况。"
 )
 """Fallback reply when the LLM gateway is entirely unavailable."""
 
 _SAFE_REPLY: str = (
     "我暂时无法回答这个问题，请稍后再试。"
-    "你可以查看今日报告 /api/v1/focus 了解你的专注情况。"
+    "你可以查看「专注分析」页面了解你的专注情况。"
 )
 """Fallback reply when the LLM output fails the forbidden-word check."""
 

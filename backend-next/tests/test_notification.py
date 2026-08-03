@@ -51,7 +51,7 @@ def _popup_payload() -> dict[str, object]:
             "http://127.0.0.1:8765/api/v1/intervention/"
             "intervention-123/response"
         ),
-        "timeout_s": 120,
+        "timeout_s": 90,
     }
 
 
@@ -116,6 +116,54 @@ async def test_intervention_popup_launches_pythonw_with_json_payload_and_ready_m
     assert captured["payload"] == expected_payload
     assert captured["kwargs"]["env"]["MINDFLOW_POPUP_TOKEN"] == "system-token"
     assert captured["kwargs"]["creationflags"] == notification.subprocess.CREATE_NO_WINDOW
+    assert not popup_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("urgency", "expected_timeout_s"),
+    [
+        ("low", 60),
+        ("normal", 90),
+        ("critical", 120),
+        ("unknown", 90),  # unrecognised urgency falls back to normal
+    ],
+)
+async def test_popup_timeout_derives_from_urgency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    urgency: str,
+    expected_timeout_s: int,
+) -> None:
+    popup_dir = _use_popup_temp_dir(monkeypatch, tmp_path)
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    python_executable = python_dir / "python.exe"
+    pythonw_executable = python_dir / "pythonw.exe"
+    pythonw_executable.touch()
+    monkeypatch.setattr(notification.sys, "executable", str(python_executable))
+
+    captured: dict[str, Any] = {}
+
+    def fake_popen(command: list[str], **kwargs: object) -> _FakeProcess:
+        payload_path = Path(command[2])
+        ready_path = Path(command[3])
+        captured["payload"] = json.loads(payload_path.read_text(encoding="utf-8"))
+        ready_path.write_text("ready", encoding="utf-8")
+        return _FakeProcess(returncode=None)
+
+    monkeypatch.setattr(notification.subprocess, "Popen", fake_popen)
+
+    notifier = notification._TkinterInteractivePopup()
+    result = await notifier.send(
+        "标题",
+        "正文",
+        urgency=urgency,  # type: ignore[arg-type]
+        intervention_id="intervention-123",
+        auth_token="system-token",
+    )
+
+    assert result is True
+    assert captured["payload"]["timeout_s"] == expected_timeout_s
     assert not popup_dir.exists()
 
 

@@ -388,11 +388,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # V1 model loading removed — only V2 (24-dim feature schema) is supported.
 
         v2_report_path = model_base_dir / "v2" / "training_report.json"
+        v2_report_mode: str | None = None
+        v2_report_version: str | None = None
         if v2_report_path.exists():
             try:
                 v2_report = json.loads(v2_report_path.read_text(encoding="utf-8"))
                 if v2_report.get("model_mode") == "shadow":
                     v2_training_mode = "shadow"
+                v2_report_mode = v2_report.get("model_mode")
+                v2_report_version = v2_report.get("version_tag")
             except (json.JSONDecodeError, OSError) as exc:
                 logger.opt(exception=True).warning(
                     "Failed to parse training report {}: {}", v2_report_path, exc
@@ -408,6 +412,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 prediction_service.attach_model_manager(v2_model_manager)
                 telemetry_service.attach_model_manager(v2_model_manager)
                 v2_training_mode = "ready"
+                loaded_tag = _v2_model_manager.current_version_tag
+                if v2_report_mode == "shadow":
+                    v2_training_mode = "shadow"
+                elif v2_report_mode == "ready" and (
+                    v2_report_version is None or v2_report_version == loaded_tag
+                ):
+                    v2_training_mode = "ready"
+                elif v2_report_mode == "ready":
+                    v2_training_mode = "shadow"
+                else:
+                    v2_training_mode = "ready"
                 logger.info(
                     "Feature schema v2 model loaded (version: {})",
                     v2_model_manager.current_version_tag,
@@ -504,6 +519,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             llm_client=intervention_llm_client,
             llm_model=intervention_llm_model,
             auth_token=system_token,
+            ollama_base_url=(
+                settings.llm.ollama_base_url
+                if settings.llm.ollama_enabled
+                else None
+            ),
+            ollama_model=settings.llm.ollama_model,
         )
 
         # ── 7d. G003: Panel service ──────────────────────────────────────────

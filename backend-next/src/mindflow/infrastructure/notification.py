@@ -35,6 +35,14 @@ from loguru import logger
 
 Urgency = Literal["low", "normal", "critical"]
 
+# How long the interactive intervention popup stays open (seconds),
+# mapped from urgency so critical interventions demand more attention.
+_URGENCY_TIMEOUT_S: dict[Urgency, int] = {
+    "low": 60,
+    "normal": 90,
+    "critical": 120,
+}
+
 
 class NotificationService(Protocol):
     """Protocol for platform-specific desktop notifications.
@@ -163,7 +171,7 @@ class _TkinterInteractivePopup:
                     f"{self._api_base_url}/api/v1/intervention/"
                     f"{intervention_id}/response"
                 ),
-                "timeout_s": 120,
+                "timeout_s": _URGENCY_TIMEOUT_S.get(urgency, 90),
             }
             payload_path.write_text(
                 json.dumps(payload, ensure_ascii=False),

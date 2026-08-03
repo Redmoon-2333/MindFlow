@@ -19,6 +19,7 @@ from mindflow.infrastructure.repositories.baseline import (
     BaselineRepository,
     baseline_models,
 )
+from mindflow.infrastructure.repositories.focus import focus_sessions
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository, user_preferences
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.infrastructure.schema import behavior_feature_windows, metadata
@@ -88,6 +89,45 @@ async def test_browser_heartbeats_merge_by_domain(telemetry_repo: TelemetryRepos
     assert len(segments) == 2
     assert segments[0]["duration_s"] == 10.0
     assert segments[1]["domain"] == "youtube.com"
+
+
+async def test_feedback_snapshots_and_intervention_checks(
+    telemetry_repo: TelemetryRepository, engine, session_factory,
+) -> None:
+    start = datetime(2026, 7, 24, 8, tzinfo=UTC)
+    async with engine.begin() as connection:
+        await connection.run_sync(focus_sessions.metadata.create_all)
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            focus_sessions.insert().values(
+                id="session-1",
+                user_id=1,
+                date="2026-07-24",
+                start_time=start.isoformat(),
+                end_time=(start + timedelta(minutes=30)).isoformat(),
+                session_type="focus",
+                created_at=datetime.now(UTC).isoformat(),
+            )
+        )
+    saved = await telemetry_repo.save_focus_feedback(
+        user_id=1, session_id="session-1", label="focus", score=5, task_type="coding"
+    )
+    assert saved["session_start_utc"] == start.isoformat()
+    assert saved["session_end_utc"] == (start + timedelta(minutes=30)).isoformat()
+
+    await telemetry_repo.save_intervention_check(
+        user_id=1,
+        checked_at=datetime.now(UTC).isoformat(),
+        reason="low_confidence",
+        confidence=0.4,
+        ml_status="ready",
+    )
+    async with session_factory() as session:
+        from mindflow.infrastructure.schema import intervention_checks
+        count = await session.scalar(
+            sa.select(sa.func.count()).select_from(intervention_checks)
+        )
+    assert count == 1
 
 
 async def test_focus_feedback_roundtrip(telemetry_repo: TelemetryRepository) -> None:
