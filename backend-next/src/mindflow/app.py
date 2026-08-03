@@ -666,6 +666,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             event_retention_days=settings.event_retention_days,
             min_confidence=settings.auto_intervention_min_confidence,
             panel_confidence=settings.auto_intervention_panel_confidence,
+            start_hour=settings.intervention_start_hour,
+            end_hour=settings.intervention_end_hour,
             timezone=settings.timezone,
         )
         runtime = RuntimeServices(
