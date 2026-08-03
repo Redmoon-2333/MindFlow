@@ -173,6 +173,13 @@ class Settings(BaseSettings):
     auto_intervention_panel_confidence: float = Field(
         default=0.75, ge=0.0, le=1.0, description="Confidence threshold for panel escalation"
     )
+    intervention_start_hour: int = Field(
+        default=8, ge=0, le=23, description="Auto-intervention window start hour (local 24h)"
+    )
+    intervention_end_hour: int = Field(
+        default=23, ge=0, le=24,
+        description="Auto-intervention window end hour (exclusive, local 24h)",
+    )
 
     # --- Intervention throttle ---
     throttle_daily_limit: int = Field(

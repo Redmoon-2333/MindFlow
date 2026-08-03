@@ -85,6 +85,30 @@ class TestBuildScheduler:
         trigger = job.trigger
         assert trigger.interval.total_seconds() == 300  # 5 min
 
+    async def test_auto_intervention_job_passes_custom_hours(self) -> None:
+        """build_scheduler wires start_hour/end_hour into the job kwargs."""
+        scheduler = build_scheduler(
+            intervention_service=MagicMock(),
+            activity_repository=MagicMock(),
+            start_hour=10,
+            end_hour=11,
+        )
+        job = scheduler.get_job("auto_intervention_check")
+        assert job is not None
+        assert job.kwargs["start_hour"] == 10
+        assert job.kwargs["end_hour"] == 11
+
+    async def test_auto_intervention_job_defaults_to_8_and_23(self) -> None:
+        """Default window bounds are 08:00-23:00 (exclusive end)."""
+        scheduler = build_scheduler(
+            intervention_service=MagicMock(),
+            activity_repository=MagicMock(),
+        )
+        job = scheduler.get_job("auto_intervention_check")
+        assert job is not None
+        assert job.kwargs["start_hour"] == 8
+        assert job.kwargs["end_hour"] == 23
+
     async def test_registers_4_jobs_without_intervention(self) -> None:
         """Without intervention service, only 4 jobs should be registered."""
         analysis = MagicMock()
@@ -348,6 +372,56 @@ class TestAutoInterventionCheck:
             # Should not query events
             mock_repo.query_range.assert_not_called()
             mock_svc.maybe_intervene.assert_not_called()
+
+    async def test_honors_custom_start_hour(self) -> None:
+        """Custom window 10:00-11:00: 09:30 local is outside_hours."""
+        mock_repo = AsyncMock()
+        mock_svc = MagicMock()
+        telemetry = MagicMock()
+        telemetry.save_intervention_check = AsyncMock()
+
+        with patch("mindflow.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 7, 17, 9, 30, 0, tzinfo=UTC)
+            mock_dt.UTC = UTC
+            mock_dt.timedelta = __import__("datetime").timedelta
+
+            await _auto_intervention_check(
+                mock_repo,
+                mock_svc,
+                timezone="UTC",
+                start_hour=10,
+                end_hour=11,
+                telemetry_service=telemetry,
+            )
+
+        mock_repo.query_range.assert_not_called()
+        mock_svc.maybe_intervene.assert_not_called()
+        telemetry.save_intervention_check.assert_awaited_once()
+        assert (
+            telemetry.save_intervention_check.await_args.kwargs["reason"]
+            == "outside_hours"
+        )
+
+    async def test_honors_custom_end_hour(self) -> None:
+        """Custom window 10:00-11:00: 11:00 local (end, exclusive) is outside_hours."""
+        mock_repo = AsyncMock()
+        mock_svc = MagicMock()
+
+        with patch("mindflow.services.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 7, 17, 11, 0, 0, tzinfo=UTC)
+            mock_dt.UTC = UTC
+            mock_dt.timedelta = __import__("datetime").timedelta
+
+            await _auto_intervention_check(
+                mock_repo,
+                mock_svc,
+                timezone="UTC",
+                start_hour=10,
+                end_hour=11,
+            )
+
+        mock_repo.query_range.assert_not_called()
+        mock_svc.maybe_intervene.assert_not_called()
 
     async def test_working_hours_use_configured_local_timezone(self) -> None:
         mock_repo = AsyncMock()

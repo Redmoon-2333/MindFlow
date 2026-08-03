@@ -44,6 +44,7 @@ def test_popup_action_mapping() -> None:
     assert ACTION_RESPONSES == {
         "accept": "accepted",
         "reject": "dismissed",
+        "dismiss": "dismissed",
         "ignore": "ignored",
         "close": "ignored",
         "timeout": "ignored",

@@ -241,8 +241,8 @@ async def test_windows_notifier_marks_plain_fallback_as_degraded() -> None:
     ("button_text", "expected_response"),
     [
         ("接受", "accepted"),
-        ("拒绝", "dismissed"),
-        ("暂时忽略", "ignored"),
+        ("忽略", "ignored"),
+        ("关闭", "dismissed"),
     ],
 )
 def test_chinese_popup_action_posts_mapped_response_with_actual_latency(

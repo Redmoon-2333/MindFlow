@@ -20,6 +20,7 @@ Response = Literal["accepted", "dismissed", "ignored"]
 ACTION_RESPONSES: dict[str, Response] = {
     "accept": "accepted",
     "reject": "dismissed",
+    "dismiss": "dismissed",
     "ignore": "ignored",
     "close": "ignored",
     "timeout": "ignored",
@@ -27,8 +28,8 @@ ACTION_RESPONSES: dict[str, Response] = {
 
 _BUTTON_RESPONSES: dict[str, Response] = {
     "接受": ACTION_RESPONSES["accept"],
-    "拒绝": ACTION_RESPONSES["reject"],
-    "暂时忽略": ACTION_RESPONSES["ignore"],
+    "忽略": ACTION_RESPONSES["ignore"],
+    "关闭": ACTION_RESPONSES["dismiss"],
 }
 
 
@@ -119,7 +120,7 @@ class InterventionPopup:
 
         buttons = ttk.Frame(content, style="MindFlow.TFrame")
         buttons.pack(fill="x")
-        for button_text in ("接受", "拒绝", "暂时忽略"):
+        for button_text in ("接受", "忽略", "关闭"):
             ttk.Button(
                 buttons,
                 text=button_text,

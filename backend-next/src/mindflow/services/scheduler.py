@@ -67,6 +67,12 @@ _AUTO_INTERVENTION_MIN_CONFIDENCE: float = 0.5
 # precise intervention (see G005 three-tier routing).
 _AUTO_INTERVENTION_PANEL_CONFIDENCE: float = 0.75
 
+# Auto-intervention local-time window bounds. ``_AUTO_INTERVENTION_END_HOUR``
+# is exclusive — an intervention is only dispatched when
+# ``start_hour <= local_hour < end_hour``. Both are configurable via settings.
+_AUTO_INTERVENTION_START_HOUR: int = 8
+_AUTO_INTERVENTION_END_HOUR: int = 23
+
 # Auto-intervention check cadence (minutes). Throttle still limits dispatch.
 _AUTO_INTERVENTION_INTERVAL_MINUTES: int = 5
 
@@ -544,11 +550,14 @@ async def _auto_intervention_check(
     min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
     panel_confidence: float = _AUTO_INTERVENTION_PANEL_CONFIDENCE,
     timezone: TimezoneLike = "local",
+    start_hour: int = _AUTO_INTERVENTION_START_HOUR,
+    end_hour: int = _AUTO_INTERVENTION_END_HOUR,
 ) -> None:
     """Assess recent behavior and intervene if significant procrastination detected.
 
     Guard conditions (silent skip):
-      1. Outside 08:00-23:00 local-time-equivalent window.
+      1. Outside the configurable local-time intervention window
+         (default 08:00-23:00, exclusive end — see ``start_hour``/``end_hour``).
       2. No events in the look-back window.
       3. All events are idle (user away from computer).
       4. Non-idle activity < 10 min (insufficient data for pattern).
@@ -569,6 +578,8 @@ async def _auto_intervention_check(
             (optional — if None, skips the autonomy check).
         user_id: User identifier (default 1 for single-user mode).
         window_min: Look-back window in minutes (default 30).
+        start_hour: Intervention window start hour, local 24h (default 8).
+        end_hour: Intervention window end hour, exclusive, local 24h (default 23).
     """
     engine = rule_engine or RuleEngine()
     now = datetime.now(UTC)
@@ -624,11 +635,17 @@ async def _auto_intervention_check(
             await _record("autonomy_error")
             return
 
-    # ── Time-of-day guard: only 08:00-23:00 ─────────────────────────
+    # ── Time-of-day guard: configurable local window (default 08:00-23:00) ─
     hour = now_local.hour
-    if hour < 8 or hour >= 23:
+    if hour < start_hour or hour >= end_hour:
         await _record("outside_hours")
-        logger.debug("Auto-intervention: outside working hours ({:02d}:00), skipping", hour)
+        logger.debug(
+            "Auto-intervention: outside working hours "
+            "({:02d}:00 not in [{:02d}:00, {:02d}:00)), skipping",
+            hour,
+            start_hour,
+            end_hour,
+        )
         return
 
     # ── Fetch recent events ─────────────────────────────────────────
@@ -833,6 +850,8 @@ def build_scheduler(
     event_retention_days: int = 30,
     min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
     panel_confidence: float = _AUTO_INTERVENTION_PANEL_CONFIDENCE,
+    start_hour: int = _AUTO_INTERVENTION_START_HOUR,
+    end_hour: int = _AUTO_INTERVENTION_END_HOUR,
     timezone: TimezoneLike = "local",
 ) -> AsyncioScheduler:
     """Create a pure-asyncio scheduler with cron + interval jobs.
@@ -1186,6 +1205,8 @@ def build_scheduler(
                 "min_confidence": min_confidence,
                 "panel_confidence": panel_confidence,
                 "timezone": timezone,
+                "start_hour": start_hour,
+                "end_hour": end_hour,
             },
             name="auto_intervention_check",
         )

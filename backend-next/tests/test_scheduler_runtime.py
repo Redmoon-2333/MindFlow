@@ -33,6 +33,35 @@ def _job_coro(scheduler: AsyncioScheduler, name: str):
     return next(job["coro"] for job in scheduler._jobs if job["name"] == name)
 
 
+async def test_built_auto_intervention_job_honors_configured_window() -> None:
+    """The built auto-intervention job skips when outside its configured window.
+
+    Exercises the full scheduler wiring (kwargs -> interval job -> guard) with a
+    custom 10:00-11:00 window: at 09:00 local the check returns before querying
+    events or dispatching an intervention.
+    """
+    activity_repo = AsyncMock()
+    intervention = MagicMock()
+    intervention.maybe_intervene = AsyncMock()
+    scheduler = build_scheduler(
+        intervention_service=intervention,
+        activity_repository=activity_repo,
+        start_hour=10,
+        end_hour=11,
+        timezone="UTC",
+    )
+    job = next(j for j in scheduler._jobs if j["name"] == "auto_intervention_check")
+
+    with patch("mindflow.services.scheduler.datetime") as mock_dt:
+        mock_dt.now.return_value = datetime(2026, 7, 17, 9, 0, 0, tzinfo=UTC)
+        mock_dt.UTC = UTC
+        mock_dt.timedelta = __import__("datetime").timedelta
+        await job["coro"](**job["kwargs"])
+
+    activity_repo.query_range.assert_not_awaited()
+    intervention.maybe_intervene.assert_not_awaited()
+
+
 async def test_shutdown_cancels_and_awaits_tasks() -> None:
     scheduler = AsyncioScheduler(timezone="UTC")
     scheduler.interval_minutes(1, AsyncMock(), name="waiter")
