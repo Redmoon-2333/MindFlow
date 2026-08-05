@@ -1,8 +1,12 @@
-"""Tests for services/export_service.py — CSV/JSON export logic.
+"""Tests for services/export_service.py — streaming CSV/JSON export logic.
 
 Covers:
   - CSV format: correct column headers, BOM, section separation
   - JSON format: correct structure with events/focus_sessions/daily_reports
+  - Privacy (NF-S3a): streamed JSON event fields match the CSV allowlist
+    exactly, and neither format leaks ``window_title`` or its value
+    (regression for the export-privacy fix that replaced
+    ``event.to_dict()`` with the shared allowlist helper)
   - Empty date range: returns empty sections (not an error)
   - Boundary dates: inclusive range filtering
   - Format validation
@@ -11,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
@@ -18,7 +23,31 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mindflow.domain.events import make_event
-from mindflow.services.export_service import ExportResult, ExportService, _csv_safe
+from mindflow.services.export_service import (
+    ExportService,
+    ExportStreamResult,
+    _csv_safe,
+)
+
+# Event fields exposed by both streamed formats (equivalent to the CSV headers).
+_EVENTS_ALLOWLIST: set[str] = {
+    "id",
+    "user_id",
+    "timestamp_utc",
+    "duration_s",
+    "event_type",
+    "app_name",
+    "process_name",
+    "is_idle",
+}
+
+# A distinctive window title that must never reach either export format.
+_PRIVACY_TITLE = "SECRET-TITLE-勿泄露"
+
+
+async def _collect(result: ExportStreamResult) -> bytes:
+    """Materialise a streamed export for assertions."""
+    return b"".join([chunk async for chunk in result.content])
 
 
 class TestExportService:
@@ -86,7 +115,11 @@ class TestExportService:
     @pytest.fixture
     def mock_activity_repo(self, events: list[Any]) -> AsyncMock:
         repo = AsyncMock()
-        repo.query_range = AsyncMock(return_value=events)
+
+        async def _yield_events(*_args: Any, **_kwargs: Any) -> Any:
+            yield events
+
+        repo.iter_range_chunks = _yield_events
         return repo
 
     @pytest.fixture
@@ -120,13 +153,12 @@ class TestExportService:
         """CSV export should include all three section headers with correct columns."""
         start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
-        result: ExportResult = await service.export_events(start, end, fmt="csv")
+        result = await service.stream_events(start, end, fmt="csv")
 
-        assert isinstance(result.content, bytes)
         assert result.media_type.startswith("text/csv")
         assert result.filename.endswith(".csv")
 
-        body = result.content.decode("utf-8-sig")
+        body = (await _collect(result)).decode("utf-8-sig")
         lines = body.splitlines()
 
         # Check section headers
@@ -146,9 +178,9 @@ class TestExportService:
         """CSV export should include data rows from all three sections."""
         start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
-        result: ExportResult = await service.export_events(start, end, fmt="csv")
+        result = await service.stream_events(start, end, fmt="csv")
 
-        body = result.content.decode("utf-8-sig")
+        body = (await _collect(result)).decode("utf-8-sig")
 
         # Events data rows
         assert "Code.exe" in body
@@ -159,7 +191,12 @@ class TestExportService:
         self, mock_activity_repo: AsyncMock, mock_focus_repo: AsyncMock, mock_report_repo: AsyncMock
     ) -> None:
         """Empty date range should return CSV with only headers (no data rows)."""
-        mock_activity_repo.query_range = AsyncMock(return_value=[])
+
+        async def _no_chunks(*_args: Any, **_kwargs: Any) -> Any:
+            if False:
+                yield []
+
+        mock_activity_repo.iter_range_chunks = _no_chunks
         mock_focus_repo.query_range = AsyncMock(return_value=[])
         mock_report_repo.query_range = AsyncMock(return_value=[])
         svc = ExportService(
@@ -170,9 +207,9 @@ class TestExportService:
 
         start = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
         end = datetime(2025, 1, 2, 0, 0, 0, tzinfo=UTC)
-        result: ExportResult = await svc.export_events(start, end, fmt="csv")
+        result = await svc.stream_events(start, end, fmt="csv")
 
-        body = result.content.decode("utf-8-sig")
+        body = (await _collect(result)).decode("utf-8-sig")
         # Headers present but no data rows beyond headers
         assert "# Events" in body
         assert "Code.exe" not in body
@@ -183,37 +220,48 @@ class TestExportService:
         """JSON export should have events/focus_sessions/daily_reports keys."""
         start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
-        result: ExportResult = await service.export_events(start, end, fmt="json")
+        result = await service.stream_events(start, end, fmt="json")
 
         assert result.media_type.startswith("application/json")
         assert result.filename.endswith(".json")
 
-        import json
-
-        data = json.loads(result.content.decode("utf-8"))
+        data = json.loads(await _collect(result))
         assert "events" in data
         assert "focus_sessions" in data
         assert "daily_reports" in data
 
-    async def test_json_events_use_to_dict(self, service: ExportService, events: list[Any]) -> None:
-        """JSON events should be serialised via ActivityEvent.to_dict."""
+    async def test_json_event_fields_match_csv_allowlist(
+        self, service: ExportService, events: list[Any]
+    ) -> None:
+        """Streamed JSON events must expose exactly the CSV allowlist field set.
+
+        Regression: JSON previously serialised via ``event.to_dict()``,
+        leaking the nested ``data.window_title`` and a wider field set than
+        the CSV headers. Both formats must now share the same allowlisted
+        payload.
+        """
         start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
-        result: ExportResult = await service.export_events(start, end, fmt="json")
+        result = await service.stream_events(start, end, fmt="json")
+        body = await _collect(result)
+        data = json.loads(body)
 
-        import json
-
-        data = json.loads(result.content.decode("utf-8"))
         assert len(data["events"]) == len(events)
-        assert "id" in data["events"][0]
-        assert "data" in data["events"][0]
-        assert "app_name" in data["events"][0]["data"]
+        assert set(data["events"][0]) == _EVENTS_ALLOWLIST
+        assert "data" not in data["events"][0]
+        assert "window_title" not in data["events"][0]
+        assert b"window_title" not in body
 
     async def test_json_empty_range(
         self, mock_activity_repo: AsyncMock, mock_focus_repo: AsyncMock, mock_report_repo: AsyncMock
     ) -> None:
         """Empty date range should return JSON with empty lists."""
-        mock_activity_repo.query_range = AsyncMock(return_value=[])
+
+        async def _no_chunks(*_args: Any, **_kwargs: Any) -> Any:
+            if False:
+                yield []
+
+        mock_activity_repo.iter_range_chunks = _no_chunks
         mock_focus_repo.query_range = AsyncMock(return_value=[])
         mock_report_repo.query_range = AsyncMock(return_value=[])
         svc = ExportService(
@@ -224,14 +272,61 @@ class TestExportService:
 
         start = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
         end = datetime(2025, 1, 2, 0, 0, 0, tzinfo=UTC)
-        result: ExportResult = await svc.export_events(start, end, fmt="json")
+        result = await svc.stream_events(start, end, fmt="json")
 
-        import json
-
-        data = json.loads(result.content.decode("utf-8"))
+        data = json.loads(await _collect(result))
         assert data["events"] == []
         assert data["focus_sessions"] == []
         assert data["daily_reports"] == []
+
+    # ── Privacy (NF-S3a): window_title must never leak ─────────────
+
+    @pytest.fixture
+    def privacy_service(
+        self,
+        mock_focus_repo: AsyncMock,
+        mock_report_repo: AsyncMock,
+    ) -> ExportService:
+        """A service whose only activity event carries a secret window title."""
+        base = datetime(2026, 7, 17, 12, 0, 0, tzinfo=UTC)
+        title_bearing_events = [
+            make_event(
+                user_id=1,
+                timestamp_utc=base,
+                duration_s=5.0,
+                app_name="Browser",
+                process_name="browser.exe",
+                window_title=_PRIVACY_TITLE,
+            )
+        ]
+        activity_repo = AsyncMock()
+
+        async def _yield_privacy(*_args: Any, **_kwargs: Any) -> Any:
+            yield title_bearing_events
+
+        activity_repo.iter_range_chunks = _yield_privacy
+        return ExportService(
+            activity_repo=activity_repo,
+            focus_repo=mock_focus_repo,
+            report_repo=mock_report_repo,
+        )
+
+    @pytest.mark.parametrize("fmt", ["csv", "json"])
+    async def test_window_title_never_leaked(
+        self, privacy_service: ExportService, fmt: str
+    ) -> None:
+        """Neither streamed format may contain the window_title key or its value."""
+        start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
+        result = await privacy_service.stream_events(start, end, fmt=fmt)
+        body = await _collect(result)
+
+        assert b"window_title" not in body
+        assert _PRIVACY_TITLE.encode("utf-8") not in body
+
+        if fmt == "json":
+            data = json.loads(body)
+            assert set(data["events"][0]) == _EVENTS_ALLOWLIST
 
     # ── Format validation ──────────────────────────────────────────
 
@@ -263,7 +358,7 @@ class TestExportService:
         """Filename should include start and end dates."""
         start = datetime(2026, 7, 1, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
-        result: ExportResult = await service.export_events(start, end, fmt="csv")
+        result = await service.stream_events(start, end, fmt="csv")
         assert "2026-07-01" in result.filename
         assert "2026-07-17" in result.filename
 
@@ -281,9 +376,22 @@ class TestExportService:
 
         start = datetime(2026, 7, 15, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
-        await svc.export_events(start, end, fmt="json")
 
-        mock_activity_repo.query_range.assert_awaited_once_with(1, start, end)
+        calls: list[tuple[Any, ...]] = []
+
+        async def _recording_chunks(
+            user_id: int, range_start: datetime, range_end: datetime, *, chunk_size: int
+        ) -> Any:
+            calls.append((user_id, range_start, range_end, chunk_size))
+            if False:
+                yield None
+
+        mock_activity_repo.iter_range_chunks = _recording_chunks
+
+        result = await svc.stream_events(start, end, fmt="json")
+        await _collect(result)
+
+        assert calls == [(1, start, end, 1000)]
         mock_focus_repo.query_range.assert_awaited_once_with(1, start.date(), end.date())
         mock_report_repo.query_range.assert_awaited_once_with(1, start.date(), end.date())
 
@@ -377,7 +485,11 @@ class TestCsvInjectionInExport:
         malicious_daily_reports: list[dict[str, Any]],
     ) -> ExportService:
         activity_repo = AsyncMock()
-        activity_repo.query_range = AsyncMock(return_value=malicious_events)
+
+        async def _yield_malicious(*_args: Any, **_kwargs: Any) -> Any:
+            yield malicious_events
+
+        activity_repo.iter_range_chunks = _yield_malicious
         focus_repo = AsyncMock()
         focus_repo.query_range = AsyncMock(return_value=malicious_focus_sessions)
         report_repo = AsyncMock()
@@ -394,8 +506,8 @@ class TestCsvInjectionInExport:
         """A formula-shaped app_name must appear quote-prefixed in the CSV, not raw."""
         start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
-        result: ExportResult = await malicious_service.export_events(start, end, fmt="csv")
-        body = result.content.decode("utf-8-sig")
+        result = await malicious_service.stream_events(start, end, fmt="csv")
+        body = (await _collect(result)).decode("utf-8-sig")
 
         # The raw (unescaped) field must not appear right after a comma —
         # note the escaped form "'=cmd..." legitimately *contains* the raw
@@ -411,8 +523,8 @@ class TestCsvInjectionInExport:
         """A formula-shaped dominant_app must be escaped in the Focus Sessions section."""
         start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
-        result: ExportResult = await malicious_service.export_events(start, end, fmt="csv")
-        body = result.content.decode("utf-8-sig")
+        result = await malicious_service.stream_events(start, end, fmt="csv")
+        body = (await _collect(result)).decode("utf-8-sig")
 
         assert "'=1+1" in body
 
@@ -422,8 +534,8 @@ class TestCsvInjectionInExport:
         """A formula-shaped pattern_summary must be escaped in the Daily Reports section."""
         start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
-        result: ExportResult = await malicious_service.export_events(start, end, fmt="csv")
-        body = result.content.decode("utf-8-sig")
+        result = await malicious_service.stream_events(start, end, fmt="csv")
+        body = (await _collect(result)).decode("utf-8-sig")
 
         assert "'@SUM(1,2)" in body
 
@@ -431,11 +543,9 @@ class TestCsvInjectionInExport:
         self, malicious_service: ExportService
     ) -> None:
         """JSON export is not spreadsheet-rendered, so no escaping is applied there."""
-        import json
-
         start = datetime(2026, 7, 17, 0, 0, 0, tzinfo=UTC)
         end = datetime(2026, 7, 17, 23, 59, 59, tzinfo=UTC)
-        result: ExportResult = await malicious_service.export_events(start, end, fmt="json")
-        data = json.loads(result.content.decode("utf-8"))
+        result = await malicious_service.stream_events(start, end, fmt="json")
+        data = json.loads(await _collect(result))
 
-        assert data["events"][0]["data"]["app_name"] == "=cmd|'/c calc'!A1"
+        assert data["events"][0]["app_name"] == "=cmd|'/c calc'!A1"

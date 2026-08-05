@@ -518,29 +518,28 @@ async def test_repeated_recovery_with_real_claim_does_not_repeat_panel(
     analysis_repository = SQLAlchemyProcrastinationAnalysisRepository(session_factory)
     panel_service = PanelService.__new__(PanelService)
     panel_service._builder = AsyncMock()
-    panel_service._orchestrator = AsyncMock()
     panel_service._llm_service = AsyncMock()
     panel_service._analysis_repository = analysis_repository
     panel_service._timezone = "UTC"
+    panel_service._workflow_port = None
 
-    from mindflow.agents.types import PanelVerdict, TranscriptEntry
-    from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
-
-    expected = PanelVerdict(
-        types=(ProcrastinationType.IMPULSIVITY,),
-        confidence={ProcrastinationType.IMPULSIVITY: 0.85},
-        recommended_technique=CBTTechnique.STIMULUS_CONTROL,
-        rationale="测试会诊结果",
-        dissent=(),
-        transcript=(
-            TranscriptEntry(role="数据分析师", content="模式分析完成", round=0),
-        ),
-        escalated=False,
-            call_count=6,
-            source="panel",
-            degradation_path=("panel",),
-        )
-    panel_service._orchestrator.run.return_value = expected
+    # v2 architecture: no workflow port → PanelService falls back to the
+    # single-expert LLM service. Mock that call to return a plausible outcome.
+    panel_service._llm_service.analyze.return_value = type(
+        "Outcome",
+        (),
+        {
+            "assessment": {
+                "procrastination_types": ["impulsivity"],
+                "type_confidence": {"impulsivity": 0.85},
+                "cbt_technique": "stimulus_control",
+                "response_text": "测试会诊结果",
+            },
+            "source": "deepseek",
+            "cached": False,
+            "degraded": True,
+        },
+    )()
     scheduler = build_scheduler(
         panel_service=panel_service,
         scheduled_job_runs_repository=runs,
@@ -551,8 +550,8 @@ async def test_repeated_recovery_with_real_claim_does_not_repeat_panel(
     await scheduler.run_startup_recovery(now_utc=startup_time)
     await scheduler.run_startup_recovery(now_utc=startup_time)
 
-    panel_service._orchestrator.run.assert_awaited_once()
-    assert await panel_service.get_stored_verdict(1, date(2026, 7, 25)) == expected
+    # The panel must only run once despite two recovery passes (claim idempotency).
+    panel_service._llm_service.analyze.assert_awaited_once()
 
 
 async def test_startup_recovery_and_cron_share_real_panel_claim(

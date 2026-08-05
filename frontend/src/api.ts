@@ -22,6 +22,33 @@ type InterventionIntensity = components["schemas"]["InterventionTriggerRequest"]
 type InterventionResponse = components["schemas"]["InterventionResponseRequest"]["response"];
 type InterventionRating = components["schemas"]["InterventionFeedbackRequest"]["rating"];
 type ActivityQuery = NonNullable<paths["/api/v1/activities"]["get"]["parameters"]["query"]>;
+export type TelemetryDeleteScope = NonNullable<paths["/api/v1/telemetry/data"]["delete"]["parameters"]["query"]>["scope"];
+export type TelemetryDeleteResponse = components["schemas"]["TelemetryDeleteResponse"];
+
+export type TelemetryDeleteNotice =
+  | { kind: "success"; message: string; failures: []; retryScope: null }
+  | { kind: "partial"; message: string; failures: string[]; retryScope: TelemetryDeleteScope };
+
+export type TelemetryDeleteOutcome = {
+  notice: TelemetryDeleteNotice;
+  clearPairingCode: boolean;
+};
+
+export type TelemetryDeleteExecution =
+  | { telemetry: TelemetryStatus; refreshError: null }
+  | { telemetry: null; refreshError: unknown };
+
+export type TelemetryDeleteDependencies = {
+  clear: (scope: TelemetryDeleteScope) => Promise<TelemetryDeleteResponse>;
+  refresh: () => Promise<TelemetryStatus>;
+  onDeleted: (outcome: TelemetryDeleteOutcome) => void;
+};
+
+const TELEMETRY_FAILURE_LABELS: Record<string, string> = {
+  browser_tokens: "浏览器配对令牌",
+  model_artifacts: "本地模型文件",
+};
+const UNKNOWN_TELEMETRY_FAILURE = "未知清理步骤（服务未返回失败详情）";
 
 export type CollectorStatus = CollectorStatusResponse;
 export type ChatReply = ChatResponse;
@@ -351,6 +378,57 @@ export function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+export function mapTelemetryDeleteResult(
+  scope: TelemetryDeleteScope,
+  result: TelemetryDeleteResponse,
+): TelemetryDeleteNotice {
+  const reportedFailures = result.failures ?? [];
+  if (!result.partial && reportedFailures.length === 0) {
+    return { kind: "success", message: `已删除 ${result.deleted} 条记录`, failures: [], retryScope: null };
+  }
+  const hasUnknownFailure = result.partial && reportedFailures.length === 0;
+  const failures = hasUnknownFailure
+    ? [UNKNOWN_TELEMETRY_FAILURE]
+    : reportedFailures.map((failure) => {
+        const label = TELEMETRY_FAILURE_LABELS[failure];
+        return label ? `${label}（${failure}）` : failure;
+      });
+  return {
+    kind: "partial",
+    message: hasUnknownFailure
+      ? `已删除 ${result.deleted} 条记录，但仍有未明确报告的项目未完成`
+      : `已删除 ${result.deleted} 条记录，但有 ${failures.length} 项未完成`,
+    failures,
+    retryScope: scope,
+  };
+}
+
+export function shouldClearTelemetryPairingCode(
+  scope: TelemetryDeleteScope,
+  result: TelemetryDeleteResponse,
+): boolean {
+  if (scope !== "browser" && scope !== "all") return false;
+  const failures = result.failures;
+  if (result.partial && (!failures || failures.length === 0)) return false;
+  return !failures?.includes("browser_tokens");
+}
+
+export async function runTelemetryDelete(
+  scope: TelemetryDeleteScope,
+  dependencies: TelemetryDeleteDependencies,
+): Promise<TelemetryDeleteExecution> {
+  const result = await dependencies.clear(scope);
+  dependencies.onDeleted({
+    notice: mapTelemetryDeleteResult(scope, result),
+    clearPairingCode: shouldClearTelemetryPairingCode(scope, result),
+  });
+  try {
+    return { telemetry: await dependencies.refresh(), refreshError: null };
+  } catch (refreshError: unknown) {
+    return { telemetry: null, refreshError };
+  }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const res = await fetch(`${BASE}${url}`, { credentials: "include", ...init, headers: { ...headers, ...((init?.headers as Record<string, string>) || {}) } });
@@ -432,7 +510,15 @@ export async function getChatMessages(sessionId: string): Promise<ChatMessageRec
 }
 
 export const triggerPanel = async (body?: { force?: boolean; retryIfDegraded?: boolean }): Promise<PanelResult> =>
-  request<PanelResult>("/panel/today", { method: "POST", body: JSON.stringify(body || {}) });
+  request<PanelResult>("/panel/today", {
+    method: "POST",
+    body: JSON.stringify({
+      ...(body?.force !== undefined ? { force: body.force } : {}),
+      ...(body?.retryIfDegraded !== undefined
+        ? { retry_if_degraded: body.retryIfDegraded }
+        : {}),
+    }),
+  });
 export const getPanelResult = async (): Promise<PanelResult> => unwrap(await client.GET("/api/v1/panel", requestOptions()));
 
 export async function triggerIntervention(intensity: InterventionIntensity): Promise<InterventionTriggerResponse> {
@@ -455,7 +541,7 @@ export const stopCollector = async (): Promise<CollectorStatus> => unwrap(await 
 export const getTelemetryStatus = () => request<TelemetryStatus>("/telemetry/status");
 export const patchTelemetryPreferences = (data: Partial<TelemetryPreferences>) => request<TelemetryPreferences>("/telemetry/preferences", { method: "PATCH", body: JSON.stringify(data) });
 export const createBrowserPairingCode = () => request<{ code: string; expires_at: string }>("/telemetry/browser/pairing-code", { method: "POST" });
-export const clearTelemetryData = (scope: "interaction" | "browser" | "feedback" | "all") => request<{ deleted: number }>(`/telemetry/data?scope=${scope}`, { method: "DELETE" });
+export const clearTelemetryData = (scope: TelemetryDeleteScope) => request<TelemetryDeleteResponse>(`/telemetry/data?scope=${scope}`, { method: "DELETE" });
 export const getPreferences = () => request<Preferences>("/preferences");
 export const putPreferences = (data: Preferences) => request<Preferences>("/preferences", { method: "PUT", body: JSON.stringify(data) });
 export const patchPreferences = (data: Preferences) => request<Preferences>("/preferences", { method: "PATCH", body: JSON.stringify(data) });

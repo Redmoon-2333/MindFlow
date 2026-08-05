@@ -1,5 +1,10 @@
 # 第3章 ML 行为分析引擎
 
+> **V2 cutover 提示（2026-08-05）**：本章中的 `ConsensusLabeler`、
+> `train/synthetic_data.py` 与 17 维 `BehaviorFeatureExtractor` 小节记录的是已删除的
+> V1 设计，不代表当前代码。现役训练使用 `train/v2.py`、`train/synthetic_v2.py`
+> 和 24 维 schema-v3 特征；产物位于 `data/models/v2/`。
+>
 > 本章覆盖：BaselineModel（Welford 在线算法）、DeviationDetector（多维 Z-score）、
 > ConsensusLabeler（弱监督 6 信号投票）、ProcrastinationType（TMT 规则引擎）、
 > 合成数据生成、模型训练管线、EvidenceBundle 组装。

@@ -20,12 +20,18 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from mindflow.infrastructure.repositories.activity import activity_events
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
     intervention_logs,
 )
+from mindflow.infrastructure.repositories.preferences import (
+    PreferencesRepository,
+    user_preferences,
+)
 from mindflow.infrastructure.schema import (
     chat_messages,
+    intervention_checks,
     intervention_slot_reservations,
     procrastination_analyses,
     workflow_budget_reservations,
@@ -884,3 +890,197 @@ class TestConcurrentInterventionLimits:
         # Different type should still work
         decision2 = await throttle.can_intervene(1, "task_breakdown")
         assert decision2.allowed
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Activity-retention lifecycle: preference authoritative, env default,
+# intervention_checks cleaned by checked_at at the same horizon
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestActivityRetentionLifecycle:
+    """Raw ``activity_events`` and ``intervention_checks`` share one effective
+    activity-retention horizon: user preference wins, env default falls back."""
+
+    @pytest.fixture
+    async def create_retention_tables(self, engine):
+        async with engine.begin() as conn:
+            for table in (activity_events, user_preferences, intervention_checks):
+                await conn.run_sync(table.metadata.create_all)
+
+    @pytest.fixture
+    async def preferences_repo(self, session_factory, create_retention_tables):
+        return PreferencesRepository(session_factory)
+
+    async def _insert_activity_event(
+        self, session_factory, *, event_id: str, days_ago: int
+    ) -> None:
+        ts = (_BASE - timedelta(days=days_ago)).isoformat()
+        data = (
+            '{"app_name":"Test","window_title":"","process_name":"test.exe",'
+            '"is_idle":false,"timestamp_utc":"' + ts + '"}'
+        )
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                activity_events.insert().values(
+                    id=event_id,
+                    user_id=1,
+                    timestamp=ts,
+                    duration_s=5.0,
+                    data_json=data,
+                    event_type="window_snapshot",
+                )
+            )
+
+    async def _insert_checks(
+        self, session_factory, *, rows: list[tuple[str, str]]
+    ) -> None:
+        async with session_factory() as session, session.begin():
+            for checked_at, check_id in rows:
+                await session.execute(
+                    intervention_checks.insert().values(
+                        id=check_id,
+                        user_id=1,
+                        checked_at=checked_at,
+                        reason="rule_engine",
+                        source="rule_engine",
+                    )
+                )
+
+    async def _remaining_ids(
+        self, session_factory, table, id_col
+    ) -> list[str]:
+        async with session_factory() as session:
+            result = await session.execute(sa.select(id_col).order_by(id_col))
+            return [row[0] for row in result.fetchall()]
+
+    async def test_cleanup_old_events_prefers_preference_activity_retention(
+        self, engine, session_factory, notifier, preferences_repo,
+    ) -> None:
+        """User preference overrides the env retention argument."""
+        await preferences_repo.set(1, {"telemetry": {"activity_retention_days": 14}})
+        await self._insert_activity_event(
+            session_factory, event_id="e-old", days_ago=20
+        )
+        await self._insert_activity_event(
+            session_factory, event_id="e-recent", days_ago=5
+        )
+        svc = MaintenanceService(
+            engine=engine,
+            session_factory=session_factory,
+            notifier=notifier,
+            clock=_clock,
+            preferences_repository=preferences_repo,
+        )
+
+        deleted = await svc.cleanup_old_events(retention_days=30)
+
+        assert deleted == 1  # 20-day-old (preference 14) deleted; 5-day-old kept
+        remaining = await self._remaining_ids(
+            session_factory, activity_events, activity_events.c.id
+        )
+        assert remaining == ["e-recent"]
+
+    async def test_cleanup_old_events_falls_back_to_env_when_preference_missing(
+        self, engine, session_factory, notifier, preferences_repo,
+    ) -> None:
+        """No stored preference → the env retention argument applies."""
+        await self._insert_activity_event(
+            session_factory, event_id="e-old", days_ago=40
+        )
+        await self._insert_activity_event(
+            session_factory, event_id="e-recent", days_ago=10
+        )
+        svc = MaintenanceService(
+            engine=engine,
+            session_factory=session_factory,
+            notifier=notifier,
+            clock=_clock,
+            preferences_repository=preferences_repo,
+        )
+
+        deleted = await svc.cleanup_old_events(retention_days=30)
+
+        assert deleted == 1
+        remaining = await self._remaining_ids(
+            session_factory, activity_events, activity_events.c.id
+        )
+        assert remaining == ["e-recent"]
+
+    async def test_cleanup_old_intervention_checks_deletes_old_preserves_recent(
+        self, engine, session_factory, notifier, create_retention_tables,
+    ) -> None:
+        """Checks older than the activity horizon are deleted by ``checked_at``."""
+        await self._insert_checks(
+            session_factory,
+            rows=[
+                ((_BASE - timedelta(days=40)).isoformat(), "check-old"),
+                ((_BASE - timedelta(days=10)).isoformat(), "check-recent"),
+            ],
+        )
+        svc = MaintenanceService(
+            engine=engine,
+            session_factory=session_factory,
+            notifier=notifier,
+            clock=_clock,
+        )
+
+        deleted = await svc.cleanup_old_intervention_checks(retention_days=30)
+
+        assert deleted == 1
+        remaining = await self._remaining_ids(
+            session_factory, intervention_checks, intervention_checks.c.id
+        )
+        assert remaining == ["check-recent"]
+
+    async def test_cleanup_old_intervention_checks_boundary_preserved(
+        self, engine, session_factory, notifier, create_retention_tables,
+    ) -> None:
+        """A check exactly at the activity cutoff survives (strict ``<``)."""
+        await self._insert_checks(
+            session_factory,
+            rows=[((_BASE - timedelta(days=30)).isoformat(), "check-boundary")],
+        )
+        svc = MaintenanceService(
+            engine=engine,
+            session_factory=session_factory,
+            notifier=notifier,
+            clock=_clock,
+        )
+
+        deleted = await svc.cleanup_old_intervention_checks(retention_days=30)
+
+        assert deleted == 0
+        async with session_factory() as session:
+            result = await session.execute(
+                sa.select(sa.func.count()).select_from(intervention_checks)
+            )
+            assert result.scalar() == 1
+
+    async def test_cleanup_old_intervention_checks_prefers_preference(
+        self, engine, session_factory, notifier, preferences_repo,
+    ) -> None:
+        """The preference activity retention drives the check cutoff too."""
+        await preferences_repo.set(1, {"telemetry": {"activity_retention_days": 14}})
+        await self._insert_checks(
+            session_factory,
+            rows=[
+                ((_BASE - timedelta(days=20)).isoformat(), "check-old"),
+                ((_BASE - timedelta(days=5)).isoformat(), "check-recent"),
+            ],
+        )
+        svc = MaintenanceService(
+            engine=engine,
+            session_factory=session_factory,
+            notifier=notifier,
+            clock=_clock,
+            preferences_repository=preferences_repo,
+        )
+
+        deleted = await svc.cleanup_old_intervention_checks(retention_days=30)
+
+        assert deleted == 1
+        remaining = await self._remaining_ids(
+            session_factory, intervention_checks, intervention_checks.c.id
+        )
+        assert remaining == ["check-recent"]

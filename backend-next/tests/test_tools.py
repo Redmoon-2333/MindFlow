@@ -334,6 +334,27 @@ class TestLatestAnalysisTool:
     def tool(self, analysis_repo: AsyncMock) -> LatestAnalysisTool:
         return LatestAnalysisTool(analysis_repo=analysis_repo)
 
+    def test_nested_context_binding_restores_outer_context(
+        self,
+        tool: LatestAnalysisTool,
+    ) -> None:
+        outer = ToolContext(user_id=101, session_id="outer")
+        inner = ToolContext(user_id=202, session_id="inner")
+
+        outer_token = tool.bind_context(outer)
+        try:
+            inner_token = tool.bind_context(inner)
+            try:
+                assert tool.context == inner
+            finally:
+                tool.reset_context(inner_token)
+
+            assert tool.context == outer
+        finally:
+            tool.reset_context(outer_token)
+
+        assert tool.context is None
+
     async def test_missing_context_returns_error(
         self, tool: LatestAnalysisTool
     ) -> None:

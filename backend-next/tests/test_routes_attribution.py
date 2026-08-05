@@ -13,12 +13,16 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import mindflow.api.routes.attribution as attribution_module
+from mindflow.agents.types import PanelVerdict
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes.attribution import router as attribution_router
+from mindflow.domain.procrastination import ProcrastinationType
+from mindflow.ports import AnalysisResult
 from mindflow.services.llm_service import AttributionOutcome
 
 
@@ -110,6 +114,38 @@ class TestAttributionRoute:
         data = resp.json()
         assert data["cached"] is True
 
+    def test_workflow_path_uses_analysis_kind_and_verdict_cache_flag(self) -> None:
+        """Workflow attribution keeps its kind and cached metadata."""
+        llm_service = MagicMock()
+        workflow_port = MagicMock()
+        workflow_port.run_analysis = AsyncMock(
+            return_value=AnalysisResult(
+                verdict=PanelVerdict(
+                    types=(ProcrastinationType.IMPULSIVITY,),
+                    confidence={ProcrastinationType.IMPULSIVITY: 0.8},
+                    recommended_technique=None,
+                    rationale="cached workflow result",
+                    dissent=(),
+                    transcript=(),
+                    escalated=False,
+                    call_count=0,
+                    source="deepseek",
+                    cached=True,
+                )
+            )
+        )
+        app = _make_app(llm_service)
+        app.state.workflow_port = workflow_port
+
+        resp = TestClient(app).post(
+            "/api/v1/analytics/attribution", json={"date": "2026-07-17"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["cached"] is True
+        request = workflow_port.run_analysis.call_args.args[0]
+        assert request.analysis_kind == "daily_attribution"
+
     def test_degraded_to_rule_engine(self) -> None:
         """Full degradation returns 200 with meta.degraded=true."""
         mock_service = MagicMock()
@@ -176,6 +212,25 @@ class TestAttributionRoute:
         assert "not-found" in data["type"]
         assert "暂无活动数据" in data["detail"]
 
+    def test_workflow_no_activity_domain_error_maps_to_404(self) -> None:
+        """The shared workflow must preserve the no-activity 404 contract."""
+        llm_service = MagicMock()
+        workflow_port = MagicMock()
+        from mindflow.errors import NoActivityDataError
+
+        workflow_port.run_analysis = AsyncMock(
+            side_effect=NoActivityDataError("暂无活动数据，请先开始采集")
+        )
+        app = _make_app(llm_service)
+        app.state.workflow_port = workflow_port
+
+        resp = TestClient(app).post(
+            "/api/v1/analytics/attribution", json={"date": "2026-07-17"}
+        )
+
+        assert resp.status_code == 404
+        assert "not-found" in resp.json()["type"]
+
     def test_force_bypasses_cache(self) -> None:
         """force=True should reach the service."""
         mock_service = MagicMock()
@@ -197,3 +252,28 @@ class TestAttributionRoute:
         mock_service.analyze.assert_called_once()
         call_kwargs = mock_service.analyze.call_args[1]
         assert call_kwargs.get("force") is True
+
+    @pytest.mark.parametrize(
+        "bad_date",
+        ["not-a-date", "2026-13-01", "2026-07-32"],
+    )
+    def test_invalid_date_returns_422(self, bad_date: str) -> None:
+        """A malformed or impossible date must be rejected with 422 at the boundary.
+
+        The ``date`` field is validated by Pydantic before the handler runs, so
+        an invalid ISO/calendar date yields an RFC 9457 ``validation-error``
+        (422) instead of reaching the service.
+        """
+        mock_service = MagicMock()
+        mock_service.analyze = AsyncMock(return_value=_success_outcome())
+        app = _make_app(mock_service)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/v1/analytics/attribution", json={"date": bad_date}
+        )
+
+        assert resp.status_code == 422
+        data = resp.json()
+        assert "validation-error" in data["type"]
+        mock_service.analyze.assert_not_called()

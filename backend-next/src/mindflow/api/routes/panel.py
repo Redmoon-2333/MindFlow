@@ -162,6 +162,7 @@ async def post_panel_today(
                 AnalysisRequest(
                     user_id=1,
                     target_date=today,
+                    analysis_kind="daily_panel",
                     force=should_retry,
                     retry_if_degraded=req.retry_if_degraded,
                     origin="api",

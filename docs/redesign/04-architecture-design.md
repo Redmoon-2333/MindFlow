@@ -841,11 +841,11 @@ mindflow-app/backend-next/
 | `analyzer/patterns.py` | `services/analysis_service.py` | keep → 事件流化 |
 | `analyzer/baseline.py` | `domain/baseline.py` | keep (直接迁移) |
 | `analyzer/deviation.py` | `domain/deviation.py` | keep (直接迁移) |
-| `analyzer/labeling.py` | `domain/labeling.py` | keep (直接迁移) |
+| `analyzer/labeling.py` | `train/v2.py:_weak_label` | refactor → V2 弱标签 |
 | `analyzer/title_analyzer.py` | `domain/features.py` (内联) | keep → 合并 |
 | `analyzer/context_packer.py` | `services/llm_service.py` | keep → 集成到服务 |
 | `analyzer/ml_models.py` | `train/pipeline.py` + `domain/` (HMM) | refactor → 拆分 |
-| `analyzer/data_pipeline.py` | `train/synthetic_data.py` | keep（合成数据生成器） |
+| `analyzer/data_pipeline.py` | `train/synthetic_v2.py` | refactor → V2 特征窗口生成器 |
 | `analyzer/train.py` | `train/pipeline.py` | refactor → pipeline 编排 |
 | `api/routes.py` | `api/routes/` (多文件) | refactor → 按领域拆分 |
 | `api/websocket.py` | `api/websocket.py` | refactor |

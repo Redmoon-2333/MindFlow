@@ -227,3 +227,84 @@ class TestDeepSeekClient:
         await client.close()
 
         assert result.cbt_technique == "stimulus_control"
+
+    @pytest.mark.asyncio
+    async def test_uses_configured_timeout(self) -> None:
+        """The httpx timeout must come from LLMSettings.timeout_s, not a hardcode."""
+        settings = LLMSettings(
+            api_key="test-key",
+            base_url="https://test.api.example.com",
+            model="test-model",
+            timeout_s=12,
+            max_retries=3,
+        )
+        client = DeepSeekClient(settings)
+        try:
+            assert client._client.timeout == httpx.Timeout(12)
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_retries_follow_configured_max_retries(self) -> None:
+        """The retry budget must come from LLMSettings.max_retries (3 → 4 attempts)."""
+        settings = LLMSettings(
+            api_key="test-key",
+            base_url="https://test.api.example.com",
+            model="test-model",
+            timeout_s=12,
+            max_retries=3,
+        )
+        client = DeepSeekClient(settings)
+        calls = 0
+
+        async def _handler(_: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(500, json={"error": "internal"})
+
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(_handler),
+            base_url=client._base_url,
+            timeout=httpx.Timeout(12),
+            headers={"Authorization": "Bearer test-key", "Content-Type": "application/json"},
+        )
+        try:
+            with pytest.raises(LLMAPIError, match="failed after 4 attempts"):
+                await client.analyze('{"test": "data"}')
+        finally:
+            await client.close()
+
+        assert calls == 4
+
+    @pytest.mark.asyncio
+    async def test_timeout_message_reflects_configured_timeout(self) -> None:
+        """The chained timeout exception must name the configured timeout, not 30s."""
+        settings = LLMSettings(
+            api_key="test-key",
+            base_url="https://test.api.example.com",
+            model="test-model",
+            timeout_s=12,
+            max_retries=1,
+        )
+        client = DeepSeekClient(settings)
+
+        async def _handler(_: httpx.Request) -> httpx.Response:
+            raise httpx.TimeoutException("Request timed out")
+
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(_handler),
+            base_url=client._base_url,
+            timeout=httpx.Timeout(12),
+            headers={"Authorization": "Bearer test-key", "Content-Type": "application/json"},
+        )
+        try:
+            with pytest.raises(LLMAPIError, match="failed after 2 attempts") as exc_info:
+                await client.analyze('{"test": "data"}')
+            cause = exc_info.value.__cause__
+            assert cause is not None
+            assert "12s" in str(cause), f"Expected configured timeout in message, got: {cause}"
+            assert "30s" not in str(cause), f"Message must not hardcode 30s, got: {cause}"
+        finally:
+            await client.close()

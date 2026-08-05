@@ -33,8 +33,8 @@ Run all from `mindflow-app/backend-next/`:
 
 - **Framework-neutral ports** (`ports.py`): `AnalysisWorkflowPort`, `WorkflowRunStorePort`, `BudgetReservationPort`. LangGraph can be swapped without touching the scheduler.
 - **AnalysisGraph**: Composition root for daily analysis. Implements `AnalysisWorkflowPort`. Contains PanelGraph as subgraph.
-- **PanelGraph**: Explicit expert-deliberation subgraph (Analyst -> 3x parallel attribution -> validation -> Moderator -> Critic). `PanelOrchestrator` is a thin compatibility adapter; do not reintroduce its old inline graph.
-- **ChatGraph**: Explicit chat lifecycle StateGraph. The legacy `create_agent` route remains the default while `new_chat_graph=False`.
+- **PanelGraph**: Explicit expert-deliberation subgraph (Analyst -> 3x parallel attribution -> validation -> Moderator -> Critic). The old `PanelOrchestrator` class was removed at v2 cutover; keep its parsing helpers module-level and do not reintroduce the inline graph.
+- **ChatGraph**: Explicit chat lifecycle StateGraph. The v2 graph is now the only production chat path; the former `create_agent` route has been removed.
 - **ProviderRegistry**: LLM provider lifecycle (L1 DeepSeek, L2 Ollama, L3 RuleEngine). Single HTTP session pool.
 - **Scheduler**: No graph. Owns time, claims, heartbeats (`scheduled_job_runs` table). Two-layer design per ADR-001.
 - **Local OTel**: Traces to local SQLite; no external export. No PII in span attributes (ADR-003).
@@ -58,15 +58,15 @@ Run all from `mindflow-app/backend-next/`:
 
 ## Feature Flags (ADR-005)
 
-All default to **legacy-safe old paths**. Rollback is a config change, not a code revert.
+The backend completed the v2 graph cutover. `checkpointing_enabled` remains active;
+the two graph-selection flags are retained only so older environment files still
+parse, but changing them no longer selects a legacy implementation.
 
 | Flag | Default | Effect When True |
 |------|---------|-----------------|
-| `MINDFLOW_GRAPH_VERSION` | `1` | Reserved metadata; does not select an implementation today |
 | `MINDFLOW_CHECKPOINTING_ENABLED` | `False` | Use SQLite-backed instead of in-memory checkpoints |
-| `MINDFLOW_NEW_ANALYSIS_GRAPH` | `False` | Route panel through v2 AnalysisGraph |
-| `MINDFLOW_NEW_CHAT_GRAPH` | `False` | Route chat through ChatGraph StateGraph |
-| `MINDFLOW_SHADOW_MODE_CHAT` | `False` | Run both legacy+new chat, return legacy |
+| `MINDFLOW_NEW_ANALYSIS_GRAPH` | `True` | Deprecated compatibility flag; v2 AnalysisGraph is always active |
+| `MINDFLOW_NEW_CHAT_GRAPH` | `True` | Deprecated compatibility flag; v2 ChatGraph is always active |
 
 ## Real QA Expectations
 

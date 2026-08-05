@@ -146,6 +146,27 @@ class TestBuildScheduler:
         assert job is not None
         assert "retention_days" in job.kwargs
 
+    async def test_event_cleanup_invokes_intervention_check_cleanup(self) -> None:
+        """event_cleanup deletes raw events AND intervention checks at the same
+        activity-retention horizon (single effective retention value)."""
+        maintenance = MagicMock()
+        maintenance.cleanup_old_events = AsyncMock()
+        maintenance.cleanup_old_intervention_checks = AsyncMock()
+        maintenance.expire_stale_budgets = AsyncMock()
+        scheduler = build_scheduler(
+            maintenance_service=maintenance,
+            event_retention_days=45,
+        )
+        coro = _job_coro(scheduler, "event_cleanup")
+
+        await coro(retention_days=45)
+
+        maintenance.cleanup_old_events.assert_awaited_once_with(retention_days=45)
+        maintenance.cleanup_old_intervention_checks.assert_awaited_once_with(
+            retention_days=45
+        )
+        maintenance.expire_stale_budgets.assert_awaited_once_with()
+
     async def test_missing_service_skips_jobs(self) -> None:
         """Without services, corresponding jobs should be skipped."""
         scheduler = build_scheduler()

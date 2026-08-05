@@ -1,10 +1,10 @@
 """Expert panel integration service — G003 wiring layer.
 
-Connects the G001 EvidenceBundleBuilder → G002 PanelOrchestrator → existing
-LLMService fallback chain for the daily expert panel workflow.
+Connects the G001 EvidenceBundleBuilder → v2 AnalysisGraph (PanelGraph)
+workflow for the daily expert panel workflow.
 
 Degradation chain (07-agent-upgrade-design.md §5):
-  L1: Expert panel (PanelOrchestrator)
+  L1: Expert panel (PanelGraph inside AnalysisGraph)
   L2: Single-expert (existing LLMService.analyze)
   L3+: Handled by LLMService's own degradation (Ollama → RuleEngine)
 """
@@ -13,18 +13,11 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Any
-from dataclasses import replace
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mindflow.agents.orchestrator import PanelOrchestrator
-from mindflow.agents.types import (
-    PanelBudgetExceededError,
-    PanelUnavailableError,
-    PanelVerdict,
-    TranscriptEntry,
-)
+from mindflow.agents.types import PanelVerdict, TranscriptEntry
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
@@ -39,7 +32,7 @@ from mindflow.ports import AnalysisRequest, AnalysisWorkflowPort, OriginType
 from mindflow.services.effectiveness_service import EffectivenessService
 from mindflow.services.evidence_service import EvidenceBundleBuilder
 from mindflow.services.llm_service import LLMService
-from mindflow.time_utils import TimezoneLike, business_day_bounds_utc
+from mindflow.time_utils import TimezoneLike
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Unified verdict conversion
@@ -254,14 +247,13 @@ class PanelService:
         activity_repo: Repository for activity event data.
         intervention_repo: Repository for intervention history.
         session_factory: SQLAlchemy session factory.
-        orchestrator: The expert panel orchestrator.
         llm_service: LLM service for fallback (single-expert mode).
         analysis_repository: Repository that persists panel and fallback verdicts.
         effectiveness_service: Effectiveness service for enriching intervention
             records with outcome data (G005 learning loop — optional).
-        workflow_port: Optional framework-neutral workflow port. When set,
-            :meth:`run_daily_panel` delegates through this port instead of
-            executing the panel directly.
+        workflow_port: Optional framework-neutral workflow port (v2
+            ``AnalysisGraph``). When set, :meth:`run_daily_panel` delegates
+            through this port instead of running the panel inline.
     """
 
     def __init__(
@@ -269,7 +261,6 @@ class PanelService:
         activity_repo: SQLAlchemyActivityRepository,
         intervention_repo: InterventionLogRepository,
         session_factory: async_sessionmaker[AsyncSession],
-        orchestrator: PanelOrchestrator,
         llm_service: LLMService,
         analysis_repository: SQLAlchemyProcrastinationAnalysisRepository,
         effectiveness_service: EffectivenessService | None = None,
@@ -284,7 +275,6 @@ class PanelService:
             session_factory=session_factory,
             effectiveness_service=effectiveness_service,
         )
-        self._orchestrator = orchestrator
         self._llm_service = llm_service
         self._analysis_repository = analysis_repository
         self._timezone = timezone
@@ -301,29 +291,26 @@ class PanelService:
     ) -> PanelVerdict:
         """Run the daily expert panel (or degrade gracefully).
 
-        **Compatibility adapter**: When ``workflow_port`` is injected, this
-        method delegates through :class:`~mindflow.ports.AnalysisWorkflowPort`
-        instead of executing the panel directly. The port contract keeps the
-        call-site signature unchanged while allowing the workflow engine to be
-        swapped (LangGraph, state machine, or test fake) without touching
-        route handlers.
+        Delegates through :class:`~mindflow.ports.AnalysisWorkflowPort`
+        (the v2 AnalysisGraph).  The port keeps the call-site signature
+        unchanged while owning idempotency, crisis gating, and the
+        L1 panel → L2 single-expert → L3 rule-engine degradation chain.
 
-        Without a workflow port, the existing behaviour is preserved:
-        attempts the full multi-expert panel. If the panel is unavailable
-        (e.g. insufficient valid expert opinions), falls through to the
-        existing single-expert LLM service.
+        When no workflow port is injected, falls back to the single-expert
+        LLM service (which itself degrades to Ollama → RuleEngine).
 
         Args:
             user_id: The user to analyse.
             target_date: The date to analyse.
             origin: Which entry point triggered this run
                 (``"scheduler"``, ``"api"``, ``"chat"``, or
-                ``"auto_intervention"``).  Only used when delegating
-                through the workflow port; ignored in the inline path.
+                ``"auto_intervention"``).
+            force: Bypass the cached-result short-circuit.
+            retry_if_degraded: Re-run even if the prior result was degraded.
 
         Returns:
-            A ``PanelVerdict`` — either from the full panel (source="panel")
-            or from the deepest successful fallback tier
+            A ``PanelVerdict`` — from the full panel (source="panel") or the
+            deepest successful fallback tier
             (source="single_expert", "ollama", or "rule_engine").
         """
         # ── Framework-neutral delegation path ──────────────────────────────────
@@ -332,6 +319,7 @@ class PanelService:
             request = AnalysisRequest(
                 user_id=user_id,
                 target_date=target_date,
+                analysis_kind="daily_panel",
                 origin=origin,
                 force=force,
                 retry_if_degraded=retry_if_degraded,
@@ -339,95 +327,21 @@ class PanelService:
             result = await workflow_port.run_analysis(request)
             return result.verdict
 
-        # ── Existing inline orchestration path ─────────────────────────────────
-        # Build evidence bundle ──────────────────────────────────────────────
-        window_start, window_end = business_day_bounds_utc(
-            target_date,
-            self._timezone,
+        # ── No workflow port — degrade to the single-expert LLM service ────────
+        if self._llm_service is None:
+            raise RuntimeError(
+                "PanelService has neither an AnalysisWorkflowPort nor an llm_service"
+            )
+        logger.warning(
+            "No AnalysisWorkflowPort injected; falling back to single-expert analysis"
         )
-
-        bundle = await self._builder.build(user_id, window_start, window_end)
-
-        # ── Attempt expert panel ───────────────────────────────────────────────
-        try:
-            verdict = await self._orchestrator.run(bundle)
-            await self._analysis_repository.upsert(
-                user_id=user_id,
-                target_date=target_date,
-                procrastination_types=[item.value for item in verdict.types],
-                type_confidence={
-                    item.value: float(confidence)
-                    for item, confidence in verdict.confidence.items()
-                },
-                cognitive_distortions=[],
-                cbt_technique=(
-                    verdict.recommended_technique.value
-                    if verdict.recommended_technique is not None
-                    else None
-                ),
-                response_text=verdict.rationale,
-                llm_model="deepseek-chat",
-                analysis_kind="daily_panel",
-                source=verdict.source,
-                panel_transcript={
-                    "transcript": [
-                        {
-                            "role": entry.role,
-                            "content": entry.content,
-                            "round": entry.round,
-                        }
-                        for entry in verdict.transcript
-                    ],
-                    "dissent": list(verdict.dissent),
-                    "escalated": verdict.escalated,
-                    "call_count": verdict.call_count,
-                    "degradation_path": list(verdict.degradation_path),
-                    "cached": verdict.cached,
-                    "insufficient_data": verdict.insufficient_data,
-                    "uncertainty": verdict.uncertainty,
-                    "evidence_gaps": list(verdict.evidence_gaps),
-                },
-                degraded=False,
-                degradation_path=list(verdict.degradation_path),
-            )
-            logger.info(
-                "Panel succeeded for user {} on {} ({} calls, escalated={})",
-                user_id,
-                target_date,
-                verdict.call_count,
-                verdict.escalated,
-            )
-            return verdict
-        except PanelUnavailableError as exc:
-            logger.warning(
-                "Panel unavailable, falling back to single-expert analysis: {}",
-                exc,
-            )
-        except PanelBudgetExceededError as exc:
-            logger.warning(
-                "Panel budget exceeded, falling back to single-expert analysis: {}",
-                exc,
-            )
-
-        # ── Fallback to single-expert LLM service ──────────────────────────────
-        # Pass analysis_kind="daily_panel" so the fallback result is stored AS
-        # the daily panel (with the correct degradation source), not as a
-        # separate daily_attribution row.  This is critical for the chat
-        # agent's get_panel_verdict tool to find the result.
-        logger.info("Panel unavailable, falling back to single-expert analysis")
         outcome = await self._llm_service.analyze(
             user_id=user_id,
             target_date=target_date,
             force=True,
             analysis_kind="daily_panel",
         )
-
         return self._outcome_to_verdict(outcome)
-        verdict = self._outcome_to_verdict(outcome)
-        path = list(getattr(verdict, "degradation_path", ()) or [])
-        if not path:
-            path = ["panel", str(getattr(outcome, "source", "rule_engine"))]
-        return replace(verdict, degradation_path=tuple(path), cached=False)
 
     async def get_stored_verdict(self, user_id: int, target_date: date) -> PanelVerdict | None:
         """Return the most recent stored analysis as a verdict, or None.
@@ -454,14 +368,12 @@ class PanelService:
         return self._analysis_to_verdict(cached)
 
     async def aclose(self) -> None:
-        """Close the underlying LLM gateway HTTP client.
+        """No-op cleanup hook.
 
-        Cleanup hook for application shutdown (review P2 connection leak).
+        The v2 path owns no gateway or HTTP clients directly — LLM pools are
+        managed by the shared ``ProviderRegistry``, which is closed separately
+        during application shutdown.
         """
-        import contextlib
-
-        with contextlib.suppress(Exception):
-            await self._orchestrator._gateway.close()  # noqa: SLF001
 
     # ══════════════════════════════════════════════════════════════════════════
     # Helpers

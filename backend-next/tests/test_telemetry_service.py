@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
 from test_prediction_service import _make_feature_window, _make_mock_model_manager
 
+import mindflow.services.telemetry_service as telemetry_service_module
 from mindflow.services.prediction_service import FocusPredictionService
 from mindflow.services.telemetry_service import TelemetryService
 from mindflow.train.v2 import V2_FEATURE_NAMES
@@ -178,7 +180,7 @@ def _prediction_service_for(
 ) -> FocusPredictionService:
     """Wire a real ``FocusPredictionService`` against a mocked telemetry repo."""
     repository = AsyncMock()
-    repository.list_feature_windows.return_value = windows
+    repository.list_feature_windows_in_range.return_value = windows
     if model_manager is _MISSING:
         model_manager = _make_mock_model_manager(focus_proba=focus_proba)
     if model_manager is not None and classifier_overrides:
@@ -301,3 +303,110 @@ class TestPredictLatestFocusNormalization:
         assert payload["focus_probability"] is None
         assert payload["mode"] == "rule_engine_only"
         assert payload["reason"]
+
+
+# ── Activity-retention lifecycle: preference authoritative, env default ──────
+
+
+async def test_get_preferences_falls_back_to_env_event_retention_days_when_preference_missing(
+    tmp_path, monkeypatch,
+) -> None:
+    """Missing ``activity_retention_days`` preference → env startup default.
+
+    The environment ``event_retention_days`` is the default only when the
+    user preference is absent; it must not override a stored preference.
+    """
+    monkeypatch.setattr(
+        telemetry_service_module,
+        "get_settings",
+        lambda: SimpleNamespace(event_retention_days=45),
+    )
+    prefs_repo = AsyncMock()
+    prefs_repo.get.return_value = {"telemetry": {"input_telemetry_enabled": True}}
+    service = TelemetryService(
+        repository=AsyncMock(),
+        preferences_repository=prefs_repo,
+        data_dir=tmp_path,
+    )
+
+    prefs = await service.get_preferences(1)
+
+    assert prefs["activity_retention_days"] == 45
+
+
+async def test_get_preferences_preference_overrides_env_event_retention_days(
+    tmp_path, monkeypatch,
+) -> None:
+    """Stored preference wins over the env startup default."""
+    monkeypatch.setattr(
+        telemetry_service_module,
+        "get_settings",
+        lambda: SimpleNamespace(event_retention_days=30),
+    )
+    prefs_repo = AsyncMock()
+    prefs_repo.get.return_value = {"telemetry": {"activity_retention_days": 60}}
+    service = TelemetryService(
+        repository=AsyncMock(),
+        preferences_repository=prefs_repo,
+        data_dir=tmp_path,
+    )
+
+    prefs = await service.get_preferences(1)
+
+    assert prefs["activity_retention_days"] == 60
+
+
+async def test_cleanup_retained_data_activity_cutoff_follows_preference(
+    tmp_path, monkeypatch,
+) -> None:
+    """``cleanup_retained_data`` derives the raw-event cutoff from the preference."""
+    monkeypatch.setattr(
+        telemetry_service_module,
+        "get_settings",
+        lambda: SimpleNamespace(event_retention_days=45),
+    )
+    repository = AsyncMock()
+    repository.cleanup_old_telemetry = AsyncMock(return_value=7)
+    prefs_repo = AsyncMock()
+    prefs_repo.get.return_value = {"telemetry": {"activity_retention_days": 60}}
+    service = TelemetryService(
+        repository=repository,
+        preferences_repository=prefs_repo,
+        data_dir=tmp_path,
+    )
+
+    await service.cleanup_retained_data(1)
+
+    kwargs = repository.cleanup_old_telemetry.await_args.kwargs
+    interaction_cutoff = kwargs["interaction_cutoff"]
+    activity_cutoff = kwargs["activity_cutoff"]
+    feature_cutoff = kwargs["feature_cutoff"]
+    assert interaction_cutoff - activity_cutoff == timedelta(days=60 - 7)
+    assert activity_cutoff - feature_cutoff == timedelta(days=180 - 60)
+
+
+async def test_cleanup_retained_data_activity_cutoff_falls_back_to_env(
+    tmp_path, monkeypatch,
+) -> None:
+    """Missing preference → env ``event_retention_days`` drives the activity cutoff."""
+    monkeypatch.setattr(
+        telemetry_service_module,
+        "get_settings",
+        lambda: SimpleNamespace(event_retention_days=45),
+    )
+    repository = AsyncMock()
+    repository.cleanup_old_telemetry = AsyncMock(return_value=7)
+    prefs_repo = AsyncMock()
+    prefs_repo.get.return_value = {"telemetry": {"input_telemetry_enabled": True}}
+    service = TelemetryService(
+        repository=repository,
+        preferences_repository=prefs_repo,
+        data_dir=tmp_path,
+    )
+
+    await service.cleanup_retained_data(1)
+
+    kwargs = repository.cleanup_old_telemetry.await_args.kwargs
+    interaction_cutoff = kwargs["interaction_cutoff"]
+    activity_cutoff = kwargs["activity_cutoff"]
+    assert interaction_cutoff - activity_cutoff == timedelta(days=45 - 7)

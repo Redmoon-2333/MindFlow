@@ -35,7 +35,6 @@ from starlette.types import Scope
 from mindflow import __version__
 
 # Agent imports (G002, G003)
-from mindflow.agents.orchestrator import PanelOrchestrator
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.middleware import (
     AuthMiddleware,
@@ -73,6 +72,9 @@ from mindflow.infrastructure.repositories.baseline import (
 )
 from mindflow.infrastructure.repositories.chat import (
     ChatRepository,
+)
+from mindflow.infrastructure.repositories.collector_intervals import (
+    CollectorIntervalsRepository,
 )
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
@@ -330,6 +332,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             collector_service = CollectorService(
                 collector=collector,
                 repository=activity_repository,
+                interval_repository=CollectorIntervalsRepository(session_factory),
                 interval_s=float(settings.collect_interval_s),
             )
             logger.info("CollectorService created (not started)")
@@ -350,6 +353,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             repository=telemetry_repository,
             preferences_repository=preferences_repository,
             data_dir=data_dir,
+            models_dir=settings.models_dir,
             activity_repository=activity_repository,
             prediction_service=prediction_service,
             baseline_repository=baseline_repository,
@@ -455,6 +459,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             session_factory=session_factory,
             notifier=notifier,
             data_dir=data_dir,
+            preferences_repository=preferences_repository,
         )
 
         # ── 7b. Wave 6: Provider registry + LLM service ───────────────────
@@ -534,7 +539,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         if llm_service is not None:
             try:
                 gateway = provider_registry.get_gateway()
-                orchestrator = PanelOrchestrator(gateway=gateway)
                 # Create shared EvidenceBundleBuilder for Panel + Chat
                 shared_evidence_builder = EvidenceBundleBuilder(
                     activity_repo=activity_repository,
@@ -545,54 +549,45 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     prediction_service=prediction_service,
                 )
 
-                # ── Create AnalysisGraph (Todo 12) — gated on new_analysis_graph ──
-                # ADR-005: new_analysis_graph controls whether the unified
-                # AnalysisGraph is constructed and injected as the shared
-                # AnalysisWorkflowPort.  When False (default), legacy inline
-                # paths (attribution, scheduler, panel) are used.
-                if settings.new_analysis_graph:
-                    workflow_run_repo: Any = WorkflowRunsRepository(session_factory)
-                    workflow_budget_repo: Any = BudgetReservationRepository(session_factory)
+                # ── Create AnalysisGraph (v2 is the only analysis path) ──
+                workflow_run_repo: Any = WorkflowRunsRepository(session_factory)
+                workflow_budget_repo: Any = BudgetReservationRepository(session_factory)
 
-                    # RuleEngine is a lightweight deterministic engine — safe to
-                    # create here (no DB state, no HTTP clients).
-                    from mindflow.domain.procrastination import RuleEngine as _RuleEngine
+                # RuleEngine is a lightweight deterministic engine — safe to
+                # create here (no DB state, no HTTP clients).
+                from mindflow.domain.procrastination import RuleEngine as _RuleEngine
 
-                    deepseek_client: Any | None = provider_registry.get_structured_attribution()
+                deepseek_client: Any | None = provider_registry.get_structured_attribution()
 
-                    # ── G002: Explicit PanelGraph wired into AnalysisGraph ──
-                    # Shares the same gateway/provider lifecycle as the
-                    # PanelOrchestrator; compiled graph is built lazily on
-                    # first access and reused across all invocations.
-                    panel_graph = PanelGraph(gateway=gateway)
+                # ── G002: Explicit PanelGraph wired into AnalysisGraph ──
+                # Shares the gateway/provider lifecycle; the compiled graph
+                # is built lazily on first access and reused across calls.
+                panel_graph = PanelGraph(gateway=gateway)
 
-                    analysis_graph = AnalysisGraph(
-                        analysis_repo=analysis_repository,
-                        workflow_run_repo=workflow_run_repo,
-                        budget_repo=workflow_budget_repo,
-                        evidence_builder=shared_evidence_builder,
-                        crisis_detector=CrisisDetector(),
-                        panel_graph=panel_graph,
-                        deepseek_client=deepseek_client,
-                        ollama_base_url=(
-                            settings.llm.ollama_base_url
-                            if settings.llm.ollama_enabled
-                            else None
-                        ),
-                        ollama_model=settings.llm.ollama_model,
-                        rule_engine=_RuleEngine(),
-                        timezone=settings.timezone,
-                    )
-                    analysis_workflow_port = analysis_graph
-                    logger.info("AnalysisGraph created as shared AnalysisWorkflowPort")
-                else:
-                    logger.info("new_analysis_graph=False; legacy analysis paths active")
+                analysis_graph = AnalysisGraph(
+                    analysis_repo=analysis_repository,
+                    workflow_run_repo=workflow_run_repo,
+                    budget_repo=workflow_budget_repo,
+                    evidence_builder=shared_evidence_builder,
+                    crisis_detector=CrisisDetector(),
+                    panel_graph=panel_graph,
+                    deepseek_client=deepseek_client,
+                    ollama_base_url=(
+                        settings.llm.ollama_base_url
+                        if settings.llm.ollama_enabled
+                        else None
+                    ),
+                    ollama_model=settings.llm.ollama_model,
+                    rule_engine=_RuleEngine(),
+                    timezone=settings.timezone,
+                )
+                analysis_workflow_port = analysis_graph
+                logger.info("AnalysisGraph created as shared AnalysisWorkflowPort")
 
                 panel_service = PanelService(
                     activity_repo=activity_repository,
                     intervention_repo=intervention_repository,
                     session_factory=session_factory,
-                    orchestrator=orchestrator,
                     llm_service=llm_service,
                     effectiveness_service=effectiveness_service,
                     timezone=settings.timezone,
@@ -600,7 +595,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     evidence_builder=shared_evidence_builder,
                     workflow_port=analysis_workflow_port,
                 )
-                logger.info("PanelService created with expert panel orchestrator")
+                logger.info("PanelService created with v2 AnalysisGraph workflow port")
             except Exception as exc:
                 logger.warning("Failed to create PanelService: {}", exc)
         else:
@@ -635,7 +630,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 timezone=settings.timezone,
                 model=provider_registry.get_chat_model(),
                 provider_registry=provider_registry,
-                chat_graph=None,
             )
             logger.info("ChatService created for G004 conversational assistant")
         except Exception as exc:
@@ -648,8 +642,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             else None
         )
         if chat_graph is not None:
-            logger.info("ChatGraph attached to runtime (new_chat_graph={}, shadow={})",
-                         settings.new_chat_graph, settings.shadow_mode_chat)
+            logger.info("ChatGraph attached to runtime (v2 chat graph)")
 
         # ── 8. Scheduler (Wave 5 cron jobs) ───────────────────────────────
         scheduler = build_scheduler(

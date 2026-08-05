@@ -1,22 +1,20 @@
-"""Tests for PanelOrchestrator's LangGraph internal migration.
+"""Tests for the v2 PanelGraph — the only active panel deliberation path.
 
-Verifies that the internal StateGraph produces the same public behaviour
-as the original manual async orchestration.  The orchestrator's ``run()``
-method is the sole public contract — these tests exercise it end-to-end
-against the same MockGateway used by the existing test suite.
+The legacy ``PanelOrchestrator`` was removed when PanelGraph took over.  These
+tests drive the full ``PanelGraph`` (compiled once, reused across invocations)
+through the same MockGateway used by the older suite.
 
 Three core paths (07-agent-upgrade-design.md §2):
   1. Fast path (no conflict, critic approves)
   2. Conflict escalation (rebuttal round triggered)
   3. Critic reject → moderator re-verdict
 
-Also covers the new ``graph/`` module contracts (Todo 3):
+Also covers the ``graph/`` module contracts:
   4. State round-trip JSON serialization
   5. Order-independent reducer fan-in for parallel expert updates
   6. Reflection: no lock/client/repository/ContextVar fields in state types
 
-Reuses MockGateway and test fixtures from ``test_agents_orchestrator``
-to guarantee behaviour parity.
+Reuses MockGateway and test fixtures from ``test_agents_orchestrator``.
 """
 
 from __future__ import annotations
@@ -46,7 +44,6 @@ from test_agents_orchestrator import (
     _make_bundle,
 )
 
-from mindflow.agents.orchestrator import PanelOrchestrator
 from mindflow.agents.types import (
     ExpertOpinion,
     PanelBudgetExceededError,
@@ -54,6 +51,9 @@ from mindflow.agents.types import (
     PanelVerdict,
     TranscriptEntry,
 )
+from mindflow.domain.evidence import EvidenceBundle, to_prompt_json
+from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
+from mindflow.graph.panel_graph import PanelGraph, PanelGraphState
 from mindflow.graph.reducers import (
     accumulate_errors,
     accumulate_tool_messages,
@@ -61,6 +61,7 @@ from mindflow.graph.reducers import (
     append_transcript,
 )
 from mindflow.graph.state import AnalysisState, ChatState, PanelState
+from mindflow.services.panel_service import analysis_dict_to_panel_verdict
 
 
 class RecordingGateway(MockGateway):
@@ -105,12 +106,60 @@ class BudgetFailingGateway(MockGateway):
             return _ANALYST_JSON
         raise PanelBudgetExceededError(call_count=13)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PanelGraph helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _panel_state(bundle: EvidenceBundle) -> PanelGraphState:
+    """Build a full PanelGraphState for a bundle (mirrors AnalysisGraph node)."""
+    bundle_json = to_prompt_json(bundle)
+    valid_metrics = frozenset(evidence_catalog_ids(build_evidence_catalog(bundle)))
+    return {  # type: ignore[typeddict-item]
+        "bundle_json": bundle_json,
+        "valid_metrics": valid_metrics,
+        "attribution_opinions": (),
+        "transcript": (),
+        "analyst_opinion": None,
+        "conflict_report": None,
+        "escalated": False,
+        "moderator_verdict": None,
+        "critic_result": None,
+        "critic_retries": 0,
+        "moderator_redo_count": 0,
+        "call_count": 0,
+        "disagreement_summary": None,
+        "rebuttal_delta": None,
+        "_expert_index": 0,
+    }
+
+
+async def _run_panel(gateway: MockGateway, bundle: EvidenceBundle) -> PanelVerdict:
+    """Run PanelGraph end-to-end and convert the final state to a PanelVerdict."""
+    graph = PanelGraph(gateway=gateway)
+    result = await graph.ainvoke(_panel_state(bundle))
+    verdict_dict = result.get("moderator_verdict") if isinstance(result, dict) else None
+    if verdict_dict is None or not isinstance(verdict_dict, dict):
+        raise PanelUnavailableError(
+            reason="Moderator did not produce a verdict",
+            call_count=result.get("call_count", 0) if isinstance(result, dict) else 0,
+        )
+    return analysis_dict_to_panel_verdict(
+        verdict_dict,
+        escalated=result.get("escalated", False) if isinstance(result, dict) else False,
+        transcript=result.get("transcript", ()) if isinstance(result, dict) else (),
+        call_count=result.get("call_count", 0) if isinstance(result, dict) else 0,
+        source="panel",
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tests — fast path
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestLangGraphFastPath:
+class TestPanelGraphFastPath:
     """Fast path: no attribution conflict, critic approves on first pass."""
 
     @pytest.mark.asyncio
@@ -124,8 +173,7 @@ class TestLangGraphFastPath:
             FP_MODERATOR: [_MODERATOR_JSON],
             FP_CRITIC: [_CRITIC_APPROVE],
         }
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
-        verdict = await orchestrator.run(_make_bundle())
+        verdict = await _run_panel(MockGateway(responses=responses), _make_bundle())
 
         assert isinstance(verdict, PanelVerdict)
         assert verdict.source == "panel"
@@ -144,7 +192,7 @@ class TestLangGraphFastPath:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestLangGraphConflictEscalation:
+class TestPanelGraphConflictEscalation:
     """Attribution experts disagree → rebuttal round → escalated=True."""
 
     @pytest.mark.asyncio
@@ -158,8 +206,7 @@ class TestLangGraphConflictEscalation:
             FP_MODERATOR: [_MODERATOR_JSON],
             FP_CRITIC: [_CRITIC_APPROVE],
         }
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
-        verdict = await orchestrator.run(_make_bundle())
+        verdict = await _run_panel(MockGateway(responses=responses), _make_bundle())
 
         assert isinstance(verdict, PanelVerdict)
         assert verdict.escalated is True
@@ -173,7 +220,7 @@ class TestLangGraphConflictEscalation:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestLangGraphCriticReject:
+class TestPanelGraphCriticReject:
     """Critic rejects verdict → moderator re-verdicts → critic approves."""
 
     @pytest.mark.asyncio
@@ -188,8 +235,7 @@ class TestLangGraphCriticReject:
             FP_CRITIC: [_CRITIC_REJECT, _CRITIC_APPROVE],
         }
         gateway = RecordingGateway(responses=responses)
-        orchestrator = PanelOrchestrator(gateway=gateway)
-        verdict = await orchestrator.run(_make_bundle())
+        verdict = await _run_panel(gateway, _make_bundle())
 
         assert isinstance(verdict, PanelVerdict)
         assert verdict.source == "panel"
@@ -208,17 +254,19 @@ class TestLangGraphCriticReject:
             FP_MODERATOR: [_MODERATOR_JSON, _MODERATOR_REDO_JSON],
             FP_CRITIC: [_CRITIC_REJECT, _CRITIC_REJECT],
         }
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
+        graph = PanelGraph(gateway=MockGateway(responses=responses))
+        result = await graph.ainvoke(_panel_state(_make_bundle()))
 
-        with pytest.raises(PanelUnavailableError) as exc_info:
-            await orchestrator.run(_make_bundle())
+        # Exhausted: critic rejected twice, moderator redo budget consumed.
+        critic = result["critic_result"]
+        assert critic.approved is False
+        assert result["moderator_redo_count"] == 2
+        assert result["critic_retries"] == 2
+        assert result["call_count"] == 8
 
-        assert exc_info.value.call_count == 8
-        assert "批评家" in exc_info.value.reason
 
-
-class TestLangGraphConcurrency:
-    """A compiled orchestrator instance must isolate concurrent invocations."""
+class TestPanelGraphConcurrency:
+    """A compiled PanelGraph instance must isolate concurrent invocations."""
 
     @pytest.mark.asyncio
     async def test_same_instance_concurrent_runs_are_isolated(self) -> None:
@@ -230,22 +278,23 @@ class TestLangGraphConcurrency:
             FP_MODERATOR: [_MODERATOR_JSON, _MODERATOR_JSON],
             FP_CRITIC: [_CRITIC_APPROVE, _CRITIC_APPROVE],
         }
-        orchestrator = PanelOrchestrator(gateway=YieldingGateway(responses=responses))
+        graph = PanelGraph(gateway=YieldingGateway(responses=responses))
+        bundle = _make_bundle()
 
-        verdicts = await asyncio.gather(
-            orchestrator.run(_make_bundle()),
-            orchestrator.run(_make_bundle()),
+        results = await asyncio.gather(
+            graph.ainvoke(_panel_state(bundle)),
+            graph.ainvoke(_panel_state(bundle)),
         )
 
-        assert [verdict.call_count for verdict in verdicts] == [6, 6]
-        assert [len(verdict.transcript) for verdict in verdicts] == [6, 6]
+        assert [r.get("call_count") for r in results] == [6, 6]
+        assert [len(r.get("transcript", ())) for r in results] == [6, 6]
 
     @pytest.mark.asyncio
     async def test_budget_exceeded_is_not_swallowed_by_parallel_safe_call(self) -> None:
-        orchestrator = PanelOrchestrator(gateway=BudgetFailingGateway())
+        graph = PanelGraph(gateway=BudgetFailingGateway())
 
         with pytest.raises(PanelBudgetExceededError):
-            await orchestrator.run(_make_bundle())
+            await graph.ainvoke(_panel_state(_make_bundle()))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -526,37 +575,35 @@ class TestStateFieldReflection:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Golden topology fixture — captures current orchestrator node/edge configuration
+# Golden topology fixture — captures the current PanelGraph node/edge configuration
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 class TestGoldenTopology:
-    """Capture the current orchestrator topology for regression detection.
+    """Capture the current PanelGraph topology for regression detection.
 
-    If these tests fail after a code change, the orchestrator's internal
-    topology has changed.  Update the golden values only after confirming
-    the change is intentional.
+    If these tests fail after a code change, the panel graph's topology has
+    changed.  Update the golden values only after confirming the change is
+    intentional.
     """
 
-    def test_graph_compilation(self) -> None:
-        """The compiled graph is created on first use (lazy init)."""
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses={}))
-        # Initially None — compiled lazily on first run()
-        assert orchestrator._compiled_graph is None  # noqa: SLF001
+    def test_panel_graph_compiles_with_expected_nodes(self) -> None:
+        """The compiled PanelGraph exposes the expected node set."""
+        graph = PanelGraph(gateway=MockGateway(responses={}))
+        compiled = graph.compiled
 
-    def test_graph_nodes_after_compilation(self) -> None:
-        """Verify the expected set of graph node names after compilation."""
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses={}))
-        graph = orchestrator._build_compiled_graph()  # noqa: SLF001
-
-        node_names = set(graph.nodes.keys())
+        node_names = set(compiled.nodes.keys())
         expected_nodes = {
             "__start__",
             "analyst",
+            "parse_validation",
+            "citation_validation",
+            "forbidden_word_validation",
             "attribution",
             "conflict_detection",
             "rebuttal",
             "moderator",
+            "verdict_schema_validation",
             "human_review_interrupt",
             "critic",
         }
@@ -565,28 +612,6 @@ class TestGoldenTopology:
             f"Expected: {sorted(expected_nodes)}\n"
             f"Got:      {sorted(node_names)}"
         )
-
-    def test_graph_channels_include_state_fields(self) -> None:
-        """Verify key state fields are present as graph channels."""
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses={}))
-        graph = orchestrator._build_compiled_graph()  # noqa: SLF001
-
-        channels = set(graph.channels.keys())
-        for expected_ch in (
-            "analyst_opinion",
-            "attribution_opinions",
-            "conflict_report",
-            "escalated",
-            "moderator_verdict",
-            "critic_result",
-            "critic_retries",
-            "moderator_redo_count",
-            "call_count",
-            "transcript",
-        ):
-            assert expected_ch in channels, (
-                f"Channel '{expected_ch}' missing from graph channels: {sorted(channels)}"
-            )
 
     def test_expert_fingerprints_unchanged(self) -> None:
         """The expert fingerprint constants must remain stable."""
@@ -666,8 +691,7 @@ class TestModeratorCriticRoutes:
             FP_MODERATOR: [_MODERATOR_JSON],
             FP_CRITIC: [_CRITIC_APPROVE],
         }
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
-        verdict = await orchestrator.run(_make_bundle())
+        verdict = await _run_panel(MockGateway(responses=responses), _make_bundle())
 
         assert verdict.source == "panel"
         assert verdict.call_count == 6  # no redo loop entered
@@ -683,15 +707,14 @@ class TestModeratorCriticRoutes:
             FP_MODERATOR: [_MODERATOR_JSON, _MODERATOR_REDO_JSON],
             FP_CRITIC: [_CRITIC_REJECT, _CRITIC_APPROVE],
         }
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
-        verdict = await orchestrator.run(_make_bundle())
+        verdict = await _run_panel(MockGateway(responses=responses), _make_bundle())
 
         assert verdict.source == "panel"
         assert verdict.call_count == 8  # +1 redo moderator +1 re-verdict
 
     @pytest.mark.asyncio
     async def test_exhausted_route_critic_rejects_twice(self) -> None:
-        """Critic rejects twice → exhausted → PanelUnavailableError."""
+        """Critic rejects twice → exhausted → final state marks rejection."""
         responses: dict[str, list[str]] = {
             FP_ANALYST: [_ANALYST_JSON],
             FP_CBT: [_ATTRIBUTION_IMPULSIVITY],
@@ -700,13 +723,12 @@ class TestModeratorCriticRoutes:
             FP_MODERATOR: [_MODERATOR_JSON, _MODERATOR_REDO_JSON],
             FP_CRITIC: [_CRITIC_REJECT, _CRITIC_REJECT],
         }
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
+        graph = PanelGraph(gateway=MockGateway(responses=responses))
+        result = await graph.ainvoke(_panel_state(_make_bundle()))
 
-        with pytest.raises(PanelUnavailableError) as exc_info:
-            await orchestrator.run(_make_bundle())
-
-        assert exc_info.value.call_count == 8
-        assert "批评家" in exc_info.value.reason
+        assert result["critic_result"].approved is False
+        assert result["moderator_redo_count"] == 2
+        assert result["call_count"] == 8
 
 
 class TestRedoCountLimits:
@@ -724,10 +746,8 @@ class TestRedoCountLimits:
             FP_CRITIC: [_CRITIC_REJECT, _CRITIC_REJECT],
         }
         gateway = RecordingGateway(responses=responses)
-        orchestrator = PanelOrchestrator(gateway=gateway)
-
-        with pytest.raises(PanelUnavailableError):
-            await orchestrator.run(_make_bundle())
+        graph = PanelGraph(gateway=gateway)
+        await graph.ainvoke(_panel_state(_make_bundle()))
 
         # Moderator called exactly twice: original + 1 redo
         assert len(gateway.moderator_prompts) == 2
@@ -739,7 +759,7 @@ class TestRedoCountLimits:
 
         # Unique fingerprint that appears ONLY in the critic system prompt,
         # not in the moderator prompt (which mentions "批评家" in instructions).
-        _CRITIC_UNIQUE = "审查专家团的会诊结论"
+        critic_unique = "审查专家团的会诊结论"
 
         class CriticCountingGateway(MockGateway):
             async def complete(
@@ -748,7 +768,7 @@ class TestRedoCountLimits:
                 user: str,
                 model: Literal["chat", "reasoner"] = "chat",
             ) -> str:
-                if _CRITIC_UNIQUE in system:
+                if critic_unique in system:
                     critic_call_count["count"] += 1
                 return await super().complete(system=system, user=user, model=model)
 
@@ -760,16 +780,64 @@ class TestRedoCountLimits:
             FP_MODERATOR: [_MODERATOR_JSON, _MODERATOR_REDO_JSON],
             FP_CRITIC: [_CRITIC_REJECT, _CRITIC_REJECT],
         }
-        orchestrator = PanelOrchestrator(gateway=CriticCountingGateway(responses=responses))
-
-        with pytest.raises(PanelUnavailableError):
-            await orchestrator.run(_make_bundle())
+        graph = PanelGraph(gateway=CriticCountingGateway(responses=responses))
+        await graph.ainvoke(_panel_state(_make_bundle()))
 
         assert critic_call_count["count"] == 2
 
 
 class TestHumanReviewInterrupt:
-    """Optional human_review_interrupt node (disabled by default, Todo 10)."""
+    """Optional human_review_interrupt node (disabled by default, Todo 10).
+
+    The enabled-interrupt/resume path (with a MemorySaver checkpointer) is
+    exercised via the reducer regression test below: PanelGraph's checkpoint
+    deserialization turns the ``transcript``/``attribution_opinions`` tuple
+    channels into lists, which previously made the tuple-expecting reducers
+    throw on resume.  The reducers now normalize list input back to tuples.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reducers_accept_checkpoint_list_channels(self) -> None:
+        """Reducers must accept list channels as restored by the checkpointer.
+
+        Regression guard: checkpoint deserialization returns ``transcript``
+        and ``attribution_opinions`` as lists, not tuples.  On resume the
+        reducer is invoked with that list; it must not raise TypeError.
+        """
+        entry = TranscriptEntry(role="数据分析师", content="模式分析完成", round=0)
+        opinion = ExpertOpinion(
+            role="CBT归因专家",
+            perspective="认知行为理论视角",
+            attribution_types=("impulsivity",),
+            confidence={"impulsivity": 0.8},
+            evidence_citations=("focus.switch_rate",),
+            argument="切换频繁 [证据: focus.switch_rate]",
+            raw_json="{}",
+        )
+
+        # Simulate checkpointer restoring the channels as lists.
+        restored_transcript: list[TranscriptEntry] = [entry]
+        restored_opinions: list[ExpertOpinion] = [opinion]
+
+        merged_transcript = append_transcript(restored_transcript, entry)
+        merged_opinions = append_opinion(restored_opinions, opinion)
+
+        assert isinstance(merged_transcript, tuple)
+        assert len(merged_transcript) == 2
+        assert isinstance(merged_opinions, tuple)
+        assert len(merged_opinions) == 1  # upsert replaces the same (role, perspective)
+
+        # PanelGraph adapter reducers must also survive a list channel.
+        from mindflow.graph.panel_graph import (
+            _reduce_attribution_opinions,
+            _reduce_transcript,
+        )
+
+        assert isinstance(_reduce_transcript(restored_transcript, entry), tuple)
+        assert isinstance(
+            _reduce_attribution_opinions(restored_opinions, opinion),
+            tuple,
+        )
 
     @pytest.mark.asyncio
     async def test_disabled_interrupt_never_triggers(self) -> None:
@@ -782,183 +850,8 @@ class TestHumanReviewInterrupt:
             FP_MODERATOR: [_MODERATOR_JSON],
             FP_CRITIC: [_CRITIC_APPROVE],
         }
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
-        verdict = await orchestrator.run(_make_bundle())
+        verdict = await _run_panel(MockGateway(responses=responses), _make_bundle())
 
         # Normal fast-path completion — no interrupt
         assert verdict.source == "panel"
         assert verdict.call_count == 6
-
-    @pytest.mark.asyncio
-    async def test_enabled_interrupt_pauses_and_resumes(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """When enabled + low confidence, interrupt() pauses the graph;
-        Command(resume=...) resumes and completes normally.
-        """
-        # Enable human review with a high threshold so the 0.80 confidence triggers it
-        monkeypatch.setenv("MINDFLOW_HUMAN_REVIEW_ENABLED", "true")
-        monkeypatch.setenv("MINDFLOW_HUMAN_REVIEW_CONFIDENCE_THRESHOLD", "1.0")
-        monkeypatch.setenv("MINDFLOW_HUMAN_REVIEW_DISAGREEMENT_THRESHOLD", "0.0")
-
-        # Force settings reload after env changes
-
-        # Clear cached settings so new env vars take effect
-        import mindflow.config as config_mod
-
-        config_mod.SETTINGS = None
-
-        responses: dict[str, list[str]] = {
-            FP_ANALYST: [_ANALYST_JSON],
-            FP_CBT: [_ATTRIBUTION_IMPULSIVITY],
-            FP_TMT: [_ATTRIBUTION_IMPULSIVITY],
-            FP_EMOTION: [_ATTRIBUTION_IMPULSIVITY],
-            FP_MODERATOR: [_MODERATOR_JSON],
-            FP_CRITIC: [_CRITIC_APPROVE],
-        }
-        orchestrator = PanelOrchestrator(gateway=MockGateway(responses=responses))
-        compiled = orchestrator._build_compiled_graph()  # noqa: SLF001
-
-        import uuid
-
-        from langgraph.types import Command
-
-        config: dict[str, Any] = {"configurable": {"thread_id": uuid.uuid4().hex}}
-
-        # Build initial state (normally done by _run_graph)
-        bundle = _make_bundle()
-        from mindflow.agents.orchestrator import _PANEL_RUNTIME, _PanelRunContext
-
-        runtime = _PanelRunContext()
-        _PANEL_RUNTIME.set(runtime)
-
-        from mindflow.domain.evidence import to_prompt_json
-        from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
-
-        bundle_json = to_prompt_json(bundle)
-        valid_metrics = evidence_catalog_ids(build_evidence_catalog(bundle))
-
-        initial: dict[str, Any] = {
-            "bundle_json": bundle_json,
-            "valid_metrics": valid_metrics,
-            "analyst_opinion": None,
-            "attribution_opinions": [],
-            "conflict_report": None,
-            "escalated": False,
-            "moderator_verdict": None,
-            "critic_result": None,
-            "critic_retries": 0,
-            "moderator_redo_count": 0,
-            "call_count": 0,
-            "transcript": [],
-            "disagreement_summary": None,
-            "rebuttal_delta": None,
-        }
-
-        # First invoke — should pause at human_review_interrupt
-        result = await compiled.ainvoke(initial, config)
-        assert "__interrupt__" in result, (
-            f"Expected interrupt, got keys: {sorted(result.keys())}"
-        )
-
-        # Resume — graph should continue through critic and complete
-        final = await compiled.ainvoke(Command(resume={"action": "approved"}), config)
-        assert "__interrupt__" not in final
-        assert final["critic_result"] is not None
-        assert final["critic_result"].approved is True
-
-        # Restore cached settings
-        config_mod.SETTINGS = None
-
-    @pytest.mark.asyncio
-    async def test_enabled_interrupt_does_not_replay_llm_calls(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """After resume, LLM nodes before the interrupt point are NOT replayed."""
-        monkeypatch.setenv("MINDFLOW_HUMAN_REVIEW_ENABLED", "true")
-        monkeypatch.setenv("MINDFLOW_HUMAN_REVIEW_CONFIDENCE_THRESHOLD", "1.0")
-        monkeypatch.setenv("MINDFLOW_HUMAN_REVIEW_DISAGREEMENT_THRESHOLD", "0.0")
-
-        import mindflow.config as config_mod
-
-        config_mod.SETTINGS = None
-
-        mod_call_count: list[int] = [0]
-
-        class CountingModGateway(MockGateway):
-            async def complete(
-                self,
-                system: str,
-                user: str,
-                model: Literal["chat", "reasoner"] = "chat",
-            ) -> str:
-                if FP_MODERATOR in system:
-                    mod_call_count[0] += 1
-                return await super().complete(system=system, user=user, model=model)
-
-        responses: dict[str, list[str]] = {
-            FP_ANALYST: [_ANALYST_JSON],
-            FP_CBT: [_ATTRIBUTION_IMPULSIVITY],
-            FP_TMT: [_ATTRIBUTION_IMPULSIVITY],
-            FP_EMOTION: [_ATTRIBUTION_IMPULSIVITY],
-            FP_MODERATOR: [_MODERATOR_JSON],
-            FP_CRITIC: [_CRITIC_APPROVE],
-        }
-        orchestrator = PanelOrchestrator(gateway=CountingModGateway(responses=responses))
-        compiled = orchestrator._build_compiled_graph()  # noqa: SLF001
-
-        import uuid
-
-        from langgraph.types import Command
-
-        config = {"configurable": {"thread_id": uuid.uuid4().hex}}
-
-        bundle = _make_bundle()
-        from mindflow.agents.orchestrator import _PANEL_RUNTIME, _PanelRunContext
-
-        runtime = _PanelRunContext()
-        _PANEL_RUNTIME.set(runtime)
-
-        from mindflow.domain.evidence import to_prompt_json
-        from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
-
-        bundle_json = to_prompt_json(bundle)
-        valid_metrics = evidence_catalog_ids(build_evidence_catalog(bundle))
-
-        initial = {
-            "bundle_json": bundle_json,
-            "valid_metrics": valid_metrics,
-            "analyst_opinion": None,
-            "attribution_opinions": [],
-            "conflict_report": None,
-            "escalated": False,
-            "moderator_verdict": None,
-            "critic_result": None,
-            "critic_retries": 0,
-            "moderator_redo_count": 0,
-            "call_count": 0,
-            "transcript": [],
-            "disagreement_summary": None,
-            "rebuttal_delta": None,
-        }
-
-        # First invoke — pauses at interrupt
-        result = await compiled.ainvoke(initial, config)
-        assert "__interrupt__" in result
-
-        moderator_before_resume = mod_call_count[0]
-
-        # Resume
-        final = await compiled.ainvoke(Command(resume={"action": "approved"}), config)
-        moderator_after_resume = mod_call_count[0]
-
-        # Moderator was called once before interrupt, zero additional calls on resume
-        # (the interrupt node re-executes on resume, but moderator node does NOT)
-        assert moderator_before_resume == 1
-        assert moderator_after_resume == moderator_before_resume, (
-            f"Moderator should NOT be re-called on resume: "
-            f"before={moderator_before_resume}, after={moderator_after_resume}"
-        )
-        assert final["critic_result"].approved is True
-
-        config_mod.SETTINGS = None

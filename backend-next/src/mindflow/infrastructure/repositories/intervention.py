@@ -52,6 +52,12 @@ class UTCCLock:
 ResponseType = Literal["accepted", "ignored", "dismissed"]
 FeedbackRating = Literal["helpful", "neutral", "annoying"]
 
+# A reservation is a short-lived lease held only while the intervention log is
+# being persisted.  A crashed process cannot release it, so the next reserve
+# attempt reclaims leases older than this window before applying the UNIQUE
+# constraint.  Persistence is expected to complete well within this interval.
+DAILY_SLOT_RESERVATION_TTL = timedelta(minutes=15)
+
 
 class InterventionLogRepository:
     """Intervention history, backed by SQLAlchemy Core + async SQLite.
@@ -523,9 +529,29 @@ class InterventionLogRepository:
             "date": date_str,
             "slot_index": slot_index,
             "intervention_type": intervention_type,
+            "reserved_at": self._clock.now().astimezone(UTC).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
         }
 
         async with self._session_factory() as session, session.begin():
+            # Reclaim a same-day lease left behind by a crashed process.  The
+            # cleanup and insert share one transaction, so concurrent callers
+            # still serialize on SQLite's UNIQUE(user_id, date, slot_index)
+            # constraint and cannot both win the slot.
+            expired_before = (
+                self._clock.now().astimezone(UTC) - DAILY_SLOT_RESERVATION_TTL
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            await session.execute(
+                sa.delete(intervention_slot_reservations).where(
+                    sa.and_(
+                        intervention_slot_reservations.c.user_id == user_id,
+                        intervention_slot_reservations.c.date == date_str,
+                        sa.func.datetime(intervention_slot_reservations.c.reserved_at)
+                        < sa.func.datetime(expired_before),
+                    )
+                )
+            )
             stmt = (
                 sqlite_insert(intervention_slot_reservations)
                 .values(**values)

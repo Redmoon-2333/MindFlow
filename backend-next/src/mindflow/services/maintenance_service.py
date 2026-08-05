@@ -28,8 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from mindflow.infrastructure.database import backup_database
 from mindflow.infrastructure.notification import NotificationService
 from mindflow.infrastructure.repositories.activity import activity_events
+from mindflow.infrastructure.repositories.preferences import PreferencesRepository
 from mindflow.infrastructure.schema import (
     chat_messages,
+    intervention_checks,
     workflow_budget_reservations,
     workflow_node_events,
     workflow_runs,
@@ -60,6 +62,7 @@ class MaintenanceService:
         notifier: NotificationService,
         data_dir: Path | None = None,
         clock: Callable[[], datetime] | None = None,
+        preferences_repository: PreferencesRepository | None = None,
     ) -> None:
         self._engine = engine
         self._session_factory = session_factory
@@ -68,23 +71,49 @@ class MaintenanceService:
             platformdirs.user_data_dir("mindflow", ensure_exists=True)
         )
         self._now = clock or (lambda: datetime.now(UTC))
+        # When wired, the user preference ``activity_retention_days`` is the
+        # single effective activity-retention value; the ``retention_days``
+        # argument (the env ``event_retention_days`` startup default) is only
+        # the fallback when no preference is stored.
+        self._preferences_repository = preferences_repository
+
+    async def _activity_retention_days(self, fallback: int) -> int:
+        """Resolve the effective activity-retention days.
+
+        The stored preference ``activity_retention_days`` is authoritative;
+        *fallback* (the env ``event_retention_days`` startup default) applies
+        only when the preference is missing or no preference repository is
+        wired.
+        """
+        if self._preferences_repository is None:
+            return fallback
+        preferences = await self._preferences_repository.get(1)
+        value = preferences.get("telemetry", {}).get("activity_retention_days")
+        if value is None:
+            return fallback
+        return int(value)
 
     # ── Event cleanup ────────────────────────────────────────────────
 
     async def cleanup_old_events(self, retention_days: int = 30) -> int:
-        """Delete activity events older than *retention_days*, in batches.
+        """Delete activity events older than the effective retention horizon.
+
+        The effective horizon is the user preference
+        ``activity_retention_days`` when present; otherwise *retention_days*
+        (the env ``event_retention_days`` startup default) applies.
 
         Each batch deletes up to ``_BATCH_SIZE`` (10 000) rows and commits
         immediately, preventing long-running transactions.
 
         Args:
-            retention_days: Events older than this many days are removed.
-                Must be >= 7 (validated at the config level).
+            retention_days: Env startup default for events older than this many
+                days are removed. Must be >= 7 (validated at the config level).
 
         Returns:
             Total number of rows deleted.
         """
-        cutoff = (self._now() - timedelta(days=retention_days)).isoformat()
+        effective = await self._activity_retention_days(retention_days)
+        cutoff = (self._now() - timedelta(days=effective)).isoformat()
         total_deleted = 0
 
         while True:
@@ -117,7 +146,7 @@ class MaintenanceService:
             logger.info(
                 "Event cleanup complete: deleted {} events older than {} days",
                 total_deleted,
-                retention_days,
+                effective,
             )
         else:
             logger.debug("Event cleanup: no events to delete")
@@ -140,6 +169,45 @@ class MaintenanceService:
         async with self._engine.connect() as conn:
             await conn.execute(sa.text("PRAGMA wal_checkpoint(TRUNCATE)"))
             await conn.commit()
+
+    # ── Intervention-check cleanup ─────────────────────────────────────
+
+    async def cleanup_old_intervention_checks(self, retention_days: int = 30) -> int:
+        """Delete ``intervention_checks`` older than the activity horizon.
+
+        Rows are matched by ``checked_at`` against the same effective
+        activity-retention cutoff used for raw ``activity_events``: the user
+        preference ``activity_retention_days`` wins, otherwise the
+        *retention_days* argument (env ``event_retention_days``) applies.
+        A check exactly at the cutoff is preserved (strict ``<``).
+
+        Args:
+            retention_days: Env startup default retention in days.
+
+        Returns:
+            Number of intervention checks deleted.
+        """
+        effective = await self._activity_retention_days(retention_days)
+        cutoff = (self._now() - timedelta(days=effective)).isoformat()
+
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(
+                sa.delete(intervention_checks).where(
+                    intervention_checks.c.checked_at < cutoff
+                )
+            )
+            deleted = result.rowcount or 0
+
+        if deleted > 0:
+            logger.info(
+                "Intervention-check cleanup: deleted {} checks older than {} days",
+                deleted,
+                effective,
+            )
+        else:
+            logger.debug("Intervention-check cleanup: no checks to delete")
+
+        return deleted
 
     # ── Daily backup ─────────────────────────────────────────────────
 

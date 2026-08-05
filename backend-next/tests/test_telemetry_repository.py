@@ -30,6 +30,7 @@ from mindflow.services.telemetry_service import TelemetryService
 async def telemetry_repo(engine, session_factory):
     async with engine.begin() as connection:
         await connection.run_sync(metadata.create_all)
+        await connection.run_sync(activity_events.metadata.create_all)
     return TelemetryRepository(session_factory)
 
 
@@ -344,6 +345,72 @@ async def test_cleanup_retains_only_recent_feature_windows(
 
     assert deleted == 1
     assert len(windows) == 1
+
+
+async def test_cleanup_old_telemetry_deletes_raw_activity_events(
+    telemetry_repo: TelemetryRepository,
+    session_factory,
+) -> None:
+    """Raw ``activity_events`` older than the activity cutoff are deleted."""
+    now = datetime(2026, 7, 24, 8, tzinfo=UTC)
+    activity = SQLAlchemyActivityRepository(session_factory)
+    await activity.append_event(
+        make_event(
+            user_id=1,
+            timestamp_utc=now - timedelta(days=40),
+            app_name="Old App",
+            process_name="old.exe",
+        )
+    )
+    await activity.append_event(
+        make_event(
+            user_id=1,
+            timestamp_utc=now - timedelta(days=10),
+            app_name="Recent App",
+            process_name="recent.exe",
+        )
+    )
+
+    deleted = await telemetry_repo.cleanup_old_telemetry(
+        interaction_cutoff=now - timedelta(days=7),
+        activity_cutoff=now - timedelta(days=30),
+        feature_cutoff=now - timedelta(days=180),
+    )
+
+    remaining = await activity.query_range(
+        1, now - timedelta(days=400), now + timedelta(days=1)
+    )
+    assert deleted >= 1
+    assert [event.data.app_name for event in remaining] == ["Recent App"]
+
+
+async def test_cleanup_old_telemetry_activity_cutoff_boundary_preserved(
+    telemetry_repo: TelemetryRepository,
+    session_factory,
+) -> None:
+    """An event exactly at the activity cutoff survives (strict ``<``)."""
+    now = datetime(2026, 7, 24, 8, tzinfo=UTC)
+    activity = SQLAlchemyActivityRepository(session_factory)
+    await activity.append_event(
+        make_event(
+            user_id=1,
+            timestamp_utc=now - timedelta(days=30),
+            app_name="Boundary App",
+            process_name="boundary.exe",
+        )
+    )
+
+    deleted = await telemetry_repo.cleanup_old_telemetry(
+        interaction_cutoff=now - timedelta(days=7),
+        activity_cutoff=now - timedelta(days=30),
+        feature_cutoff=now - timedelta(days=180),
+    )
+
+    remaining = await activity.query_range(
+        1, now - timedelta(days=400), now + timedelta(days=1)
+    )
+    assert deleted == 0
+    assert len(remaining) == 1
 
 
 async def test_delete_input_scope_removes_derived_feature_windows(

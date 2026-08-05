@@ -225,6 +225,7 @@ class InterventionThrottle:
         intervention_type: str,
         *,
         slot_index: int | None = None,
+        date_str: str | None = None,
     ) -> int | None:
         """Atomically reserve a daily intervention slot.
 
@@ -243,6 +244,9 @@ class InterventionThrottle:
             intervention_type: Type of intervention for audit tracking.
             slot_index: Specific slot to reserve (1-based).  If None,
                 auto-computes from the current daily count + 1.
+            date_str: Optional date override (ISO8601 date).  When provided,
+                it is threaded through to the repository so the reservation
+                can later be released with the exact same date.
 
         Returns:
             The reserved ``slot_index`` (1-based) on success, or ``None``
@@ -264,6 +268,6 @@ class InterventionThrottle:
             slot_index = stats.today_count + 1
 
         reserved = await self._repo.try_reserve_daily_slot(
-            user_id, slot_index, intervention_type,
+            user_id, slot_index, intervention_type, date_str=date_str,
         )
         return slot_index if reserved else None

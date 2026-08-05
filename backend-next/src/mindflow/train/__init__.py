@@ -9,7 +9,6 @@ removed in the V2 consolidation — all training now uses the 24-dim
 feature schema (train/v2.py / synthetic_v2.py).
 """
 
-from mindflow.train.features import BehaviorFeatureExtractor
 from mindflow.train.models import BehaviorClustering, BehaviorHMM, ModelManager
 from mindflow.train.pipeline import TrainingReport, run_training
 from mindflow.train.user_profiles import (
@@ -23,7 +22,6 @@ from mindflow.train.user_profiles import (
 )
 
 __all__ = [
-    "BehaviorFeatureExtractor",
     "BehaviorClustering",
     "BehaviorHMM",
     "ModelManager",

@@ -99,6 +99,8 @@ class EvidenceBundle:
         behavior_summary: Aggregated behavioral metrics (reused from domain/procrastination.py).
         intervention_history: Recent intervention records for context.
         novelty_flags: Detected novel behaviour patterns (Phase A: simple heuristic).
+        events: Activity events used to build this bundle, retained for workflow
+            contracts that distinguish an empty window from degraded analysis.
     """
 
     user_id: int
@@ -107,6 +109,7 @@ class EvidenceBundle:
     behavior_summary: BehaviorSummary
     intervention_history: tuple[InterventionRecord, ...]
     novelty_flags: tuple[str, ...]
+    events: tuple[object, ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

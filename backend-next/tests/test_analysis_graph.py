@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,12 +23,14 @@ from mindflow.agents.types import PanelUnavailableError, PanelVerdict
 from mindflow.domain.procrastination import (
     RuleEngine,
 )
+from mindflow.errors import NoActivityDataError
 from mindflow.graph.analysis_graph import (
     AnalysisGraph,
     AnalysisGraphState,
     AnalysisRunContext,
     _empty_verdict,
     build_idempotency_key,
+    evidence_preparation_node,
     terminal_persistence_node,
 )
 from mindflow.ports import (
@@ -291,6 +294,26 @@ class TestRunAnalysis:
         # Budget should be released
         mock_budget_repo.release.assert_awaited_once()
 
+    async def test_request_analysis_kind_drives_cache_and_persistence(
+        self,
+        analysis_graph: AnalysisGraph,
+        mock_analysis_repo: AsyncMock,
+    ) -> None:
+        """The request kind is used for both cache reads and writes."""
+        request = AnalysisRequest(
+            user_id=1,
+            target_date=date(2026, 7, 29),
+            origin="api",
+            analysis_kind="daily_panel",
+        )
+
+        await analysis_graph.run_analysis(request)
+
+        mock_analysis_repo.get_by_date.assert_awaited_once_with(
+            1, date(2026, 7, 29), analysis_kind="daily_panel"
+        )
+        assert mock_analysis_repo.upsert.call_args.kwargs["analysis_kind"] == "daily_panel"
+
     async def test_cache_hit_skips_analysis(
         self,
         analysis_graph: AnalysisGraph,
@@ -519,10 +542,17 @@ class TestRunAnalysis:
             origin="api",
         )
 
-        result = await graph.run_analysis(request)
+        with pytest.raises(RuntimeError, match="persistence: DB connection lost"):
+            await graph.run_analysis(request)
 
-        # The graph catches the error and returns an empty verdict
-        assert result.verdict is not None
+        mock_workflow_run_repo.update_status.assert_any_await(
+            "run-test-001",
+            "failed",
+            error="persistence: DB connection lost",
+        )
+        mock_budget_repo.release.assert_awaited_once_with(
+            "api:1:2026-07-29:daily_attribution"
+        )
 
 
 class TestOneGraphServingMultipleOrigins:
@@ -719,6 +749,99 @@ class TestSideEffectIdempotency:
 
         result = await budget_reserve_node(state)
         assert result["budget_reserved"] is False
+
+    async def test_budget_reserve_waits_for_owner_cache_before_ending(
+        self,
+        mock_analysis_repo: AsyncMock,
+        mock_workflow_run_repo: AsyncMock,
+        mock_budget_repo: AsyncMock,
+    ) -> None:
+        """A duplicate request replays the winner instead of empty verdict."""
+        cached = {
+            "procrastination_types": ["impulsivity"],
+            "type_confidence": {"impulsivity": 0.85},
+            "cbt_technique": "stimulus_control",
+            "response_text": "Winner result",
+            "source": "rule_engine",
+            "degraded": True,
+            "degradation_path": ["rule_engine"],
+        }
+        mock_budget_repo.try_reserve.return_value = False
+        # The first cache probe races the winner's persistence; the second
+        # probe sees the row after the winner reaches terminal persistence.
+        mock_analysis_repo.get_by_date.side_effect = [None, None, cached]
+        mock_workflow_run_repo.get_run.side_effect = [
+            SimpleNamespace(status="running"),
+            SimpleNamespace(status="running"),
+        ]
+
+        runtime = AnalysisRunContext(
+            analysis_repo=mock_analysis_repo,
+            workflow_run_repo=mock_workflow_run_repo,
+            budget_repo=mock_budget_repo,
+            evidence_builder=MagicMock(),
+            crisis_detector=MagicMock(),
+        )
+        state: AnalysisGraphState = {
+            "user_id": 1,
+            "target_date": date(2026, 7, 29),
+            "analysis_kind": "daily_attribution",
+            "origin": "api",
+            "force": False,
+            "idempotency_key": "api:1:2026-07-29:daily_attribution",
+            "runtime": runtime,
+            "run_id": "run-test-001",
+            "budget_reserved": False,
+            "cache_hit": False,
+            "cached_result": None,
+            "assessment": None,
+            "source": "",
+            "degradation_path": [],
+            "degraded": False,
+            "verdict_json": None,
+            "error": None,
+            "persistence_failed": False,
+        }
+
+        from mindflow.graph.analysis_graph import budget_reserve_node
+
+        result = await budget_reserve_node(state)
+
+        assert result["budget_reserved"] is False
+        assert result["cache_hit"] is True
+        assert result["assessment"] == cached
+        assert result["source"] == "rule_engine"
+        assert result["degraded"] is True
+
+
+class TestNoActivityDataContract:
+    async def test_empty_evidence_bundle_raises_domain_error(self) -> None:
+        """An empty real bundle must not become a degraded 200 result."""
+        from mindflow.domain.evidence import EvidenceBundle
+
+        builder = AsyncMock()
+        builder.build.return_value = EvidenceBundle(
+            user_id=1,
+            window=(
+                datetime(2026, 7, 29, tzinfo=UTC),
+                datetime(2026, 7, 30, tzinfo=UTC),
+            ),
+            items=(),
+            behavior_summary=MagicMock(),
+            intervention_history=(),
+            novelty_flags=(),
+            events=(),
+        )
+        runtime = AnalysisRunContext(evidence_builder=builder)
+
+        with pytest.raises(NoActivityDataError):
+            await evidence_preparation_node(
+                {
+                    "user_id": 1,
+                    "target_date": date(2026, 7, 29),
+                    "runtime": runtime,
+                }
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -1,40 +1,45 @@
 """Background collector service — 5-second tick loop for window tracking.
 
 CollectorService owns the active collection loop: it polls the active
-window at a fixed interval, constructs ActivityEvents, and persists
-them through the ActivityRepository.
+window at a fixed interval, builds ActivityEvents, and persists them
+through the ActivityRepository.
 
 Key design decisions (ADR-007, ADR-002):
   - Own asyncio task per instance (not a global singleton).
   - Bare asyncio loop (no APScheduler) — matches the "no framework"
     spirit of the new architecture.
-  - Single tick failure does not kill the loop; 10 consecutive failures
-    transitions to ``degraded`` status and stops.
+  - One failure does not kill the loop; 10 consecutive failures
+    transition to ``degraded``, close the run interval ``failure=True``
+    and enter a backoff retry (5/15/30/60s) before the same supervisor
+    opens a fresh run cycle (self-healing).
   - ``stop()`` is graceful — sets a sentinel flag and waits for the
-    current tick to complete naturally, with a timeout-based cancel
-    fallback. This ensures in-flight events are persisted before
-    shutdown (addresses P1-1).
-  - Each ``_tick()`` call is wrapped in ``asyncio.wait_for`` so that
-    a hung collector never blocks the loop indefinitely (addresses P1-4).
-  - ``_state_lock`` (``asyncio.Lock``) makes start/stop lifecycle
-    transitions atomic.  Task completion is NEVER awaited under the
-    lock — the lock gates only state reads/writes, not I/O-bound
-    awaits (addresses P1-4).
+    current tick to finish naturally, with a timeout-based cancel
+    fallback so in-flight events persist before shutdown (P1-1).
+  - Each tick runs under ``asyncio.wait_for`` so a hung collector can
+    never block the loop indefinitely (P1-4).
+  - ``_state_lock`` (``asyncio.Lock``) makes start/stop transitions
+    atomic; task completion is NEVER awaited under the lock — the lock
+    gates only state reads/writes, not I/O-bound awaits (P1-4).
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from loguru import logger
 
 from mindflow.config import get_settings
-from mindflow.domain.events import ActivityEvent, EventType, WindowSnapshot
-from mindflow.domain.ids import new_id
 from mindflow.infrastructure.collectors.base import EventCollector
 from mindflow.infrastructure.repositories.base import ActivityRepository
+from mindflow.ports import CollectorIntervalsPort
+from mindflow.services.collector_interval_lifecycle import (
+    CollectorIntervalLifecycle,
+    safe_error_text,
+)
+from mindflow.services.collector_recovery import RecoveryState
+from mindflow.services.collector_ticker import CollectorTicker
 
 _IDLE_THRESHOLD_S: int = 60
 """Seconds of inactivity before marking a snapshot as idle."""
@@ -43,9 +48,13 @@ _IDLE_THRESHOLD_S: int = 60
 class CollectorService:
     """Background collector service — polls the active window on a tick.
 
-    Not a singleton — each instance manages its own lifecycle. The caller
-    is responsible for holding a reference and calling ``stop()`` during
-    application shutdown.
+    Not a singleton — each instance manages its own lifecycle; the caller
+    holds a reference and calls ``stop()`` on shutdown.  The single
+    long-lived ``_task`` supervisor runs repeated run cycles: every 10
+    consecutive failures close the current run interval ``failure=True``,
+    schedule the exact retry delay on ``RecoveryState``, sleep it out
+    inside a ``sleep=True`` backoff interval, then open a fresh run cycle.
+    A manual stop — during a run or during backoff — is the only exit.
 
     Args:
         collector: Platform-specific ``EventCollector``.
@@ -54,6 +63,12 @@ class CollectorService:
         interval_s: Tick interval in seconds (defaults to settings).
         idle_threshold_s: Seconds of no input before marking idle
             (default 60).
+        interval_repository: Optional ``CollectorIntervalsPort`` — when
+            provided, each run and backoff persists one interval row,
+            opened/closed from single lifecycle seams.
+        sleep: Injectable async sleep (default ``asyncio.sleep``) so
+            tests never wait out real backoff.
+        now: Injectable UTC clock (default ``datetime.now(UTC)``).
     """
 
     def __init__(
@@ -63,6 +78,9 @@ class CollectorService:
         user_id: int = 1,
         interval_s: float | None = None,
         idle_threshold_s: int = _IDLE_THRESHOLD_S,
+        interval_repository: CollectorIntervalsPort | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self._collector = collector
         self._repository = repository
@@ -71,6 +89,18 @@ class CollectorService:
             interval_s if interval_s is not None else float(get_settings().collect_interval_s)
         )
         self._idle_threshold_s = idle_threshold_s
+        self._intervals = CollectorIntervalLifecycle(interval_repository, user_id)
+        self._sleep = sleep if sleep is not None else asyncio.sleep
+        self._now = now if now is not None else lambda: datetime.now(UTC)
+        self._recovery = RecoveryState()
+        self._ticker = CollectorTicker(
+            collector=collector,
+            repository=repository,
+            user_id=user_id,
+            interval_s=self._interval_s,
+            idle_threshold_s=idle_threshold_s,
+            now=self._now,
+        )
 
         self._state_lock = asyncio.Lock()
         """Serialises start/stop transitions so that concurrent callers
@@ -78,15 +108,30 @@ class CollectorService:
         ``_task`` / ``_status`` / ``_stop_requested`` inconsistent."""
 
         self._task: asyncio.Task[None] | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._status: str = "stopped"
         self._stop_requested: bool = False
         self._consecutive_failures: int = 0
-        self._last_tick_time: datetime | None = None
 
     @property
     def status(self) -> str:
         """Return current status: stopped, running, stopping, or degraded."""
         return self._status
+
+    @property
+    def next_retry_at(self) -> datetime | None:
+        """UTC time of the next permitted retry, or None while healthy."""
+        return self._recovery.next_retry_at
+
+    @property
+    def last_error(self) -> str | None:
+        """Message of the most recent failure, or None after a success."""
+        return self._recovery.last_error
+
+    @property
+    def recovery_attempts(self) -> int:
+        """Consecutive recovery-attempt count (reset to 0 on success)."""
+        return self._recovery.recovery_attempts
 
     async def start(self) -> None:
         """Start the collection loop.
@@ -97,14 +142,17 @@ class CollectorService:
         callers never spawn duplicate background tasks.
         """
         async with self._state_lock:
-            if self._task is not None or self._status == "stopping":
-                logger.warning("CollectorService already running (start ignored)")
+            if (
+                self._task is not None
+                or self._cleanup_task is not None
+                or self._status == "stopping"
+            ):
+                logger.warning("CollectorService running or stopping (start ignored)")
                 return
 
             self._status = "running"
             self._stop_requested = False
             self._consecutive_failures = 0
-            self._last_tick_time = None
             self._task = asyncio.create_task(self._run())
 
         logger.info("CollectorService started (interval={}s)", self._interval_s)
@@ -125,9 +173,10 @@ class CollectorService:
 
         Cancellation-safe: if the caller's task is cancelled while
         awaiting the background task, the background task is also
-        cancelled and ``_finalize`` runs under ``asyncio.shield`` so
-        ``_task`` / ``_status`` are always cleaned up.  CancelledError
-        propagates after cleanup — never swallowed.
+        cancelled.  When cancellation cleanup outlives the stop timeout,
+        it remains tracked with status ``stopping`` so ``start()`` stays
+        a no-op until the old supervisor truly exits.  CancelledError
+        still propagates to the caller — never swallowed.
         """
         task: asyncio.Task[None] | None = None
 
@@ -143,30 +192,53 @@ class CollectorService:
         # ── Await / cancel OUTSIDE the lock ──────────────────────────
         try:
             try:
-                await asyncio.wait_for(task, timeout=self._interval_s * 2)
+                done, _ = await asyncio.wait(
+                    {task}, timeout=self._interval_s * 2
+                )
+                if task in done:
+                    await task
+                else:
+                    logger.warning(
+                        "CollectorService stop timeout — cancelling task (interval={}s)",
+                        self._interval_s,
+                    )
+                    task.cancel()
             except asyncio.CancelledError:
                 # We were cancelled — cancel the background task too,
-                # then re-raise so the caller knows.  The finally block
-                # below runs *before* the re-raise.
+                # then give its audit finalizer the same bounded grace
+                # period before re-raising to the caller.
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                await asyncio.wait({task}, timeout=self._interval_s * 2)
                 raise
-            except TimeoutError:
-                logger.warning(
-                    "CollectorService stop timeout — cancelling task (interval={}s)",
-                    self._interval_s,
-                )
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
         finally:
-            # Shielded: _finalize always completes even if this
-            # coroutine was cancelled — no stale _task or stuck
-            # _status="stopping" left behind.
-            await asyncio.shield(self._finalize(task))
+            if task.done():
+                await asyncio.shield(self._finalize(task))
+            else:
+                await asyncio.shield(self._track_cleanup(task))
 
-        logger.info("CollectorService stopped")
+        logger.info(
+            "CollectorService {}",
+            "stopped" if task.done() else "stop returned (cleanup pending)",
+        )
+
+    async def _track_cleanup(self, task: asyncio.Task[None]) -> None:
+        """Keep a timed-out supervisor registered until it really exits."""
+        async with self._state_lock:
+            if self._task is task and self._cleanup_task is None:
+                self._cleanup_task = asyncio.create_task(self._finish_cleanup(task))
+
+    async def _finish_cleanup(self, task: asyncio.Task[None]) -> None:
+        """Await detached supervisor cleanup, then release lifecycle state."""
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.error(
+                "CollectorService supervisor cleanup failed: {}", safe_error_text(exc)
+            )
+        finally:
+            await self._finalize(task)
 
     async def _finalize(self, task: asyncio.Task[None]) -> None:
         """Clean up lifecycle state under ``_state_lock``.
@@ -177,81 +249,116 @@ class CollectorService:
         async with self._state_lock:
             if self._task is task:
                 self._task = None
+            if self._cleanup_task is asyncio.current_task():
+                self._cleanup_task = None
             self._status = "stopped"
 
-    # ── Internal: tick loop ──────────────────────────────────────────
+    # ── Internal: supervisor loop ─────────────────────────────────────
 
     async def _run(self) -> None:
-        """Main collection loop — runs until stop_requested or degraded."""
+        """Single long-lived supervisor — run cycles and backoff retries.
+
+        Never dies on degraded exits: after 10 consecutive failures the
+        current run interval closes ``failure=True``, ``RecoveryState``
+        schedules the exact retry delay, a ``sleep=True`` backoff interval
+        spans the wait, then the same supervisor opens a fresh run cycle.
+        A manual stop request is the only exit — during a run or during
+        backoff it prevents every later retry.
+        """
         while not self._stop_requested:
-            tick_start = datetime.now(UTC)
+            self._consecutive_failures = 0
+            self._ticker.reset()
+            interval_id: str | None = None
+            degraded = False
+            last_error: str | None = None
             try:
-                await asyncio.wait_for(self._tick(), timeout=self._interval_s * 2)
-                self._consecutive_failures = 0
-            except TimeoutError:
-                self._consecutive_failures += 1
-                logger.warning(
-                    "Collector tick timed out ({}/{})",
-                    self._consecutive_failures,
-                    10,
-                )
-                if self._consecutive_failures >= 10:
-                    logger.error(
-                        "10 consecutive failures — CollectorService degraded"
+                interval_id = await self._intervals.open()
+
+                while not self._stop_requested:
+                    tick_start = self._now()
+                    try:
+                        await asyncio.wait_for(
+                            self._ticker.tick(), timeout=self._interval_s * 2
+                        )
+                        self._consecutive_failures = 0
+                        if self._status == "degraded":
+                            self._status = "running"
+                        self._recovery.record_success()
+                    except TimeoutError:
+                        last_error = safe_error_text(TimeoutError("collector tick timed out"))
+                        if self._degrade_on_failure("timed out"):
+                            degraded = True
+                            break
+                    except Exception as exc:
+                        last_error = safe_error_text(exc)
+                        if self._degrade_on_failure("failed"):
+                            degraded = True
+                            break
+
+                    if interval_id is None:
+                        interval_id = await self._intervals.open()
+
+                    # Sleep until the next tick (account for tick duration)
+                    elapsed = (self._now() - tick_start).total_seconds()
+                    sleep_time = max(0.0, self._interval_s - elapsed)
+                    if not self._stop_requested:
+                        await self._sleep(sleep_time)
+                        # Keep injected no-op sleeps cooperative.  Production
+                        # ``asyncio.sleep`` already yields, but deterministic
+                        # test clocks and shutdown hooks may return immediately;
+                        # an explicit checkpoint prevents a tight supervisor
+                        # loop from starving lifecycle callers.
+                        await asyncio.sleep(0)
+            finally:
+                # Single lifecycle seam per run cycle: every exit path
+                # (manual stop, degraded failure, cancellation/shutdown)
+                # closes the run interval exactly once with truthful facts.
+                if interval_id is None:
+                    interval_id = await self._intervals.open()
+                close_task = asyncio.create_task(
+                    self._intervals.close(
+                        interval_id,
+                        degraded=degraded,
+                        stop_requested=self._stop_requested,
+                        last_error=last_error,
                     )
-                    self._status = "degraded"
-                    break
-            except Exception:
-                self._consecutive_failures += 1
-                logger.opt(exception=True).warning(
-                    "Collector tick failed ({}/{})",
-                    self._consecutive_failures,
-                    10,
                 )
-                if self._consecutive_failures >= 10:
-                    logger.error(
-                        "10 consecutive failures — CollectorService degraded"
-                    )
-                    self._status = "degraded"
-                    break
+                try:
+                    await asyncio.shield(close_task)
+                except asyncio.CancelledError:
+                    # ``stop()`` may cancel the supervisor after its short
+                    # tick timeout.  Audit persistence must still finish
+                    # before cancellation propagates, otherwise an interval
+                    # can remain open forever in SQLite.
+                    await asyncio.shield(close_task)
+                    raise
 
-            # Sleep until the next tick (account for tick duration)
-            elapsed = (datetime.now(UTC) - tick_start).total_seconds()
-            sleep_time = max(0.0, self._interval_s - elapsed)
-            if not self._stop_requested:
-                await asyncio.sleep(sleep_time)
+            if not degraded:
+                break  # manual stop / shutdown — no further retries
 
-    async def _tick(self) -> None:
-        """Execute a single collection tick."""
-        now = datetime.now(UTC)
+            # Backoff: schedule the exact delay, then sleep it out inside
+            # a sleep=True interval.  The same supervisor retries after.
+            delay = self._recovery.record_failure(self._now(), last_error)
+            # Publish the degraded state only after recovery metadata is
+            # complete, so observers never see a half-updated snapshot.
+            self._status = "degraded"
+            logger.error("CollectorService degraded — retrying in {}s", delay)
+            sleep_id = await self._intervals.open_sleep()
+            try:
+                await self._sleep(delay)
+            finally:
+                if sleep_id is None:
+                    sleep_id = await self._intervals.open_sleep()
+                await self._intervals.close_sleep(sleep_id, stop_requested=self._stop_requested)
+            # The injected sleep may complete synchronously; yield before
+            # opening the next run cycle so stop/start callers get scheduled.
+            await asyncio.sleep(0)
 
-        # Duration since last tick (measured, not config-based)
-        if self._last_tick_time is not None:
-            actual_duration = (now - self._last_tick_time).total_seconds()
-        else:
-            actual_duration = float(self._interval_s)
-        self._last_tick_time = now
-
-        # Collect window and idle info
-        snapshot = await self._collector.snapshot()
-        idle_secs = await self._collector.idle_seconds()
-
-        is_idle = idle_secs >= self._idle_threshold_s
-        event_type: EventType = "idle_change" if is_idle else "window_snapshot"
-
-        event = ActivityEvent(
-            id=new_id(),
-            user_id=self._user_id,
-            timestamp_utc=now,
-            duration_s=actual_duration,
-            event_type=event_type,
-            data=WindowSnapshot(
-                app_name=snapshot.app_name,
-                window_title=snapshot.window_title,
-                process_name=snapshot.process_name,
-                is_idle=is_idle,
-                timestamp_utc=now,
-            ),
-        )
-
-        await self._repository.append_event(event)
+    def _degrade_on_failure(self, kind: str) -> bool:
+        """Count one consecutive failure; degrade at the 10th."""
+        self._consecutive_failures += 1
+        logger.warning("Collector tick {} ({}/{})", kind, self._consecutive_failures, 10)
+        if self._consecutive_failures < 10:
+            return False
+        logger.error("10 consecutive failures — CollectorService degraded")
+        return True

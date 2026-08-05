@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
@@ -15,7 +16,10 @@ from mindflow.domain.prediction import (
     FocusPrediction,
     FocusPredictionStatus,
 )
-from mindflow.services.prediction_service import FocusPredictionService
+from mindflow.services.prediction_service import (
+    _MAX_PREDICT_WINDOWS,
+    FocusPredictionService,
+)
 from mindflow.train.v2 import V2_FEATURE_NAMES
 
 
@@ -106,7 +110,7 @@ class TestFocusPredictionService:
     async def test_no_data_returns_no_data_status(self):
         """When no feature windows found, status is no_data."""
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=[])
+        repo.list_feature_windows_in_range = AsyncMock(return_value=[])
         mm = _make_mock_model_manager()
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_latest(user_id=1)
@@ -122,7 +126,7 @@ class TestFocusPredictionService:
             for i in range(23, 0, -1)
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager(focus_proba=0.82)
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_latest(user_id=1, now=now)
@@ -144,7 +148,7 @@ class TestFocusPredictionService:
             for i in range(23)
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager(focus_proba=0.65)
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_range(user_id=1, start=start, end=end, now=now)
@@ -162,7 +166,7 @@ class TestFocusPredictionService:
             for i in range(24)
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager(focus_proba=0.75)
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_latest(user_id=1, now=now)
@@ -186,7 +190,7 @@ class TestFocusPredictionService:
             for i in range(24)
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager(focus_proba=0.75)
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_latest(user_id=1, now=now)
@@ -205,7 +209,7 @@ class TestFocusPredictionService:
             },
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager(focus_proba=0.75)
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_latest(user_id=1, now=now)
@@ -214,13 +218,50 @@ class TestFocusPredictionService:
     async def test_attach_model_manager_lazy(self):
         """Model manager can be attached after construction."""
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=[])
+        repo.list_feature_windows_in_range = AsyncMock(return_value=[])
         service = FocusPredictionService(telemetry_repository=repo)
         assert (await service.predict_latest()).status == "no_model"
 
         mm = _make_mock_model_manager()
         service.attach_model_manager(mm)
         assert service._model_manager is not None
+
+    async def test_detach_model_manager_returns_to_no_model(self):
+        """Detaching the active manager immediately disables inference."""
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=[])
+        service = FocusPredictionService(
+            telemetry_repository=repo,
+            model_manager=_make_mock_model_manager(),
+        )
+
+        service.detach_model_manager()
+
+        result = await service.predict_latest(user_id=1)
+        assert result.status == "no_model"
+        repo.list_feature_windows_in_range.assert_not_awaited()
+
+    async def test_detach_during_feature_query_stops_inference(self):
+        """A privacy wipe racing with a query cannot use the detached model."""
+        now = datetime.now(UTC)
+        windows = [
+            _make_feature_window(now - timedelta(minutes=5 * i))
+            for i in range(23, 0, -1)
+        ]
+        repo = MagicMock()
+        manager = _make_mock_model_manager()
+        service = FocusPredictionService(repo, manager)
+
+        async def detach_before_return(**_kwargs: Any) -> list[dict]:
+            service.detach_model_manager()
+            return windows
+
+        repo.list_feature_windows_in_range = AsyncMock(side_effect=detach_before_return)
+
+        result = await service.predict_latest(user_id=1, now=now)
+
+        assert result.status == "no_model"
+        manager.classifier.predict_proba.assert_not_called()
 
     async def test_check_health_returns_dict(self):
         """Health check returns structured status."""
@@ -244,7 +285,7 @@ class TestFocusPredictionService:
             _make_feature_window(now + timedelta(hours=1)),  # outside (future)
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=all_windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=all_windows)
         mm = _make_mock_model_manager(focus_proba=0.75)
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_range(
@@ -254,6 +295,149 @@ class TestFocusPredictionService:
             now=now,
         )
         assert result.window_count == 2
+
+
+class TestFocusPredictionRangeBoundedRetrieval:
+    """Regression: prediction retrieval must be range-bounded.
+
+    ``predict_latest``/``predict_range`` must query via
+    ``list_feature_windows_in_range`` (never load the full window history) and
+    must never build a feature matrix larger than ``_MAX_PREDICT_WINDOWS`` —
+    the matrix rows and the reported ``window_count`` must always agree.
+    """
+
+    def _make_matrix_probe(self) -> tuple[dict[str, float], Any]:
+        """Return a (probe, side_effect) pair capturing matrix shape/ordering."""
+        probe: dict[str, float] = {}
+
+        def _probe(matrix: np.ndarray) -> np.ndarray:
+            probe["rows"] = float(matrix.shape[0])
+            probe["first_app_switch"] = float(matrix[0, 0])
+            probe["last_app_switch"] = float(matrix[-1, 0])
+            n = matrix.shape[0]
+            return np.column_stack([np.full(n, 0.25), np.full(n, 0.75)])
+
+        return probe, _probe
+
+    def _oversized_windows(
+        self,
+        *,
+        spacing_s: int,
+        latest_end: datetime,
+    ) -> list[dict]:
+        """Build >_MAX_PREDICT_WINDOWS ascending windows, most recent first by index."""
+        total = 3 * _MAX_PREDICT_WINDOWS
+        return [
+            _make_feature_window(
+                latest_end
+                - timedelta(minutes=5)
+                - timedelta(seconds=spacing_s * (total - 1 - i)),
+                features={"app_switch_count": i},
+            )
+            for i in range(total)
+        ]
+
+    async def test_predict_latest_queries_range_bounded(self):
+        """predict_latest queries the repo by range, never full history."""
+        now = datetime.now(UTC)
+        windows = [
+            _make_feature_window(now - timedelta(minutes=5 * i))
+            for i in range(23, 0, -1)
+        ]
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock()  # legacy path must not be used
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
+        mm = _make_mock_model_manager(focus_proba=0.82)
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_latest(user_id=1, now=now)
+        assert result.status == "ready"
+        repo.list_feature_windows_in_range.assert_awaited_once()
+        call = repo.list_feature_windows_in_range.await_args
+        assert call.kwargs["user_id"] == 1
+        assert call.kwargs["feature_schema_version"] == 3
+        assert call.kwargs["end"] == now
+        assert (now - call.kwargs["start"]).total_seconds() == pytest.approx(7200.0)
+        repo.list_feature_windows.assert_not_awaited()
+
+    async def test_predict_range_queries_range_bounded(self):
+        """predict_range passes the requested range through to the repo."""
+        now = datetime.now(UTC)
+        start = now - timedelta(hours=2)
+        end = now
+        windows = [
+            _make_feature_window(start + timedelta(minutes=5 * i))
+            for i in range(23)
+        ]
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock()  # legacy path must not be used
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
+        mm = _make_mock_model_manager(focus_proba=0.65)
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_range(user_id=1, start=start, end=end, now=now)
+        assert result.status == "ready"
+        repo.list_feature_windows_in_range.assert_awaited_once()
+        call = repo.list_feature_windows_in_range.await_args
+        assert call.kwargs["start"] == start
+        assert call.kwargs["end"] == end
+        assert call.kwargs["user_id"] == 1
+        assert call.kwargs["feature_schema_version"] == 3
+        repo.list_feature_windows.assert_not_awaited()
+
+    async def test_predict_latest_bounds_matrix_to_max_windows(self):
+        """>_MAX_PREDICT_WINDOWS in the lookback never over-builds the matrix."""
+        now = datetime.now(UTC)
+        total = 3 * _MAX_PREDICT_WINDOWS
+        windows = self._oversized_windows(
+            spacing_s=3,
+            latest_end=now,  # newest window ends exactly at *now*
+        )
+        probe, side_effect = self._make_matrix_probe()
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock(return_value=windows)  # legacy path
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
+        mm = _make_mock_model_manager(focus_proba=0.75)
+        mm.classifier.predict_proba.side_effect = side_effect
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_latest(user_id=1, now=now)
+        assert result.status == "ready"
+        repo.list_feature_windows_in_range.assert_awaited_once()
+        repo.list_feature_windows.assert_not_awaited()
+        assert probe["rows"] == _MAX_PREDICT_WINDOWS
+        assert result.window_count == _MAX_PREDICT_WINDOWS
+        assert probe["rows"] == result.window_count
+        # Recency preserved: the most recent _MAX_PREDICT_WINDOWS windows.
+        assert probe["first_app_switch"] == float(total - _MAX_PREDICT_WINDOWS)
+        assert probe["last_app_switch"] == float(total - 1)
+
+    async def test_predict_range_bounds_matrix_to_max_windows(self):
+        """A range wider than _MAX_PREDICT_WINDOWS never over-builds the matrix."""
+        now = datetime.now(UTC)
+        total = 3 * _MAX_PREDICT_WINDOWS
+        start = now - timedelta(hours=13)
+        end = now
+        windows = self._oversized_windows(
+            spacing_s=30,
+            latest_end=now,  # newest window ends exactly at *now*
+        )
+        probe, side_effect = self._make_matrix_probe()
+        repo = MagicMock()
+        repo.list_feature_windows = AsyncMock(return_value=windows)  # legacy path
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
+        mm = _make_mock_model_manager(focus_proba=0.75)
+        mm.classifier.predict_proba.side_effect = side_effect
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
+        result = await service.predict_range(user_id=1, start=start, end=end, now=now)
+        assert result.status == "ready"
+        repo.list_feature_windows_in_range.assert_awaited_once()
+        call = repo.list_feature_windows_in_range.await_args
+        assert call.kwargs["start"] == start
+        assert call.kwargs["end"] == end
+        assert probe["rows"] == _MAX_PREDICT_WINDOWS
+        assert result.window_count == _MAX_PREDICT_WINDOWS
+        assert probe["rows"] == result.window_count
+        # Recency preserved: the most recent _MAX_PREDICT_WINDOWS windows.
+        assert probe["first_app_switch"] == float(total - _MAX_PREDICT_WINDOWS)
+        assert probe["last_app_switch"] == float(total - 1)
 
 
 class TestFocusPredictionStatusContract:
@@ -297,7 +481,7 @@ class TestFocusPredictionStatusContract:
             _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager()
         mm.classifier.predict_proba.side_effect = RuntimeError("model crash")
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
@@ -308,7 +492,7 @@ class TestFocusPredictionStatusContract:
 
     async def test_db_query_failure_is_inference_error(self) -> None:
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(side_effect=RuntimeError("db down"))
+        repo.list_feature_windows_in_range = AsyncMock(side_effect=RuntimeError("db down"))
         mm = _make_mock_model_manager()
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_latest(user_id=1)
@@ -321,7 +505,7 @@ class TestFocusPredictionStatusContract:
             _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager()
         mm.classifier.feature_names_ = ["old_feature"]
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
@@ -335,7 +519,7 @@ class TestFocusPredictionStatusContract:
         # One window ending exactly at now -> coverage 1/24 below the 0.3 floor.
         windows = [_make_feature_window(now - timedelta(minutes=5))]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager(focus_proba=0.75)
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_latest(user_id=1, now=now)
@@ -355,7 +539,7 @@ class TestFocusPredictionStatusContract:
             _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager()
         mm.classifier.feature_names_ = list(V2_FEATURE_NAMES)
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
@@ -369,7 +553,7 @@ class TestFocusPredictionStatusContract:
             _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(23, 0, -1)
         ]
         repo = MagicMock()
-        repo.list_feature_windows = AsyncMock(return_value=windows)
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
         mm = _make_mock_model_manager(focus_proba=0.82)
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_latest(user_id=1, now=now)

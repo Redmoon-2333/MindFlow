@@ -308,6 +308,34 @@ class ModelManager:
             reasons.append("hmm_not_fitted")
         return {"ready": not reasons, "reasons": reasons}
 
+    def unload(self) -> None:
+        """Invalidate every loaded model while preserving object identity.
+
+        Privacy wipes can leave the manager reachable through application
+        state and other long-lived references. Resetting the current model
+        objects in place ensures those references become unfitted too; merely
+        assigning new objects here would leave the old fitted estimators usable.
+        Persisted artifacts are intentionally untouched by this method.
+        """
+        self._reset_state_in_place(
+            self.classifier,
+            type(self.classifier)(),
+        )
+        self._reset_state_in_place(
+            self.clustering,
+            BehaviorClustering(method=self.clustering.method),
+        )
+        self._reset_state_in_place(
+            self.hmm,
+            BehaviorHMM(n_states=self.hmm.n_states),
+        )
+
+    @staticmethod
+    def _reset_state_in_place(current: object, fresh: object) -> None:
+        current_state = vars(current)
+        current_state.clear()
+        current_state.update(vars(fresh))
+
     def load_latest(self) -> bool:
         """Load the latest version of all models. Returns True if successful."""
         if not self.latest_path.exists():

@@ -184,6 +184,7 @@ class TrainingReadinessService:
         *,
         v2_training_mode: str = "rule_engine_only",
         user_id: int = 1,
+        training_report: dict[str, Any] | None = None,
     ) -> None:
         self._telemetry_repo = telemetry_repo
         self._focus_repo = focus_repo
@@ -191,6 +192,83 @@ class TrainingReadinessService:
         self._baseline_repo = baseline_repo
         self._v2_training_mode = v2_training_mode
         self._user_id = user_id
+        self._training_report = training_report
+
+    def _report_gate_override(
+        self,
+    ) -> dict[str, tuple[str, str, str, str]]:
+        """Extract real post-training gate values from the training report.
+
+        When a training report exists (a training job already ran), the four
+        post-training gates (balanced_accuracy, minority_f1,
+        calibration_better_than_rule, stable_date_folds) are reported with
+        their actual evaluated values instead of the hard-coded
+        ``not_evaluated`` / ``not_implemented`` placeholders.
+
+        Returns a mapping ``{gate_key: (status, actual, threshold, fail_msg)}``
+        for gates that have real evidence; empty dict when no report is
+        available (callers keep the placeholder behaviour).
+        """
+        report = self._training_report
+        if not report:
+            return {}
+
+        evaluation = report.get("evaluation") or {}
+        candidate = evaluation.get("candidate") or {}
+        rule_baseline = evaluation.get("rule_baseline") or {}
+        fold_stability = evaluation.get("fold_stability") or {}
+        checks = (report.get("quality_gate") or {}).get("checks") or {}
+
+        overrides: dict[str, tuple[str, str, str, str]] = {}
+
+        ba = candidate.get("balanced_accuracy")
+        if ba is not None:
+            passed = bool(checks.get("balanced_accuracy", False))
+            overrides["balanced_accuracy"] = (
+                "passed" if passed else "failed",
+                f"{ba:.3f}",
+                f">= {_MIN_BALANCED_ACCURACY}",
+                "" if passed else "训练后平衡准确率未达阈值",
+            )
+
+        mf1 = candidate.get("minority_f1")
+        if mf1 is not None:
+            passed = bool(checks.get("minority_f1", False))
+            overrides["minority_f1"] = (
+                "passed" if passed else "failed",
+                f"{mf1:.3f}",
+                f">= {_MIN_MINORITY_F1}",
+                "" if passed else "训练后少数类 F1 未达阈值",
+            )
+
+        cand_brier = candidate.get("brier_score")
+        rule_brier = rule_baseline.get("brier_score")
+        if cand_brier is not None and rule_brier is not None:
+            passed = bool(checks.get("calibration_better_than_rule", False))
+            overrides["calibration_better_than_rule"] = (
+                "passed" if passed else "failed",
+                f"候选 {cand_brier:.3f} vs 规则 {rule_brier:.3f}",
+                "候选 Brier <= 规则 Brier + 0.01",
+                "" if passed else "候选模型校准不优于规则引擎",
+            )
+
+        if fold_stability:
+            passed = bool(checks.get("stable_date_folds", False))
+            min_ba = fold_stability.get("min_balanced_accuracy")
+            rng = fold_stability.get("range")
+            actual_parts: list[str] = []
+            if min_ba is not None:
+                actual_parts.append(f"最差折 {min_ba:.3f}")
+            if rng is not None:
+                actual_parts.append(f"波动 {rng:.3f}")
+            overrides["stable_date_folds"] = (
+                "passed" if passed else "failed",
+                ", ".join(actual_parts) or "-",
+                "最差折 >= 0.50 且 波动 <= 0.35",
+                "" if passed else "日期折叠稳定性未达阈值",
+            )
+
+        return overrides
 
     async def compute(self) -> TrainingReadinessResponse:
         uid = self._user_id
@@ -292,7 +370,26 @@ class TrainingReadinessService:
 
         # ── 10. Gate checks ────────────────────────────────────────────
         gates: list[V2GateCheck] = []
+        report_gates = self._report_gate_override()
         for gd in _GATES:
+            override = report_gates.get(gd.key)
+            if override is not None:
+                status_str, actual, threshold, fail_msg = override
+                gate_passed = status_str == "passed"
+                msg = fail_msg if fail_msg else _pass_message(gd.key)
+                gates.append(V2GateCheck(
+                    key=gd.key,
+                    label=gd.label,
+                    passed=gate_passed,
+                    status=status_str,
+                    actual=actual,
+                    threshold=threshold,
+                    message=msg,
+                    blocker_code=(
+                        gd.key if not gate_passed else ""
+                    ),
+                ))
+                continue
             status_str, actual, fail_msg, blocker_code = gd.compute(training_data)
             gate_passed = status_str == "passed"
             msg = fail_msg if fail_msg else _pass_message(gd.key)

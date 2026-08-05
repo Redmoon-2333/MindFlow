@@ -10,12 +10,13 @@ Composes the full analysis pipeline as a LangGraph StateGraph:
   7. terminal_persistence     — save analysis + mark run completed + release budget
 
 Implements ``AnalysisWorkflowPort`` from Todo 2.  Distinct idempotency keys
-per origin: ``scheduler:{user_id}:{date}:daily_attribution``,
-``api:{user_id}:{date}:{analysis_kind}``, ``chat:{user_id}:{date}:{analysis_kind}``.
+per origin and analysis kind: ``{origin}:{user_id}:{date}:{analysis_kind}``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, TypedDict
@@ -26,6 +27,7 @@ from loguru import logger
 
 from mindflow.agents.types import PanelUnavailableError
 from mindflow.domain.evidence import EvidenceBundle, to_prompt_json
+from mindflow.errors import NoActivityDataError
 from mindflow.graph.fallback_nodes import (
     FallbackRunContext,
     FallbackState,
@@ -64,6 +66,13 @@ class AnalysisRunContext:
     analysis_repo: Any = None  # ProcrastinationAnalysisRepositoryPort
     workflow_run_repo: WorkflowRunStorePort | None = None
     budget_repo: BudgetReservationPort | None = None
+
+    # ── Reservation ownership ──
+    # True only when THIS run won the budget reservation (set by
+    # budget_reserve_node on a successful try_reserve).  Used by the
+    # run_analysis failure handler so a failing non-owner concurrent run
+    # never deletes the winner's reservation.
+    budget_owned: bool = False
 
     # ── Evidence ──
     evidence_builder: Any = None  # EvidenceBundleBuilder
@@ -180,6 +189,91 @@ def _cached_analysis_meta(cached: dict[str, Any]) -> tuple[str, bool, list[str]]
     return source, degraded, path
 
 
+_COMPETING_ANALYSIS_WAIT_TIMEOUT_S = 30.0
+_COMPETING_ANALYSIS_POLL_INTERVAL_S = 0.05
+
+
+async def _wait_for_competing_analysis(
+    runtime: AnalysisRunContext,
+    *,
+    user_id: int,
+    target_date: date,
+    analysis_kind: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Wait for the owner of a duplicate key to publish its cached result.
+
+    ``try_reserve(False)`` only tells us that another run owns the key; the
+    owner's analysis row may not exist yet.  Returning from the graph at that
+    point produces a misleading empty verdict.  The idempotent workflow run
+    row is the coordination signal: only a pending/running owner warrants a
+    short wait, while missing or terminal rows keep the existing non-blocking
+    behavior.
+    """
+    workflow_repo = runtime.workflow_run_repo
+    if workflow_repo is None or not run_id:
+        return None
+
+    try:
+        owner_run = await workflow_repo.get_run(run_id)
+    except Exception as exc:
+        logger.debug("Could not inspect competing workflow run {}: {}", run_id, exc)
+        return None
+
+    status = getattr(owner_run, "status", None)
+    if status not in {"pending", "running"}:
+        return None
+
+    deadline = asyncio.get_running_loop().time() + _COMPETING_ANALYSIS_WAIT_TIMEOUT_S
+    while True:
+        try:
+            cached = await runtime.analysis_repo.get_by_date(
+                user_id,
+                target_date,
+                analysis_kind=analysis_kind,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Competing analysis cache lookup failed for {}: {}",
+                run_id,
+                exc,
+            )
+            cached = None
+        if isinstance(cached, dict):
+            logger.info("Replayed analysis published by competing run {}", run_id)
+            return cached
+
+        try:
+            owner_run = await workflow_repo.get_run(run_id)
+        except Exception as exc:
+            logger.debug("Could not poll competing workflow run {}: {}", run_id, exc)
+            return None
+        status = getattr(owner_run, "status", None)
+        if status not in {"pending", "running"}:
+            # A completed owner should have written the analysis before its
+            # terminal status.  Do one final cache read, then stop waiting.
+            if status == "completed":
+                try:
+                    cached = await runtime.analysis_repo.get_by_date(
+                        user_id,
+                        target_date,
+                        analysis_kind=analysis_kind,
+                    )
+                    return cached if isinstance(cached, dict) else None
+                except Exception:
+                    return None
+            return None
+
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            logger.warning(
+                "Timed out waiting for competing analysis run {} to publish",
+                run_id,
+            )
+            return None
+        await asyncio.sleep(min(_COMPETING_ANALYSIS_POLL_INTERVAL_S, remaining))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Graph nodes
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -215,14 +309,6 @@ async def cache_idempotency_check_node(
 
     if cached is not None:
         logger.debug("AnalysisGraph cache hit for {}/{}", user_id, target_date)
-        return {
-            "cache_hit": True,
-            "cached_result": cached,
-            "assessment": cached,
-            "source": cached.get("source", "rule_engine"),
-            "degraded": False,
-            "error": None,
-        }
         source, degraded, path = _cached_analysis_meta(cached)
         return {
             "cache_hit": True,
@@ -271,14 +357,6 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
                 user_id, target_date, analysis_kind=analysis_kind,
             )
             if cached is not None:
-                return {
-                    "budget_reserved": False,
-                    "cache_hit": True,
-                    "cached_result": cached,
-                    "assessment": cached,
-                    "source": cached.get("source", "rule_engine"),
-                    "degraded": False,
-                }
                 source, degraded, path = _cached_analysis_meta(cached)
                 return {
                     "budget_reserved": False,
@@ -290,11 +368,36 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
                     "degradation_path": path,
                 }
         except Exception:
-            pass
+            cached = None
+
+        # A duplicate request can observe the reservation before the owner
+        # reaches terminal persistence.  Wait for that owner to publish the
+        # cache rather than routing directly to END (which becomes an empty
+        # verdict in run_analysis()).
+        if cached is None:
+            cached = await _wait_for_competing_analysis(
+                runtime,
+                user_id=user_id,
+                target_date=target_date,
+                analysis_kind=analysis_kind,
+                run_id=state.get("run_id", ""),
+            )
+        if cached is not None:
+            source, degraded, path = _cached_analysis_meta(cached)
+            return {
+                "budget_reserved": False,
+                "cache_hit": True,
+                "cached_result": cached,
+                "assessment": cached,
+                "source": source,
+                "degraded": degraded,
+                "degradation_path": path,
+            }
 
         return {"budget_reserved": False}
 
     logger.debug("Budget reserved for {}", idempotency_key)
+    runtime.budget_owned = True
     return {"budget_reserved": True}
 
 
@@ -320,6 +423,9 @@ async def evidence_preparation_node(
     bundle: EvidenceBundle = await runtime.evidence_builder.build(
         user_id, window_start, window_end,
     )
+
+    if isinstance(bundle, EvidenceBundle) and not bundle.events:
+        raise NoActivityDataError("暂无活动数据，请先开始采集")
 
     # Build the JSON bundle for the panel subgraph
     bundle_json = to_prompt_json(bundle)
@@ -449,7 +555,6 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
         }
 
     verdict_dict = result.get("moderator_verdict") if isinstance(result, dict) else None
-    transcript = result.get("transcript", ()) if isinstance(result, dict) else ()
     escalated = result.get("escalated", False) if isinstance(result, dict) else False
     call_count = result.get("call_count", 0) if isinstance(result, dict) else 0
 
@@ -609,7 +714,6 @@ async def terminal_persistence_node(
     assessment = state.get("assessment")
     source = state.get("source", "rule_engine")
     degraded = state.get("degraded", True)
-    error = state.get("error")
     run_id = state.get("run_id", "")
     idempotency_key = state.get("idempotency_key", "")
     verdict_json = state.get("verdict_json")
@@ -882,7 +986,7 @@ class AnalysisGraph:
             origin=request.origin,
             user_id=request.user_id,
             target_date=request.target_date,
-            analysis_kind="daily_attribution",
+            analysis_kind=request.analysis_kind,
         )
 
         # Create workflow run
@@ -916,9 +1020,8 @@ class AnalysisGraph:
         initial_state: AnalysisGraphState = {
             "user_id": request.user_id,
             "target_date": request.target_date,
-            "analysis_kind": "daily_attribution",
+            "analysis_kind": request.analysis_kind,
             "origin": request.origin,
-            "force": request.force,
             "force": request.force or request.retry_if_degraded,
             "idempotency_key": idempotency_key,
             "runtime": runtime,
@@ -945,25 +1048,56 @@ class AnalysisGraph:
             "persistence_failed": False,
         }
 
+        # Mark the run as running before executing the graph so stale-run
+        # recovery can observe it if the process dies mid-flight.
+        try:
+            await self._workflow_run_repo.update_status(run_id, "running")
+        except Exception as exc:
+            logger.warning("Failed to mark run {} as running: {}", run_id, exc)
+
         # Run the graph
         graph = self._get_compiled_graph()
         try:
             final_state = await graph.ainvoke(initial_state)
+        except NoActivityDataError:
+            with contextlib.suppress(Exception):
+                await self._workflow_run_repo.update_status(
+                    run_id, "failed", error="暂无活动数据，请先开始采集",
+                )
+            if runtime.budget_owned and self._budget_repo is not None:
+                try:
+                    await self._budget_repo.release(idempotency_key)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to release budget for {}: {}", idempotency_key, exc
+                    )
+            raise
         except Exception as exc:
             logger.error("AnalysisGraph invocation failed: {}", exc)
             # Mark run as failed
-            try:
+            with contextlib.suppress(Exception):
                 await self._workflow_run_repo.update_status(
                     run_id, "failed", error=str(exc),
                 )
-            except Exception:
-                pass
+            # Release the reservation ONLY if this run actually won it — a
+            # failing non-owner concurrent run must never delete the winner's
+            # reservation.
+            if runtime.budget_owned and self._budget_repo is not None:
+                try:
+                    await self._budget_repo.release(idempotency_key)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to release budget for {}: {}", idempotency_key, exc
+                    )
             # Return an empty verdict
             return AnalysisResult(
                 verdict=_empty_verdict(),
                 run_id=run_id,
                 created_at=datetime.now(UTC),
             )
+
+        if isinstance(final_state, dict) and final_state.get("persistence_failed"):
+            raise RuntimeError(final_state.get("error") or "analysis persistence failed")
 
         # Convert final state to AnalysisResult
         verdict_json = final_state.get("verdict_json") if isinstance(final_state, dict) else None

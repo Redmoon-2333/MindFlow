@@ -10,13 +10,23 @@ Flow:
   3. Select intervention type from assessment types
   4. Look up CBT technique from the top procrastination type
   5. Render message — AI-generated (primary) or template fallback
-  6. Persist intervention log
-  7. Broadcast via WebSocket (``intervention`` frame type)
-  8. Desktop notification (best-effort, never raises)
+  6. Safety guard — block dispatches that fail the safety verdict
+  7. Reserve an atomic daily slot (automated only) — contention skips
+  8. Persist intervention log — failure releases the slot and skips
+  9. Broadcast via WebSocket (``intervention`` frame type)
+  10. Desktop notification (best-effort, never raises)
 
 Design:
   - ``maybe_intervene()`` never raises — errors are logged and returned
     as structured ``InterventionResult``.
+  - Safety is evaluated on the *rendered* title/message (so LLM output is
+    gated), after generation and before any reservation or persistence.
+  - The daily-slot reservation closes the TOCTOU race between the
+    read-only ``can_intervene()`` check and the ``log_triggered()`` INSERT:
+    exactly one concurrent caller wins each ``(user_id, date, slot)``.
+  - Manual triggers (``bypass_throttle=True``) intentionally skip the slot
+    reservation — the throttle limits are bypassed by design, so there is no
+    daily slot to arbitrate — but safety still applies.
   - LLM enhancement is attempted first; template fallback ensures messages
     are always generated even when LLM is unavailable or fails.
   - ``record_response()`` updates the log with user feedback.
@@ -24,8 +34,10 @@ Design:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, cast
 
@@ -59,6 +71,7 @@ from mindflow.services.intervention_throttle import (
     ThrottleDecision,
     ThrottleReason,
 )
+from mindflow.services.safety_guard import evaluate_safety
 
 # ── Type -> detail/suggestion templates (Chinese, NF-S7 compliant) ───────
 # All suggestions are desktop actions — MindFlow is a desktop assistant,
@@ -504,15 +517,18 @@ class InterventionService:
         Args:
             assessment: The procrastination assessment to act on.
             intensity: Intervention tone intensity.
-            bypass_throttle: If True, skip throttle check
-                (for manual trigger).
+            bypass_throttle: If True, skip throttle check and daily-slot
+                reservation (for manual trigger).  The safety guard still
+                applies.
             bypass_deep_work_guard: If True, keep recent events as message
                 context but do not suppress an explicitly requested reminder.
             recent_events: Recent activity events for deep-work detection.
             user_id: User identifier.
 
         Returns:
-            An ``InterventionResult`` describing what happened.
+            An ``InterventionResult`` describing what happened.  A blocked
+            safety verdict, a contended daily slot, or a persistence failure
+            all return ``skipped=True`` with an observable ``skip_reason``.
         """
         # ── 1. Select intervention type ────────────────────────────────
         intervention_type = _select_intervention_type(assessment)
@@ -605,8 +621,31 @@ class InterventionService:
                 intervention_type, intensity, cbt_technique
             )
 
-        # ── 6. Create domain object ───────────────────────────────────
+        # ── 6. Safety guard (after rendering, before persistence) ─────
+        # Evaluate the safety verdict on the final rendered title/message so
+        # AI-generated content is gated.  Frequency defaults are intentionally
+        # zero: the throttle (automated path) and the manual-bypass semantics
+        # already own intervention frequency, so the guard's value here is the
+        # content / intensity / context checks.  A real hour-of-day makes the
+        # late-night warning reachable without extra DB round-trips.
         now = datetime.now(UTC)
+        verdict = evaluate_safety(
+            title=title,
+            message=message,
+            intensity=intensity,
+            hour_of_day=now.hour,
+        )
+        for warning in verdict.warnings:
+            logger.warning("Intervention safety warning: {}", warning)
+        if not verdict.allowed:
+            logger.warning("Intervention blocked by safety guard: {}", verdict.blocked_by)
+            return InterventionResult(
+                skipped=True,
+                skip_reason=f"内容安全检查未通过（{verdict.blocked_by}）",
+                throttle_decision=decision,
+            )
+
+        # ── 7. Create domain object ───────────────────────────────────
         intervention = Intervention(
             id=new_id(),
             user_id=user_id,
@@ -618,7 +657,34 @@ class InterventionService:
             created_at=now,
         )
 
-        # ── 7. Persist ────────────────────────────────────────────────
+        # ── 8. Reserve daily slot (atomic, automated path only) ───────
+        # Closes the TOCTOU race between the read-only can_intervene() check
+        # and the log_triggered() INSERT.  Manual triggers bypass the throttle
+        # limits by design, so there is no daily slot to arbitrate — but the
+        # safety guard above still applies to them.
+        reserved_slot: int | None = None
+        slot_date: str | None = None
+        if not bypass_throttle:
+            slot_date = now.date().isoformat()
+            reserved_slot = await self._throttle.reserve_slot(
+                user_id, intervention_type, date_str=slot_date,
+            )
+            if reserved_slot is None:
+                logger.warning(
+                    "Intervention slot already reserved by a concurrent caller — skipping"
+                )
+                return InterventionResult(
+                    skipped=True,
+                    skip_reason="干预槽位已被并发调用占用",
+                    throttle_decision=decision,
+                )
+
+        # ── 9. Persist ────────────────────────────────────────────────
+        # Persistence is the transaction's commit point: without a durable log
+        # the intervention must not be broadcast or notified.  Both an ordinary
+        # persistence failure and a runtime cancellation that lands after the
+        # reservation but before persistence completes free the exact slot; the
+        # cancellation is then re-raised so callers observe it.
         try:
             context = {
                 "procrastination_types": [str(t) for t in assessment.types],
@@ -639,14 +705,34 @@ class InterventionService:
                 title=title,
                 message=message,
             )
+        except asyncio.CancelledError:
+            # Cancellation after owning a reservation but before persistence
+            # completed: free the exact slot (release is shielded so the
+            # cancellation cannot interrupt it), then re-raise.  Nothing is
+            # logged, broadcast, or notified.
+            if reserved_slot is not None:
+                await self._release_reserved_slot(
+                    user_id=user_id, slot_index=reserved_slot, date_str=slot_date,
+                )
+                logger.debug("Released reserved intervention slot {}", reserved_slot)
+            raise
         except Exception as exc:
             logger.error("Failed to persist intervention log: {}", exc)
-            # Continue — don't fail the user experience for a log write
+            if reserved_slot is not None:
+                await self._release_reserved_slot(
+                    user_id=user_id, slot_index=reserved_slot, date_str=slot_date,
+                )
+                logger.debug("Released reserved intervention slot {}", reserved_slot)
+            return InterventionResult(
+                skipped=True,
+                skip_reason="干预记录持久化失败，已释放今日槽位",
+                throttle_decision=decision,
+            )
 
-        # ── 8. Broadcast via WebSocket ────────────────────────────────
+        # ── 10. Broadcast via WebSocket ───────────────────────────────
         await self._broadcast_intervention(intervention)
 
-        # ── 9. Desktop notification ────────────────────────────────────
+        # ── 11. Desktop notification ──────────────────────────────────
         await self._notifier.send(
             title=intervention.title,
             body=intervention.message,
@@ -656,6 +742,46 @@ class InterventionService:
         )
 
         return InterventionResult(intervention=intervention)
+
+    async def _release_reserved_slot(
+        self,
+        *,
+        user_id: int,
+        slot_index: int,
+        date_str: str | None,
+    ) -> None:
+        """Release a reserved daily slot under cancellation shielding.
+
+        The delete runs in a child task wrapped with ``asyncio.shield`` so a
+        cancellation delivered while the release is in flight cannot interrupt
+        it — the exact ``(user_id, date, slot_index)`` reservation is always
+        freed.  A release failure is logged through the existing convention and
+        never replaces the cancellation or persistence failure that triggered
+        the cleanup.
+        """
+        async def _delete() -> None:
+            try:
+                await self._repo.release_daily_slot(
+                    user_id, slot_index, date_str=date_str,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to release reserved intervention slot {}: {}",
+                    slot_index,
+                    exc,
+                )
+
+        release_task = asyncio.create_task(_delete())
+        try:
+            await asyncio.shield(release_task)
+        except asyncio.CancelledError:
+            # Outer cancellation raced the release: the shielded child keeps
+            # running.  Join it so the slot is guaranteed free before the
+            # cancellation propagates; if even the join is interrupted, the
+            # child still completes on its own.
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(release_task)
+            raise
 
     async def record_response(
         self,

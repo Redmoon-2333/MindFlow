@@ -99,10 +99,11 @@ class InputTelemetryService:
         if event is None:
             context_key = "unknown"
         else:
-            source = f"{event.data.process_name}\0{event.data.window_title}"
+            # Privacy: the key derives from process_name alone — window_title
+            # never contributes to the stored context_key.
             context_key = (
                 f"{event.data.process_name.lower()}:"
-                f"{hashlib.sha256(source.encode()).hexdigest()[:16]}"
+                f"{hashlib.sha256(event.data.process_name.encode()).hexdigest()[:16]}"
             )
         await self._telemetry_repository.save_interaction_bucket(
             user_id=self._user_id,

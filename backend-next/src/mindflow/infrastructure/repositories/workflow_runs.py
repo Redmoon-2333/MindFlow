@@ -9,7 +9,7 @@ caller wins for a given idempotency key.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 import json
 
@@ -322,6 +322,9 @@ class BudgetReservationRepository:
         the same key get a conflict and receive ``False`` — no waiting,
         no partial state.
 
+        The reservation row carries a 24-hour TTL (``expires_at = now + 24h``)
+        so a leaked reservation can never block the key permanently.
+
         Args:
             idempotency_key: Unique reservation key (e.g.
                 ``"{origin}:{user_id}:{target_date}:{analysis_kind}"``).
@@ -344,7 +347,7 @@ class BudgetReservationRepository:
             "target_date": now.date().isoformat(),
             "budget_type": f"cost_{cost_estimate:.4f}",
             "reserved_at": now.isoformat(),
-            "expires_at": None,
+            "expires_at": (now + timedelta(hours=24)).isoformat(),
             "released_at": None,
         }
         async with self._session_factory() as session, session.begin():

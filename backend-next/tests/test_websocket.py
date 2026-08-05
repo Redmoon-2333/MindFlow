@@ -202,6 +202,43 @@ class TestWebSocketErrors:
             assert "code" in response["payload"]
 
 
+class TestWebSocketNonObjectJson:
+    """Valid JSON whose top-level value is not an object.
+
+    An array, string, number, boolean, or null cannot carry a ``type`` field —
+    the server must reply with the established error envelope and keep the
+    connection alive so a following valid object is still processed.
+    """
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "[1, 2, 3]",
+            '"just-a-string"',
+            "42",
+            "true",
+            "null",
+        ],
+    )
+    def test_non_object_json_error_and_connection_stays_usable(
+        self, client, raw: str
+    ) -> None:
+        """Non-object JSON gets an error envelope and does not disconnect."""
+        with client.websocket_connect(
+            "/api/v1/ws", headers=_TRUSTED_HOST_HEADERS
+        ) as ws:
+            ws.send_text(raw)
+            response = ws.receive_json()
+            assert response["type"] == "error"
+            assert response["payload"]["code"] == "INVALID_MESSAGE"
+            assert "timestamp" in response
+
+            # Connection must remain usable: a valid object is still processed.
+            ws.send_json({"type": "ping", "payload": {}})
+            pong = ws.receive_json()
+            assert pong["type"] == "pong"
+
+
 class TestWebSocketMessageFlood:
     """F3: verify the per-connection message-rate guard."""
 

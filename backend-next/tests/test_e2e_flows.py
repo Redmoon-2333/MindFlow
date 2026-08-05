@@ -24,6 +24,7 @@ from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes import (
     activities_router,
     analytics_router,
+    auth_router,
     autonomy_router,
     chat_router,
     collector_router,
@@ -44,7 +45,7 @@ from mindflow.eval.scenarios import ALL_SCENARIOS
 
 
 class _HealthyEngine:
-    async def connect(self):
+    def connect(self):
         class _Ctx:
             async def __aenter__(self): return object()
             async def __aexit__(self, *a): return None
@@ -60,6 +61,7 @@ _ROUTERS = (
     health_router, collector_router, focus_router, activities_router,
     reports_router, analytics_router, panel_router, chat_router,
     intervention_router, export_router, telemetry_router, autonomy_router,
+    auth_router,
 )
 
 
@@ -85,13 +87,26 @@ def _make_app(**overrides: Any) -> FastAPI:
         "chat_service", "llm_service", "prediction_service",
         "training_job_service", "training_readiness_service",
         "report_service", "export_service", "autonomy_service",
-        "baseline_repo", "focus_repo", "workflow_runs_repository",
+        "baseline_repo", "focus_repository", "workflow_runs_repository",
         "scheduler", "session_factory",
     ):
         if attr not in overrides:
             setattr(app.state, attr, MagicMock())
+    # Autonomy route awaits get_status(); make the stub awaitable with a sane default.
+    if "autonomy_service" not in overrides:
+        app.state.autonomy_service = AsyncMock()
+        app.state.autonomy_service.get_status.return_value = {
+            "enabled": True,
+            "paused_until": None,
+        }
     for k, v in overrides.items():
         setattr(app.state, k, v)
+    # Auth tests opt in to real middleware; the shared `client` fixture stays
+    # middleware-free so non-auth routes are reachable without a token.
+    if overrides.get("with_auth"):
+        from mindflow.api.middleware.auth import AuthMiddleware
+
+        app.add_middleware(AuthMiddleware)
     return app
 
 
@@ -171,7 +186,7 @@ class TestCollectorE2E:
 
 class TestAuthE2E:
     def test_protected_endpoint_rejects_without_token(self) -> None:
-        app = _make_app(system_token="secret")
+        app = _make_app(system_token="secret", with_auth=True)
         with TestClient(app) as c:
             r = c.get("/api/v1/focus")
             assert r.status_code == 401
@@ -182,13 +197,28 @@ class TestAuthE2E:
             r = c.get("/api/v1/health")
             assert r.status_code == 200
 
-    def test_bootstrap_ticket_endpoint_is_exempt(self) -> None:
-        """bootstrap/ticket is listed in _EXEMPT_PATHS so it returns 200."""
-        app = _make_app(system_token="secret")
+    def test_bootstrap_ticket_endpoint_requires_token(self) -> None:
+        """bootstrap/ticket issues one-time tickets and requires the Bearer system token.
+
+        This endpoint was deliberately removed from _EXEMPT_PATHS (fcb7021):
+        it mints bootstrap credentials, so unauthenticated requests must be
+        rejected with 401 rather than publicly callable.
+        """
+        app = _make_app(system_token="secret", with_auth=True)
         with TestClient(app) as c:
             r = c.post("/api/v1/auth/bootstrap/ticket")
-            # Exempt path, so no 401
-            assert r.status_code in (200, 500)  # 500 if store missing
+            assert r.status_code == 401
+
+    def test_bootstrap_ticket_with_valid_token(self) -> None:
+        """With a valid Bearer token the launcher can mint a one-time ticket."""
+        app = _make_app(system_token="secret", with_auth=True)
+        with TestClient(app) as c:
+            r = c.post(
+                "/api/v1/auth/bootstrap/ticket",
+                headers={"Authorization": "Bearer secret"},
+            )
+            # 503 only if the ticket store is missing; a minted ticket is 200.
+            assert r.status_code in (200, 503)
 
 
 # ── 4. Autonomy subsystem ───────────────────────────────────────────────────
@@ -286,9 +316,12 @@ class TestMLTrainingPipelineE2E:
 
     def test_v2_training_shadow_when_gates_fail(self, tmp_path: Path) -> None:
         from mindflow.train.pipeline import run_training
+        # 6 days × 2 classes = 12 windows: enough to enter the training branch
+        # (>=10 explicit samples) but too few feedback days for the quality gate
+        # (minimum_days >= 7), so the model lands in shadow mode, not ready.
         start = datetime(2026, 7, 1, 9, tzinfo=UTC)
         windows, feedback = [], []
-        for d in range(3):
+        for d in range(6):
             for cls in (True, False):
                 s = start + timedelta(days=d, hours=2 if cls else 4)
                 windows.append({"window_start_utc": s.isoformat(),
@@ -587,7 +620,7 @@ class TestFocusPredictionE2E:
             mgr.train_all(X, [f"f{i}" for i in range(14)], np.array([1]*25+[0]*25))
             mgr.save_all(activate=True)
             repo = AsyncMock()
-            repo.list_feature_windows = AsyncMock(return_value=[])
+            repo.list_feature_windows_in_range = AsyncMock(return_value=[])
             svc = FocusPredictionService(telemetry_repository=repo, model_manager=mgr)
             r = await svc.predict_latest(user_id=1)
             assert r.status == "no_data"
@@ -747,8 +780,19 @@ class TestHealthIntegrationE2E:
 
     def test_collector_status_against_running_server(self) -> None:
         import httpx
+
+        from mindflow.config import get_settings
         try:
-            r = httpx.get("http://127.0.0.1:8765/api/v1/collector", timeout=3.0)
+            token = get_settings().token_path.read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            token = ""
+        try:
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            r = httpx.get(
+                "http://127.0.0.1:8765/api/v1/collector",
+                timeout=3.0,
+                headers=headers,
+            )
             assert r.status_code == 200
         except (httpx.ConnectError, httpx.ConnectTimeout):
             pytest.skip("Backend not running on 8765")

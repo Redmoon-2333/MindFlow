@@ -13,8 +13,9 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
-from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 from fastapi import status as http_status
@@ -27,6 +28,7 @@ from mindflow.api.schemas import (
     TrainingJobResponse,
     TrainingReadinessResponse,
 )
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
 )
@@ -44,6 +46,27 @@ from mindflow.services.training_job_service import (
 from mindflow.services.training_readiness_service import TrainingReadinessService
 
 router = APIRouter(tags=["analytics"])
+
+
+def _load_training_report(request: Request) -> dict[str, Any] | None:
+    """Load the most recent training report JSON, or None if absent/unreadable.
+
+    The report lives at ``{models_dir}/v2/training_report.json`` and holds the
+    real post-training evaluation values (candidate metrics, rule baseline,
+    date-fold stability).  ``TrainingReadinessService`` consumes it so the UI
+    shows actual evaluated gates instead of ``not_implemented`` placeholders.
+    """
+    settings = getattr(request.app.state, "settings", None)
+    models_dir = getattr(settings, "models_dir", None)
+    if not models_dir:
+        return None
+    report_path = Path(models_dir) / "v2" / "training_report.json"
+    if not report_path.is_file():
+        return None
+    try:
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 @router.get("/analytics/patterns")
@@ -240,6 +263,7 @@ async def get_training_readiness(
         activity_repo=activity_repo,
         baseline_repo=baseline_repo,
         v2_training_mode=v2_training_mode,
+        training_report=_load_training_report(request),
     )
     result = await service.compute()
 
@@ -305,6 +329,7 @@ async def create_training_job(
         activity_repo=activity_repo,
         baseline_repo=baseline_repo,
         v2_training_mode=v2_training_mode,
+        training_report=_load_training_report(request),
     )
     assessment = await readiness.compute()
 

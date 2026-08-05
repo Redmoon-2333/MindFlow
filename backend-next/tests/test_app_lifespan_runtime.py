@@ -37,8 +37,8 @@ def test_full_lifespan_starts_and_stops_with_background_roles_disabled(
         assert app.state.scheduler._running is False
         assert app.state.chat_service is not None
         assert app.state.panel_service is not None
-        assert app.state.workflow_port is None, (
-            "workflow_port should be None with default new_analysis_graph=False"
+        assert app.state.workflow_port is not None, (
+            "workflow_port should be an AnalysisGraph with default new_analysis_graph=True"
         )
         assert app.state.panel_service._timezone == "Asia/Shanghai"
         assert app.state.llm_service._timezone == "Asia/Shanghai"

@@ -26,9 +26,6 @@ from mindflow.domain.events import ActivityEvent
 # Constants (preserved from old features.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-MIN_ACTIVITY_THRESHOLD: int = 10
-"""Legacy heartbeat-count threshold retained for compatibility."""
-
 MIN_ACTIVITY_DURATION_S: float = 50.0
 """Minimum non-idle duration required to compute a meaningful score."""
 

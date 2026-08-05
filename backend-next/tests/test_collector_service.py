@@ -13,7 +13,9 @@ Tests cover:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -21,6 +23,11 @@ import pytest
 from mindflow.domain.events import ActivityEvent, WindowSnapshot
 from mindflow.infrastructure.collectors.base import EventCollector
 from mindflow.infrastructure.repositories.base import ActivityRepository
+from mindflow.infrastructure.repositories.collector_intervals import (
+    CollectorIntervalsRepository,
+)
+from mindflow.infrastructure.schema import collector_intervals
+from mindflow.ports import CollectorIntervalRecord
 from mindflow.services.collector_service import CollectorService
 
 
@@ -601,3 +608,376 @@ class TestConcurrency:
         )
         await service.stop()
         assert service.status == "stopped"
+
+
+# ── Collector interval wiring ────────────────────────────────────────────
+
+
+class _RecordingIntervalRepo:
+    """In-memory CollectorIntervalsPort stand-in that records lifecycle calls.
+
+    Records every ``open()`` and ``close()`` so tests can assert exactly-once
+    semantics without touching a database.
+    """
+
+    def __init__(self) -> None:
+        self.opens: list[CollectorIntervalRecord] = []
+        self.closes: list[dict[str, Any]] = []
+        self._seq = 0
+
+    async def open(
+        self,
+        user_id: int,
+        *,
+        reason: str | None = None,
+        manual_stop: bool = False,
+        failure: bool = False,
+        sleep: bool = False,
+        now: datetime | None = None,
+    ) -> CollectorIntervalRecord:
+        self._seq += 1
+        record = CollectorIntervalRecord(
+            id=f"iv-{self._seq}",
+            user_id=user_id,
+            started_at=(now or datetime.now(UTC)).isoformat(),
+            ended_at=None,
+            reason=reason,
+            manual_stop=manual_stop,
+            failure=failure,
+            sleep=sleep,
+            last_error=None,
+        )
+        self.opens.append(record)
+        return record
+
+    async def close(
+        self,
+        interval_id: str,
+        *,
+        reason: str | None = None,
+        manual_stop: bool = False,
+        failure: bool = False,
+        sleep: bool = False,
+        last_error: str | None = None,
+        now: datetime | None = None,
+    ) -> CollectorIntervalRecord | None:
+        self.closes.append(
+            {
+                "interval_id": interval_id,
+                "reason": reason,
+                "manual_stop": manual_stop,
+                "failure": failure,
+                "sleep": sleep,
+                "last_error": last_error,
+            }
+        )
+        return None
+
+    async def list_by_user(
+        self, user_id: int, *, limit: int = 100
+    ) -> list[CollectorIntervalRecord]:
+        return []
+
+
+@pytest.fixture
+def wired_service(mock_collector, mock_repository):
+    """Return a CollectorService wired to a recording interval repo."""
+    repo = _RecordingIntervalRepo()
+    service = CollectorService(
+        collector=mock_collector,
+        repository=mock_repository,
+        user_id=1,
+        interval_s=0.01,
+        idle_threshold_s=60,
+        interval_repository=repo,
+    )
+    return service, repo
+
+
+class TestIntervalWiring:
+    """CollectorService persists exactly one interval per run via the port."""
+
+    async def test_start_then_stop_opens_one_interval_and_closes_manual_stop(
+        self, wired_service
+    ):
+        """A full run opens one interval and closes it once with
+        manual_stop=True and a truthful reason."""
+        service, repo = wired_service
+        await service.start()
+        await asyncio.sleep(0.05)
+        await service.stop()
+
+        assert len(repo.opens) == 1
+        assert len(repo.closes) == 1
+        close = repo.closes[0]
+        assert close["interval_id"] == repo.opens[0].id
+        assert close["manual_stop"] is True
+        assert close["failure"] is False
+        assert close["reason"] == "manual stop"
+        assert close["last_error"] is None
+
+    async def test_double_start_does_not_open_duplicate_interval(
+        self, wired_service
+    ):
+        """start() idempotency must not open a second interval row."""
+        service, repo = wired_service
+        await service.start()
+        task_ref = service._task
+        await service.start()  # No-op — same task keeps running.
+        assert service._task is task_ref
+
+        await asyncio.sleep(0.05)
+        await service.stop()
+
+        assert len(repo.opens) == 1
+        assert len(repo.closes) == 1
+
+    async def test_degraded_exit_closes_once_with_failure_and_last_error(
+        self, mock_collector, mock_repository
+    ):
+        """10 consecutive failures close the interval once with failure=True
+        and the captured last error string."""
+        mock_collector.snapshot = AsyncMock(
+            side_effect=RuntimeError("Persistent failure")
+        )
+        repo = _RecordingIntervalRepo()
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+            interval_repository=repo,
+        )
+
+        await service.start()
+        for _ in range(20):
+            if service.status == "degraded":
+                break
+            await asyncio.sleep(0.1)
+
+        assert service.status == "degraded"
+        await service.stop()
+
+        # A degraded run closes its run interval, then opens a backoff
+        # interval before the supervisor can retry.  stop() closes both.
+        assert len(repo.opens) == 2
+        assert len(repo.closes) == 2
+        run_open, sleep_open = repo.opens
+        run_close, sleep_close = repo.closes
+        assert run_close["interval_id"] == run_open.id
+        assert run_close["failure"] is True
+        assert run_close["manual_stop"] is False
+        assert run_close["reason"] == "collector degraded (10 consecutive failures)"
+        assert run_close["last_error"] == "RuntimeError: Persistent failure"
+        assert sleep_close["interval_id"] == sleep_open.id
+        assert sleep_close["sleep"] is True
+        assert sleep_close["manual_stop"] is True
+
+    async def test_concurrent_stops_close_exactly_once(self, wired_service):
+        """Concurrent stop() calls must not double-close the interval."""
+        service, repo = wired_service
+        await service.start()
+        await asyncio.sleep(0.02)
+
+        await asyncio.gather(service.stop(), service.stop(), service.stop())
+
+        assert len(repo.opens) == 1
+        assert len(repo.closes) == 1
+
+    async def test_hanging_interval_close_blocks_restart_until_cleanup_finishes(
+        self, mock_collector, mock_repository
+    ):
+        """Bounded stop keeps restart blocked until shielded cleanup ends."""
+        close_entered = asyncio.Event()
+        release_close = asyncio.Event()
+
+        class HangingCloseIntervalRepo(_RecordingIntervalRepo):
+            async def close(
+                self,
+                interval_id: str,
+                *,
+                reason: str | None = None,
+                manual_stop: bool = False,
+                failure: bool = False,
+                sleep: bool = False,
+                last_error: str | None = None,
+                now: datetime | None = None,
+            ) -> CollectorIntervalRecord | None:
+                close_entered.set()
+                await release_close.wait()
+                return await super().close(
+                    interval_id,
+                    reason=reason,
+                    manual_stop=manual_stop,
+                    failure=failure,
+                    sleep=sleep,
+                    last_error=last_error,
+                    now=now,
+                )
+
+        interval_repo = HangingCloseIntervalRepo()
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+            interval_repository=interval_repo,
+        )
+
+        await service.start()
+        supervisor_task = service._task
+        assert supervisor_task is not None
+        await asyncio.sleep(0.02)
+        started_at = asyncio.get_running_loop().time()
+        stop_task = asyncio.create_task(service.stop())
+        done, _ = await asyncio.wait({stop_task}, timeout=0.1)
+        elapsed = asyncio.get_running_loop().time() - started_at
+
+        try:
+            assert stop_task in done
+            assert elapsed < 0.1
+            assert close_entered.is_set()
+            assert service.status == "stopping"
+
+            await service.start()
+            await asyncio.sleep(0)
+
+            assert service._task is supervisor_task
+            assert len(interval_repo.opens) == 1
+        finally:
+            release_close.set()
+            if not stop_task.done():
+                await asyncio.wait_for(stop_task, timeout=1.0)
+            with contextlib.suppress(asyncio.CancelledError):
+                await supervisor_task
+            if service._task is not None and service._task is not supervisor_task:
+                await service.stop()
+
+        for _ in range(100):
+            if service.status == "stopped":
+                break
+            await asyncio.sleep(0.01)
+        assert service.status == "stopped"
+        assert service._task is None
+
+        await service.start()
+        for _ in range(100):
+            if len(interval_repo.opens) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert len(interval_repo.opens) == 2
+        await service.stop()
+        assert len(interval_repo.closes) == 2
+
+    async def test_cancelled_stop_still_closes_interval_once_and_restart_reopens(
+        self, mock_collector, mock_repository
+    ):
+        """Cancelling stop() mid-await closes the interval once and a
+        restart opens a fresh interval (no stale state)."""
+        tick_barrier = asyncio.Event()
+        tick_entered = asyncio.Event()
+
+        async def blocking_snapshot():
+            tick_entered.set()
+            await tick_barrier.wait()
+            return _snapshot()
+
+        mock_collector.snapshot = AsyncMock(side_effect=blocking_snapshot)
+        repo = _RecordingIntervalRepo()
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+            interval_repository=repo,
+        )
+
+        await service.start()
+        await asyncio.wait_for(tick_entered.wait(), timeout=2.0)
+
+        stop_task = asyncio.create_task(service.stop())
+        stop_yielded = asyncio.Event()
+
+        async def _mark() -> None:
+            stop_yielded.set()
+
+        asyncio.create_task(_mark())
+        await stop_yielded.wait()
+
+        background_task = service._task
+        assert background_task is not None
+
+        stop_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stop_task
+
+        tick_barrier.set()
+        with pytest.raises(asyncio.CancelledError):
+            await background_task
+
+        # Closed exactly once despite the cancellation.
+        assert len(repo.opens) == 1
+        assert len(repo.closes) == 1
+
+        # Restart opens a fresh interval and closes it again.
+        await service.start()
+        assert service.status == "running"
+        for _ in range(100):
+            if len(repo.opens) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert len(repo.opens) == 2
+        await service.stop()
+        assert len(repo.closes) == 2
+
+    async def test_without_interval_repository_no_interval_rows(
+        self, mock_collector, mock_repository
+    ):
+        """The optional dependency keeps the un-wired behaviour unchanged."""
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+        )
+        await service.start()
+        await asyncio.sleep(0.05)
+        await service.stop()
+        assert service.status == "stopped"
+
+
+class TestRealSqliteLifecycle:
+    """Full start → one tick → stop against a real temp SQLite database,
+    then repository reconstruction / list to prove persistence."""
+
+    async def test_start_tick_stop_persists_one_interval(
+        self, engine, session_factory, mock_collector, mock_repository
+    ):
+        async with engine.begin() as conn:
+            await conn.run_sync(collector_intervals.metadata.create_all)
+
+        repository = CollectorIntervalsRepository(session_factory)
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+            interval_repository=repository,
+        )
+
+        await service.start()
+        await asyncio.sleep(0.05)
+        await service.stop()
+
+        # Reconstruct the repository over the same DB and read back.
+        rebuilt = CollectorIntervalsRepository(session_factory)
+        listed = await rebuilt.list_by_user(1)
+
+        assert len(listed) == 1
+        record = listed[0]
+        assert record.user_id == 1
+        assert record.ended_at is not None
+        assert record.manual_stop is True
+        assert record.failure is False
+        assert record.reason == "manual stop"
+        assert record.last_error is None

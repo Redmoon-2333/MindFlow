@@ -11,13 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.domain.ids import new_id
+from mindflow.infrastructure.repositories.activity import activity_events
+from mindflow.infrastructure.repositories.focus import focus_sessions
+from mindflow.infrastructure.repositories.report import daily_reports
 from mindflow.infrastructure.schema import (
+    baseline_models,
     behavior_feature_windows,
     browser_segments,
     browser_tokens,
+    collector_intervals,
     focus_session_feedback,
     interaction_buckets,
     intervention_checks,
+    intervention_logs,
+    intervention_slot_reservations,
+    procrastination_analyses,
 )
 
 _FEATURE_UPSERT_BATCH_SIZE = 250
@@ -524,6 +532,18 @@ class TelemetryRepository:
                 .returning(behavior_feature_windows.c.id)
             )
             total += len(feature_result.all())
+            # Raw activity events are retained under the same activity horizon
+            # as browser segments (preference ``activity_retention_days``,
+            # env ``event_retention_days`` as the startup default).
+            activity_result = await session.scalars(
+                sa.delete(activity_events)
+                .where(
+                    activity_events.c.timestamp
+                    < activity_cutoff.astimezone(UTC).isoformat()
+                )
+                .returning(activity_events.c.id)
+            )
+            total += len(activity_result.all())
         return total
 
     async def save_browser_token(self, user_id: int, token_hash: str) -> None:
@@ -627,11 +647,35 @@ class TelemetryRepository:
             "all": [
                 interaction_buckets,
                 browser_segments,
-                browser_tokens,
                 focus_session_feedback,
+                focus_sessions,
                 behavior_feature_windows,
+                activity_events,
+                intervention_checks,
+                intervention_logs,
+                daily_reports,
+                procrastination_analyses,
+                baseline_models,
             ],
         }[scope]
+        # Runtime audit tables were added after the original telemetry schema.
+        # Delete them when present, while keeping the wipe compatible with an
+        # older database that has not applied those migrations yet.
+        if scope == "all":
+            optional_tables = (intervention_slot_reservations, collector_intervals)
+            async with self._session_factory() as session:
+                for optional_table in optional_tables:
+                    present = (
+                        await session.execute(
+                            sa.text(
+                                "SELECT name FROM sqlite_master "
+                                "WHERE type='table' AND name=:name"
+                            ),
+                            {"name": optional_table.name},
+                        )
+                    ).fetchone() is not None
+                    if present:
+                        tables = [*tables, optional_table]
         total = 0
         async with self._session_factory() as session, session.begin():
             for table in tables:

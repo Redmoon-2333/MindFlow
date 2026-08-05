@@ -173,7 +173,7 @@ from mindflow.train.features import AppClassifier  # ← 领域层导入训练�
 # domain/app_classification.py
 from mindflow.domain.classifier import AppClassifier  # ← 同层导入
 
-# train/features.py  
+# train/pipeline.py
 from mindflow.domain.classifier import AppClassifier  # ← 训练层导入领域层（正确方向）
 ```
 

@@ -1,16 +1,11 @@
-﻿"""PanelOrchestrator — the expert panel deliberation kernel.
+﻿"""Expert panel deliberation helpers for the v2 PanelGraph.
 
-Implements the full orchestration flow from 07-agent-upgrade-design.md §2 and §4,
-now using LangGraph StateGraph internally:
-
-```
-快速通道（默认 ~6 次调用）: analyst → 归因×3并行 → [冲突检测] → moderator → critic
-冲突升级（+3 次）: 每位归因专家收到其他两位完整论证 → 反驳修正 → moderator → critic
-```
-
-On unrecoverable failure, raises ``PanelUnavailableError`` for the caller (G003)
-to catch and fall through the four-layer degradation chain:
-  panel → single_expert (existing llm_service) → ollama → rule_engine
+This module holds the parsing, citation-validation, prompt-building, and
+per-invocation budget/transcript helpers used by the v2 ``PanelGraph``
+(``mindflow.graph.panel_graph``).  The legacy ``PanelOrchestrator`` class was
+removed when PanelGraph became the only active panel path; these module-level
+helpers are imported lazily by PanelGraph nodes (and their tests) to avoid
+circular imports with ``panel_service``.
 """
 
 from __future__ import annotations
@@ -21,28 +16,12 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, TypedDict, cast
+from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, StateGraph
-from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import interrupt
 from loguru import logger
 
-from mindflow.agents.conflict import ConflictReport, detect_conflict
-from mindflow.agents.disagreement import (
-    DisagreementSummary,
-    analyze_disagreement,
-    compute_rebuttal_delta,
-)
-from mindflow.agents.experts import (
-    ANALYST,
-    ATTRIBUTION_EXPERTS,
-    CRITIC,
-    MODERATOR,
-    ExpertDef,
-)
-from mindflow.agents.llm_gateway import PanelLLMGateway
+from mindflow.agents.conflict import ConflictReport
+from mindflow.agents.experts import ExpertDef
 from mindflow.agents.schemas import (
     AnalystOutput,
     AttributionOutput,
@@ -52,14 +31,10 @@ from mindflow.agents.schemas import (
 from mindflow.agents.types import (
     CriticResult,
     ExpertOpinion,
-    PanelBudgetExceededError,
-    PanelUnavailableError,
     PanelVerdict,
     TranscriptEntry,
     _contains_forbidden_words,
 )
-from mindflow.domain.evidence import EvidenceBundle, to_prompt_json
-from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 
 # ── Parsing helpers ────────────────────────────────────────────────────────────
@@ -370,28 +345,6 @@ def _parse_critic(raw: str) -> CriticResult:
     )
 
 
-def _verdict_dict_to_panel_verdict(
-    data: dict[str, Any],
-    escalated: bool,
-    transcript: tuple[TranscriptEntry, ...],
-    call_count: int,
-) -> PanelVerdict:
-    """Convert a moderator's JSON dict into a ``PanelVerdict``.
-
-    Delegates to the shared :func:`mindflow.services.panel_service.analysis_dict_to_panel_verdict`.
-    The lazy import avoids a circular dependency (``panel_service`` imports ``PanelOrchestrator``).
-    """
-    from mindflow.services.panel_service import analysis_dict_to_panel_verdict
-
-    return analysis_dict_to_panel_verdict(
-        data,
-        escalated=escalated,
-        transcript=transcript,
-        call_count=call_count,
-        source="panel",
-    )
-
-
 # ── Prompt builders ────────────────────────────────────────────────────────────
 
 
@@ -570,30 +523,7 @@ def _critic_summary(result: CriticResult) -> str:
     return f"打回：{'；'.join(result.issues[:2])}"
 
 
-# ── LangGraph State Schema ───────────────────────────────────────────────────
-
-
-class PanelState(TypedDict):  # noqa: UP035 — TypedDict with `from __future__ import annotations`
-    """State flowing through the LangGraph deliberation graph.
-
-    All fields are required per the TypedDict contract; None-valued fields
-    indicate data not yet produced by the corresponding graph node.
-    """
-
-    bundle_json: str
-    valid_metrics: frozenset[str]
-    analyst_opinion: ExpertOpinion | None
-    attribution_opinions: list[ExpertOpinion]
-    conflict_report: ConflictReport | None
-    escalated: bool
-    moderator_verdict: dict[str, Any] | None
-    critic_result: CriticResult | None
-    critic_retries: int
-    moderator_redo_count: int
-    call_count: int
-    transcript: list[TranscriptEntry]
-    disagreement_summary: DisagreementSummary | None
-    rebuttal_delta: object | None  # RebuttalDelta — lazy import to avoid circular
+# ── Per-invocation runtime (budget + transcript) ─────────────────────────────
 
 
 @dataclass
@@ -607,369 +537,7 @@ class _PanelRunContext:
 
 # Context variable to carry the mutable per-invocation runtime through the
 # LangGraph StateGraph without including it in the checkpointable state.
-# Set by ``_run_graph`` before ``ainvoke`` and read by all graph nodes.
+# Set by ``PanelGraph.ainvoke`` before ``ainvoke`` and read by all graph nodes.
 _PANEL_RUNTIME: contextvars.ContextVar[_PanelRunContext] = contextvars.ContextVar(
     "_PANEL_RUNTIME",
 )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PanelOrchestrator
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class PanelOrchestrator:
-    """Expert panel deliberation orchestrator — uses LangGraph StateGraph internally.
-
-    Manages the full expert panel lifecycle: calling experts, detecting conflicts,
-    synthesising verdicts, and validating via the critic.
-
-    The public API (``run(bundle) -> PanelVerdict``) is unchanged; the internal
-    orchestration was migrated from manual async flow to a LangGraph ``StateGraph``.
-
-    Args:
-        gateway: The LLM gateway for calling experts.
-    """
-
-    def __init__(self, gateway: PanelLLMGateway) -> None:
-        self._gateway = gateway
-        self._compiled_graph: CompiledStateGraph[Any, Any, Any, Any] | None = None
-
-    # ── Public API ────────────────────────────────────────────────────────
-
-    async def run(self, bundle: EvidenceBundle) -> PanelVerdict:
-        """Run a full expert panel deliberation on an evidence bundle.
-
-        Args:
-            bundle: The evidence bundle from the ML sensing layer.
-
-        Returns:
-            A ``PanelVerdict`` with the deliberation outcome.
-
-        Raises:
-            PanelUnavailableError: If the panel cannot produce a verdict
-                (caller should fall through to single-expert tier).
-            PanelBudgetExceededError: If the panel would exceed 12 LLM calls
-                (hard safety guard, should never trigger on normal paths).
-        """
-        runtime = _PanelRunContext()
-        try:
-            return await self._run_graph(bundle, runtime)
-        except (PanelBudgetExceededError, PanelUnavailableError):
-            raise
-        except Exception as exc:
-            logger.error("Panel orchestrator unexpected error: {}", exc)
-            raise PanelUnavailableError(
-                reason=f"编排器异常：{exc}",
-                call_count=runtime.call_count,
-            ) from exc
-
-    # ── LangGraph orchestration ───────────────────────────────────────────
-
-    def _build_compiled_graph(
-        self,
-    ) -> CompiledStateGraph[Any, Any, Any, Any]:
-        """Build and compile the LangGraph StateGraph once.
-
-        Graph nodes: analyst → attribution → conflict_detection
-          → [rebuttal (if escalated) | moderator]
-          → human_review_interrupt → critic
-          → [END (approved) | moderator (retry) | END (exhausted)]
-        """
-        graph = StateGraph(PanelState)
-
-        # ── Node: analyst ──────────────────────────────────────────────
-        async def analyst_node(state: PanelState) -> dict[str, Any]:
-            rt = _PANEL_RUNTIME.get()
-            logger.info("Panel round 0: Analyst")
-            raw = await self._call_with_budget(rt, ANALYST, state["bundle_json"])
-            analyst = _parse_analyst_opinion(raw, ANALYST)
-            bogus = validate_citations(analyst, state["valid_metrics"])
-            if bogus:
-                logger.warning("Hallucinated citations {} in analyst — marking", bogus)
-                analyst = ExpertOpinion(
-                    role=ANALYST.role, perspective=ANALYST.perspective,
-                    attribution_types=(), confidence={}, evidence_citations=(),
-                    argument="", raw_json=raw, skipped=True,
-                )
-            rt.transcript.append(TranscriptEntry(role=ANALYST.role, content=_opinion_summary(analyst), round=0))
-            return {
-                "analyst_opinion": analyst,
-                "transcript": list(rt.transcript),
-                "call_count": rt.call_count,
-            }
-
-        # ── Node: attribution ──────────────────────────────────────────
-        async def attribution_node(state: PanelState) -> dict[str, Any]:
-            rt = _PANEL_RUNTIME.get()
-            logger.info("Panel round 1: Attribution experts (parallel)")
-
-            async def _call_and_parse(exp: ExpertDef) -> ExpertOpinion:
-                raw = await self._safe_call_with_budget(rt, exp, state["bundle_json"])
-                op = _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
-                if op.skipped and _contains_forbidden_words(raw):
-                    logger.warning("{} triggered forbidden words, retrying once", exp.role)
-                    retry_msg = "你的上一条回复包含禁用词汇（诊断、治疗、患者、处方）。请用中文重新输出，严格遵守禁用词规则。"
-                    raw2 = await self._safe_call_with_budget(rt, exp, retry_msg)
-                    op2 = _parse_expert_opinion(raw2, exp, valid_metrics=state["valid_metrics"])
-                    if not op2.skipped:
-                        return op2
-                    logger.warning("{} retry still failed, using original", exp.role)
-                return op
-
-            results = await asyncio.gather(*[_call_and_parse(exp) for exp in ATTRIBUTION_EXPERTS])
-            opinions = list(results)
-            for op in opinions:
-                rt.transcript.append(TranscriptEntry(role=op.role, content=_opinion_summary(op), round=1))
-
-            non_skipped = [o for o in opinions if not o.skipped]
-            if len(non_skipped) < 2:
-                raise PanelUnavailableError(
-                    reason=f"仅{len(non_skipped)}份归因意见有效，需至少2份",
-                    call_count=rt.call_count,
-                )
-            return {
-                "attribution_opinions": opinions,
-                "transcript": list(rt.transcript),
-                "call_count": rt.call_count,
-            }
-
-        # ── Node: conflict_detection ───────────────────────────────────
-        async def conflict_detection_node(state: PanelState) -> dict[str, Any]:
-            logger.info("Conflict detection")
-            conflict = detect_conflict(state["attribution_opinions"])
-            escalated = conflict.has_conflict
-            if escalated:
-                logger.info("Conflict detected: {}", conflict.details)
-            else:
-                logger.info("No conflict among attribution experts")
-            ds = analyze_disagreement(state["attribution_opinions"], conflict.details, conflict.max_confidence_gap, rebuttal_delta=None)
-            logger.info("Disagreement analytics: agreement={:.3f}, stability={}", ds.agreement_strength, ds.stability)
-            return {"conflict_report": conflict, "escalated": escalated, "disagreement_summary": ds}
-
-        # ── Node: rebuttal ─────────────────────────────────────────────
-        async def rebuttal_node(state: PanelState) -> dict[str, Any]:
-            rt = _PANEL_RUNTIME.get()
-            logger.info("Panel round 2a: Attribution rebuttal (parallel)")
-            opinions = state["attribution_opinions"]
-            prompts = [(ATTRIBUTION_EXPERTS[i], _build_rebuttal_prompt(state["bundle_json"], opinions, i)) for i in range(len(ATTRIBUTION_EXPERTS))]
-            responses = await asyncio.gather(*[self._safe_call_with_budget(rt, exp, msg) for exp, msg in prompts])
-            new_opinions = []
-            for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True):
-                op = _parse_expert_opinion(raw, exp, valid_metrics=state["valid_metrics"])
-                if op.skipped and _contains_forbidden_words(raw):
-                    logger.warning("{} rebuttal triggered forbidden words, retrying", exp.role)
-                    retry_msg = "你的上一条回复包含禁用词汇（诊断、治疗、患者、处方）。请用中文重新输出，严格遵守禁用词规则并回到推理内容。"
-                    raw2 = await self._safe_call_with_budget(rt, exp, retry_msg)
-                    op2 = _parse_expert_opinion(raw2, exp, valid_metrics=state["valid_metrics"])
-                    if not op2.skipped:
-                        op = op2
-                new_opinions.append(op)
-            for op in new_opinions:
-                rt.transcript.append(TranscriptEntry(role=op.role, content=_opinion_summary(op), round=2))
-            non_skipped = [o for o in new_opinions if not o.skipped]
-            if len(non_skipped) < 2:
-                raise PanelUnavailableError(reason=f"辩论后仅{len(non_skipped)}份归因意见有效", call_count=rt.call_count)
-            delta = compute_rebuttal_delta(opinions, new_opinions)
-            logger.info("Rebuttal delta: agreement {:.3f}→{:.3f}, delta={:+.3f}, converged={}", delta.before_agreement, delta.after_agreement, delta.agreement_delta, delta.converged)
-            return {"attribution_opinions": new_opinions, "transcript": list(rt.transcript), "call_count": rt.call_count, "rebuttal_delta": delta}
-
-        # ── Node: moderator ────────────────────────────────────────────
-        async def moderator_node(state: PanelState) -> dict[str, Any]:
-            rt = _PANEL_RUNTIME.get()
-            is_redo = state["moderator_redo_count"] > 0
-            analyst = state["analyst_opinion"]
-            conflict = state["conflict_report"]
-            assert analyst is not None
-            assert conflict is not None
-            if is_redo:
-                round_num = 4
-                prompt = _build_moderator_redo_prompt(state["bundle_json"], analyst, state["attribution_opinions"], conflict, cast(CriticResult, state["critic_result"]).issues)
-            else:
-                round_num = 2 if not state["escalated"] else 3
-                prompt = _build_moderator_user_prompt(state["bundle_json"], analyst, state["attribution_opinions"], conflict)
-                prompt = _build_moderator_user_prompt(state["bundle_json"], analyst, state["attribution_opinions"], conflict, state.get("disagreement_summary"))
-            logger.info("Panel round {}: Moderator (redo_count={})", round_num, state["moderator_redo_count"])
-            raw = await self._call_with_budget(rt, MODERATOR, prompt)
-            verdict = _parse_verdict(raw)
-            if verdict is None:
-                raise PanelUnavailableError(reason="主持人输出解析失败", call_count=rt.call_count)
-            rt.transcript.append(TranscriptEntry(role=MODERATOR.role, content=_verdict_summary(verdict), round=round_num))
-            return {"moderator_verdict": verdict, "transcript": list(rt.transcript), "call_count": rt.call_count}
-
-        # ── Node: human_review_interrupt ────────────────────────────────
-        async def human_review_interrupt_node(state: PanelState) -> dict[str, Any]:
-            """Optional human review gate — disabled by default (Todo 10)."""
-            from mindflow.config import get_settings
-
-            settings = get_settings()
-            if not settings.human_review_enabled:
-                return {}
-            verdict = state.get("moderator_verdict")
-            if verdict is None:
-                return {}
-            confidence: dict[str, float] = verdict.get("confidence", {})
-            min_conf = min(confidence.values()) if confidence else 1.0
-            ds = state.get("disagreement_summary")
-            agreement_strength: float = float(ds.agreement_strength) if ds is not None else 1.0
-            disagreement_strength = 1.0 - agreement_strength
-            if min_conf < settings.human_review_confidence_threshold or disagreement_strength > settings.human_review_disagreement_threshold:
-                logger.warning("Human review interrupt triggered: min_confidence={:.2f}, disagreement={:.2f}", min_conf, disagreement_strength)
-                interrupt({"verdict": verdict, "min_confidence": min_conf, "agreement_strength": agreement_strength})
-                logger.info("Human review interrupt resumed")
-            return {}
-
-        # ── Node: critic ───────────────────────────────────────────────
-        async def critic_node(state: PanelState) -> dict[str, Any]:
-            rt = _PANEL_RUNTIME.get()
-            base_round = 2 if not state["escalated"] else 3
-            round_num = base_round + 1 + state["critic_retries"]
-            logger.info("Panel round {}: Critic", round_num)
-            pending_verdict = _verdict_dict_to_panel_verdict(cast(dict[str, Any], state["moderator_verdict"]), state["escalated"], tuple(rt.transcript), rt.call_count)
-            all_opinions: list[ExpertOpinion] = [cast(ExpertOpinion, state["analyst_opinion"]), *state["attribution_opinions"]]
-            prompt = _build_critic_user_prompt(state["bundle_json"], pending_verdict, all_opinions, state["valid_metrics"])
-            raw = await self._call_with_budget(rt, CRITIC, prompt)
-            result = _parse_critic(raw)
-            rt.transcript.append(TranscriptEntry(role=CRITIC.role, content=_critic_summary(result), round=round_num))
-            updates: dict[str, Any] = {"critic_result": result, "transcript": list(rt.transcript), "call_count": rt.call_count}
-            if not result.approved:
-                updates["critic_retries"] = state["critic_retries"] + 1
-                updates["moderator_redo_count"] = state["moderator_redo_count"] + 1
-            return updates
-
-        # ── Routers ────────────────────────────────────────────────────
-        def should_escalate(state: PanelState) -> str:
-            return "rebuttal" if state["escalated"] else "moderator"
-
-        def critic_verdict(state: PanelState) -> str:
-            if cast(CriticResult, state["critic_result"]).approved:
-                return "approved"
-            if state["moderator_redo_count"] < 2:
-                return "retry"
-            return "exhausted"
-
-        # ── Wire graph ──────────────────────────────────────────────────
-        graph.add_node("analyst", analyst_node)
-        graph.add_node("attribution", attribution_node)
-        graph.add_node("conflict_detection", conflict_detection_node)
-        graph.add_node("rebuttal", rebuttal_node)
-        graph.add_node("moderator", moderator_node)
-        graph.add_node("human_review_interrupt", human_review_interrupt_node)
-        graph.add_node("critic", critic_node)
-
-        graph.set_entry_point("analyst")
-        graph.add_edge("analyst", "attribution")
-        graph.add_edge("attribution", "conflict_detection")
-        graph.add_conditional_edges("conflict_detection", should_escalate, {"rebuttal": "rebuttal", "moderator": "moderator"})
-        graph.add_edge("rebuttal", "moderator")
-        graph.add_edge("moderator", "human_review_interrupt")
-        graph.add_edge("human_review_interrupt", "critic")
-        graph.add_conditional_edges("critic", critic_verdict, {"approved": END, "retry": "moderator", "exhausted": END})
-
-        from mindflow.config import get_settings
-
-        checkpointer = MemorySaver() if get_settings().human_review_enabled else None
-        return graph.compile(checkpointer=checkpointer)
-
-    def _get_compiled_graph(self) -> CompiledStateGraph[Any, Any, Any, Any]:
-        """Return the compiled graph, building it on first access (lazy)."""
-        if self._compiled_graph is None:
-            self._compiled_graph = self._build_compiled_graph()
-        return self._compiled_graph
-
-    async def _run_graph(
-        self,
-        bundle: EvidenceBundle,
-        runtime: _PanelRunContext,
-    ) -> PanelVerdict:
-        """Run the compiled LangGraph StateGraph for this session."""
-
-        bundle_json = to_prompt_json(bundle)
-        valid_metrics = evidence_catalog_ids(build_evidence_catalog(bundle))
-
-        compiled = self._get_compiled_graph()
-
-        initial: PanelState = {
-            "bundle_json": bundle_json,
-            "valid_metrics": valid_metrics,
-            "analyst_opinion": None,
-            "attribution_opinions": (),
-            "conflict_report": None,
-            "escalated": False,
-            "moderator_verdict": None,
-            "critic_result": None,
-            "critic_retries": 0,
-            "moderator_redo_count": 0,
-            "call_count": 0,
-            "transcript": (),
-            "disagreement_summary": None,
-            "rebuttal_delta": None,
-        }
-
-        # Set runtime in context var so graph nodes can access it without
-        # including it in the checkpointable state (avoids msgpack error).
-        _PANEL_RUNTIME.set(runtime)
-
-        final = await compiled.ainvoke(initial)
-        critic_result = cast(CriticResult, final["critic_result"])
-        if not critic_result.approved:
-            issues = "；".join(critic_result.issues) or "未提供拒绝原因"
-            raise PanelUnavailableError(
-                reason=f"批评家复核未通过：{issues}",
-                call_count=final["call_count"],
-            )
-
-        return _verdict_dict_to_panel_verdict(
-            cast(dict[str, Any], final["moderator_verdict"]),
-            final["escalated"],
-            tuple(final["transcript"]),
-            final["call_count"],
-        )
-
-    # ── Gateway helpers ───────────────────────────────────────────────────
-
-    async def _call_with_budget(
-        self,
-        runtime: _PanelRunContext,
-        expert: ExpertDef,
-        user_message: str,
-    ) -> str:
-        """Atomic budget check then gateway call.
-
-        Args:
-            expert: The expert definition (system prompt + role).
-            user_message: The user message content.
-
-        Returns:
-            Raw response text from the LLM.
-
-        Raises:
-            PanelBudgetExceededError: If budget (12 calls) would be exceeded.
-        """
-        async with runtime.budget_lock:
-            runtime.call_count += 1
-            if runtime.call_count > 12:
-                raise PanelBudgetExceededError(call_count=runtime.call_count)
-        return await self._gateway.complete(
-            system=expert.system_prompt,
-            user=user_message,
-            model=expert.model,
-        )
-
-    async def _safe_call_with_budget(
-        self,
-        runtime: _PanelRunContext,
-        expert: ExpertDef,
-        user_message: str,
-    ) -> str:
-        """Like ``_call_with_budget`` but returns empty string on failure.
-
-        Used in parallel batches so a single failed call doesn't abort the group.
-        """
-        try:
-            return await self._call_with_budget(runtime, expert, user_message)
-        except PanelBudgetExceededError:
-            raise
-        except Exception as exc:
-            logger.error("Parallel call to {} failed: {}", expert.role, exc)
-            return ""

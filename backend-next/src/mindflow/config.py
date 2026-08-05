@@ -215,19 +215,23 @@ class Settings(BaseSettings):
         description="Disagreement strength above which human review is triggered (1.0 - agreement_strength)",
     )
 
-    # --- Graph orchestration (ADR-005 — default to legacy paths until cutover) ---
-    graph_version: int = Field(default=1, description="LangGraph version (1=legacy, 2=new)")
+    # --- Graph orchestration (ADR-005 — v2 graphs are the only paths) ---
     checkpointing_enabled: bool = Field(
         default=False, description="Enable LangGraph checkpoint persistence"
     )
     new_analysis_graph: bool = Field(
-        default=False, description="Use v2 analysis graph (default: legacy v1)"
+        default=True,
+        description=(
+            "Deprecated compatibility flag; v2 AnalysisGraph is always active "
+            "and this value no longer changes routing"
+        ),
     )
     new_chat_graph: bool = Field(
-        default=False, description="Use v2 chat graph (default: legacy v1)"
-    )
-    shadow_mode_chat: bool = Field(
-        default=False, description="Run both legacy and new chat paths, compare, return legacy output"
+        default=True,
+        description=(
+            "Deprecated compatibility flag; v2 ChatGraph is always active "
+            "and this value no longer changes routing"
+        ),
     )
 
     # --- LLM placeholder ---

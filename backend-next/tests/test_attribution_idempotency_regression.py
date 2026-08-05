@@ -12,7 +12,7 @@ return the existing run_id when the key already exists.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,6 +20,8 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from mindflow.domain.events import make_event
+from mindflow.domain.evidence import EvidenceBundle
 from mindflow.domain.procrastination import RuleEngine
 from mindflow.graph.analysis_graph import AnalysisGraph
 from mindflow.infrastructure.database import create_engine, create_session_factory
@@ -81,8 +83,6 @@ def mock_budget_repo() -> AsyncMock:
 
 @pytest.fixture
 def mock_evidence_builder() -> AsyncMock:
-    from mindflow.domain.evidence import EvidenceBundle
-
     builder = AsyncMock()
     bundle = EvidenceBundle(
         user_id=1,
@@ -99,6 +99,9 @@ def mock_evidence_builder() -> AsyncMock:
         ),
         intervention_history=(),
         novelty_flags=(),
+        events=(
+            make_event(user_id=1, timestamp_utc=datetime(2026, 7, 29, 12, 0, tzinfo=UTC)),
+        ),
     )
     builder.build.return_value = bundle
     return builder

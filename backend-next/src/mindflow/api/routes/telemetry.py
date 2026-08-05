@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 
 from mindflow.api.deps import get_telemetry_service
 from mindflow.api.errors import ProblemDetail
-from mindflow.api.schemas import FocusPredictionResponse
-from mindflow.services.telemetry_service import TelemetryService
+from mindflow.api.schemas import FocusPredictionResponse, TelemetryDeleteResponse
+from mindflow.services.telemetry_service import TelemetryClearResult, TelemetryService
 
 router = APIRouter(tags=["telemetry"])
 
@@ -58,12 +58,21 @@ async def patch_telemetry_preferences(
     return await service.patch_preferences(body.model_dump(exclude_none=True))
 
 
-@router.delete("/telemetry/data")
+@router.delete(
+    "/telemetry/data",
+    response_model=TelemetryDeleteResponse,
+    response_model_exclude_defaults=True,
+)
 async def delete_telemetry_data(
     scope: Literal["interaction", "browser", "feedback", "all"],
     service: TelemetryService = Depends(get_telemetry_service),  # noqa: B008
-) -> dict[str, int]:
-    return {"deleted": await service.clear_data(scope)}
+) -> TelemetryDeleteResponse:
+    result = await service.clear_data(scope)
+    return TelemetryDeleteResponse(
+        deleted=int(result),
+        partial=isinstance(result, TelemetryClearResult) and result.partial,
+        failures=(list(result.failures) if isinstance(result, TelemetryClearResult) else []),
+    )
 
 
 @router.post("/telemetry/browser/pairing-code")

@@ -291,7 +291,7 @@ uv run alembic upgrade head     # 应用所有待定迁移
 ├──────────────────────────────────────────────────────────┤
 │  内层：分析推理图 (LangGraph StateGraph)                  │
 │  拥有：专家面板逻辑、证据引用、降级链                      │
-│  技术：AnalysisGraph / PanelGraph / PanelOrchestrator      │
+│  技术：AnalysisGraph / PanelGraph                          │
 │  不包含任务 claim/心跳/时间管理                            │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -300,7 +300,7 @@ uv run alembic upgrade head     # 应用所有待定迁移
 
 - **AnalysisGraph** (`src/mindflow/graph/analysis_graph.py`): 每日分析组成根，实现 `AnalysisWorkflowPort`
 - **PanelGraph** (`src/mindflow/graph/panel_graph.py`): AnalysisGraph 的显式子图，封装专家审议（分析师 -> 3 路并行归因 -> 校验 -> 调节器 -> 评论家）
-- **ChatGraph** (`src/mindflow/graph/chat_graph.py`): 显式聊天生命周期 StateGraph；默认仍走 legacy `create_agent`，由开关切换
+- **ChatGraph** (`src/mindflow/graph/chat_graph.py`): 显式聊天生命周期 StateGraph；v2 图是当前唯一生产聊天路径，旧版 `create_agent` 已移除
 - **框架无关端口** (`src/mindflow/ports.py`): `AnalysisWorkflowPort`, `WorkflowRunStorePort`, `BudgetReservationPort` — LangGraph 可替换而不影响调度器
 - **ProviderRegistry**: DeepSeek / Ollama / RuleEngine 三层 LLM 降级管理，统一 HTTP 会话池
 - **本地 OTel**: OpenTelemetry 写入本地 SQLite，不导出外部（无 PII 在 span 属性中，ADR-003）
@@ -309,15 +309,13 @@ uv run alembic upgrade head     # 应用所有待定迁移
 
 ## 功能标记 (Feature Flags, ADR-005)
 
-所有标记默认使用**旧路径**，无需代码回滚即可回退。
+分析和聊天已完成 v2 cutover。旧版图选择开关仅为兼容历史 `.env` 保留，修改它们不会恢复旧实现。
 
 | 环境变量 | 类型 | 默认值 | 说明 |
 |---------|------|--------|------|
-| `MINDFLOW_GRAPH_VERSION` | int | `1` | 保留的图版本元数据，当前不负责选择实现 |
 | `MINDFLOW_CHECKPOINTING_ENABLED` | bool | `False` | 使用 SQLite 持久化 checkpoint；关闭时使用内存实现 |
-| `MINDFLOW_NEW_ANALYSIS_GRAPH` | bool | `False` | 通过 v2 AnalysisGraph 路由面板分析 |
-| `MINDFLOW_NEW_CHAT_GRAPH` | bool | `False` | 通过 ChatGraph StateGraph 路由聊天 |
-| `MINDFLOW_SHADOW_MODE_CHAT` | bool | `False` | 新旧聊天路径并行运行，返回旧版输出 |
+| `MINDFLOW_NEW_ANALYSIS_GRAPH` | bool | `True` | 已弃用的兼容字段；始终使用 v2 AnalysisGraph |
+| `MINDFLOW_NEW_CHAT_GRAPH` | bool | `True` | 已弃用的兼容字段；始终使用 v2 ChatGraph |
 
 ---
 

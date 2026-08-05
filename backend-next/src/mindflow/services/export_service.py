@@ -47,21 +47,6 @@ class ExportStreamResult:
     media_type: str
 
 
-@dataclass(frozen=True)
-class ExportResult:
-    """Result of an export operation.
-
-    Attributes:
-        content: The exported data as bytes.
-        filename: Suggested filename for download.
-        media_type: MIME type of the content.
-    """
-
-    content: bytes
-    filename: str
-    media_type: str
-
-
 # ── CSV column headers ───────────────────────────────────────────────────
 
 _EVENTS_CSV_HEADERS: list[str] = [
@@ -116,6 +101,27 @@ def _csv_safe(value: str) -> str:
     if value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
         return "'" + value
     return value
+
+
+def _event_payload(event: ActivityEvent) -> dict[str, Any]:
+    """Return the export-allowlisted event fields.
+
+    Shared by the CSV and JSON streamers so both formats expose exactly the
+    same field set (mirroring the CSV headers) and never leak snapshot
+    internals such as ``window_title`` (privacy NF-S3a). Values are raw —
+    each format applies its own escaping/typing (``_csv_safe`` in CSV, native
+    JSON types in JSON).
+    """
+    return {
+        "id": event.id,
+        "user_id": event.user_id,
+        "timestamp_utc": event.timestamp_utc.isoformat(),
+        "duration_s": event.duration_s,
+        "event_type": event.event_type,
+        "app_name": event.data.app_name,
+        "process_name": event.data.process_name,
+        "is_idle": event.data.is_idle,
+    }
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -211,15 +217,16 @@ class ExportService:
             output = io.StringIO()
             writer = csv.writer(output, lineterminator="\n")
             for event in events:
+                payload = _event_payload(event)
                 writer.writerow([
-                    event.id,
-                    event.user_id,
-                    event.timestamp_utc.isoformat(),
-                    event.duration_s,
-                    event.event_type,
-                    _csv_safe(event.data.app_name),
-                    _csv_safe(event.data.process_name),
-                    "1" if event.data.is_idle else "0",
+                    payload["id"],
+                    payload["user_id"],
+                    payload["timestamp_utc"],
+                    payload["duration_s"],
+                    payload["event_type"],
+                    _csv_safe(payload["app_name"]),
+                    _csv_safe(payload["process_name"]),
+                    "1" if payload["is_idle"] else "0",
                 ])
             yield output.getvalue().encode("utf-8")
 
@@ -276,7 +283,7 @@ class ExportService:
                 prefix = b"" if first else b","
                 first = False
                 yield prefix + json.dumps(
-                    event.to_dict(),
+                    _event_payload(event),
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ).encode("utf-8")
@@ -288,130 +295,6 @@ class ExportService:
             + "}"
         )
         yield suffix.encode("utf-8")
-
-    async def export_events(
-        self,
-        start: datetime,
-        end: datetime,
-        fmt: ExportFormat = "csv",
-    ) -> ExportResult:
-        """Export activity data for the given time range.
-
-        Args:
-            start: Inclusive start of the time range (timezone-aware UTC).
-            end: Inclusive end of the time range (timezone-aware UTC).
-            fmt: Output format — ``"csv"`` or ``"json"``.
-
-        Returns:
-            An ``ExportResult`` with content, filename, and media type.
-            Empty ranges produce an empty archive (not an error).
-        """
-        # These three reads are independent (no data dependency) — fetch
-        # them concurrently instead of three sequential round-trips.
-        events, focus_sessions, daily_reports = await asyncio.gather(
-            self._activity_repo.query_range(self._user_id, start, end),
-            self._focus_repo.query_range(self._user_id, start.date(), end.date()),
-            self._report_repo.query_range(self._user_id, start.date(), end.date()),
-        )
-
-        date_suffix = f"{start.date().isoformat()}_{end.date().isoformat()}"
-
-        if fmt == "csv":
-            content = self._build_csv(events, focus_sessions, daily_reports)
-            return ExportResult(
-                content=content.encode("utf-8-sig"),
-                filename=f"mindflow_export_{date_suffix}.csv",
-                media_type="text/csv; charset=utf-8",
-            )
-
-        content = self._build_json(events, focus_sessions, daily_reports)
-        return ExportResult(
-            content=content.encode("utf-8"),
-            filename=f"mindflow_export_{date_suffix}.json",
-            media_type="application/json; charset=utf-8",
-        )
-
-    # ── CSV builder ─────────────────────────────────────────────────
-
-    @staticmethod
-    def _build_csv(
-        events: list[ActivityEvent],
-        focus_sessions: list[dict[str, Any]],
-        daily_reports: list[dict[str, Any]],
-    ) -> str:
-        """Build a CSV string with three sections.
-
-        Sections are separated by comment lines (``# Section Name``).
-        """
-        output = io.StringIO()
-        output.write("﻿")  # BOM for Excel compatibility
-
-        # ── Events section ─────────────────────────────────────────
-        output.write("# Events\n")
-        writer = csv.writer(output, lineterminator="\n")
-        writer.writerow(_EVENTS_CSV_HEADERS)
-        for ev in events:
-            writer.writerow([
-                ev.id,
-                ev.user_id,
-                ev.timestamp_utc.isoformat(),
-                ev.duration_s,
-                ev.event_type,
-                _csv_safe(ev.data.app_name),
-                _csv_safe(ev.data.process_name),
-                "1" if ev.data.is_idle else "0",
-            ])
-
-        # ── Focus sessions section ──────────────────────────────────
-        output.write("# Focus Sessions\n")
-        writer = csv.writer(output, lineterminator="\n")
-        writer.writerow(_FOCUS_CSV_HEADERS)
-        for session in focus_sessions:
-            writer.writerow([
-                session.get("id", ""),
-                session.get("user_id", ""),
-                session.get("date", ""),
-                session.get("start_time", ""),
-                session.get("end_time", ""),
-                session.get("session_type", ""),
-                _csv_safe(session.get("dominant_app") or ""),
-                session.get("focus_score", ""),
-                session.get("switch_count", ""),
-            ])
-
-        # ── Daily reports section ───────────────────────────────────
-        output.write("# Daily Reports\n")
-        writer = csv.writer(output, lineterminator="\n")
-        writer.writerow(_REPORTS_CSV_HEADERS)
-        for report in daily_reports:
-            writer.writerow([
-                report.get("id", ""),
-                report.get("user_id", ""),
-                report.get("date", ""),
-                report.get("total_focus_min", ""),
-                report.get("total_distraction_min", ""),
-                report.get("focus_score", ""),
-                report.get("switch_frequency", ""),
-                _csv_safe(report.get("pattern_summary") or ""),
-            ])
-
-        return output.getvalue()
-
-    # ── JSON builder ────────────────────────────────────────────────
-
-    @staticmethod
-    def _build_json(
-        events: list[ActivityEvent],
-        focus_sessions: list[dict[str, Any]],
-        daily_reports: list[dict[str, Any]],
-    ) -> str:
-        """Build a JSON string with three top-level keys."""
-        data: dict[str, Any] = {
-            "events": [ev.to_dict() for ev in events],
-            "focus_sessions": focus_sessions,
-            "daily_reports": daily_reports,
-        }
-        return json.dumps(data, ensure_ascii=False, indent=2)
 
     # ── Format validation ───────────────────────────────────────────
 

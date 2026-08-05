@@ -12,7 +12,6 @@ Usage::
         activity_repo=activity_repo,
         intervention_repo=intervention_repo,
         session_factory=session_factory,
-        orchestrator=orchestrator,
         llm_service=llm_service,
         analysis_repository=analysis_repository,
     )
@@ -43,7 +42,6 @@ class PanelServiceConfig:
     activity_repo: Any  # SQLAlchemyActivityRepository
     intervention_repo: Any  # InterventionLogRepository
     session_factory: Any  # async_sessionmaker[AsyncSession]
-    orchestrator: Any  # PanelOrchestrator
     llm_service: Any  # LLMService
     analysis_repository: Any  # SQLAlchemyProcrastinationAnalysisRepository
     effectiveness_service: Any | None = None  # EffectivenessService

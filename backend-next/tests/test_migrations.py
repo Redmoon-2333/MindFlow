@@ -514,3 +514,200 @@ class TestMigrations:
         conn.close()
 
         assert "heartbeat_at" not in downgraded_columns
+
+
+# ── Destructive ML shadow-prediction migration (0019) ───────────────────────
+
+
+@pytest.mark.asyncio
+class TestMlShadowPredictionsMigration:
+    """0019 is destructive, but downgrade restores the documented schema."""
+
+    async def test_downgrade_restores_empty_0017_schema(self, sync_db_url: str) -> None:
+        import asyncio
+        import sqlite3
+
+        from alembic.config import Config
+
+        from alembic import command
+        from mindflow.infrastructure.migrations import BASE_DIR
+
+        def _run_alembic(action: str, revision: str) -> None:
+            cfg = Config(str(BASE_DIR / "alembic.ini"))
+            cfg.set_main_option("sqlalchemy.url", sync_db_url)
+            getattr(command, action)(cfg, revision)
+
+        # Build the pre-0019 state and prove that upgrade intentionally drops
+        # rows; downgrade can restore structure, not data deleted by DROP TABLE.
+        await asyncio.to_thread(
+            _run_alembic,
+            "upgrade",
+            "0018_add_feedback_snapshot_checks",
+        )
+        sync_path = sync_db_url.replace("sqlite://", "")
+        conn = sqlite3.connect(sync_path)
+        conn.execute(
+            """
+            INSERT INTO ml_shadow_predictions (
+                id, user_id, window_start_utc, candidate_version,
+                candidate_proba, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("shadow-1", 1, "2026-07-24T08:00:00Z", "candidate-v1", 0.7,
+             "2026-07-24T08:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+
+        await asyncio.to_thread(_run_alembic, "upgrade", "0019_drop_ml_shadow_predictions")
+        await asyncio.to_thread(
+            _run_alembic,
+            "downgrade",
+            "0018_add_feedback_snapshot_checks",
+        )
+
+        conn = sqlite3.connect(sync_path)
+        columns = {
+            row[1]: {"type": row[2], "notnull": row[3], "default": row[4]}
+            for row in conn.execute("PRAGMA table_info(ml_shadow_predictions)")
+        }
+        row_count = conn.execute("SELECT COUNT(*) FROM ml_shadow_predictions").fetchone()[0]
+        conn.close()
+
+        assert set(columns) == {
+            "id", "user_id", "window_start_utc", "candidate_version",
+            "active_version", "candidate_proba", "active_proba", "delta",
+            "status", "created_at",
+        }
+        assert columns["status"]["default"] == "'shadow'"
+        assert row_count == 0
+
+
+# ── Intervention slot reservations migration (0020) ──────────────────────────
+
+
+@pytest.mark.asyncio
+class TestInterventionSlotReservationsMigration:
+    """0020 chains from the 0019 head and creates the exact table schema."""
+
+    _TABLE = "intervention_slot_reservations"
+    _REVISION = "0020_create_intervention_slot_reservations"
+    _DOWN_REVISION = "0019_drop_ml_shadow_predictions"
+
+    async def test_migration_0020_exists_and_chains_from_0019(self) -> None:
+        """The migration file exists, chains from 0019, and upgrades the table."""
+        import importlib.util
+        import sys
+
+        from mindflow.infrastructure.migrations import BASE_DIR
+
+        version_path = (
+            BASE_DIR / "alembic" / "versions" / f"{self._REVISION}.py"
+        )
+        assert version_path.exists(), (
+            f"{self._REVISION}.py missing — intervention_slot_reservations "
+            "has no migration"
+        )
+
+        spec = importlib.util.spec_from_file_location("_mig_0020", version_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        assert module.revision == self._REVISION
+        assert module.down_revision == self._DOWN_REVISION
+
+    async def test_upgrade_creates_exact_table_schema(self, async_db_url, sync_db_url):
+        """Upgrade to head creates the exact columns/constraint/server_default."""
+        await run_migrations(async_db_url)
+
+        tables = _get_table_names(sync_db_url)
+        assert self._TABLE in tables
+
+        import sqlite3
+
+        sync_path = sync_db_url.replace("sqlite://", "")
+        conn = sqlite3.connect(sync_path)
+
+        # Columns must mirror schema.py (intervention_slot_reservations).
+        cols = {
+            row[1]: {"type": row[2], "notnull": row[3], "pk": row[5]}
+            for row in conn.execute(f"PRAGMA table_info({self._TABLE})")
+        }
+        assert cols["id"]["type"] == "TEXT" and cols["id"]["pk"] == 1
+        assert cols["user_id"]["type"] == "INTEGER" and cols["user_id"]["notnull"] == 1
+        assert cols["date"]["type"] == "TEXT" and cols["date"]["notnull"] == 1
+        assert cols["slot_index"]["type"] == "INTEGER" and cols["slot_index"]["notnull"] == 1
+        assert (
+            cols["intervention_type"]["type"] == "TEXT"
+            and cols["intervention_type"]["notnull"] == 1
+        )
+        assert cols["reserved_at"]["type"] == "TEXT" and cols["reserved_at"]["notnull"] == 1
+
+        # The UNIQUE(user_id, date, slot_index) constraint creates a unique index.
+        unique_indexes = {
+            row[1]: row[2]
+            for row in conn.execute(f"PRAGMA index_list({self._TABLE})")
+        }
+        assert any(unique_indexes[name] == 1 for name in unique_indexes), (
+            "expected a UNIQUE index on intervention_slot_reservations"
+        )
+
+        # server_default must be the UTC timestamp expression from schema.py.
+        ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (self._TABLE,),
+        ).fetchone()[0]
+        conn.close()
+        assert "strftime('%Y-%m-%dT%H:%M:%SZ','now')" in ddl
+
+    async def test_downgrade_removes_table_and_reupgrade_recreates(self, sync_db_url) -> None:
+        """Downgrade to 0019 drops the table; upgrade back recreates it."""
+        import asyncio
+        import sqlite3
+
+        from alembic.config import Config
+
+        from alembic import command
+        from mindflow.infrastructure.migrations import BASE_DIR
+
+        def _run_alembic(action: str, revision: str) -> None:
+            cfg = Config(str(BASE_DIR / "alembic.ini"))
+            cfg.set_main_option("sqlalchemy.url", sync_db_url)
+            getattr(command, action)(cfg, revision)
+
+        sync_path = sync_db_url.replace("sqlite://", "")
+
+        # 1. Upgrade to head → table present.
+        await asyncio.to_thread(_run_alembic, "upgrade", self._REVISION)
+        conn = sqlite3.connect(sync_path)
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (self._TABLE,),
+        ).fetchone() is not None
+        conn.close()
+
+        # 2. Downgrade to 0019 → table removed.
+        await asyncio.to_thread(_run_alembic, "downgrade", self._DOWN_REVISION)
+        conn = sqlite3.connect(sync_path)
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (self._TABLE,),
+        ).fetchone() is None
+        conn.close()
+
+        # 3. Re-upgrade → table recreated with the same schema.
+        await asyncio.to_thread(_run_alembic, "upgrade", self._REVISION)
+        conn = sqlite3.connect(sync_path)
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (self._TABLE,),
+        ).fetchone() is not None
+        cols = {
+            row[1]
+            for row in conn.execute(f"PRAGMA table_info({self._TABLE})")
+        }
+        conn.close()
+        assert cols == {
+            "id", "user_id", "date", "slot_index", "intervention_type", "reserved_at",
+        }

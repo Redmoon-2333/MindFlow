@@ -16,18 +16,22 @@ Covers parity and new-graph behaviour:
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from langchain_core.language_models import FakeListChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import tool as lc_tool
 
+from mindflow.agents.langchain_tools import make_get_latest_analysis
 from mindflow.graph.chat_graph import (
     _LLM_DOWN_REPLY,
     _SAFE_REPLY,
+    CHAT_SYSTEM_PROMPT,
     ChatGraph,
 )
+from mindflow.graph.tools import LatestAnalysisOutput, LatestAnalysisTool
 from mindflow.infrastructure.security.crisis_detector import (
     CrisisDetector,
     CrisisLevel,
@@ -78,6 +82,42 @@ def _make_ainvoke_model(responses: list[AIMessage]) -> AsyncMock:
     model.ainvoke = AsyncMock(side_effect=_ainvoke)
     model.bind_tools = MagicMock(return_value=model)
     return model
+
+
+class _ContextEchoLatestAnalysisTool(LatestAnalysisTool):
+    """Expose the invocation context through a real typed tool adapter."""
+
+    def __init__(self, *, synchronize_calls: bool = False) -> None:
+        super().__init__(analysis_repo=AsyncMock())
+        self._synchronize_calls = synchronize_calls
+        self._entered_count = 0
+        self._captured_count = 0
+        self._both_entered = asyncio.Event()
+        self._both_captured = asyncio.Event()
+
+    async def execute(self) -> LatestAnalysisOutput:
+        if self._synchronize_calls:
+            self._entered_count += 1
+            if self._entered_count == 2:
+                self._both_entered.set()
+            await self._both_entered.wait()
+
+        context = self.context
+
+        if self._synchronize_calls:
+            self._captured_count += 1
+            if self._captured_count == 2:
+                self._both_captured.set()
+            await self._both_captured.wait()
+
+        if context is None:
+            return LatestAnalysisOutput(error="context missing")
+        return LatestAnalysisOutput(
+            analysis={
+                "user_id": context.user_id,
+                "session_id": context.session_id,
+            }
+        )
 
 
 def _make_chat_graph(
@@ -166,6 +206,76 @@ class TestParityNoTool:
         assert result.session_id == "meta-test"
 
 
+class TestSystemPrompt:
+    """The behavioral contract is included in every model invocation."""
+
+    async def test_initial_call_starts_with_system_prompt(self) -> None:
+        """Fresh calls put the chat contract before persisted history."""
+        captured_messages: list[Any] = []
+
+        async def capture(messages: list[Any]) -> AIMessage:
+            captured_messages.extend(messages)
+            return AIMessage(content="收到")
+
+        model = AsyncMock()
+        model.ainvoke = AsyncMock(side_effect=capture)
+        model.bind_tools = MagicMock(return_value=model)
+        repo = _make_mock_chat_repo()
+        repo.recent = AsyncMock(return_value=[
+            {"role": "user", "content": "之前的问题"},
+            {"role": "assistant", "content": "之前的回答"},
+        ])
+        graph = _make_chat_graph(model=model, chat_repo=repo)
+
+        await graph.ask(user_id=1, session_id="s1", message="新的问题")
+
+        assert isinstance(captured_messages[0], SystemMessage)
+        assert captured_messages[0].content == CHAT_SYSTEM_PROMPT
+        assert sum(
+            message.content == CHAT_SYSTEM_PROMPT for message in captured_messages
+        ) == 1
+        assert "使用中文" in CHAT_SYSTEM_PROMPT
+        assert "引用具体证据" in CHAT_SYSTEM_PROMPT
+        assert "禁止使用以下词汇" in CHAT_SYSTEM_PROMPT
+        assert all(
+            call.args[2] != CHAT_SYSTEM_PROMPT for call in repo.append.call_args_list
+        )
+
+    async def test_correction_call_keeps_single_leading_system_prompt(self) -> None:
+        """Forbidden-word correction preserves the contract without duplication."""
+        invocations: list[list[Any]] = []
+        responses = iter([
+            AIMessage(content="根据诊断结果，需要调整。"),
+            AIMessage(content="根据行为数据，建议调整作息。"),
+        ])
+
+        async def capture(messages: list[Any]) -> AIMessage:
+            invocations.append(list(messages))
+            return next(responses)
+
+        model = AsyncMock()
+        model.ainvoke = AsyncMock(side_effect=capture)
+        model.bind_tools = MagicMock(return_value=model)
+        repo = _make_mock_chat_repo()
+        graph = _make_chat_graph(model=model, chat_repo=repo)
+
+        result = await graph.ask(user_id=1, session_id="s1", message="分析")
+
+        assert result.answer == "根据行为数据，建议调整作息。"
+        assert len(invocations) == 2
+        for messages in invocations:
+            assert isinstance(messages[0], SystemMessage)
+            assert messages[0].content == CHAT_SYSTEM_PROMPT
+            assert sum(
+                message.content == CHAT_SYSTEM_PROMPT for message in messages
+            ) == 1
+        assert isinstance(invocations[1][-1], SystemMessage)
+        assert "请用中文重新回答" in str(invocations[1][-1].content)
+        assert all(
+            call.args[2] != CHAT_SYSTEM_PROMPT for call in repo.append.call_args_list
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tool tests
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -230,6 +340,36 @@ class TestEachTool:
         assert "建议你休息一下" in result.answer
         assert "query_evidence" in result.tools_used
         assert "get_latest_analysis" in result.tools_used
+        assert result.evidence_cited is True
+
+    async def test_multiple_tool_calls_in_one_response_are_all_recorded(self) -> None:
+        """One model response can request multiple tools and records each call."""
+        combined_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "name": "query_evidence",
+                    "args": {"days_back": 7},
+                },
+                {
+                    "id": "call_2",
+                    "name": "get_latest_analysis",
+                    "args": {},
+                },
+            ],
+        )
+        final = AIMessage(content="根据证据和分析，建议你休息一下。")
+
+        model = _make_ainvoke_model([combined_call, final])
+        tool_a = _make_tool("query_evidence", "evidence data")
+        tool_b = _make_tool("get_latest_analysis", "analysis data")
+        graph = _make_chat_graph(model=model, tools=[tool_a, tool_b])
+
+        result = await graph.ask(user_id=1, session_id="s1", message="分析")
+
+        assert result.answer == "根据证据和分析，建议你休息一下。"
+        assert set(result.tools_used) == {"query_evidence", "get_latest_analysis"}
         assert result.evidence_cited is True
 
     async def test_tool_not_found_handled(self) -> None:
@@ -519,6 +659,197 @@ class TestConcurrency:
 
         release.set()
         await asyncio.gather(task_a, task_b)
+
+    async def test_different_users_keep_tool_context_isolated(self) -> None:
+        """Concurrent tool calls keep each request's user and session context."""
+        adapter = _ContextEchoLatestAnalysisTool(synchronize_calls=True)
+        analysis_tool = make_get_latest_analysis(adapter)
+        initial_entered = {
+            "request-a": asyncio.Event(),
+            "request-b": asyncio.Event(),
+        }
+        release_initial = asyncio.Event()
+
+        async def context_echo_ainvoke(messages: list[Any]) -> AIMessage:
+            request = next(
+                str(message.content)
+                for message in messages
+                if getattr(message, "type", "") == "human"
+            )
+            tool_results = [
+                message
+                for message in messages
+                if getattr(message, "type", "") == "tool"
+            ]
+            if tool_results:
+                return AIMessage(content=str(tool_results[-1].content))
+
+            initial_entered[request].set()
+            await release_initial.wait()
+            return AIMessage(
+                content="",
+                tool_calls=[{
+                    "id": f"call-{request}",
+                    "name": "get_latest_analysis",
+                    "args": {},
+                }],
+            )
+
+        model = AsyncMock()
+        model.ainvoke = AsyncMock(side_effect=context_echo_ainvoke)
+        model.bind_tools = MagicMock(return_value=model)
+        graph = _make_chat_graph(
+            model=model,
+            tools=[analysis_tool],
+            tool_adapters=[adapter],
+        )
+
+        task_a = asyncio.create_task(
+            graph.ask(user_id=101, session_id="session-a", message="request-a")
+        )
+        await initial_entered["request-a"].wait()
+        task_b = asyncio.create_task(
+            graph.ask(user_id=202, session_id="session-b", message="request-b")
+        )
+        await initial_entered["request-b"].wait()
+        release_initial.set()
+        result_a, result_b = await asyncio.gather(task_a, task_b)
+
+        assert json.loads(result_a.answer) == {
+            "user_id": 101,
+            "session_id": "session-a",
+        }
+        assert json.loads(result_b.answer) == {
+            "user_id": 202,
+            "session_id": "session-b",
+        }
+
+    async def test_finished_request_does_not_clear_concurrent_tool_context(self) -> None:
+        """One request's cleanup cannot clear another request's tool context."""
+        adapter = _ContextEchoLatestAnalysisTool()
+        analysis_tool = make_get_latest_analysis(adapter)
+        a_final_entered = asyncio.Event()
+        b_initial_entered = asyncio.Event()
+        release_a_final = asyncio.Event()
+        release_b_initial = asyncio.Event()
+
+        async def staggered_ainvoke(messages: list[Any]) -> AIMessage:
+            request = next(
+                str(message.content)
+                for message in messages
+                if getattr(message, "type", "") == "human"
+            )
+            tool_results = [
+                message
+                for message in messages
+                if getattr(message, "type", "") == "tool"
+            ]
+            if tool_results:
+                if request == "request-a":
+                    a_final_entered.set()
+                    await release_a_final.wait()
+                return AIMessage(content=str(tool_results[-1].content))
+
+            if request == "request-b":
+                b_initial_entered.set()
+                await release_b_initial.wait()
+            return AIMessage(
+                content="",
+                tool_calls=[{
+                    "id": f"call-{request}",
+                    "name": "get_latest_analysis",
+                    "args": {},
+                }],
+            )
+
+        model = AsyncMock()
+        model.ainvoke = AsyncMock(side_effect=staggered_ainvoke)
+        model.bind_tools = MagicMock(return_value=model)
+        graph = _make_chat_graph(
+            model=model,
+            tools=[analysis_tool],
+            tool_adapters=[adapter],
+        )
+
+        task_a = asyncio.create_task(
+            graph.ask(user_id=101, session_id="session-a", message="request-a")
+        )
+        await a_final_entered.wait()
+        task_b = asyncio.create_task(
+            graph.ask(user_id=202, session_id="session-b", message="request-b")
+        )
+        await b_initial_entered.wait()
+
+        release_a_final.set()
+        result_a = await task_a
+        release_b_initial.set()
+        result_b = await task_b
+
+        assert json.loads(result_a.answer) == {
+            "user_id": 101,
+            "session_id": "session-a",
+        }
+        assert json.loads(result_b.answer) == {
+            "user_id": 202,
+            "session_id": "session-b",
+        }
+
+    async def test_nested_request_restores_outer_tool_context(self) -> None:
+        """A nested ask in the same task restores the outer request context."""
+        adapter = _ContextEchoLatestAnalysisTool()
+        analysis_tool = make_get_latest_analysis(adapter)
+        graph: ChatGraph
+
+        async def nested_ainvoke(messages: list[Any]) -> AIMessage:
+            request = next(
+                str(message.content)
+                for message in messages
+                if getattr(message, "type", "") == "human"
+            )
+            tool_results = [
+                message
+                for message in messages
+                if getattr(message, "type", "") == "tool"
+            ]
+            if request == "inner":
+                return AIMessage(content="inner complete")
+            if tool_results:
+                return AIMessage(content=str(tool_results[-1].content))
+
+            inner_result = await graph.ask(
+                user_id=202,
+                session_id="inner-session",
+                message="inner",
+            )
+            assert inner_result.answer == "inner complete"
+            return AIMessage(
+                content="",
+                tool_calls=[{
+                    "id": "call-outer",
+                    "name": "get_latest_analysis",
+                    "args": {},
+                }],
+            )
+
+        model = AsyncMock()
+        model.ainvoke = AsyncMock(side_effect=nested_ainvoke)
+        model.bind_tools = MagicMock(return_value=model)
+        graph = _make_chat_graph(
+            model=model,
+            tools=[analysis_tool],
+            tool_adapters=[adapter],
+        )
+
+        result = await graph.ask(
+            user_id=101,
+            session_id="outer-session",
+            message="outer",
+        )
+
+        assert json.loads(result.answer) == {
+            "user_id": 101,
+            "session_id": "outer-session",
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

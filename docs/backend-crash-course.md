@@ -243,11 +243,11 @@ backend/
 ### 4.1 数据流
 
 ```
-ActivityLog (原始, 每5秒)
+ActivityEvent / InputTelemetry (原始采集)
        │
-       ▼  BehaviorFeatureExtractor (30分钟窗口聚合)
+       ▼  V2 rollup (5分钟窗口聚合)
        │
-特征向量 (14维, 每30分钟一个)
+特征向量 (schema-v3, 24维, 每5分钟一个)
        │
        ├──→ BaselineModel.update()  → 更新个人基线（在线学习）
        │

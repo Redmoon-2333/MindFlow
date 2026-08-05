@@ -4,8 +4,6 @@ Covers:
   - EvidenceBundleBuilder with mock ML models produces ML items.
   - EvidenceBundleBuilder without ML models falls back to rule-only.
   - ML inference failure degrades gracefully to rule-based only.
-  - GET /api/v1/analytics/model-status reports loaded vs unloaded.
-  - BehaviorFeatureExtractor delegates title analysis to domain/features.
 """
 
 from __future__ import annotations
@@ -15,11 +13,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from mindflow.api.errors import register_exception_handlers
-from mindflow.api.routes.analytics import router as analytics_router
 from mindflow.domain.events import make_event
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
@@ -30,7 +24,6 @@ from mindflow.infrastructure.repositories.intervention import (
     intervention_logs,
 )
 from mindflow.services.evidence_service import EvidenceBundleBuilder, baseline_models_metadata
-from mindflow.train.features import BehaviorFeatureExtractor
 
 
 def _utc(iso: str) -> datetime:
@@ -278,121 +271,3 @@ class TestMLInferenceFailureGracefulDegradation:
         # ML items should NOT be present (degraded gracefully)
         assert "ml_focus_probability" not in metrics
         assert "ml_behavior_cluster" not in metrics
-
-
-@pytest.mark.skip(reason="V1 model_manager removed — test needs V2 fixture update")
-class TestModelStatusEndpoint:
-    """Verify the model-status endpoint returns correct status."""
-
-    async def test_model_status_endpoint(self, engine, session_factory):
-        """GET /api/v1/analytics/model-status reports correct loaded state."""
-        async with engine.begin() as conn:
-            await conn.run_sync(activity_events.metadata.create_all)
-
-        # --- Case 1: models not loaded (model_manager=None) ---
-        app_none = FastAPI()
-        register_exception_handlers(app_none)
-        app_none.include_router(analytics_router, prefix="/api/v1")
-        app_none.state.model_manager = None
-
-        client_none = TestClient(app_none)
-        resp_none = client_none.get("/api/v1/analytics/model-status")
-        assert resp_none.status_code == 200
-        body_none = resp_none.json()
-        assert body_none["loaded"] is False
-        assert body_none["mode"] == "rule_engine_only"
-        assert "ML models not available" in body_none["message"]
-
-        # --- Case 2: models loaded (mock ModelManager for backward compat) ---
-        mock_mm = MagicMock()
-        mock_mm.current_version_tag = "20260718"
-        mock_mm.list_versions.return_value = ["20260718"]
-        mock_mm.readiness_status.return_value = {"ready": True, "reasons": []}
-        mock_mm.classifier = MagicMock()
-        mock_mm.classifier._is_fitted = True
-        mock_mm.classifier.get_feature_importance.return_value = {"focus_score": 0.5}
-
-        app_loaded = FastAPI()
-        register_exception_handlers(app_loaded)
-        app_loaded.include_router(analytics_router, prefix="/api/v1")
-        app_loaded.state.model_manager = mock_mm
-        app_loaded.state.v2_model_manager = None
-        app_loaded.state.model_training_mode = "ready"
-
-        client_loaded = TestClient(app_loaded)
-        resp_loaded = client_loaded.get("/api/v1/analytics/model-status")
-        assert resp_loaded.status_code == 200
-        body_loaded = resp_loaded.json()
-        assert body_loaded["loaded"] is True
-        assert body_loaded["mode"] == "ready"
-        assert body_loaded["version"] == "20260718"
-        assert body_loaded["available_versions"] == ["20260718"]
-        assert "ready" in body_loaded["message"]
-
-
-class TestFeatureExtractorDelegatesToDomain:
-    """Verify BehaviorFeatureExtractor uses domain/features.py functions."""
-
-    def test_feature_extractor_delegates_to_domain(self):
-        """TitleAnalyzer calls domain.features.title_features, converting booleans to floats."""
-        extractor = BehaviorFeatureExtractor(window_minutes=30)
-        result = extractor.title_analyzer.analyze("main.py - VS Code")
-
-        # Code editor title should produce is_code_editor=1.0
-        assert result["is_code_editor"] == 1.0
-        # Other flags should be 0.0
-        assert result["is_document"] == 0.0
-        assert result["is_meeting"] == 0.0
-
-    def test_feature_extractor_title_delegation_url(self):
-        """TitleAnalyzer correctly delegates URL detection to domain."""
-        extractor = BehaviorFeatureExtractor()
-        # Use .org to avoid false-positive on ".c" substring in ".com"
-        result = extractor.title_analyzer.analyze("https://example.org/page")
-
-        assert result["is_browser"] == 1.0
-        assert result["is_code_editor"] == 0.0
-
-    def test_feature_extractor_title_delegation_meeting(self):
-        """TitleAnalyzer correctly delegates meeting detection to domain."""
-        extractor = BehaviorFeatureExtractor()
-        result = extractor.title_analyzer.analyze("Daily standup - Zoom Meeting")
-
-        assert result["is_meeting"] == 1.0
-
-    def test_feature_extractor_empty_title(self):
-        """TitleAnalyzer handles empty title gracefully."""
-        extractor = BehaviorFeatureExtractor()
-        result = extractor.title_analyzer.analyze("")
-        assert all(v == 0.0 for v in result.values())
-
-    def test_feature_extractor_get_feature_names(self):
-        """BehaviorFeatureExtractor exposes 17 feature names."""
-        extractor = BehaviorFeatureExtractor()
-        names = extractor.get_feature_names()
-        assert len(names) == 17
-        assert "unique_app_count" in names
-        assert "title_code_ratio" in names
-
-    def test_feature_extractor_extract_session_features_uses_domain(self):
-        """extract_session_features produces features when given valid events."""
-        extractor = BehaviorFeatureExtractor(window_minutes=30)
-
-        # Create events spanning >30 min so the extractor produces ≥2 boundaries
-        events = []
-        for i in range(20):
-            ev = make_event(
-                user_id=1,
-                timestamp_utc=_BASE_TS + timedelta(minutes=i * 2),
-                duration_s=60.0,
-                process_name="Code.exe",
-                is_idle=False,
-            )
-            events.append(ev)
-
-        rows = extractor.extract_session_features(events)
-        # Should produce at least one feature row
-        assert len(rows) >= 1
-        # Each row should have the 17 feature keys
-        for name in BehaviorFeatureExtractor.FEATURE_NAMES:
-            assert name in rows[0]

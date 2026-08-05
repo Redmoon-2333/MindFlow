@@ -83,31 +83,26 @@ def test_checkpoint() -> Any:
 
 
 class TestSettingsDefaults:
-    """All new graph/chceckpoint flags default to False (legacy paths)."""
-
-    def test_graph_version_defaults_to_1(self) -> None:
-        settings = Settings()
-        assert settings.graph_version == 1
+    """All graph flags default to v2 (new) paths."""
 
     def test_checkpointing_enabled_defaults_to_false(self) -> None:
         settings = Settings()
         assert settings.checkpointing_enabled is False
 
-    def test_new_analysis_graph_defaults_to_false(self) -> None:
+    def test_new_analysis_graph_defaults_to_true(self) -> None:
         settings = Settings()
-        assert settings.new_analysis_graph is False
+        assert settings.new_analysis_graph is True
 
-    def test_new_chat_graph_defaults_to_false(self) -> None:
+    def test_new_chat_graph_defaults_to_true(self) -> None:
         settings = Settings()
-        assert settings.new_chat_graph is False
+        assert settings.new_chat_graph is True
 
-    def test_all_flags_false_by_default(self) -> None:
-        """Verify complete legacy default posture."""
+    def test_all_flags_default_to_v2_paths(self) -> None:
+        """Verify the v2 default posture."""
         settings = Settings()
-        assert settings.graph_version == 1
         assert settings.checkpointing_enabled is False
-        assert settings.new_analysis_graph is False
-        assert settings.new_chat_graph is False
+        assert settings.new_analysis_graph is True
+        assert settings.new_chat_graph is True
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -6,7 +6,7 @@ Usage:
     python -m mindflow.train
 
     # Train with synthetic data, explicit args
-    python -m mindflow.train --source synthetic --days 7 --samples-per-hour 6
+    python -m mindflow.train --source synthetic_v2 --days 7 --num-users 3
 
     # Train with real data from database
     python -m mindflow.train --source db
@@ -192,20 +192,16 @@ def main() -> None:
         "--source",
         choices=["synthetic_v2", "db"],
         default="synthetic_v2",
-        help="Data source: synthetic_v2 (archetype-based 24-dim windows) or db (real V2 feature windows)",
+        help=(
+            "Data source: synthetic_v2 (archetype-based 24-dim windows) "
+            "or db (real V2 feature windows)"
+        ),
     )
     parser.add_argument(
         "--days",
         type=int,
         default=14,
         help="Number of synthetic days (default: 14)",
-    )
-    parser.add_argument(
-        "--samples-per-hour",
-        type=int,
-        default=12,
-        dest="samples_per_hour",
-        help="Synthetic data samples per hour (default: 12)",
     )
     parser.add_argument(
         "--seed",
@@ -219,12 +215,6 @@ def main() -> None:
         default=1,
         dest="num_users",
         help="Number of virtual users to generate (default: 1)",
-    )
-    parser.add_argument(
-        "--include-procrastination",
-        action="store_true",
-        dest="include_procrastination",
-        help="Include realistic procrastination patterns in synthetic data",
     )
     parser.add_argument(
         "--user-profiles",
@@ -366,10 +356,8 @@ def main() -> None:
         data_dir=data_dir,
         models_dir=models_dir,
         days=args.days,
-        samples_per_hour=args.samples_per_hour,
         seed=args.seed,
-        num_users=args.num_users if not profiles_arg else len(profiles_arg),
-        include_procrastination=args.include_procrastination,
+        num_users=args.num_users,
         user_profiles=profiles_arg,
         events=events,
         feature_windows=feature_windows,
@@ -380,7 +368,7 @@ def main() -> None:
         print("\nTraining pipeline did not complete (no data).")
         sys.exit(1)
 
-    print(f"\nTraining report saved to {models_dir / 'training_report.json'}")
+    print(f"\nTraining report saved to {v2_models_dir / 'training_report.json'}")
     print("Done.")
 
 

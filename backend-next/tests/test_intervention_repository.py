@@ -23,6 +23,7 @@ from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
     intervention_logs,
 )
+from mindflow.infrastructure.schema import intervention_slot_reservations
 from mindflow.services.intervention_throttle import (
     InterventionThrottle,
 )
@@ -340,3 +341,67 @@ class TestClockInjection:
         )
         decision = await throttle.can_intervene(1, "nudge")
         assert decision.allowed, f"Expected OK after reset, got {decision.reason}"
+
+
+class TestInterventionSlotReservationExpiry:
+    """Crashed-process leases are reclaimable without weakening atomicity."""
+
+    async def test_expired_same_day_reservation_is_reclaimed(
+        self, engine, session_factory
+    ) -> None:
+        clock = FakeClock(datetime(2026, 1, 15, 8, 0, 0, tzinfo=UTC))
+        async with engine.begin() as conn:
+            await conn.run_sync(intervention_slot_reservations.metadata.create_all)
+
+        stale_at = (clock.now() - timedelta(minutes=16)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                intervention_slot_reservations.insert().values(
+                    id="stale-slot",
+                    user_id=1,
+                    date="2026-01-15",
+                    slot_index=1,
+                    intervention_type="nudge",
+                    reserved_at=stale_at,
+                )
+            )
+
+        repo = InterventionLogRepository(session_factory=session_factory, clock=clock)
+        assert await repo.try_reserve_daily_slot(1, 1, "task_breakdown") is True
+
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    intervention_slot_reservations.select().where(
+                        intervention_slot_reservations.c.user_id == 1,
+                        intervention_slot_reservations.c.date == "2026-01-15",
+                        intervention_slot_reservations.c.slot_index == 1,
+                    )
+                )
+            ).one()
+        assert row.intervention_type == "task_breakdown"
+        assert row.reserved_at == "2026-01-15T08:00:00Z"
+
+    async def test_fresh_same_day_reservation_still_conflicts(
+        self, engine, session_factory
+    ) -> None:
+        clock = FakeClock(datetime(2026, 1, 15, 8, 0, 0, tzinfo=UTC))
+        async with engine.begin() as conn:
+            await conn.run_sync(intervention_slot_reservations.metadata.create_all)
+
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                intervention_slot_reservations.insert().values(
+                    id="fresh-slot",
+                    user_id=1,
+                    date="2026-01-15",
+                    slot_index=1,
+                    intervention_type="nudge",
+                    reserved_at="2026-01-15T07:55:00Z",
+                )
+            )
+
+        repo = InterventionLogRepository(session_factory=session_factory, clock=clock)
+        assert await repo.try_reserve_daily_slot(1, 1, "task_breakdown") is False

@@ -25,7 +25,7 @@ from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request  # noqa: B008
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from mindflow.api.deps import get_llm_service, get_workflow_port
 from mindflow.api.errors import ProblemDetail
@@ -44,6 +44,24 @@ class AttributionRequest(BaseModel):
         default=None, description="Date in YYYY-MM-DD format. Defaults to today."
     )
     force: bool = Field(default=False, description="Force re-analysis even if cached.")
+
+    @field_validator("date")
+    @classmethod
+    def validate_date(cls, v: str | None) -> str | None:
+        """Reject malformed or impossible ISO/calendar dates at the boundary.
+
+        Without this, an unparseable ``date`` reaches ``date.fromisoformat`` in
+        the handler and escapes as HTTP 500 via the generic Exception handler.
+        Raising ``ValueError`` here makes FastAPI surface the established RFC
+        9457 ``validation-error`` (422) instead.
+        """
+        if v is None:
+            return v
+        try:
+            date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError(f"无效的日期格式，应为 YYYY-MM-DD: {v!r}") from exc
+        return v
 
 
 @router.post("/analytics/attribution")
@@ -83,6 +101,7 @@ async def post_attribution(
                 AnalysisRequest(
                     user_id=1,
                     target_date=target_date,
+                    analysis_kind="daily_attribution",
                     force=req.force,
                     origin="api",
                 )
@@ -102,7 +121,7 @@ async def post_attribution(
                     "response_text": verdict.rationale,
                 },
                 "source": verdict.source,
-                "cached": False,
+                "cached": verdict.cached,
                 "meta": {
                     "degraded": verdict.source != "panel",
                 },

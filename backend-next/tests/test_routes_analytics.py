@@ -193,11 +193,10 @@ class TestProfile:
         assert "not-found" in data["type"]
 
 
-@pytest.mark.skip(reason="V1 model_manager removed — test needs V2 fixture update")
 def test_model_status_reports_unready_classifier(tmp_path) -> None:
     app = FastAPI()
     app.include_router(analytics_router, prefix="/api/v1")
-    app.state.model_manager = ModelManager(models_dir=tmp_path / "models")
+    app.state.v2_model_manager = ModelManager(models_dir=tmp_path / "models" / "v2")
 
     response = TestClient(app).get("/api/v1/analytics/model-status")
 
@@ -209,12 +208,11 @@ def test_model_status_reports_unready_classifier(tmp_path) -> None:
     assert "classifier_not_fitted" in data["reasons"]
 
 
-@pytest.mark.skip(reason="V1 model_manager removed — test needs V2 fixture update")
 def test_model_status_reports_shadow_mode_without_active_model() -> None:
     app = FastAPI()
     app.include_router(analytics_router, prefix="/api/v1")
-    app.state.model_manager = None
-    app.state.model_training_mode = "shadow"
+    app.state.v2_model_manager = None
+    app.state.v2_training_mode = "shadow"
 
     data = TestClient(app).get("/api/v1/analytics/model-status").json()
 

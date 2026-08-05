@@ -1,17 +1,15 @@
-"""Tests for agents/orchestrator.py — full panel deliberation paths.
+"""Tests for agents/orchestrator.py — module-level panel deliberation helpers.
 
-Uses ``MockGateway`` with per-fingerprint call counting to simulate
-recording/playback of LLM responses.
+The legacy ``PanelOrchestrator`` class was removed when the v2 ``PanelGraph``
+became the only active panel path.  This file now exercises the module-level
+parsing / citation-validation helpers that ``PanelGraph`` depends on.
+
+Also hosts the shared ``MockGateway`` and JSON fixtures used by
+``test_langgraph_orchestrator`` (which drives the full PanelGraph).
 
 Covers:
-  - Fast path success (no conflict, critic approves)
-  - Conflict escalation path (rebuttal round)
-  - Critic reject → re-verdict
-  - Fake metric reference caught by critic
-  - Bad JSON → expert skipped
-  - 2 attribution failures → PanelUnavailableError
-  - Call count budget guard
-  - Forbidden words in expert opinion → skipped
+  - Citation validation (validate_citations) — bogus vs valid references
+  - Expert opinion parsing skips opinions with hallucinated citations
 """
 
 from __future__ import annotations
@@ -20,13 +18,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
-import pytest
-
-from mindflow.agents.orchestrator import PanelOrchestrator
-from mindflow.agents.types import (
-    PanelUnavailableError,
-    PanelVerdict,
-)
 from mindflow.domain.evidence import EvidenceBundle, EvidenceItem
 from mindflow.domain.procrastination import BehaviorSummary
 
@@ -232,194 +223,8 @@ def _conflict_responses() -> dict[str, list[str]]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Tests
+# Citation validation — review P1: code-enforced citation validation, not prompt trust
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-class TestFastPath:
-    """Fast path: no conflict, critic approves on first try."""
-
-    @pytest.mark.asyncio
-    async def test_fast_path_success(self) -> None:
-        gateway = MockGateway(responses=_fast_responses())
-        orchestrator = PanelOrchestrator(gateway=gateway)
-        verdict = await orchestrator.run(_make_bundle())
-
-        assert isinstance(verdict, PanelVerdict)
-        assert verdict.source == "panel"
-        assert verdict.escalated is False
-        assert verdict.call_count == 6
-        assert len(verdict.types) >= 1
-        assert verdict.recommended_technique is not None
-        assert verdict.rationale != ""
-        assert len(verdict.transcript) >= 4
-
-    @pytest.mark.asyncio
-    async def test_fast_path_call_count(self) -> None:
-        gateway = MockGateway(responses=_fast_responses())
-        verdict = await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-        assert verdict.call_count == 6
-
-
-class TestConflictEscalation:
-    """Conflict escalation: attribution experts disagree → rebuttal round."""
-
-    @pytest.mark.asyncio
-    async def test_conflict_escalation(self) -> None:
-        """TMT says task_aversion, CBT+Emotion say impulsivity → escalation."""
-        gateway = MockGateway(responses=_conflict_responses())
-        verdict = await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-
-        assert verdict.escalated is True
-        assert verdict.call_count == 9
-
-    @pytest.mark.asyncio
-    async def test_conflict_escalation_verdict(self) -> None:
-        """After escalation, should still produce a valid verdict."""
-        gateway = MockGateway(responses=_conflict_responses())
-        verdict = await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-
-        assert verdict.escalated is True
-        assert len(verdict.types) >= 1
-        assert verdict.rationale != ""
-
-
-class TestCriticReject:
-    """Critic rejects → moderator re-verdict → critic approves."""
-
-    @pytest.mark.asyncio
-    async def test_critic_reject_redo(self) -> None:
-        """Critic rejects once (then approves on re-check)."""
-        responses = _fast_responses()
-        responses[FP_CRITIC] = [_CRITIC_REJECT, _CRITIC_APPROVE]
-        responses[FP_MODERATOR] = [_MODERATOR_JSON, _MODERATOR_REDO_JSON]
-
-        gateway = MockGateway(responses=responses)
-        verdict = await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-
-        assert verdict.source == "panel"
-        # analyst(1) + 3attribution(3) + moderator(1) + critic(1) + redo(1) + critic2(1) = 8
-        assert verdict.call_count == 8
-
-    @pytest.mark.asyncio
-    async def test_critic_reject_fake_metric(self) -> None:
-        """Critic identifies fake metric reference → re-verdict → final verdict."""
-        responses = _fast_responses()
-        responses[FP_CRITIC] = [_CRITIC_FAKE_METRIC, _CRITIC_APPROVE]
-        responses[FP_MODERATOR] = [_MODERATOR_JSON, _MODERATOR_REDO_JSON]
-
-        gateway = MockGateway(responses=responses)
-        verdict = await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-
-        assert isinstance(verdict, PanelVerdict)
-        assert verdict.source == "panel"
-
-
-class TestBadJSON:
-    """Malformed JSON from experts → graceful degradation (skip)."""
-
-    @pytest.mark.asyncio
-    async def test_attribution_bad_json_skipped(self) -> None:
-        """One attribution expert returns bad JSON → that expert is skipped."""
-        responses = _fast_responses()
-        responses[FP_TMT] = ["这不是合法 JSON"]
-
-        gateway = MockGateway(responses=responses)
-        verdict = await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-
-        assert verdict.source == "panel"
-        # Still 6 calls (the bad JSON one consumed a call)
-        assert verdict.call_count == 6
-
-    @pytest.mark.asyncio
-    async def test_two_attribution_failures_raises_unavailable(self) -> None:
-        """Two attribution experts fail → PanelUnavailableError (< 2 valid)."""
-        responses = {
-            FP_ANALYST: [_ANALYST_JSON],
-            FP_CBT: ["坏掉的 JSON"],
-            FP_TMT: ["坏掉的 JSON"],
-            FP_EMOTION: [_ATTRIBUTION_IMPULSIVITY],
-        }
-        gateway = MockGateway(responses=responses)
-
-        with pytest.raises(PanelUnavailableError):
-            await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-
-    @pytest.mark.asyncio
-    async def test_analyst_bad_json_creates_skipped_opinion(self) -> None:
-        """Analyst returns bad JSON → produces skipped opinion."""
-        responses = _fast_responses()
-        responses[FP_ANALYST] = ["{{{ 损坏的 JSON"]
-
-        gateway = MockGateway(responses=responses)
-        try:
-            verdict = await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-            assert isinstance(verdict, PanelVerdict)
-        except PanelUnavailableError:
-            pass  # Acceptable if analyst failure cascades
-
-
-class TestBudgetGuard:
-    """Call count > 12 raises PanelBudgetExceededError."""
-
-    @pytest.mark.asyncio
-    async def test_normal_path_never_exceeds_budget(self) -> None:
-        """Fast path (6) and conflict path (9) are within budget."""
-        v1 = await PanelOrchestrator(
-            gateway=MockGateway(responses=_fast_responses()),
-        ).run(_make_bundle())
-        assert v1.call_count <= 12
-
-        v2 = await PanelOrchestrator(
-            gateway=MockGateway(responses=_conflict_responses()),
-        ).run(_make_bundle())
-        assert v2.call_count <= 12
-
-
-class TestForbiddenWords:
-    """Forbidden words in expert output → opinion skipped."""
-
-    @pytest.mark.asyncio
-    async def test_forbidden_word_skips_expert(self) -> None:
-        """Attribution expert uses forbidden word → that expert is skipped."""
-        forbidden_json = """{
-          "attribution_types": ["task_aversion"],
-          "confidence": {"task_aversion": 0.75},
-          "argument": "这个患者需要治疗 [证据: focus.focus_score]",
-          "evidence_citations": ["focus.focus_score"]
-        }"""
-
-        responses = _fast_responses()
-        responses[FP_TMT] = [forbidden_json]
-
-        gateway = MockGateway(responses=responses)
-        try:
-            verdict = await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-            assert verdict.source == "panel"
-        except PanelUnavailableError:
-            pass  # Acceptable if only 1 attribution valid after skip
-
-
-class TestPanelVerdictShape:
-    """PanelVerdict aligns with ProcrastinationAssessment shape."""
-
-    @pytest.mark.asyncio
-    async def test_verdict_shape_matches_assessment(self) -> None:
-        gateway = MockGateway(responses=_fast_responses())
-        verdict = await PanelOrchestrator(gateway=gateway).run(_make_bundle())
-
-        # Common with ProcrastinationAssessment
-        assert hasattr(verdict, "types")
-        assert hasattr(verdict, "confidence")
-        assert hasattr(verdict, "recommended_technique")
-        assert hasattr(verdict, "rationale")
-
-        # Panel-specific extras
-        assert hasattr(verdict, "dissent")
-        assert hasattr(verdict, "transcript")
-        assert hasattr(verdict, "escalated")
-        assert hasattr(verdict, "call_count")
-        assert hasattr(verdict, "source")
 
 
 class TestCitationValidation:

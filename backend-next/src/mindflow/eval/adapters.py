@@ -20,13 +20,15 @@ from typing import Any, Literal
 from loguru import logger
 
 from mindflow.agents.llm_gateway import PanelLLMGateway
-from mindflow.agents.orchestrator import PanelOrchestrator
-from mindflow.agents.types import PanelVerdict
-from mindflow.domain.evidence import EvidenceBundle
+from mindflow.agents.types import PanelUnavailableError, PanelVerdict
+from mindflow.domain.evidence import EvidenceBundle, to_prompt_json
+from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
 from mindflow.domain.procrastination import (
     ProcrastinationAssessment,
     RuleEngine,
 )
+from mindflow.graph.panel_graph import PanelGraph, PanelGraphState
+from mindflow.services.panel_service import analysis_dict_to_panel_verdict
 
 # ---------------------------------------------------------------------------
 # Rule engine adapter
@@ -63,10 +65,48 @@ def panel_analyzer(gateway: PanelLLMGateway) -> AnalyzerFunc:
     Returns:
         An async callable that takes an EvidenceBundle and returns a PanelVerdict.
     """
+    # PanelGraph is safe to reuse across invocations (compiled once; per-call
+    # state flows through graph channels, isolated by the runtime ContextVar).
+    panel_graph = PanelGraph(gateway=gateway)
 
     async def _analyze(bundle: EvidenceBundle) -> PanelVerdict:
-        orchestrator = PanelOrchestrator(gateway=gateway)
-        return await orchestrator.run(bundle)
+        bundle_json = to_prompt_json(bundle)
+        valid_metrics = frozenset(
+            evidence_catalog_ids(build_evidence_catalog(bundle))
+        )
+        panel_state: PanelGraphState = {  # type: ignore[typeddict-item]
+            "bundle_json": bundle_json,
+            "valid_metrics": valid_metrics,
+            "attribution_opinions": (),
+            "transcript": (),
+            "analyst_opinion": None,
+            "conflict_report": None,
+            "escalated": False,
+            "moderator_verdict": None,
+            "critic_result": None,
+            "critic_retries": 0,
+            "moderator_redo_count": 0,
+            "call_count": 0,
+            "disagreement_summary": None,
+            "rebuttal_delta": None,
+            "_expert_index": 0,
+        }
+        result = await panel_graph.ainvoke(panel_state)
+        verdict_dict = (
+            result.get("moderator_verdict") if isinstance(result, dict) else None
+        )
+        if verdict_dict is None or not isinstance(verdict_dict, dict):
+            raise PanelUnavailableError(
+                reason="Moderator did not produce a verdict",
+                call_count=result.get("call_count", 0) if isinstance(result, dict) else 0,
+            )
+        return analysis_dict_to_panel_verdict(
+            verdict_dict,
+            escalated=result.get("escalated", False) if isinstance(result, dict) else False,
+            transcript=result.get("transcript", ()) if isinstance(result, dict) else (),
+            call_count=result.get("call_count", 0) if isinstance(result, dict) else 0,
+            source="panel",
+        )
 
     return _analyze
 

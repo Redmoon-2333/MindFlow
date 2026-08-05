@@ -93,8 +93,8 @@ Frontend (React/TS) <-> Backend (FastAPI :8765) <-> Collector (cross-platform ac
 
 - **Framework-neutral ports** (`src/mindflow/ports.py`): Protocol interfaces (`AnalysisWorkflowPort`, `WorkflowRunStorePort`, `BudgetReservationPort`) decouple the outer scheduler from the inner analysis graph. LangGraph can be replaced without touching the scheduler.
 - **AnalysisGraph** (`src/mindflow/graph/analysis_graph.py`): Daily analysis composition root implementing `AnalysisWorkflowPort`; owns idempotency, budget, crisis gating, persistence, and fallback routing.
-- **PanelGraph** (`src/mindflow/graph/panel_graph.py`): Explicit AnalysisGraph subgraph for expert deliberation (Analyst -> 3x Attribution parallel -> validation -> Moderator -> Critic). The legacy `PanelOrchestrator` remains available when the v2 route is disabled.
-- **ChatGraph** (`src/mindflow/graph/chat_graph.py`): Explicit chat lifecycle StateGraph, independent from analysis. The legacy LangChain `create_agent` path remains the default until `new_chat_graph=True`.
+- **PanelGraph** (`src/mindflow/graph/panel_graph.py`): Explicit AnalysisGraph subgraph for expert deliberation (Analyst -> 3x Attribution parallel -> validation -> Moderator -> Critic). The legacy `PanelOrchestrator` class was removed at v2 cutover; v2 is the production route.
+- **ChatGraph** (`src/mindflow/graph/chat_graph.py`): Explicit chat lifecycle StateGraph, independent from analysis. It is the only production chat path; the former LangChain `create_agent` path has been removed.
 - **ProviderRegistry** (`src/mindflow/infrastructure/provider_registry.py`): Manages LLM provider lifecycle (L1 DeepSeek, L2 Ollama, L3 RuleEngine). Single HTTP session pool shut down atomically.
 - **SQLite checkpointer**: LangGraph checkpoint persistence (off by default via `checkpointing_enabled=False`). Shares the same DB file.
 - **Workflow run store**: `workflow_runs` + `workflow_node_events` tables track every analysis run with status, timing, call count, and degradation metadata. Exposed read-only via `/api/v1/ai/runs`.
@@ -113,17 +113,19 @@ Frontend (React/TS) <-> Backend (FastAPI :8765) <-> Collector (cross-platform ac
 
 ## Feature Flags (ADR-005)
 
-All flags live in `Settings` (Pydantic BaseSettings) with `MINDFLOW_` env-var prefix. **All default to legacy-safe paths.**
+All flags live in `Settings` (Pydantic BaseSettings) with `MINDFLOW_` env-var prefix.
+The backend is v2-only for analysis and chat. The graph-selection fields remain as
+deprecated compatibility inputs for older `.env` files, but they do not change routing.
 
 | Flag | Type | Default | Meaning |
 |------|------|---------|---------|
-| `graph_version` | int | `1` | Reserved graph-version metadata. It does not select an implementation today. |
 | `checkpointing_enabled` | bool | `False` | Use SQLite-backed LangGraph checkpoints instead of the in-memory checkpointer. |
-| `new_analysis_graph` | bool | `False` | Route daily panel analysis through v2 AnalysisGraph instead of direct PanelOrchestrator |
-| `new_chat_graph` | bool | `False` | Route chat through explicit ChatGraph StateGraph instead of LangChain create_agent |
-| `shadow_mode_chat` | bool | `False` | Run both legacy and new chat paths, compare, return legacy output |
+| `new_analysis_graph` | bool | `True` | Deprecated compatibility input; v2 AnalysisGraph is always active |
+| `new_chat_graph` | bool | `True` | Deprecated compatibility input; v2 ChatGraph is always active |
 
-**Legacy-safe rollback**: Set all flags to defaults to restore pre-refactoring behaviour. No code revert needed. See ADR-005 for full migration/rollback procedure.
+**Rollback**: The pre-v2 implementations are no longer shipped. Roll back by deploying a
+previous application revision; changing the deprecated graph flags only preserves config
+file compatibility and does not restore legacy behavior.
 
 ## Health & Diagnostics Endpoints
 
@@ -181,7 +183,7 @@ The following verification was run after the model-center implementation, not as
 - Feature schema 已升级到 v3；切换计数必须使用 `count_confirmed_switches()`（驻留 10 秒 + 瞬时进程忽略）。
 - ML 质量门使用唯一反馈会话数（>=20 条）、7 个反馈日、每类 >=5 条；日期 GroupKFold 内计算 rule baseline 与校准。
 - `POST /panel/today` 支持 `force`/`retry_if_degraded`，缓存命中保留降级元数据。
-- `PanelGraph` 是唯一活动面板图；`PanelOrchestrator` 仅作为兼容适配器。
+- `PanelGraph` 是唯一活动面板图；旧 `PanelOrchestrator` 类已在 v2 cutover 中删除，解析/校验 helper 保留在 `agents/orchestrator.py`。
 - 实验统一使用 `scripts/run_experiments.py`，最终报告见 `data/experiments/20260731_final/`。
 
 ## Quality Debt (Transparent)
@@ -199,7 +201,9 @@ Do NOT claim lint or type-clean status. These are tracked as known debt, not reg
 - `manictime/`: 44 real user activity CSV exports (ManicTime, contains PII)
 - `awt-labelled/`: Academic Work Tracker labelled data + preprocessing notebook
 
-Synthetic data generator in `train/synthetic_data.py`, models real weekday/weekend behaviour patterns.
+V2 synthetic feature-window generation lives in `train/synthetic_v2.py` and uses the
+student archetypes from `train/user_profiles.py`. Model artifacts and
+`training_report.json` are written under `data/models/v2/`.
 
 ## Docs
 

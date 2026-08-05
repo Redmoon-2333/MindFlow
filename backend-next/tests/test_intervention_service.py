@@ -36,6 +36,7 @@ from mindflow.services.intervention_service import (
     _select_intervention_type,
 )
 from mindflow.services.intervention_throttle import ThrottleDecision, ThrottleReason
+from mindflow.services.safety_guard import SafetyCheck, SafetyVerdict
 
 
 class TestDeepWorkGuard:
@@ -160,58 +161,65 @@ class TestRenderMessage:
         assert "goal_setting" not in body
 
 
+@pytest.fixture
+def mock_repo() -> AsyncMock:
+    repo = AsyncMock()
+    repo.log_triggered = AsyncMock(return_value={"id": "mock-id"})
+    repo.update_response = AsyncMock(
+        return_value={"id": "mock-id", "user_response": "accepted"}
+    )
+    repo.update_feedback = AsyncMock(
+        return_value={"id": "mock-id", "feedback_rating": "helpful"}
+    )
+    repo.query_range = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture
+def mock_throttle() -> MagicMock:
+    throttle = MagicMock()
+    throttle.can_intervene = AsyncMock(
+        return_value=ThrottleDecision(ThrottleReason.OK, detail="通过")
+    )
+    throttle.reserve_slot = AsyncMock(return_value=1)
+    return throttle
+
+
+@pytest.fixture
+def mock_notifier() -> AsyncMock:
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_broadcast() -> AsyncMock:
+    return AsyncMock(return_value=1)
+
+
+@pytest.fixture
+def service(
+    mock_repo, mock_throttle, mock_notifier, mock_broadcast
+) -> InterventionService:
+    return InterventionService(
+        intervention_repo=mock_repo,
+        throttle=mock_throttle,
+        notifier=mock_notifier,
+        broadcast_fn=mock_broadcast,
+    )
+
+
+@pytest.fixture
+def assessment() -> ProcrastinationAssessment:
+    return ProcrastinationAssessment(
+        types=(ProcrastinationType.IMPULSIVITY,),
+        confidence={ProcrastinationType.IMPULSIVITY: 0.8},
+        recommended_technique=CBTTechnique.STIMULUS_CONTROL,
+        rationale="检测到冲动分心模式",
+        source="rule_engine",
+    )
+
+
 class TestInterventionService:
     """InterventionService orchestration tests."""
-
-    @pytest.fixture
-    def mock_repo(self) -> AsyncMock:
-        repo = AsyncMock()
-        repo.log_triggered = AsyncMock(return_value={"id": "mock-id"})
-        repo.update_response = AsyncMock(
-            return_value={"id": "mock-id", "user_response": "accepted"}
-        )
-        repo.update_feedback = AsyncMock(
-            return_value={"id": "mock-id", "feedback_rating": "helpful"}
-        )
-        repo.query_range = AsyncMock(return_value=[])
-        return repo
-
-    @pytest.fixture
-    def mock_throttle(self) -> MagicMock:
-        throttle = MagicMock()
-        throttle.can_intervene = AsyncMock(
-            return_value=ThrottleDecision(ThrottleReason.OK, detail="通过")
-        )
-        return throttle
-
-    @pytest.fixture
-    def mock_notifier(self) -> AsyncMock:
-        return AsyncMock()
-
-    @pytest.fixture
-    def mock_broadcast(self) -> AsyncMock:
-        return AsyncMock(return_value=1)
-
-    @pytest.fixture
-    def service(
-        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
-    ) -> InterventionService:
-        return InterventionService(
-            intervention_repo=mock_repo,
-            throttle=mock_throttle,
-            notifier=mock_notifier,
-            broadcast_fn=mock_broadcast,
-        )
-
-    @pytest.fixture
-    def assessment(self) -> ProcrastinationAssessment:
-        return ProcrastinationAssessment(
-            types=(ProcrastinationType.IMPULSIVITY,),
-            confidence={ProcrastinationType.IMPULSIVITY: 0.8},
-            recommended_technique=CBTTechnique.STIMULUS_CONTROL,
-            rationale="检测到冲动分心模式",
-            source="rule_engine",
-        )
 
     # ── Deep work guard ──────────────────────────────────────────────
 
@@ -527,6 +535,123 @@ class TestInterventionService:
         mock_repo.update_feedback.assert_awaited_once_with(
             "some-id", "neutral", None
         )
+
+
+class TestSafetyGuardWiring:
+    """evaluate_safety() is wired after message rendering, before persistence.
+
+    The service must not log/reserve/broadcast/notify when the verdict blocks,
+    and must log warnings and continue when the verdict only warns.
+    """
+
+    @staticmethod
+    def _patch_verdict(
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        allowed: bool,
+        blocked_by: str = "",
+        warnings: tuple[str, ...] = (),
+    ) -> None:
+        level = "pass" if allowed and not warnings else ("warn" if allowed else "block")
+        verdict = SafetyVerdict(
+            allowed=allowed,
+            checks=(SafetyCheck(level=level, reason="safety-reason", category=blocked_by),),
+            blocked_by=blocked_by,
+            warnings=warnings,
+        )
+        monkeypatch.setattr(
+            "mindflow.services.intervention_service.evaluate_safety",
+            lambda *args, **kwargs: verdict,
+        )
+
+    async def test_safety_block_returns_skipped_without_side_effects(
+        self, service, assessment, mock_repo, mock_throttle, mock_broadcast,
+        mock_notifier, monkeypatch,
+    ) -> None:
+        """Blocked verdict → skipped; no reservation, log, broadcast, or notification."""
+        self._patch_verdict(monkeypatch, allowed=False, blocked_by="crisis_language")
+
+        result = await service.maybe_intervene(assessment=assessment)
+
+        assert result.skipped
+        assert "安全" in result.skip_reason
+        mock_throttle.reserve_slot.assert_not_awaited()
+        mock_repo.log_triggered.assert_not_awaited()
+        mock_broadcast.assert_not_awaited()
+        mock_notifier.send.assert_not_awaited()
+
+    async def test_safety_warning_logs_and_still_dispatches(
+        self, service, assessment, mock_repo, mock_broadcast, mock_notifier, monkeypatch,
+    ) -> None:
+        """Warn-only verdict → continues: persists, broadcasts, and notifies."""
+        self._patch_verdict(monkeypatch, allowed=True, warnings=("深夜时段，适合弱干预",))
+
+        result = await service.maybe_intervene(assessment=assessment)
+
+        assert not result.skipped
+        assert result.intervention is not None
+        mock_repo.log_triggered.assert_awaited_once()
+        mock_broadcast.assert_awaited_once()
+        mock_notifier.send.assert_awaited_once()
+
+
+class TestSlotReservation:
+    """Daily-slot reservation runs after can_intervene and before persistence."""
+
+    async def test_reservation_contention_returns_skipped(
+        self, service, assessment, mock_throttle, mock_repo,
+        mock_broadcast, mock_notifier,
+    ) -> None:
+        """reserve_slot returns None → skipped; no log, broadcast, or notification."""
+        mock_throttle.reserve_slot = AsyncMock(return_value=None)
+
+        result = await service.maybe_intervene(assessment=assessment)
+
+        assert result.skipped
+        assert "槽位" in result.skip_reason
+        mock_repo.log_triggered.assert_not_awaited()
+        mock_broadcast.assert_not_awaited()
+        mock_notifier.send.assert_not_awaited()
+
+    async def test_reserve_slot_called_before_persist(
+        self, service, assessment, mock_throttle, mock_repo,
+    ) -> None:
+        """reserve_slot is awaited with the user and type; the same flow persists."""
+        result = await service.maybe_intervene(assessment=assessment)
+
+        assert not result.skipped
+        mock_throttle.reserve_slot.assert_awaited_once()
+        mock_repo.log_triggered.assert_awaited_once()
+
+    async def test_persistence_failure_releases_slot_and_returns_skipped(
+        self, service, assessment, mock_throttle, mock_repo,
+        mock_broadcast, mock_notifier,
+    ) -> None:
+        """log_triggered raises → reserved slot released, skipped, no broadcast/notify."""
+        mock_repo.log_triggered = AsyncMock(side_effect=RuntimeError("db down"))
+
+        result = await service.maybe_intervene(assessment=assessment)
+
+        assert result.skipped
+        assert "持久化" in result.skip_reason
+        # Release is tied to the exact (user, slot_index, date) reservation.
+        mock_repo.release_daily_slot.assert_awaited_once()
+        call = mock_repo.release_daily_slot.await_args
+        assert call.args == (1, 1)
+        assert call.kwargs.get("date_str") is not None
+        mock_broadcast.assert_not_awaited()
+        mock_notifier.send.assert_not_awaited()
+
+    async def test_bypass_throttle_skips_reservation(
+        self, service, assessment, mock_throttle,
+    ) -> None:
+        """Manual bypass (bypass_throttle=True) does not reserve a slot."""
+        result = await service.maybe_intervene(
+            assessment=assessment, bypass_throttle=True
+        )
+
+        assert not result.skipped
+        mock_throttle.reserve_slot.assert_not_awaited()
 
 
 class TestEnrichHistoryItem:

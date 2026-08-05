@@ -9,6 +9,7 @@ Focuses on:
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,7 +17,11 @@ from pathlib import Path
 import pytest
 
 from mindflow.domain.events import make_event
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
+from mindflow.train import pipeline as pipeline_module
+from mindflow.train.__main__ import main
 from mindflow.train.pipeline import TrainingReport, run_training
+from mindflow.train.user_profiles import list_archetype_ids
 
 
 @pytest.fixture
@@ -35,6 +40,7 @@ class TestTrainingReport:
         assert report.timestamp is not None
         assert report.source == "synthetic_v2"
         assert report.total_records == 0
+        assert report.feature_schema_version == FEATURE_SCHEMA_VERSION
 
     def test_to_dict(self) -> None:
         """to_dict should return serializable dict."""
@@ -60,169 +66,111 @@ class TestTrainingReport:
         assert "42" in json_str
 
 
-@pytest.mark.skip(reason="V1 pipeline removed — tests need updating for V2 synthetic_v2")
-class TestRunTraining:
-    """End-to-end training pipeline tests — V1 pipeline removed, use synthetic_v2."""
-
-    def test_synthetic_end_to_end(self, work_dir: Path) -> None:
-        """Small synthetic run should complete without errors."""
-        report = run_training(
-            source="synthetic_v2",
-            data_dir=work_dir / "data",
-            models_dir=work_dir / "models",
-            days=3,
-            samples_per_hour=4,
-            seed=42,
-        )
-        assert report.total_records > 0
-        assert report.windows_extracted > 0
-        assert report.baseline_updated > 0
-        assert report.saved_models is not None
-
-    def test_report_has_all_fields(self, work_dir: Path) -> None:
-        """TrainingReport should have all expected fields after run."""
-        report = run_training(
-            source="synthetic_v2",
-            data_dir=work_dir / "data",
-            models_dir=work_dir / "models",
-            days=2,
-            samples_per_hour=4,
-            seed=42,
-        )
-        assert report.source == "synthetic_v2"
-        assert report.total_records > 0
-        assert report.windows_extracted > 0
-        assert report.n_focus + report.n_distract > 0
-        assert report.avg_confidence > 0
-        assert report.clustering is not None
-        assert report.hmm is not None
-
-    def test_artifacts_saved_to_disk(self, work_dir: Path) -> None:
-        """Model artifacts should be saved to disk."""
-        report = run_training(
-            source="synthetic_v2",
-            data_dir=work_dir / "data",
-            models_dir=work_dir / "models",
-            days=2,
-            samples_per_hour=4,
-            seed=42,
-        )
-
-        models_path = work_dir / "models"
-        # Check at least some .pkl files exist
-        pkl_files = list(models_path.glob("*.pkl"))
-        assert len(pkl_files) >= 1
-        assert report.total_records > 0
-
-        # Check latest.json
-        assert (models_path / "latest.json").exists()
-
-        # Check training report
-        assert (models_path / "training_report.json").exists()
-        report_data = json.loads(
-            (models_path / "training_report.json").read_text(encoding="utf-8")
-        )
-        assert report_data["total_records"] > 0
-
-    def test_reproducible(self, work_dir: Path) -> None:
-        """Same seed should produce same report totals."""
-        report_a = run_training(
-            source="synthetic_v2",
-            data_dir=work_dir / "data_a",
-            models_dir=work_dir / "models_a",
-            days=2,
-            samples_per_hour=4,
-            seed=42,
-        )
-        report_b = run_training(
-            source="synthetic_v2",
-            data_dir=work_dir / "data_b",
-            models_dir=work_dir / "models_b",
-            days=2,
-            samples_per_hour=4,
-            seed=42,
-        )
-        assert report_a.total_records == report_b.total_records
-        assert report_a.windows_extracted == report_b.windows_extracted
-        assert report_a.n_focus == report_b.n_focus
-
-    def test_baseline_saved(self, work_dir: Path) -> None:
-        """Baseline JSON should be saved."""
-        report = run_training(
-            source="synthetic_v2",
-            data_dir=work_dir / "data",
-            models_dir=work_dir / "models",
-            days=2,
-            samples_per_hour=4,
-            seed=42,
-            user_id=1,
-        )
-        baseline_path = work_dir / "data" / "baseline_user1.json"
-        assert baseline_path.exists()
-        baseline_data = json.loads(
-            baseline_path.read_text(encoding="utf-8")
-        )
-        assert baseline_data["user_id"] == 1
-        assert baseline_data["total_days"] >= 1
-        assert report.baseline_updated > 0
-
-    def test_classifier_trained(self, work_dir: Path) -> None:
-        """Classifier should be trained with sufficient data."""
-        report = run_training(
-            source="synthetic_v2",
-            data_dir=work_dir / "data",
-            models_dir=work_dir / "models",
-            days=3,
-            samples_per_hour=6,
-            seed=42,
-        )
-        if "error" in report.classifier:
-            # Minimal data might not be enough for 2 classes
-            pytest.skip(f"Classifier not trained: {report.classifier['error']}")
-        assert "accuracy" in report.classifier
-
-    def test_hmm_trained(self, work_dir: Path) -> None:
-        """HMM should have transition matrix in report."""
-        report = run_training(
-            source="synthetic_v2",
-            data_dir=work_dir / "data",
-            models_dir=work_dir / "models",
-            days=3,
-            samples_per_hour=6,
-            seed=42,
-        )
-        if "error" not in report.hmm:
-            assert "transition_matrix" in report.hmm
-            assert "steady_state" in report.hmm
-
-
-@pytest.mark.skip(reason="V1 db fallback removed — test needs V2 feature windows")
-def test_real_data_quality_gate_does_not_activate_unready_models(work_dir: Path) -> None:
-    start = datetime(2026, 7, 24, tzinfo=UTC)
-    events = [
-        make_event(
-            user_id=1,
-            timestamp_utc=start + timedelta(minutes=5 * index),
-            duration_s=300.0,
-            app_name="code.exe" if index % 2 == 0 else "bilibili.exe",
-            process_name="code.exe" if index % 2 == 0 else "bilibili.exe",
-            window_title="main.py" if index % 2 == 0 else "bilibili",
-            is_idle=False,
-        )
-        for index in range(20)
-    ]
-
-    report = run_training(
-        source="db",
-        data_dir=work_dir / "data",
-        models_dir=work_dir / "models",
-        events=events,
+@pytest.mark.parametrize(
+    ("argv", "flag"),
+    [
+        (["mindflow-train", "--samples-per-hour", "6"], "--samples-per-hour"),
+        (["mindflow-train", "--include-procrastination"], "--include-procrastination"),
+    ],
+)
+def test_cli_rejects_removed_synthetic_controls(
+    argv: list[str],
+    flag: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(
+        "mindflow.train.__main__.run_training",
+        lambda **kwargs: TrainingReport(total_records=1),
     )
 
-    assert report.activated is False
-    assert report.quality_gate["passed"] is False
-    assert not (work_dir / "models" / "latest.json").exists()
-    assert list((work_dir / "models").glob("*.pkl"))
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2
+    assert flag in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("num_users", "profiles", "expected"),
+    [
+        (2, None, list_archetype_ids()[:2]),
+        (1, list_archetype_ids()[-2:], list_archetype_ids()[-2:]),
+    ],
+)
+def test_synthetic_archetype_selection_respects_num_users_and_profiles(
+    work_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    num_users: int,
+    profiles: list[str] | None,
+    expected: list[str],
+) -> None:
+    captured: dict[str, list[str] | None] = {}
+
+    def fake_generate_v2_synthetic_data(
+        *,
+        archetype_ids: list[str] | None,
+        days_per_archetype: int,
+        seed: int,
+        sample_explicit_ratio: float,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        captured["archetype_ids"] = archetype_ids
+        return [], []
+
+    monkeypatch.setattr(
+        "mindflow.train.synthetic_v2.generate_v2_synthetic_data",
+        fake_generate_v2_synthetic_data,
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "_run_v2_training",
+        lambda **kwargs: TrainingReport(source=str(kwargs["source"])),
+    )
+
+    run_training(
+        source="synthetic_v2",
+        data_dir=work_dir / "data",
+        models_dir=work_dir / "models",
+        days=1,
+        seed=42,
+        num_users=num_users,
+        user_profiles=profiles,
+    )
+
+    assert captured["archetype_ids"] == expected
+
+
+@pytest.mark.parametrize(
+    ("legacy_kwargs", "setting"),
+    [
+        ({"samples_per_hour": 6}, "samples_per_hour"),
+        ({"include_procrastination": True}, "include_procrastination"),
+    ],
+)
+def test_programmatic_legacy_synthetic_controls_warn_when_ignored(
+    work_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    legacy_kwargs: dict[str, object],
+    setting: str,
+) -> None:
+    monkeypatch.setattr(
+        "mindflow.train.synthetic_v2.generate_v2_synthetic_data",
+        lambda **kwargs: ([], []),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "_run_v2_training",
+        lambda **kwargs: TrainingReport(source=str(kwargs["source"])),
+    )
+
+    with pytest.warns(DeprecationWarning, match=setting):
+        run_training(
+            source="synthetic_v2",
+            data_dir=work_dir / "data",
+            models_dir=work_dir / "models",
+            **legacy_kwargs,
+        )
 
 
 def test_v2_training_stays_shadow_when_feedback_gate_fails(work_dir: Path) -> None:

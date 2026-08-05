@@ -406,7 +406,13 @@ export interface paths {
         };
         /**
          * Get Today Focus
-         * @description Return today's focus sessions (auto-generates if missing).
+         * @description Return focus sessions for *target* date (auto-generates if missing).
+         *
+         *     The current business day is recomputed from the latest activity events on
+         *     every call (``refresh=True``) so the response never serves a stale
+         *     projection; ``save_sessions`` reuses session ids for matching
+         *     ``(date, start_time)``, so existing feedback stays linked.  Past dates
+         *     read the persisted projection and only generate when none exists.
          */
         get: operations["get_today_focus_api_v1_focus_get"];
         put?: never;
@@ -893,7 +899,7 @@ export interface paths {
          * Post Panel Today
          * @description Trigger a daily expert panel for today.
          *
-         *     Runs the full multi-expert panel (analyst → attribution ×3 → moderator → critic).
+         *     Runs the full multi-expert panel (analyst -> attribution x3 -> moderator -> critic).
          *     Falls through to single-expert LLM service on panel unavailability, with
          *     ``meta.degraded=true``.
          *
@@ -922,10 +928,10 @@ export interface paths {
          * Get Panel Result
          * @description Retrieve the most recent stored panel result (read-only, idempotent).
          *
-         *     A GET must not trigger the expensive 6-12-call expert panel (review C3 —
-         *     that would cost money and violate REST idempotency). This reads the last
-         *     persisted attribution for today (written by ``POST /panel/today`` or the
-         *     daily cron) and returns it, or 404 if none has been produced yet.
+         *     A GET must not trigger the expensive 6-12-call expert panel (review C3).
+         *     This reads the last persisted attribution for today (written by
+         *     ``POST /panel/today`` or the daily cron) and returns it, or 404 if none
+         *     has been produced yet.
          *
          *     Returns:
          *         A ``PanelVerdict`` JSON response matching the POST shape, or 404.
@@ -1555,12 +1561,25 @@ export interface components {
         PanelMeta: {
             /** Degraded */
             degraded: boolean;
+            /** Source */
             source?: string | null;
-            cached?: boolean;
+            /**
+             * Cached
+             * @default false
+             */
+            cached: boolean;
+            /** Degradation Path */
             degradation_path?: string[];
+            /** Retry After */
             retry_after?: number | null;
-            insufficient_data?: boolean;
+            /**
+             * Insufficient Data
+             * @default false
+             */
+            insufficient_data: boolean;
+            /** Uncertainty */
             uncertainty?: number | null;
+            /** Evidence Gaps */
             evidence_gaps?: string[];
         };
         /** PanelResponse */
@@ -1586,11 +1605,40 @@ export interface components {
             /** Degraded */
             degraded: boolean;
             meta: components["schemas"]["PanelMeta"];
+            /** Source */
             source?: string | null;
-            cached?: boolean;
-            insufficient_data?: boolean;
+            /**
+             * Cached
+             * @default false
+             */
+            cached: boolean;
+            /**
+             * Insufficient Data
+             * @default false
+             */
+            insufficient_data: boolean;
+            /** Uncertainty */
             uncertainty?: number | null;
+            /** Evidence Gaps */
             evidence_gaps?: string[];
+        };
+        /**
+         * PanelTodayRequest
+         * @description Optional body for POST /panel/today.
+         */
+        PanelTodayRequest: {
+            /**
+             * Force
+             * @description Force re-analysis even if cached.
+             * @default false
+             */
+            force: boolean;
+            /**
+             * Retry If Degraded
+             * @description Retry DeepSeek when the stored result is degraded.
+             * @default false
+             */
+            retry_if_degraded: boolean;
         };
         /** PanelTranscriptEntry */
         PanelTranscriptEntry: {
@@ -1678,6 +1726,18 @@ export interface components {
              * @default false
              */
             degraded: boolean;
+        };
+        /** TelemetryDeleteResponse */
+        TelemetryDeleteResponse: {
+            /** Deleted */
+            deleted: number;
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Failures */
+            failures?: string[];
         };
         /** TelemetryPreferencesPatch */
         TelemetryPreferencesPatch: {
@@ -3099,7 +3159,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PanelTodayRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -3108,6 +3172,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PanelResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3287,9 +3360,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: number;
-                    };
+                    "application/json": components["schemas"]["TelemetryDeleteResponse"];
                 };
             };
             /** @description Validation Error */

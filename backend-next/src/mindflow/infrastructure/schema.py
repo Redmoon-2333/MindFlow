@@ -235,22 +235,6 @@ behavior_feature_windows = sa.Table(
     sa.UniqueConstraint("user_id", "window_start_utc", "feature_schema_version"),
 )
 
-ml_shadow_predictions = sa.Table(
-    "ml_shadow_predictions",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("window_start_utc", sa.Text(), nullable=False),
-    sa.Column("candidate_version", sa.Text(), nullable=False),
-    sa.Column("active_version", sa.Text(), nullable=True),
-    sa.Column("candidate_proba", sa.Float(), nullable=False),
-    sa.Column("active_proba", sa.Float(), nullable=True),
-    sa.Column("delta", sa.Float(), nullable=True),
-    sa.Column("status", sa.Text(), nullable=False, server_default=sa.text("'shadow'")),
-    sa.Column("created_at", sa.Text(), nullable=False),
-    sa.UniqueConstraint("user_id", "window_start_utc", "candidate_version"),
-)
-
 intervention_checks = sa.Table(
     "intervention_checks",
     metadata,
@@ -334,12 +318,14 @@ workflow_node_events = sa.Table(
 )
 
 # ── Intervention daily slot reservations (atomic throttle concurrency) ──
-# Matches migration (in-memory for tests; no separate migration file).
+# Matches migration 0020_create_intervention_slot_reservations.
 #
 # Each (user_id, date, slot_index) uniquely reserves one intervention slot
 # per day.  The UNIQUE constraint acts as the atomic gate — exactly one
 # concurrent caller wins the slot via INSERT ON CONFLICT DO NOTHING.
 # This prevents the TOCTOU race between throttle read-check and log insert.
+# ``reserved_at`` is also the lease timestamp; the repository reclaims stale
+# same-day leases left behind by a crashed process before attempting INSERT.
 
 intervention_slot_reservations = sa.Table(
     "intervention_slot_reservations",
@@ -378,4 +364,43 @@ workflow_budget_reservations = sa.Table(
     sa.Column("expires_at", sa.Text(), nullable=True),
     sa.Column("released_at", sa.Text(), nullable=True),
     sa.UniqueConstraint("idempotency_key"),
+)
+
+# ── Collector interval persistence (runtime lifecycle audit) ────────────
+# Matches migration 0021_create_collector_intervals.
+#
+# One row per CollectorService run: ``open()`` inserts a row with
+# ``started_at``, ``close()`` updates that exact row by ``id`` (guarded on
+# ``ended_at IS NULL`` so a second close cannot rewrite terminal facts),
+# and list operations are user-scoped with ``started_at`` ordering backed
+# by ``idx_collector_intervals_user_started``.
+
+collector_intervals = sa.Table(
+    "collector_intervals",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("started_at", sa.Text(), nullable=False),
+    sa.Column("ended_at", sa.Text(), nullable=True),
+    sa.Column("reason", sa.Text(), nullable=True),
+    sa.Column(
+        "manual_stop",
+        sa.Integer(),
+        nullable=False,
+        server_default=sa.text("0"),
+    ),
+    sa.Column(
+        "failure",
+        sa.Integer(),
+        nullable=False,
+        server_default=sa.text("0"),
+    ),
+    sa.Column(
+        "sleep",
+        sa.Integer(),
+        nullable=False,
+        server_default=sa.text("0"),
+    ),
+    sa.Column("last_error", sa.Text(), nullable=True),
+    sa.Index("idx_collector_intervals_user_started", "user_id", "started_at"),
 )

@@ -23,6 +23,7 @@ from mindflow.agents.types import (
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes.panel import router as panel_router
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
+from mindflow.ports import AnalysisResult
 
 
 def _make_verdict(**overrides: object) -> PanelVerdict:
@@ -124,6 +125,23 @@ class TestPostPanelToday:
         assert data["meta"]["degraded"] is True
         assert data["call_count"] == 0
         assert data["transcript"] == []
+
+    def test_workflow_path_uses_daily_panel_analysis_kind(self) -> None:
+        """The shared workflow receives the panel-specific analysis kind."""
+        panel_service = AsyncMock()
+        panel_service.get_stored_verdict = AsyncMock(return_value=None)
+        workflow_port = AsyncMock()
+        workflow_port.run_analysis = AsyncMock(
+            return_value=AnalysisResult(verdict=_make_verdict())
+        )
+        app = _make_app(panel_service)
+        app.state.workflow_port = workflow_port
+
+        resp = TestClient(app).post("/api/v1/panel/today")
+
+        assert resp.status_code == 200
+        request = workflow_port.run_analysis.call_args.args[0]
+        assert request.analysis_kind == "daily_panel"
 
     def test_escalated_flag(self) -> None:
         """200 with escalated=true when panel had conflict."""

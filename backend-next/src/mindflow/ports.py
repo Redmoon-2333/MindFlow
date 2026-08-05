@@ -12,8 +12,8 @@ from datetime import date, datetime
 from typing import Any, Literal, Protocol
 
 from mindflow.agents.types import PanelVerdict
-from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.domain.baseline import BaselineModel
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.domain.intervention import ThrottleStats
 
 # ── Framework-neutral workflow value objects ───────────────────────────
@@ -29,6 +29,8 @@ class AnalysisRequest:
     Attributes:
         user_id: The user to analyse.
         target_date: The date to analyse.
+        analysis_kind: Storage/cache kind for this workflow (for example,
+            ``"daily_panel"`` or ``"daily_attribution"``).
         force: If True, bypass idempotent cache and re-run.
         origin: Which entry point triggered this run.
         idempotency_key: Client-supplied key for exactly-once semantics.
@@ -40,6 +42,7 @@ class AnalysisRequest:
     origin: OriginType = "api"
     idempotency_key: str = ""
     retry_if_degraded: bool = False
+    analysis_kind: str = "daily_attribution"
 
 
 @dataclass(frozen=True)
@@ -399,3 +402,76 @@ class BudgetReservationPort(Protocol):
     ) -> bool: ...
 
     async def release(self, idempotency_key: str) -> None: ...
+
+
+# ── Collector intervals ──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class CollectorIntervalRecord:
+    """Immutable snapshot of one CollectorService run interval.
+
+    Attributes:
+        id: UUIDv7 string returned by ``open()`` and used to target
+            ``close()``.
+        user_id: User identifier the interval belongs to.
+        started_at: UTC ISO8601 timestamp when the interval opened.
+        ended_at: UTC ISO8601 timestamp when the interval closed, or
+            ``None`` while the interval is still open.
+        reason: Human-readable reason recorded at open/close time.
+        manual_stop: Flag — the interval was stopped manually.
+        failure: Flag — the interval ended in failure.
+        sleep: Flag — the interval ended due to system sleep.
+        last_error: Error text recorded for failed intervals.
+    """
+
+    id: str
+    user_id: int
+    started_at: str
+    ended_at: str | None
+    reason: str | None
+    manual_stop: bool
+    failure: bool
+    sleep: bool
+    last_error: str | None
+
+
+class CollectorIntervalsPort(Protocol):
+    """Runtime collector-interval lifecycle storage.
+
+    ``open()`` creates exactly one row; ``close()`` updates that exact
+    row by ``id`` and is idempotent — a second close must not rewrite
+    terminal facts. List operations are user-scoped and ordered by
+    ``started_at``.
+    """
+
+    async def open(
+        self,
+        user_id: int,
+        *,
+        reason: str | None = None,
+        manual_stop: bool = False,
+        failure: bool = False,
+        sleep: bool = False,
+        now: datetime | None = None,
+    ) -> CollectorIntervalRecord: ...
+
+    async def close(
+        self,
+        interval_id: str,
+        *,
+        reason: str | None = None,
+        manual_stop: bool = False,
+        failure: bool = False,
+        sleep: bool = False,
+        last_error: str | None = None,
+        now: datetime | None = None,
+    ) -> CollectorIntervalRecord | None: ...
+
+    async def list_by_user(
+        self, user_id: int, *, limit: int = 100
+    ) -> list[CollectorIntervalRecord]: ...
+
+    async def list_by_user_range(
+        self, user_id: int, start: datetime, end: datetime
+    ) -> list[CollectorIntervalRecord]: ...

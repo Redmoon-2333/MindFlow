@@ -133,16 +133,15 @@ def _patch_heavy_dependencies(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def test_legacy_flags_all_flows_work_on_old_paths(
+def test_v2_flags_default_all_flows_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Assemble app with all flags at default (False) — verify old paths work."""
+    """Assemble app with all flags at default (v2) — verify v2 paths work."""
     settings = _patch_heavy_dependencies(monkeypatch, tmp_path)
 
-    # Assert defaults are legacy
-    assert settings.new_analysis_graph is False
-    assert settings.new_chat_graph is False
-    assert settings.shadow_mode_chat is False
+    # Assert defaults are v2
+    assert settings.new_analysis_graph is True
+    assert settings.new_chat_graph is True
     assert settings.checkpointing_enabled is False
 
     app = create_app(settings)
@@ -155,24 +154,24 @@ def test_legacy_flags_all_flows_work_on_old_paths(
         health_data = ready.json()
         assert health_data["status"] == "ready"
 
-        # Legacy state aliases published
+        # Runtime state aliases published
         assert app.state.runtime is not None
-        assert app.state.runtime.settings.new_analysis_graph is False
-        assert app.state.runtime.settings.new_chat_graph is False
+        assert app.state.runtime.settings.new_analysis_graph is True
+        assert app.state.runtime.settings.new_chat_graph is True
 
-        # Chat service exists and is wired
+        # Chat service exists and is wired with a ChatGraph
         assert app.state.chat_service is not None
         cs = app.state.chat_service
-        assert getattr(cs, "_new_chat_graph", False) is False
-        assert getattr(cs, "_shadow_mode_chat", False) is False
-        # Legacy agent path available (may be None if no API key — acceptable)
-        assert hasattr(cs, "_agent")
+        assert getattr(cs, "_chat_graph", None) is not None
 
-        # Panel service exists (legacy paths — no AnalysisGraph)
+        # Panel service exists with the v2 AnalysisGraph workflow port
+        from mindflow.graph.analysis_graph import AnalysisGraph
+
         assert app.state.panel_service is not None
-        assert app.state.workflow_port is None, (
-            "workflow_port should be None with default new_analysis_graph=False"
+        assert app.state.workflow_port is not None, (
+            "workflow_port should be an AnalysisGraph with default new_analysis_graph=True"
         )
+        assert isinstance(app.state.workflow_port, AnalysisGraph)
 
         # Scheduler exists and is NOT running (run_scheduler=False)
         assert app.state.scheduler is not None
@@ -257,8 +256,7 @@ def test_new_chat_graph_flag_routes_through_chat_graph(
         chat_graph=fake_graph,
         provider_registry=MagicMock(),
     )
-    # Override the flag from settings (which was captured at init time)
-    cs._new_chat_graph = True
+    # The injected ChatGraph is the single chat path (v2 default)
     cs._chat_graph = fake_graph
 
     result = asyncio.run(cs.ask(1, "sess-graph-test", "Hello"))
@@ -268,10 +266,10 @@ def test_new_chat_graph_flag_routes_through_chat_graph(
     fake_graph.ask.assert_awaited_once()
 
 
-def test_new_chat_graph_flag_falls_back_to_legacy_when_graph_unavailable(
+def test_chat_graph_without_model_degrades_gracefully(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """new_chat_graph=True but no ChatGraph injected → falls back to legacy."""
+    """No API key → ChatGraph built with model=None → ask() degrades safely."""
 
     db_path = tmp_path / "mf_fallback.db"
     settings = _patch_heavy_dependencies(monkeypatch, tmp_path)
@@ -280,117 +278,25 @@ def test_new_chat_graph_flag_falls_back_to_legacy_when_graph_unavailable(
         db_url=f"sqlite+aiosqlite:///{db_path}",
         run_scheduler=False,
         run_collectors=False,
-        new_chat_graph=True,
         timezone="UTC",
     )
 
     app = create_app(settings)
     with TestClient(app):  # lifespan runs inside this block
         cs = app.state.chat_service
-        # new_chat_graph=True but _chat_graph is None (no LLM key → no graph created)
         assert cs is not None
-        # ask() should NOT raise — it should fall back to legacy (degraded mode)
+        # ChatGraph is always built (v2 is the only path); no API key → model=None
+        assert cs._chat_graph is not None
+        # ask() should NOT raise — a degraded reply is returned
         result = asyncio.run(cs.ask(1, "sess-no-graph", "test"))
         assert isinstance(result, ChatAnswer)
-        # When model is None, legacy path returns degraded=True
         assert result.degraded is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Scenario 3: Shadow mode chat — both run, comparison logged, no double-persist
+# Scenario 3 removed: shadow-mode chat (legacy + new comparison) was deleted with
+# the V1 cleanup. ChatGraph is now the only chat path.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-def test_shadow_mode_chat_runs_both_paths_returns_legacy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Shadow mode: both legacy and new paths execute, legacy output returned."""
-    from mindflow.graph.chat_graph import ChatGraph
-    from mindflow.infrastructure.security.crisis_detector import CrisisDetector
-    from mindflow.services.chat_service import ChatService, _ShadowChatRepo
-
-    # Shadow result for comparison
-    shadow_answer = ChatAnswer(
-        answer="Shadow response", session_id="sess-shadow", tools_used=("run_panel",)
-    )
-
-    # Fake graph for shadow path
-    fake_shadow_graph = MagicMock(spec=ChatGraph)
-    fake_shadow_graph.ask = AsyncMock(return_value=shadow_answer)
-
-    # Real chat repo
-    fake_chat_repo = AsyncMock()
-    fake_chat_repo.append = AsyncMock(return_value={"id": "msg-real"})
-    fake_chat_repo.recent = AsyncMock(return_value=[])
-
-    gw = MagicMock()
-    gw._api_key = ""
-    gw._base_url = ""
-
-    cs = ChatService(
-        session_factory=MagicMock(),
-        crisis_detector=CrisisDetector(),
-        llm_gateway=gw,
-        analysis_repo=MagicMock(),
-        panel_service=None,
-        intervention_repo=MagicMock(),
-        evidence_builder=MagicMock(),
-        chat_repo=fake_chat_repo,
-        chat_graph=fake_shadow_graph,
-        provider_registry=MagicMock(),
-    )
-
-    # Enable shadow mode
-    cs._shadow_mode_chat = True
-    cs._shadow_graph = fake_shadow_graph
-    cs._shadow_repo = _ShadowChatRepo(fake_chat_repo)
-    cs._chat_graph = fake_shadow_graph
-    cs._new_chat_graph = False
-
-    # Legacy path: agent is None → degraded
-    cs._agent = None
-
-    result = asyncio.run(cs.ask(1, "sess-shadow", "Hello shadow"))
-    # Legacy output returned (not shadow)
-    assert result.session_id == "sess-shadow"
-    assert result.degraded is True  # no model → degraded in legacy
-    # Shadow graph WAS called
-    fake_shadow_graph.ask.assert_awaited_once()
-    # Real chat_repo.append was called (twice: user + assistant in legacy path)
-    assert fake_chat_repo.append.call_count >= 2
-
-
-def test_shadow_mode_never_double_persists() -> None:
-    """Shadow repo writes to in-memory buffer only, not real DB."""
-    from mindflow.services.chat_service import _ShadowChatRepo
-
-    real_repo = AsyncMock()
-    real_repo.append = AsyncMock(side_effect=[{"id": "a"}, {"id": "b"}, {"id": "c"}])
-    real_repo.recent = AsyncMock(return_value=[])
-
-    shadow = _ShadowChatRepo(real_repo)
-
-    # Write via shadow
-    async def _write() -> None:
-        await shadow.append("s1", "user", "test message", user_id=1)
-        await shadow.append("s1", "assistant", "response")
-
-    asyncio.run(_write())
-    # Real repo was never called by shadow.append
-    real_repo.append.assert_not_called()
-
-    # recent() delegates to real repo + buffer
-    async def _read() -> list:
-        return await shadow.recent("s1", limit=10)
-
-    history = asyncio.run(_read())
-    # Buffer has 2 messages
-    assert len(history) == 2
-
-    # Clear and verify
-    shadow.clear()
-    history_after = asyncio.run(_read())
-    assert len(history_after) == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -449,16 +355,16 @@ def test_new_analysis_graph_flag_delegates_through_port(
     assert app.state.panel_service._workflow_port is app.state.workflow_port
 
 
-def test_default_new_analysis_graph_false_leaves_workflow_port_none(
+def test_default_new_analysis_graph_constructs_workflow_port(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default new_analysis_graph=False → workflow_port is None, legacy paths active.
+    """Default new_analysis_graph=True → AnalysisGraph wired as workflow_port.
 
-    PanelService and ChatService still assemble normally.  All analysis
-    entry points use their respective legacy inline paths.
+    PanelService and ChatService assemble normally and all analysis
+    entry points route through the v2 AnalysisGraph.
     """
     settings = _patch_heavy_dependencies(monkeypatch, tmp_path)
-    assert settings.new_analysis_graph is False, "default must be False"
+    assert settings.new_analysis_graph is True, "default must be True"
 
     app = create_app(settings)
     with TestClient(app) as client:
@@ -467,13 +373,13 @@ def test_default_new_analysis_graph_false_leaves_workflow_port_none(
         assert ready.status_code == 200
 
     # Flag preserved
-    assert app.state.settings.new_analysis_graph is False
-    # workflow_port stays None — no AnalysisGraph constructed
-    assert app.state.workflow_port is None, (
-        "workflow_port should be None when new_analysis_graph=False"
+    assert app.state.settings.new_analysis_graph is True
+    # workflow_port is the AnalysisGraph
+    assert app.state.workflow_port is not None, (
+        "workflow_port should be an AnalysisGraph when new_analysis_graph=True"
     )
-    assert app.state.runtime.workflow_port is None
-    # PanelService and ChatService still assembled via legacy paths
+    assert app.state.runtime.workflow_port is app.state.workflow_port
+    # PanelService and ChatService still assemble via v2 paths
     assert app.state.panel_service is not None
     assert app.state.chat_service is not None
     # Scheduler exists and is NOT running
@@ -723,124 +629,10 @@ def test_migration_idempotent_upgrade_head_twice(tmp_path: Path) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Scenario 7: Feature-flag rollback — enable → run → disable → run → legacy works
+# Scenario 7 removed: feature-flag rollback (enable → disable → legacy) was
+# deleted with the V1 cleanup. v2 graphs are the only paths; there is no legacy
+# path to roll back to.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-def test_feature_flag_rollback_new_chat_graph(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Enable new_chat_graph → run → disable → verify legacy path works on migrated DB."""
-    from mindflow.graph.chat_graph import ChatGraph
-    from mindflow.infrastructure.security.crisis_detector import CrisisDetector
-    from mindflow.services.chat_service import ChatService
-
-    fake_repo = AsyncMock()
-    fake_repo.append = AsyncMock(return_value={"id": "x"})
-    fake_repo.recent = AsyncMock(return_value=[])
-
-    # Fake graph for new path
-    fake_new_graph = MagicMock(spec=ChatGraph)
-    fake_new_graph.ask = AsyncMock(return_value=ChatAnswer(
-        answer="New graph response", session_id="rollback-test",
-        tools_used=("query_evidence",), evidence_cited=True,
-    ))
-
-    gw = MagicMock()
-    gw._api_key = ""
-    gw._base_url = ""
-
-    cs = ChatService(
-        session_factory=MagicMock(),
-        crisis_detector=CrisisDetector(),
-        llm_gateway=gw,
-        analysis_repo=MagicMock(),
-        panel_service=None,
-        intervention_repo=MagicMock(),
-        evidence_builder=MagicMock(),
-        chat_repo=fake_repo,
-        chat_graph=fake_new_graph,
-        provider_registry=MagicMock(),
-    )
-    cs._agent = None  # Legacy path degraded
-
-    # ── Phase 1: Enable new graph ──
-    cs._new_chat_graph = True
-    cs._chat_graph = fake_new_graph
-    result1 = asyncio.run(cs.ask(1, "rollback-test", "Phase 1"))
-    assert result1.answer == "New graph response"
-    fake_new_graph.ask.assert_awaited_once()
-
-    # ── Phase 2: Rollback — disable flag ──
-    cs._new_chat_graph = False
-    # Legacy path: agent is None → degraded
-    result2 = asyncio.run(cs.ask(1, "rollback-test", "Phase 2"))
-    assert isinstance(result2, ChatAnswer)
-    assert result2.degraded is True  # Legacy path works (returns degraded fallback)
-    # Graph NOT called on second invocation
-    assert fake_new_graph.ask.call_count == 1
-
-
-def test_feature_flag_rollback_new_analysis_graph(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Enable new_analysis_graph → verify flag persisted → disable → verify legacy works."""
-    db_path = tmp_path / "mf_rollback_analysis.db"
-    # Phase 1: Enable new analysis graph
-    settings1 = Settings(
-        data_dir=tmp_path,
-        db_url=f"sqlite+aiosqlite:///{db_path}",
-        run_scheduler=False,
-        run_collectors=False,
-        new_analysis_graph=True,
-        timezone="UTC",
-    )
-
-    monkeypatch.setattr(
-        "mindflow.infrastructure.collectors.base.create_collector",
-        MagicMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        "mindflow.infrastructure.notification.create_notifier",
-        MagicMock(return_value=MagicMock()),
-    )
-
-    app1 = create_app(settings1)
-    with TestClient(app1) as client:
-        host = {"host": "localhost"}
-        ready = client.get("/api/v1/health/ready", headers=host)
-        assert ready.status_code == 200
-
-    assert app1.state.settings.new_analysis_graph is True
-    # Phase 1: AnalysisGraph constructed and wired
-    assert app1.state.workflow_port is not None, (
-        "workflow_port should be AnalysisGraph when new_analysis_graph=True"
-    )
-
-    # Phase 2: Disable, create new app with same DB
-    settings2 = Settings(
-        data_dir=tmp_path,
-        db_url=f"sqlite+aiosqlite:///{db_path}",
-        run_scheduler=False,
-        run_collectors=False,
-        new_analysis_graph=False,
-        timezone="UTC",
-    )
-
-    app2 = create_app(settings2)
-    with TestClient(app2) as client:
-        host = {"host": "localhost"}
-        ready = client.get("/api/v1/health/ready", headers=host)
-        assert ready.status_code == 200
-
-    assert app2.state.settings.new_analysis_graph is False
-    # Phase 2: workflow_port is None — legacy paths active
-    assert app2.state.workflow_port is None, (
-        "workflow_port should be None after rolling back new_analysis_graph to False"
-    )
-    # Legacy path: panel_service exists (via legacy orchestrator or None)
-    # The key assertion: app assembles without error after flag rollback on migrated DB
-    assert app2.state.panel_service is not None or app2.state.llm_service is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

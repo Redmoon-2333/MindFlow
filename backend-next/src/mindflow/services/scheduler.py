@@ -1156,10 +1156,27 @@ def build_scheduler(
 
     # ── 03:00 — Event cleanup ─────────────────────────────────────────
     if maintenance_service is not None:
+
+        async def _run_event_cleanup(retention_days: int) -> None:
+            # One effective activity-retention horizon drives both raw
+            # activity events and intervention_checks (preference
+            # ``activity_retention_days`` wins; the env ``event_retention_days``
+            # passed here is only the startup default when no preference exists).
+            await maintenance_service.cleanup_old_events(
+                retention_days=retention_days
+            )
+            await maintenance_service.cleanup_old_intervention_checks(
+                retention_days=retention_days
+            )
+            # Budget reservations are short-lived leases.  Run expiry in the
+            # same daily maintenance window so a crashed workflow cannot keep
+            # its idempotency key occupied indefinitely.
+            await maintenance_service.expire_stale_budgets()
+
         scheduler.daily_cron(
             hour=3,
             minute=0,
-            coro=maintenance_service.cleanup_old_events,
+            coro=_run_event_cleanup,
             kwargs={"retention_days": event_retention_days},
             name="event_cleanup",
         )

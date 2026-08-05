@@ -20,8 +20,9 @@ import {
   createBrowserPairingCode,
   clearTelemetryData,
   getErrorMessage,
+  runTelemetryDelete,
 } from "../api";
-import type { AutonomyStatus, ClassificationRule, ClassificationRuleInput, CollectorStatus, HealthData, Preferences, TelemetryPreferences, TelemetryStatus } from "../api";
+import type { AutonomyStatus, ClassificationRule, ClassificationRuleInput, CollectorStatus, HealthData, Preferences, TelemetryDeleteNotice, TelemetryDeleteScope, TelemetryPreferences, TelemetryStatus } from "../api";
 
 const CATEGORY_OPTIONS = ["code", "browser_work", "communication", "document", "entertainment", "social", "other"];
 
@@ -76,6 +77,7 @@ export default function Settings() {
   const [telemetryLoading, setTelemetryLoading] = useState(false);
   const [pairingCode, setPairingCode] = useState<{ code: string; expires_at: string } | null>(null);
   const [telemetryMessage, setTelemetryMessage] = useState<string | null>(null);
+  const [telemetryDeleteNotice, setTelemetryDeleteNotice] = useState<TelemetryDeleteNotice | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -224,6 +226,7 @@ export default function Settings() {
   const updateTelemetryPreferences = async (updates: Partial<TelemetryPreferences>) => {
     setTelemetryLoading(true);
     setTelemetryMessage(null);
+    setTelemetryDeleteNotice(null);
     try {
       await patchTelemetryPreferences(updates);
       setTelemetry(await getTelemetryStatus());
@@ -238,6 +241,7 @@ export default function Settings() {
   const handleCreatePairingCode = async () => {
     setTelemetryLoading(true);
     setTelemetryMessage(null);
+    setTelemetryDeleteNotice(null);
     try {
       const result = await createBrowserPairingCode();
       setPairingCode(result);
@@ -249,16 +253,27 @@ export default function Settings() {
     }
   };
 
-  const handleClearTelemetry = async (scope: "interaction" | "browser" | "feedback" | "all") => {
+  const handleClearTelemetry = async (scope: TelemetryDeleteScope) => {
     const labels = { interaction: "输入行为", browser: "浏览器", feedback: "反馈", all: "全部行为" };
     if (!window.confirm(`确定清除${labels[scope]}数据吗？此操作无法撤销。`)) return;
     setTelemetryLoading(true);
     setTelemetryMessage(null);
+    setTelemetryDeleteNotice(null);
     try {
-      const result = await clearTelemetryData(scope);
-      setTelemetry(await getTelemetryStatus());
-      setTelemetryMessage(`已删除 ${result.deleted} 条记录`);
-      if (scope === "browser" || scope === "all") setPairingCode(null);
+      const execution = await runTelemetryDelete(scope, {
+        clear: clearTelemetryData,
+        refresh: getTelemetryStatus,
+        onDeleted: ({ notice, clearPairingCode }) => {
+          setTelemetryDeleteNotice(notice);
+          if (clearPairingCode) setPairingCode(null);
+        },
+      });
+      if (execution.refreshError === null) {
+        setTelemetry(execution.telemetry);
+      } else {
+        const detail = getErrorMessage(execution.refreshError, "未知错误");
+        setError(`数据已清除，但状态刷新失败：${detail}`);
+      }
     } catch (e: unknown) {
       setError(getErrorMessage(e, "清除失败"));
     } finally {
@@ -361,6 +376,25 @@ export default function Settings() {
           </span>
         </div>
         {telemetryMessage && <div className="success-box mt16">{telemetryMessage}</div>}
+        {telemetryDeleteNotice?.kind === "success" && (
+          <div className="success-box mt16">{telemetryDeleteNotice.message}</div>
+        )}
+        {telemetryDeleteNotice?.kind === "partial" && (
+          <div className="error-box mt16" role="status">
+            <strong>{telemetryDeleteNotice.message}</strong>
+            <div style={{ marginTop: 8 }}>未完成项目：</div>
+            <ul style={{ margin: "6px 0 10px", paddingLeft: 20 }}>
+              {telemetryDeleteNotice.failures.map((failure) => <li key={failure}>{failure}</li>)}
+            </ul>
+            <button
+              className="btn btn-sm btn-danger"
+              disabled={telemetryLoading}
+              onClick={() => handleClearTelemetry(telemetryDeleteNotice.retryScope)}
+            >
+              再次尝试清除
+            </button>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginTop: 20 }}>
           <label className="flex flex-between" style={{ padding: 14, border: "1px solid var(--color-border)", borderRadius: 10 }}>
             <span><strong style={{ display: "block", fontSize: 14 }}>鼠标与键盘聚合统计</strong><span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>点击、滚动、移动距离和输入活跃秒数</span></span>

@@ -1,10 +1,9 @@
 """Typed tool adapters with explicit context for LangChain agent tools.
 
-Replaces ContextVar-based tool factories with policy-enforced tool adapters
-that receive ``user_id``, ``session_id``, and ``run_id`` explicitly via
-``ToolContext``.  Each adapter owns its dependencies (repositories, services,
-budget gate) through constructor injection — no global state, no private
-attribute access.
+Replaces global tool context with policy-enforced tool adapters that receive
+``user_id``, ``session_id``, and ``run_id`` explicitly via ``ToolContext``.
+Each adapter owns its dependencies (repositories, services, budget gate)
+through constructor injection and stores context per async task.
 
 Design constraints:
   - Every ``execute()`` method receives ``ToolContext`` as its first argument.
@@ -20,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -47,6 +47,32 @@ class ToolContext:
     user_id: int
     session_id: str | None = None
     run_id: str | None = None
+
+
+class _ContextualTool:
+    """Keep the public ``context`` attribute isolated per async task."""
+
+    def __init__(self) -> None:
+        self._context_var: ContextVar[ToolContext | None] = ContextVar(
+            f"{type(self).__name__}.context.{id(self)}",
+            default=None,
+        )
+
+    @property
+    def context(self) -> ToolContext | None:
+        return self._context_var.get()
+
+    @context.setter
+    def context(self, value: ToolContext | None) -> None:
+        self.bind_context(value)
+
+    def bind_context(self, value: ToolContext | None) -> Token[ToolContext | None]:
+        """Bind context and return the token needed to restore its predecessor."""
+        return self._context_var.set(value)
+
+    def reset_context(self, token: Token[ToolContext | None]) -> None:
+        """Restore the context value that preceded ``bind_context``."""
+        self._context_var.reset(token)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -163,7 +189,7 @@ def _sanitise_dict(data: Any) -> Any:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class QueryEvidenceTool:
+class QueryEvidenceTool(_ContextualTool):
     """Typed adapter for the ``query_evidence`` tool.
 
     Fetches behavior evidence from the ML sensing layer for a given user,
@@ -181,9 +207,9 @@ class QueryEvidenceTool:
         evidence_builder: Any,  # EvidenceBundleBuilder
         timezone: TimezoneLike = "local",
     ) -> None:
+        super().__init__()
         self._evidence_builder = evidence_builder
         self._timezone = timezone
-        self.context: ToolContext | None = None
 
     async def execute(self, days: int = 7) -> QueryEvidenceOutput:
         """Run the query-evidence flow with explicit context."""
@@ -213,7 +239,7 @@ class QueryEvidenceTool:
         )
 
 
-class LatestAnalysisTool:
+class LatestAnalysisTool(_ContextualTool):
     """Typed adapter for the ``latest_analysis`` tool.
 
     Retrieves today's (or yesterday's) procrastination analysis from the
@@ -230,9 +256,9 @@ class LatestAnalysisTool:
         analysis_repo: Any,  # SQLAlchemyProcrastinationAnalysisRepository
         timezone: TimezoneLike = "local",
     ) -> None:
+        super().__init__()
         self._analysis_repo = analysis_repo
         self._timezone = timezone
-        self.context: ToolContext | None = None
 
     async def execute(self) -> LatestAnalysisOutput:
         """Run the latest-analysis flow with explicit context."""
@@ -262,7 +288,7 @@ class LatestAnalysisTool:
         )
 
 
-class RunAnalysisTool:
+class RunAnalysisTool(_ContextualTool):
     """Typed adapter for the ``run_analysis`` tool.
 
     Triggers the expert panel deliberation for today's data.  Uses
@@ -286,10 +312,10 @@ class RunAnalysisTool:
         budget_port: BudgetReservationPort | None = None,
         timezone: TimezoneLike = "local",
     ) -> None:
+        super().__init__()
         self._panel_service = panel_service
         self._budget_port = budget_port
         self._timezone = timezone
-        self.context: ToolContext | None = None
         # In-memory cap (fallback when no budget_port)
         self._in_memory_used: set[str] = set()
         self._in_memory_lock: asyncio.Lock = asyncio.Lock()
@@ -366,7 +392,7 @@ class RunAnalysisTool:
                         self._in_memory_used.discard(idkey)
 
 
-class InterventionHistoryTool:
+class InterventionHistoryTool(_ContextualTool):
     """Typed adapter for the ``intervention_history`` tool.
 
     Queries recent intervention history (nudges, task-breakdowns, etc.)
@@ -384,9 +410,9 @@ class InterventionHistoryTool:
         intervention_repo: Any,  # InterventionLogRepository
         timezone: TimezoneLike = "local",
     ) -> None:
+        super().__init__()
         self._intervention_repo = intervention_repo
         self._timezone = timezone
-        self.context: ToolContext | None = None
 
     async def execute(self, days: int = 7) -> InterventionHistoryOutput:
         """Run the intervention-history flow with explicit context."""

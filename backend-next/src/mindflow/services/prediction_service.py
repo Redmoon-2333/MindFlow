@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 from mindflow.domain.prediction import (
     MIN_COVERAGE_RATIO,
     STALE_THRESHOLD_S,
@@ -33,8 +34,6 @@ from mindflow.domain.prediction import (
 )
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.train.models.manager import ModelManager
-from mindflow.train.v2 import V2_FEATURE_NAMES
-from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 # How many seconds of feature windows to fetch per ``predict_latest`` call
 _LATEST_LOOKBACK_S: float = 7200.0  # 2 hours
@@ -73,6 +72,10 @@ class FocusPredictionService:
         """
         self._model_manager = model_manager
 
+    def detach_model_manager(self) -> None:
+        """Detach the active manager so subsequent calls return ``no_model``."""
+        self._model_manager = None
+
     # ══════════════════════════════════════════════════════════════════════
     # Public API
     # ══════════════════════════════════════════════════════════════════════
@@ -97,25 +100,28 @@ class FocusPredictionService:
         now = now or datetime.now(UTC)
 
         # ── Guard: no model loaded ──────────────────────────────────────
-        if self._model_manager is None:
+        model_manager = self._model_manager
+        if model_manager is None:
             return FocusPrediction(
                 status="no_model",
                 reason="未加载 ML 模型，请先训练",
             )
 
         # ── Guard: model classifier not fitted ──────────────────────────
-        if not bool(getattr(self._model_manager.classifier, "_is_fitted", False)):
+        if not bool(getattr(model_manager.classifier, "_is_fitted", False)):
             return FocusPrediction(
                 status="no_model",
                 reason="分类器尚未训练完成",
-                model_version=self._model_manager.current_version_tag,
+                model_version=model_manager.current_version_tag,
             )
 
-        # ── Fetch feature windows ───────────────────────────────────────
+        # ── Fetch feature windows (range-bounded, never full history) ────
         lookback_start = now - timedelta(seconds=_LATEST_LOOKBACK_S)
         try:
-            all_windows = await self._telemetry_repo.list_feature_windows(
+            all_windows = await self._telemetry_repo.list_feature_windows_in_range(
                 user_id=user_id,
+                start=lookback_start,
+                end=now,
                 feature_schema_version=FEATURE_SCHEMA_VERSION,
             )
         except Exception as exc:
@@ -123,20 +129,26 @@ class FocusPredictionService:
             return FocusPrediction(
                 status="inference_error",
                 reason=f"特征窗口查询失败：{exc}",
-                model_version=self._model_manager.current_version_tag,
+                model_version=model_manager.current_version_tag,
             )
 
-        # Filter to lookback window
+        # Filter to lookback window (secondary guard; the query is already bounded)
         windows = [w for w in all_windows if _window_ends_after(w, lookback_start)]
 
         if not windows:
             return FocusPrediction(
                 status="no_data",
                 reason="在最近 2 小时内未找到 v2 特征窗口",
-                model_version=self._model_manager.current_version_tag,
+                model_version=model_manager.current_version_tag,
             )
 
-        return self._predict_from_windows(windows, now)
+        model_manager = self._model_manager
+        if model_manager is None or not bool(
+            getattr(model_manager.classifier, "_is_fitted", False)
+        ):
+            return FocusPrediction(status="no_model", reason="未加载 ML 模型")
+
+        return self._predict_from_windows(windows, now, model_manager)
 
     async def predict_range(
         self,
@@ -161,19 +173,22 @@ class FocusPredictionService:
         """
         now = now or datetime.now(UTC)
 
-        if self._model_manager is None:
+        model_manager = self._model_manager
+        if model_manager is None:
             return FocusPrediction(status="no_model", reason="未加载 ML 模型")
 
-        if not bool(getattr(self._model_manager.classifier, "_is_fitted", False)):
+        if not bool(getattr(model_manager.classifier, "_is_fitted", False)):
             return FocusPrediction(
                 status="no_model",
                 reason="分类器尚未训练完成",
-                model_version=self._model_manager.current_version_tag,
+                model_version=model_manager.current_version_tag,
             )
 
         try:
-            all_windows = await self._telemetry_repo.list_feature_windows(
+            all_windows = await self._telemetry_repo.list_feature_windows_in_range(
                 user_id=user_id,
+                start=start,
+                end=end,
                 feature_schema_version=FEATURE_SCHEMA_VERSION,
             )
         except Exception as exc:
@@ -181,10 +196,10 @@ class FocusPredictionService:
             return FocusPrediction(
                 status="inference_error",
                 reason=f"特征窗口查询失败：{exc}",
-                model_version=self._model_manager.current_version_tag,
+                model_version=model_manager.current_version_tag,
             )
 
-        # Filter to requested time range
+        # Filter to requested time range (secondary guard; the query is already bounded)
         windows = [
             w for w in all_windows
             if _window_overlaps_range(w, start, end)
@@ -194,10 +209,16 @@ class FocusPredictionService:
             return FocusPrediction(
                 status="no_data",
                 reason=f"在 {start.isoformat()} ~ {end.isoformat()} 范围内未找到 v2 特征窗口",
-                model_version=self._model_manager.current_version_tag,
+                model_version=model_manager.current_version_tag,
             )
 
-        return self._predict_from_windows(windows, now)
+        model_manager = self._model_manager
+        if model_manager is None or not bool(
+            getattr(model_manager.classifier, "_is_fitted", False)
+        ):
+            return FocusPrediction(status="no_model", reason="未加载 ML 模型")
+
+        return self._predict_from_windows(windows, now, model_manager)
 
     # ══════════════════════════════════════════════════════════════════════
     # Internal: predict from window rows
@@ -207,6 +228,7 @@ class FocusPredictionService:
         self,
         windows: Sequence[dict[str, Any]],
         now: datetime,
+        model_manager: ModelManager,
     ) -> FocusPrediction:
         """Run batch ML inference on a list of feature window rows.
 
@@ -214,11 +236,15 @@ class FocusPredictionService:
         errors) are captured as ``FocusPrediction`` status values — this
         method never raises.
         """
-        model_version = (
-            self._model_manager.current_version_tag
-            if self._model_manager is not None
-            else None
-        )
+        model_version = model_manager.current_version_tag
+
+        # ── Enforce window limit (before matrix construction) ───────────
+        # Bounded first so parsed rows, matrix rows, and the reported
+        # ``window_count`` always agree — the matrix is never built larger
+        # than _MAX_PREDICT_WINDOWS. The repository returns windows ascending
+        # by start, so keeping the tail preserves the most recent windows.
+        if len(windows) > _MAX_PREDICT_WINDOWS:
+            windows = windows[-_MAX_PREDICT_WINDOWS:]
 
         # ── Build feature matrix ────────────────────────────────────────
         parsed: list[dict[str, float]] = []
@@ -287,7 +313,7 @@ class FocusPredictionService:
             )
 
         # ── Check model feature names ────────────────────────────────────
-        model_feature_names = getattr(self._model_manager.classifier, "feature_names_", None)
+        model_feature_names = getattr(model_manager.classifier, "feature_names_", None)
         # Compare by content: the training pipeline stores feature_names_ as
         # ``list(V2_FEATURE_NAMES)`` while V2_FEATURE_NAMES itself is a tuple,
         # so a container-type comparison would reject every real model.
@@ -312,14 +338,9 @@ class FocusPredictionService:
                 window_count=window_count,
             )
 
-        # ── Enforce window limit ─────────────────────────────────────────
-        if len(parsed) > _MAX_PREDICT_WINDOWS:
-            parsed = parsed[-_MAX_PREDICT_WINDOWS:]
-            window_count = len(parsed)
-
         # ── Run prediction ──────────────────────────────────────────────
         try:
-            probabilities = self._model_manager.classifier.predict_proba(matrix)
+            probabilities = model_manager.classifier.predict_proba(matrix)
         except Exception as exc:
             logger.warning("FocusPredictionService: predict_proba failed: {}", exc)
             return FocusPrediction(
@@ -348,7 +369,10 @@ class FocusPredictionService:
         # Expected windows based on 5-min window size and time span
         coverage_ratio = 1.0
         if newest_window_end is not None and window_count > 0:
-            expected = max(1, int((newest_window_end - now + timedelta(seconds=_LATEST_LOOKBACK_S)).total_seconds() / 300))
+            covered_seconds = (
+                newest_window_end - now + timedelta(seconds=_LATEST_LOOKBACK_S)
+            ).total_seconds()
+            expected = max(1, int(covered_seconds / 300))
             coverage_ratio = min(1.0, window_count / expected)
 
         # ── Compute data age ────────────────────────────────────────────
@@ -360,7 +384,7 @@ class FocusPredictionService:
         top_factors: list[dict[str, float | str]] = []
         try:
             mean_vector = np.mean(matrix, axis=0)
-            importances = self._model_manager.classifier.get_feature_importance()
+            importances = model_manager.classifier.get_feature_importance()
             top_factors = [
                 {
                     "feature": name,
@@ -382,7 +406,10 @@ class FocusPredictionService:
         reason = ""
         if data_age_s is not None and data_age_s > STALE_THRESHOLD_S:
             status = "stale"
-            reason = f"数据已过期（{data_age_s:.0f} 秒前最后的窗口，阈值 {STALE_THRESHOLD_S:.0f} 秒）"
+            reason = (
+                f"数据已过期（{data_age_s:.0f} 秒前最后的窗口，"
+                f"阈值 {STALE_THRESHOLD_S:.0f} 秒）"
+            )
         elif coverage_ratio < MIN_COVERAGE_RATIO:
             status = "stale"
             reason = f"数据覆盖率不足（{coverage_ratio:.1%}，阈值 {MIN_COVERAGE_RATIO:.0%}）"
@@ -466,7 +493,11 @@ def _window_overlaps_range(row: dict[str, Any], start: datetime, end: datetime) 
         return False
     try:
         ws = datetime.fromisoformat(str(w_start).replace("Z", "+00:00"))
-        we = w_end if isinstance(w_end, datetime) else datetime.fromisoformat(str(w_end).replace("Z", "+00:00"))
+        we = (
+            w_end
+            if isinstance(w_end, datetime)
+            else datetime.fromisoformat(str(w_end).replace("Z", "+00:00"))
+        )
         if ws.tzinfo is None:
             ws = ws.replace(tzinfo=UTC)
         if we.tzinfo is None:

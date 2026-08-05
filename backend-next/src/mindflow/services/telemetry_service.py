@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,20 +13,19 @@ from typing import Any, Final, Literal
 from urllib.parse import urlsplit
 
 import numpy as np
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mindflow.config import get_settings
 from mindflow.domain.baseline import BaselineModel
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 from mindflow.infrastructure.repositories.activity import SQLAlchemyActivityRepository
 from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.services.prediction_service import FocusPredictionService
-from mindflow.services.telemetry_features import (
-    FEATURE_SCHEMA_VERSION,
-    build_v2_feature_window,
-)
+from mindflow.services.telemetry_features import build_v2_feature_window
 from mindflow.time_utils import TimezoneLike, resolve_timezone, utc_today
-from mindflow.train.v2 import V2_FEATURE_NAMES
 
 _DEFAULTS: dict[str, Any] = {
     "input_telemetry_enabled": False,
@@ -33,6 +33,18 @@ _DEFAULTS: dict[str, Any] = {
     "interaction_retention_days": 7,
     "activity_retention_days": 30,
 }
+
+
+def _effective_activity_retention_days(stored_telemetry: dict[str, Any]) -> int:
+    """Resolve the single effective activity-retention value.
+
+    The user preference ``activity_retention_days`` is authoritative; the
+    environment ``event_retention_days`` is only the startup/default when the
+    preference is missing.
+    """
+    if "activity_retention_days" in stored_telemetry:
+        return int(stored_telemetry["activity_retention_days"])
+    return int(get_settings().event_retention_days)
 
 _PAIRING_CODE_TTL_S = 300
 
@@ -57,6 +69,34 @@ class BaselineRebuildResult:
     cutoff_utc: datetime
 
 
+class TelemetryClearResult(int):
+    """Integer-compatible outcome for a telemetry deletion request.
+
+    Existing callers can keep treating the result as the deleted-row count.
+    ``partial`` and ``failures`` make post-database best-effort failures
+    explicit instead of allowing the caller to mistake a half-complete wipe
+    for full success.
+    """
+
+    failures: tuple[str, ...]
+    partial: bool
+
+    def __new__(
+        cls,
+        deleted: int,
+        *,
+        failures: tuple[str, ...] = (),
+    ) -> TelemetryClearResult:
+        result = int.__new__(cls, deleted)
+        result.failures = failures
+        result.partial = bool(failures)
+        return result
+
+    @property
+    def deleted(self) -> int:
+        return int(self)
+
+
 def _as_utc(value: Any) -> datetime:
     timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
     return timestamp.replace(tzinfo=UTC) if timestamp.tzinfo is None else timestamp.astimezone(UTC)
@@ -68,6 +108,7 @@ class TelemetryService:
         repository: TelemetryRepository,
         preferences_repository: PreferencesRepository,
         data_dir: Path,
+        models_dir: Path | None = None,
         activity_repository: SQLAlchemyActivityRepository | None = None,
         prediction_service: FocusPredictionService | None = None,
         baseline_repository: BaselineRepository | None = None,
@@ -76,6 +117,9 @@ class TelemetryService:
         self._repository = repository
         self._preferences_repository = preferences_repository
         self._data_dir = data_dir
+        # Configured local ML artifact root; defaults to the same
+        # data_dir-anchored "models" directory Settings resolves.
+        self._models_dir = models_dir or (data_dir / "models")
         self._activity_repository = activity_repository
         self._pairing_codes: dict[str, datetime] = {}
         self._input_watcher: Any = None
@@ -93,10 +137,20 @@ class TelemetryService:
     def attach_model_manager(self, model_manager: Any) -> None:
         self._model_manager = model_manager
 
+    def detach_model_manager(self) -> None:
+        """Detach all model references owned by the telemetry surface."""
+        self._model_manager = None
+        if self._prediction_service is not None:
+            self._prediction_service.detach_model_manager()
+
     async def get_preferences(self, user_id: int = 1) -> dict[str, Any]:
         preferences = await self._preferences_repository.get(user_id)
         telemetry = preferences.get("telemetry", {})
-        return {**_DEFAULTS, **telemetry}
+        merged = {**_DEFAULTS, **telemetry}
+        merged["activity_retention_days"] = _effective_activity_retention_days(
+            telemetry
+        )
+        return merged
 
     async def patch_preferences(
         self,
@@ -104,7 +158,11 @@ class TelemetryService:
         user_id: int = 1,
     ) -> dict[str, Any]:
         current = await self._preferences_repository.get(user_id)
-        telemetry = {**_DEFAULTS, **current.get("telemetry", {}), **updates}
+        stored_telemetry = current.get("telemetry", {})
+        telemetry = {**_DEFAULTS, **stored_telemetry, **updates}
+        telemetry["activity_retention_days"] = _effective_activity_retention_days(
+            {**stored_telemetry, **updates}
+        )
         telemetry["interaction_retention_days"] = min(
             max(int(telemetry["interaction_retention_days"]), 1), 30
         )
@@ -438,7 +496,9 @@ class TelemetryService:
                 samples=0,
                 cutoff_utc=cutoff,
             )
-        reason = "missing" if baseline is None else "schema_mismatch"
+        reason: Literal["missing", "schema_mismatch"] = (
+            "missing" if baseline is None else "schema_mismatch"
+        )
 
         windows = await self._repository.list_feature_windows_in_range(
             user_id, cutoff, now
@@ -638,8 +698,71 @@ class TelemetryService:
         self,
         scope: Literal["interaction", "browser", "feedback", "all"],
         user_id: int = 1,
-    ) -> int:
-        return await self._repository.delete_scope(user_id, scope)
+    ) -> TelemetryClearResult:
+        """Delete the user's telemetry data for *scope*.
+
+        ``all`` clears every in-scope behavioral table (raw events, input and
+        browser telemetry, focus sessions/feedback, daily reports/analytics,
+        intervention logs/checks/slot state, derived feature windows and
+        baseline/model metadata), revokes browser pairing tokens (rows are
+        kept with ``revoked_at`` set), and removes MindFlow-owned local
+        training/model artifact files. Chat, backups, auth credentials, and
+        user preferences are never touched. Token/artifact cleanup is
+        best-effort; a returned ``TelemetryClearResult`` marks ``partial``
+        and names failed steps while remaining usable as the deleted count.
+        Narrower scopes keep their historical semantics.
+        """
+        deleted = await self._repository.delete_scope(user_id, scope)
+        failures: list[str] = []
+        if scope == "all":
+            try:
+                self._unload_runtime_models()
+            except Exception as exc:
+                failures.append("model_runtime")
+                logger.warning("Telemetry wipe could not unload runtime models: {}", exc)
+
+            try:
+                await self._repository.revoke_browser_tokens(user_id)
+            except Exception as exc:
+                # Database deletion already committed; continue the wipe and
+                # report the token failure instead of raising as if nothing ran.
+                failures.append("browser_tokens")
+                logger.warning("Telemetry wipe could not revoke browser tokens: {}", exc)
+
+            try:
+                self._delete_local_artifacts()
+            except Exception as exc:
+                # Artifact removal is independent of the database transaction.
+                failures.append("model_artifacts")
+                logger.warning("Telemetry wipe could not remove model artifacts: {}", exc)
+
+        return TelemetryClearResult(deleted, failures=tuple(failures))
+
+    def _unload_runtime_models(self) -> None:
+        """Invalidate a real manager when available, then detach service refs."""
+        manager = self._model_manager
+        try:
+            unload = getattr(manager, "unload", None) if manager is not None else None
+            if callable(unload):
+                unload()
+        finally:
+            # Fake managers used by tests may not implement ``unload``. They
+            # are still supported because detaching does not depend on it.
+            self.detach_model_manager()
+
+    def _delete_local_artifacts(self) -> None:
+        """Remove MindFlow-owned local training/model artifacts.
+
+        All current artifacts (versioned model pickles and their HMAC
+        signatures, ``manifest.json``, ``latest.json``,
+        ``training_report.json``, and the signing key) live under
+        ``models_dir/v2``; that directory is removed recursively. Backup
+        files (``data_dir/backups``) and the auth ``token`` file are outside
+        this root and never touched.
+        """
+        v2_dir = self._models_dir / "v2"
+        if v2_dir.exists():
+            shutil.rmtree(v2_dir)
 
     @staticmethod
     def normalize_domain(value: str) -> str:

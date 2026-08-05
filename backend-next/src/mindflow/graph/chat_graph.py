@@ -395,6 +395,7 @@ async def model_call_node(state: ChatGraphState) -> dict[str, Any]:
     evidence_cited = state.get("evidence_cited", False)
 
     tool_call_objects = getattr(result, "tool_calls", None) or []
+    existing_tool_msgs: list[dict[str, str]] = list(state.get("tool_messages", []))
     for tc in tool_call_objects:
         t_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
         if t_name:
@@ -409,9 +410,9 @@ async def model_call_node(state: ChatGraphState) -> dict[str, Any]:
             "name": t_name,
             "content": str(tc.get("args", "")) if isinstance(tc, dict) else str(getattr(tc, "args", "")),
         }
-        existing_tool_msgs: list[dict[str, str]] = list(state.get("tool_messages", []))
         existing_tool_msgs.append(tool_msg)
 
+    if tool_call_objects:
         return {
             "model_messages_raw": messages,
             "tool_messages": existing_tool_msgs,
@@ -435,7 +436,7 @@ def _build_messages_from_state(state: ChatGraphState) -> list[Any]:
     user_message = state["user_message"]
     summary = state.get("history_summary")
 
-    messages: list[Any] = []
+    messages: list[Any] = [SystemMessage(content=CHAT_SYSTEM_PROMPT)]
     if summary:
         messages.append(SystemMessage(content=summary))
 
@@ -658,7 +659,7 @@ async def correction_loop_node(state: ChatGraphState) -> dict[str, Any]:
     user_message = state["user_message"]
     summary = state.get("history_summary")
 
-    retry_messages: list[Any] = []
+    retry_messages: list[Any] = [SystemMessage(content=CHAT_SYSTEM_PROMPT)]
     if summary:
         retry_messages.append(SystemMessage(content=summary))
 
@@ -853,10 +854,12 @@ class ChatGraph:
             session_id=session_id,
             run_id=turn_id,
         )
-        for adapter in self._tool_adapters:
-            adapter.context = ctx
+        context_tokens: list[tuple[Any, Any]] = []
 
         try:
+            for adapter in self._tool_adapters:
+                context_tokens.append((adapter, adapter.bind_context(ctx)))
+
             # ── Build initial state ───────────────────────────────────────
             initial_state: ChatGraphState = {
                 "user_id": user_id,
@@ -914,9 +917,8 @@ class ChatGraph:
             )
 
         finally:
-            # Clear context on adapters after invocation
-            for adapter in self._tool_adapters:
-                adapter.context = None
+            for adapter, token in reversed(context_tokens):
+                adapter.reset_context(token)
 
     # ── Graph construction ───────────────────────────────────────────────
 

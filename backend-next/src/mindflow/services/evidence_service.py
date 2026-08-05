@@ -358,6 +358,7 @@ class EvidenceBundleBuilder:
             behavior_summary=behavior_summary,
             intervention_history=tuple(interventions),
             novelty_flags=tuple(novelty_flags),
+            events=tuple(events),
         )
 
     # ══════════════════════════════════════════════════════════════════════

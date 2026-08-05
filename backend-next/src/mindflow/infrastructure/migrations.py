@@ -3,9 +3,9 @@
 Wraps Alembic's synchronous API inside asyncio.to_thread so it does
 not block the async event loop (NF-R5, §5.3 of architecture doc).
 
-On failure, returns False so the application can start with the
-existing schema and expose migration_failed status on the health
-endpoint (graceful degradation per M9/NF-R5 resolution).
+On failure, returns False and the application aborts startup. Operators must
+repair the database and rerun migrations before bringing the service up; the
+health endpoint is not a substitute for a successful migration.
 """
 
 from __future__ import annotations

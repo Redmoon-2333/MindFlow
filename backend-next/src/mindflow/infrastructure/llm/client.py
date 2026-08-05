@@ -3,8 +3,10 @@
 L1 of the three-tier degradation chain (Architecture §3.3, ADR-003).
 
 Design decisions:
-  - httpx.AsyncClient with connection pooling and a 30-second timeout.
-  - One retry on network-level errors (connect, timeout, 5xx) —
+  - httpx.AsyncClient with connection pooling and a configurable timeout
+    (``LLMSettings.timeout_s``, default 30 seconds).
+  - Retry budget from ``LLMSettings.max_retries`` (default 1) on
+    network-level errors (connect, timeout, 5xx) —
     validation errors and 4xx are NOT retried (they won't succeed).
   - Exponential backoff with jitter before retries (P0-3):
     delay = min(2^attempt + random.uniform(0, 1), 60).
@@ -17,7 +19,7 @@ Design decisions:
 
 Raises:
     LLMNotConfiguredError: If no api_key is available at construction time.
-    httpx.TimeoutException: After 30s with no response.
+    httpx.TimeoutException: After ``timeout_s`` with no response.
     LLMAttributionResult.ValidationError: If the response JSON is structurally
         valid but semantically invalid (forbidden words, type mismatches, …).
 """
@@ -66,8 +68,6 @@ _SYSTEM_PROMPT: str = (
     "请确保输出是合法的 JSON 对象，不包含 markdown 代码块标记。"
 )
 
-_DEFAULT_TIMEOUT_S: int = 30
-_MAX_RETRIES: int = 1
 _BACKOFF_CAP_S: float = 60.0
 
 
@@ -126,9 +126,11 @@ class DeepSeekClient:
 
         self._base_url = (settings.base_url or "https://api.deepseek.com").rstrip("/")
         self._model = settings.model or "deepseek-chat"
+        self._timeout_s: int = settings.timeout_s
+        self._max_retries: int = settings.max_retries
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
-            timeout=httpx.Timeout(_DEFAULT_TIMEOUT_S),
+            timeout=httpx.Timeout(self._timeout_s),
             headers={
                 "Authorization": f"Bearer {settings.api_key}",
                 "Content-Type": "application/json",
@@ -171,7 +173,7 @@ class DeepSeekClient:
 
         last_exc: Exception | None = None
 
-        for attempt in range(_MAX_RETRIES + 1):
+        for attempt in range(self._max_retries + 1):
             try:
                 response = await self._client.post(
                     "/chat/completions",
@@ -179,21 +181,23 @@ class DeepSeekClient:
                 )
             except httpx.TimeoutException:
                 logger.warning("DeepSeek API timeout (attempt {})", attempt + 1)
-                last_exc = httpx.TimeoutException("DeepSeek API timed out after 30s")
-                if attempt < _MAX_RETRIES:
+                last_exc = httpx.TimeoutException(
+                    f"DeepSeek API timed out after {self._timeout_s}s"
+                )
+                if attempt < self._max_retries:
                     await asyncio.sleep(_compute_backoff(attempt))
                 continue
             except httpx.HTTPError as exc:
                 logger.warning("DeepSeek API HTTP error (attempt {}): {}", attempt + 1, exc)
                 last_exc = exc
-                if attempt < _MAX_RETRIES:
+                if attempt < self._max_retries:
                     await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
             if response.status_code == 429:
                 logger.warning("DeepSeek rate limited (attempt {})", attempt + 1)
                 last_exc = LLMAPIError(f"Rate limited: {response.status_code}")
-                if attempt < _MAX_RETRIES:
+                if attempt < self._max_retries:
                     retry_after = _parse_retry_after(response)
                     await asyncio.sleep(_compute_backoff(attempt, retry_after))
                 continue
@@ -203,7 +207,7 @@ class DeepSeekClient:
                     "DeepSeek server error {} (attempt {})", response.status_code, attempt + 1
                 )
                 last_exc = LLMAPIError(f"Server error: {response.status_code}")
-                if attempt < _MAX_RETRIES:
+                if attempt < self._max_retries:
                     retry_after = _parse_retry_after(response)
                     await asyncio.sleep(_compute_backoff(attempt, retry_after))
                 continue
@@ -219,7 +223,7 @@ class DeepSeekClient:
             except json.JSONDecodeError as exc:
                 logger.warning("DeepSeek returned non-JSON response: {}", exc)
                 last_exc = exc
-                if attempt < _MAX_RETRIES:
+                if attempt < self._max_retries:
                     await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
@@ -227,7 +231,7 @@ class DeepSeekClient:
             if not content:
                 logger.warning("DeepSeek returned empty content")
                 last_exc = LLMAPIError("Empty content in response")
-                if attempt < _MAX_RETRIES:
+                if attempt < self._max_retries:
                     await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
@@ -242,7 +246,9 @@ class DeepSeekClient:
                 raise  # noqa: TRY201 — intentional re-raise to route to L2/L3
 
         # All retries exhausted
-        raise LLMAPIError(f"DeepSeek API failed after {_MAX_RETRIES + 1} attempts") from last_exc
+        raise LLMAPIError(
+            f"DeepSeek API failed after {self._max_retries + 1} attempts"
+        ) from last_exc
 
     async def close(self) -> None:
         """Close the underlying HTTP client connection pool."""

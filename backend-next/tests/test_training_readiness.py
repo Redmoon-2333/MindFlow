@@ -571,3 +571,100 @@ class TestContract:
         resp = client.get("/api/v1/analytics/training-readiness")
         assert resp.status_code == 200
         assert len(resp.json()["gates"]) == 7
+
+
+# ── Training-report gate overrides ─────────────────────────────────────────
+
+
+class TestTrainingReportGateOverride:
+    """Real post-training values replace hard-coded not_implemented gates."""
+
+    @staticmethod
+    def _service_with_report(report: dict[str, Any]) -> Any:
+        from mindflow.services.training_readiness_service import (
+            TrainingReadinessService,
+        )
+
+        svc = TrainingReadinessService.__new__(TrainingReadinessService)
+        svc._training_report = report
+        return svc
+
+    def test_no_report_returns_empty(self) -> None:
+        svc = self._service_with_report(None)
+        assert svc._report_gate_override() == {}
+
+    def test_report_exposes_real_gate_values(self) -> None:
+        report = {
+            "quality_gate": {
+                "checks": {
+                    "balanced_accuracy": False,
+                    "minority_f1": False,
+                    "calibration_better_than_rule": False,
+                    "stable_date_folds": False,
+                },
+            },
+            "evaluation": {
+                "candidate": {
+                    "balanced_accuracy": 0.336492,
+                    "minority_f1": 0.083102,
+                    "brier_score": 0.37435,
+                },
+                "rule_baseline": {"brier_score": 0.314571},
+                "fold_stability": {
+                    "passed": False,
+                    "min_balanced_accuracy": 0.224359,
+                    "range": 0.406583,
+                    "min_test_size": 117,
+                },
+            },
+        }
+        overrides = self._service_with_report(report)._report_gate_override()
+
+        assert set(overrides) == {
+            "balanced_accuracy",
+            "minority_f1",
+            "calibration_better_than_rule",
+            "stable_date_folds",
+        }
+        assert overrides["balanced_accuracy"][0] == "failed"
+        assert "0.336" in overrides["balanced_accuracy"][1]
+        assert overrides["minority_f1"][0] == "failed"
+        assert "0.083" in overrides["minority_f1"][1]
+        assert overrides["calibration_better_than_rule"][0] == "failed"
+        assert "0.374" in overrides["calibration_better_than_rule"][1]
+        assert overrides["stable_date_folds"][0] == "failed"
+        assert "0.224" in overrides["stable_date_folds"][1]
+
+    def test_report_passing_gates_reported_as_passed(self) -> None:
+        report = {
+            "quality_gate": {
+                "checks": {
+                    "balanced_accuracy": True,
+                    "minority_f1": True,
+                    "calibration_better_than_rule": True,
+                    "stable_date_folds": True,
+                },
+            },
+            "evaluation": {
+                "candidate": {
+                    "balanced_accuracy": 0.72,
+                    "minority_f1": 0.65,
+                    "brier_score": 0.18,
+                },
+                "rule_baseline": {"brier_score": 0.30},
+                "fold_stability": {
+                    "passed": True,
+                    "min_balanced_accuracy": 0.62,
+                    "range": 0.18,
+                    "min_test_size": 40,
+                },
+            },
+        }
+        overrides = self._service_with_report(report)._report_gate_override()
+
+        assert overrides["balanced_accuracy"][0] == "passed"
+        assert overrides["minority_f1"][0] == "passed"
+        assert overrides["calibration_better_than_rule"][0] == "passed"
+        assert overrides["stable_date_folds"][0] == "passed"
+        for key in overrides:
+            assert overrides[key][3] == ""  # no failure message when passed

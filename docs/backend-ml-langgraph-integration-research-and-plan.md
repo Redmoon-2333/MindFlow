@@ -303,60 +303,38 @@ rollup_feature_windows(start, end)
 
 ---
 
-## 3. v1/v2 训练数据、标签、模型与质量门
+## 3. V2 训练数据、标签、模型与质量门
 
-### 3.1 两条训练路径
+### 3.1 两种 V2 数据来源
 
 ```
                    训练 CLI (python -m mindflow.train)
                                │
                 ┌──────────────┴──────────────┐
                 ▼                             ▼
-          v1 路径 (--source synthetic)    v2 路径 (--source db)
-                │                             │
-   generate_synthetic_data()          load_database_v2_data()
-   (产生 ActivityEvent)                (读取 feature_windows
-                │                       + focus_session_feedback)
-   BehaviorFeatureExtractor           ┌────────┤
-   (30min 窗口, 17 特征)              │        ▼
-                │              prepare_v2_training_data()
-   ConsensusLabeler                  (合并窗口+反馈)
-   (6 信号弱监督)                      │
-                │              evaluate_v2_candidates()
-   ModelManager.train_all()          (GroupKFold 评估)
-   (聚类+分类器+HMM)                  │
-                │              evaluate_v2_quality_gate()
-   ▸ 质量门 (7 检查)                   (7 检查门)
-                │                      │
-                ▼                      ▼
-       ModelManager.save_all()  →  HMAC 签名 .pkl + latest.json
+ --source synthetic_v2                 --source db
+ generate_v2_synthetic_data()          load_database_v2_data()
+ (画像生成 5min/24维窗口+反馈)          (读取窗口+显式反馈)
+                └──────────────┬──────────────┘
+                               ▼
+                    prepare_v2_training_data()
+                               ▼
+                    evaluate_v2_candidates()
+                               ▼
+                    evaluate_v2_quality_gate()
+                               ▼
+                    ModelManager.save_all()
+              (data/models/v2 下的签名模型与报告)
 ```
 
-#### v1 路径（传统、合成数据/原始事件）
-
-- **窗口大小**: 30 分钟（对齐到整点）
-- **特征数**: 17 维（参见 `train/features.py` 的 `FEATURE_NAMES`）
-- **标签**: 6 信号弱监督共识（`ConsensusLabeler` in `domain/labeling.py`）
-- **用途**: 合成数据验证、旧模型兼容、传统训练入口
-- **状态**: **Legacy**——不再接入 Chat 或 Panel 的在线推理
-
-6 个弱监督信号:
-| 信号 | 投票逻辑 |
-|------|----------|
-| `ProductivitySignal` | `productivity_ratio > 0.8` → focus；`< 0.2` → distract |
-| `SwitchFrequencySignal` | `switch_freq < 5` → focus；`> 40` → distract |
-| `TimeContextSignal` | 工作日 9-12/14-17 → focus；深夜 → distract |
-| `ApplicationDiversitySignal` | `unique_apps <= 2` → focus；`>= 6` → distract |
-| `EntertainmentDominanceSignal` | `entertainment_ratio > 0.5` → distract |
-| `TitleBasedSignal` | `code_ratio + doc_ratio > 0.5` → focus |
-
-#### v2 路径（隐私保护、数据库特征窗口）
+V1 原始事件合成、17 维 `BehaviorFeatureExtractor` 与六信号
+`ConsensusLabeler` 已删除。合成与真实数据现在都进入同一条 V2 管线。
 
 - **窗口大小**: 5 分钟（整五分钟对齐）
 - **特征数**: 24 维（`V2_FEATURE_NAMES` in `train/v2.py`）
 - **标签**: 显式用户反馈（权重 1.0）+ 弱规则回退（权重 0.25）
-- **用途**: **未来唯一在线 ML 协议**
-- **状态**: 已实现基本训练+质量门，但未接入在线推理
+- **用途**: 唯一训练与在线 ML 协议
+- **状态**: 已实现训练、质量门、签名持久化与在线推理
 
 ### 3.2 标签生成细节（v2）
 
@@ -393,12 +371,12 @@ rollup_feature_windows(start, end)
 
 ```
 1. minimum_days:               distinct_feedback_days >= 7
-2. minimum_explicit_feedback:  explicit_feedback_count >= 30
-3. minimum_class_feedback:     explicit_focus_count >= 10 && explicit_distract_count >= 10
-4. balanced_accuracy:          candidate >= 0.65           (RF 对留出日)
-5. minority_f1:                candidate >= 0.55           (少数类 F1)
-6. calibration_better_than_rule: candidate_brier < rule_brier  (优于规则基线)
-7. stable_date_folds:          folds >= 3 && fold_range <= 0.10
+2. minimum_explicit_feedback:  explicit_feedback_count >= 20
+3. minimum_class_feedback:     explicit_focus_count >= 5 && explicit_distract_count >= 5
+4. balanced_accuracy:          candidate >= 0.55
+5. minority_f1:                candidate >= 0.40
+6. calibration_better_than_rule: candidate_brier <= rule_brier + 0.01
+7. stable_date_folds:          fold_stability.passed
 ```
 
 **评估机制**: 使用 `GroupKFold` 按**日期**分组（防止同日数据泄漏）。每个 fold:
@@ -412,7 +390,7 @@ rollup_feature_windows(start, end)
 
 目录结构:
 ```
-{models_dir}/
+{models_dir}/v2/
   ├── latest.json                    # {"clustering": "clustering-20260717.pkl", ...}
   ├── model_signing.key              # 32-byte HMAC-SHA256 key (chmod 0600)
   ├── clustering-{YYYYMMDD}.pkl      # 序列化模型
@@ -423,26 +401,8 @@ rollup_feature_windows(start, end)
   └── hmm-{YYYYMMDD}.pkl.hmac
 ```
 
-**当前问题**:
-- 模型版本标签使用 `YYYYMMDD`（**同日训练会互相覆盖**）
-- 训练 CLI 的默认 `models_dir` 使用**当前工作目录**的 `data/models/`，而应用运行时的 `Settings.models_dir` 使用 `platformdirs` 用户数据目录——两者**不一致**
-- 无 `manifest.json` 记录特征名称/hash/schema 版本等元数据
-- `latest.json` 的原子性无文件锁保护
-
-### 3.6 v1 特征提取（训练管道）vs v2 特征窗口（在线推理）对比
-
-| 维度 | v1 (BehaviorFeatureExtractor) | v2 (rollup_feature_windows) |
-|------|-------------------------------|-----------------------------|
-| 文件 | `train/features.py` | `services/telemetry_features.py` |
-| 窗口尺寸 | 30 分钟 | 5 分钟 |
-| 对齐 | 整点 | 整五分钟 |
-| 特征数 | 17 | 24 |
-| 含窗口标题 | **是**（title_code/doc/url/meeting ratios） | **否**（纯聚合指标） |
-| 含应用分类 | **是**（AppClassifier 规则） | **否**（仅计数/时长） |
-| 含键鼠数据 | 否 | **是** |
-| 含浏览器数据 | 否 | **是** |
-| 循环时间编码 | 否 | **是**（sin/cos） |
-| 当前用途 | 仅训练 | 训练 + 在线推理 |
+`manifest.json` 记录特征 schema、反馈计数、质量门、评估和数据来源。
+`latest.json` 仅在全部质量门通过时更新；未通过的制品保留为 shadow。
 
 ---
 
@@ -1245,10 +1205,8 @@ flowchart LR
 | `backend-next/src/mindflow/domain/procrastination.py` | ProcrastinationType, RuleEngine |
 | `backend-next/src/mindflow/domain/baseline.py` | BaselineModel (Welford) |
 | `backend-next/src/mindflow/domain/deviation.py` | DeviationDetector (z-score) |
-| `backend-next/src/mindflow/domain/labeling.py` | ConsensusLabeler（6 信号弱监督） |
 | `backend-next/src/mindflow/train/__main__.py` | 训练 CLI 入口 |
 | `backend-next/src/mindflow/train/pipeline.py` | run_training() 编排 |
-| `backend-next/src/mindflow/train/features.py` | v1 BehaviorFeatureExtractor |
 | `backend-next/src/mindflow/train/v2.py` | v2 训练数据准备 + 评估 + 质量门 |
 | `backend-next/src/mindflow/train/models/manager.py` | ModelManager（版本管理 + 持久化） |
 | `backend-next/src/mindflow/train/models/classifier.py` | FocusClassifier（RF） |
@@ -1256,9 +1214,8 @@ flowchart LR
 | `backend-next/src/mindflow/train/models/clustering.py` | BehaviorClustering (DBSCAN/KMeans) |
 | `backend-next/src/mindflow/train/models/hmm.py` | BehaviorHMM (5-state) |
 | `backend-next/src/mindflow/train/serialization.py` | HMAC-SHA256 模型签名 |
-| `backend-next/src/mindflow/train/synthetic_data.py` | 合成数据生成器 |
+| `backend-next/src/mindflow/train/synthetic_v2.py` | V2 特征窗口与反馈合成器 |
 | `backend-next/src/mindflow/train/user_profiles.py` | 30 个学生原型 |
-| `backend-next/src/mindflow/train/qa_pipeline.py` | 3 代理 QA 验证管道 |
 | `backend-next/src/mindflow/infrastructure/repositories/telemetry.py` | TelemetryRepository（包含表格定义） |
 | `backend-next/src/mindflow/infrastructure/repositories/focus.py` | FocusSessionRepository |
 

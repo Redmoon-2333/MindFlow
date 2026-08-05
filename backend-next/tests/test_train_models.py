@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from sklearn.exceptions import InconsistentVersionWarning
+from sklearn.exceptions import InconsistentVersionWarning, NotFittedError
 
 from mindflow.train.models import (
     BehaviorClustering,
@@ -378,3 +378,43 @@ def test_load_latest_rejects_incompatible_sklearn_artifacts(
     monkeypatch.setattr("mindflow.train.models.manager.joblib.load", incompatible_load)
 
     assert ModelManager(models_dir=model_dir, use_ensemble=False).load_latest() is False
+
+
+def test_model_manager_unload_invalidates_shared_model_references(
+    sample_features: np.ndarray,
+    model_dir: Path,
+) -> None:
+    """Unloading resets the shared manager and every current model in place."""
+    manager = ModelManager(models_dir=model_dir, use_ensemble=False)
+    labels = np.array([0, 1] * (len(sample_features) // 2), dtype=np.int32)
+    feature_names = [f"f{i}" for i in range(sample_features.shape[1])]
+    manager.classifier.fit(sample_features, labels, feature_names)
+    manager.clustering.fit(sample_features)
+    manager.hmm.fit([np.array([0, 1, 0, 1], dtype=np.int32)])
+
+    classifier = manager.classifier
+    clustering = manager.clustering
+    hmm = manager.hmm
+    assert manager.readiness_status()["ready"] is True
+
+    manager.unload()
+
+    assert manager.classifier is classifier
+    assert manager.clustering is clustering
+    assert manager.hmm is hmm
+    assert classifier._is_fitted is False
+    assert clustering.model is None
+    assert clustering.labels_ is None
+    assert hmm._is_fitted is False
+    assert hmm.model is None
+    assert hmm.transition_matrix is None
+    assert manager.readiness_status() == {
+        "ready": False,
+        "reasons": [
+            "classifier_not_fitted",
+            "clustering_not_fitted",
+            "hmm_not_fitted",
+        ],
+    }
+    with pytest.raises(NotFittedError):
+        classifier.predict_proba(sample_features[:1])

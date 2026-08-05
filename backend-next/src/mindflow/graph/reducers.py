@@ -120,7 +120,9 @@ def append_transcript(
     """
     if existing is None:
         return (new,)
-    return existing + (new,)
+    # Checkpoint restores tuple channels as lists; normalize so a resume
+    # after human-review interrupt feeds a tuple back into the reducer.
+    return tuple(existing) + (new,)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

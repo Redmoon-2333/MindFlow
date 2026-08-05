@@ -88,7 +88,7 @@ class TestFocusScore:
     """Regression tests against old ``calculate_focus_score`` behaviour."""
 
     def test_fewer_than_min_threshold_returns_zero(self):
-        """Fewer than MIN_ACTIVITY_THRESHOLD (10) non-idle events -> 0.0."""
+        """Fewer than 10 non-idle events -> 0.0."""
         events = [
             make_event(
                 user_id=1,

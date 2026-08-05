@@ -247,7 +247,7 @@ def _app_with_real_focus_prediction(
     ``FocusPredictionResponse`` response model are the production ones.
     """
     repository = AsyncMock()
-    repository.list_feature_windows.return_value = windows
+    repository.list_feature_windows_in_range.return_value = windows
     if model_manager is _MISSING:
         model_manager = _make_mock_model_manager(focus_proba=focus_proba)
     if model_manager is not None and classifier_overrides:

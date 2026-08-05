@@ -41,7 +41,6 @@ from mindflow.graph.fallback_nodes import (
     prepare_context_node,
     rule_engine_assessment_to_dict,
     rule_engine_node,
-    run_fallback_pipeline,
     single_expert_node,
 )
 from mindflow.infrastructure.llm.client import (
@@ -739,96 +738,6 @@ class TestTerminalResultFlags:
 
         assert updates["source"] == "rule_engine"
         assert updates["degraded"] is False  # crisis is safety, not degradation
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Pipeline integration tests
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class TestRunFallbackPipeline:
-    """Integration: run_fallback_pipeline executes nodes in sequence."""
-
-    @pytest.mark.asyncio
-    async def test_pipeline_ds_success(self) -> None:
-        """Pipeline with DeepSeek success → assessment from L1."""
-        client = _mock_deepseek_success()
-        events = _make_events(20)
-        summary, summary_json = build_behavior_bundle(events)
-        state = _make_state(
-            deepseek_client=client,
-            events_domain=events,
-            summary_json=summary_json,
-            behavior_summary=summary,
-            force=True,
-        )
-
-        final = await run_fallback_pipeline(state)
-
-        assert final["assessment"] is not None
-        assert final["source"] == "deepseek"
-        assert final["degraded"] is False
-        assert final["persistence_intent"] == "save"
-
-    @pytest.mark.asyncio
-    async def test_pipeline_ds_fail_os_skip_re_fallback(self) -> None:
-        """Pipeline with DS fail, no Ollama → RuleEngine fallback."""
-        client = _mock_deepseek_failure()
-        events = _make_events(20)
-        summary, summary_json = build_behavior_bundle(events)
-        state = _make_state(
-            deepseek_client=client,
-            ollama_base_url=None,
-            events_domain=events,
-            summary_json=summary_json,
-            behavior_summary=summary,
-            force=True,
-        )
-
-        final = await run_fallback_pipeline(state)
-
-        assert final["assessment"] is not None
-        assert final["source"] == "rule_engine"
-        assert final["degraded"] is True
-        assert final["persistence_intent"] == "save"
-
-    @pytest.mark.asyncio
-    async def test_pipeline_crisis_short_circuits(self) -> None:
-        """Pipeline with crisis events → rule_engine with hotline."""
-        events = _make_crisis_events()
-        state = _make_state(
-            events_domain=events,
-            summary_json="",
-            behavior_summary=None,
-            force=True,
-        )
-
-        final = await run_fallback_pipeline(state)
-
-        assert final["assessment"] is not None
-        assert final["source"] == "rule_engine"
-        assert "热线" in final["assessment"].get("response_text", "")
-
-    @pytest.mark.asyncio
-    async def test_pipeline_ds_schema_failure_falls_through(self) -> None:
-        """Schema/safety failure at L1 → falls through to next tier (not retried)."""
-        client = _mock_deepseek_schema_failure()
-        events = _make_events(20)
-        summary, summary_json = build_behavior_bundle(events)
-        state = _make_state(
-            deepseek_client=client,
-            ollama_base_url=None,
-            events_domain=events,
-            summary_json=summary_json,
-            behavior_summary=summary,
-            force=True,
-        )
-
-        final = await run_fallback_pipeline(state)
-
-        # Should have fallen through to RuleEngine
-        assert final["assessment"] is not None
-        assert final["source"] == "rule_engine"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

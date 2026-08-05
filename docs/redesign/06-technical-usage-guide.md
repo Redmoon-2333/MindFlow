@@ -248,13 +248,13 @@ MINDFLOW_LLM__OLLAMA_ENABLED=true                   # 可选 L2 本地模型
 ### 4.5 ML 训练 CLI
 
 ```bash
-python -m mindflow.train --source synthetic   # 合成数据端到端（种子42可复现）
+python -m mindflow.train --source synthetic_v2 # V2 合成特征窗口（种子42可复现）
 python -m mindflow.train --source db          # 用真实采集数据
 python -m mindflow.train --list-versions      # 模型版本列表
 python -m mindflow.train --rollback 20260717  # 回滚到某日模型
 ```
 
-产物：`data/models/{clustering,classifier,hmm}-YYYYMMDD.pkl + latest.json + training_report.json + baseline_user1.json`。hmmlearn 未装时 HMM 自动降级 Markov 链（`pip install -e ".[ml]"` 可补装）。
+产物：`data/models/v2/{clustering,classifier,hmm}-<version>.pkl`、对应 `.hmac`、`manifest.json`、通过质量门后生成的 `latest.json`，以及每次都会生成的 `training_report.json`。hmmlearn 未装时 HMM 自动降级 Markov 链（`pip install -e ".[ml]"` 可补装）。
 
 ### 4.6 数据与运维
 

@@ -146,6 +146,23 @@ def _with_timestamp(message: dict[str, Any]) -> dict[str, Any]:
     return message
 
 
+async def _send_error_frame(websocket: WebSocket, code: str, message: str) -> None:
+    """Send the established error envelope without disconnecting the client.
+
+    The ``{"type": "error", "payload": {"code", "message"}, "timestamp"}`` shape
+    matches the existing INVALID_JSON frame; ``code`` distinguishes the cause
+    (e.g. ``INVALID_JSON`` vs ``INVALID_MESSAGE``). Best-effort send: a broken
+    socket must not raise out of the message loop.
+    """
+    frame = {
+        "type": "error",
+        "payload": {"code": code, "message": message},
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    with suppress(Exception):
+        await websocket.send_text(json.dumps(frame, ensure_ascii=False))
+
+
 # ── WebSocket endpoint ─────────────────────────────────────────────────────
 
 
@@ -267,22 +284,26 @@ async def _handle_messages(websocket: WebSocket, client_id: str) -> None:
 
         try:
             data = json.loads(raw)
-            msg_type = data.get("type", "")
-
-            if msg_type == "ping":
-                pong_msg = {
-                    "type": "pong",
-                    "payload": {},
-                    "timestamp": datetime.now(UTC).isoformat(),
-                }
-                await websocket.send_text(json.dumps(pong_msg, ensure_ascii=False))
-            # Future: handle other client messages
-
         except json.JSONDecodeError:
-            err_msg = {
-                "type": "error",
-                "payload": {"code": "INVALID_JSON", "message": "无效的 JSON 格式"},
+            await _send_error_frame(websocket, "INVALID_JSON", "无效的 JSON 格式")
+            continue
+
+        # Valid JSON whose top-level value is not an object cannot carry a
+        # ``type`` field — previously ``data.get`` raised AttributeError, which
+        # killed the message loop while leaving the socket open (a client that
+        # sent e.g. ``[1, 2, 3]`` could never ping again). Reply with the error
+        # envelope and keep the loop alive.
+        if not isinstance(data, dict):
+            await _send_error_frame(websocket, "INVALID_MESSAGE", "消息必须是 JSON 对象")
+            continue
+
+        msg_type = data.get("type", "")
+
+        if msg_type == "ping":
+            pong_msg = {
+                "type": "pong",
+                "payload": {},
                 "timestamp": datetime.now(UTC).isoformat(),
             }
-            with suppress(Exception):
-                await websocket.send_text(json.dumps(err_msg, ensure_ascii=False))
+            await websocket.send_text(json.dumps(pong_msg, ensure_ascii=False))
+        # Future: handle other client messages

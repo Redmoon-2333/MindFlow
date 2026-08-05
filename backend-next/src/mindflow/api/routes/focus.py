@@ -106,7 +106,7 @@ async def get_focus_trend(
                 "focus_min": 0.0,
                 "distraction_min": 0.0,
                 "session_count": 0,
-                "avg_score": 0.0,
+                "score_sum": 0.0,
             }
         try:
             start_ts = datetime.fromisoformat(s["start_time"])
@@ -116,12 +116,18 @@ async def get_focus_trend(
             duration_min = 0.0
 
         by_date[d]["session_count"] += 1
+        # Sessions without a computable score (missing/zero) count as 0 in the
+        # daily mean, consistent with how /focus reports per-session scores.
+        by_date[d]["score_sum"] += float(s.get("focus_score") or 0.0)
         if s.get("session_type") == "focus":
             by_date[d]["focus_min"] += duration_min
         elif s.get("session_type") == "distraction":
             by_date[d]["distraction_min"] += duration_min
 
     daily_trend = sorted(by_date.values(), key=lambda x: x["date"])
+    for entry in daily_trend:
+        count = entry["session_count"]
+        entry["avg_score"] = round(entry.pop("score_sum") / count, 1)
 
     return {
         "days": days,

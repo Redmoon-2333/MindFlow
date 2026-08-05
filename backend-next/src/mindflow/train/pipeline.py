@@ -10,15 +10,14 @@ Each step is independently testable.
 from __future__ import annotations
 
 import json
-import math
-from collections.abc import Mapping, Sequence
+import warnings
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-import numpy.typing as npt
 
 # ── Domain imports (read-only — we do NOT modify domain/) ─────────────────────
 from mindflow.domain.events import ActivityEvent
@@ -61,7 +60,6 @@ class TrainingReport:
     hmm: dict[str, Any] = field(default_factory=dict)
     saved_models: dict[str, str] = field(default_factory=dict)
     version_tag: str | None = None
-    feature_schema_version: int = 1
     feature_schema_version: int = FEATURE_SCHEMA_VERSION
     model_mode: str = "rule_engine_only"
     evaluation: dict[str, Any] = field(default_factory=dict)
@@ -89,25 +87,24 @@ def run_training(
 ) -> TrainingReport:
     """Run the full training pipeline.
 
-    Steps:
-      1. Load or generate raw activity data.
-      2. Extract behavioral features (30-min windows).
-      3. Apply weak-supervision labeling (ConsensusLabeler).
-      4. Update personal baseline (BaselineModel).
-      5. Train ML models (clustering + classifier + HMM).
-      6. Save models (versioned) + training report JSON.
+    Both sources use pre-computed V2 feature windows. Synthetic training
+    generates schema-v3 windows from student archetypes; database training
+    consumes stored windows plus explicit focus feedback.
 
     Args:
-        source: ``"synthetic"`` generates data; ``"db"`` requires ``events``.
-        data_dir: Directory for data artifacts (baseline, report).
+        source: ``"synthetic_v2"`` generates windows; ``"db"`` uses supplied windows.
+        data_dir: Reserved compatibility path for callers of the former V1 pipeline.
         models_dir: Directory for model artifacts.
-        user_id: User identifier for baseline.
-        events: Activity events (required when source="db").
-        days: Number of synthetic days (source="synthetic" only).
-        samples_per_hour: Synthetic data resolution.
+        user_id: Reserved compatibility identifier for callers of the former V1 pipeline.
+        events: Reserved compatibility input; V2 database training uses ``feature_windows``.
+        days: Number of synthetic days per archetype.
+        samples_per_hour: Deprecated; V2 windows have a fixed five-minute resolution.
         seed: Random seed for synthetic data.
-        min_confidence: Minimum confidence for supervised training.
-        min_baseline_samples: Minimum samples for baseline sufficiency check.
+        num_users: Number of archetypes to generate when ``user_profiles`` is omitted.
+        include_procrastination: Deprecated; V2 archetypes already model procrastination.
+        user_profiles: Explicit archetype IDs; takes precedence over ``num_users``.
+        min_confidence: Reserved compatibility input for callers of the former V1 pipeline.
+        min_baseline_samples: Reserved compatibility input for the former V1 pipeline.
 
     Returns:
         ``TrainingReport`` with all metrics and artifact paths.
@@ -115,6 +112,19 @@ def run_training(
     data_path = Path(data_dir)
     data_path.mkdir(parents=True, exist_ok=True)
     models_path = Path(models_dir)
+
+    if samples_per_hour != 12:
+        warnings.warn(
+            "samples_per_hour is ignored because V2 uses fixed five-minute windows",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if include_procrastination:
+        warnings.warn(
+            "include_procrastination is ignored because V2 archetypes already model it",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     report = TrainingReport(source=source)
     if source == "db":
@@ -135,8 +145,17 @@ def run_training(
     if source == "synthetic_v2":
         print("[synth-v2] Generating synthetic v2 feature windows from archetypes...")
         from mindflow.train.synthetic_v2 import generate_v2_synthetic_data
+        from mindflow.train.user_profiles import list_archetype_ids
 
-        profile_ids = user_profiles  # list of archetype IDs or None for all
+        if user_profiles is not None:
+            profile_ids = user_profiles
+        else:
+            available_profiles = list_archetype_ids()
+            if not 1 <= num_users <= len(available_profiles):
+                raise ValueError(
+                    f"num_users must be between 1 and {len(available_profiles)}"
+                )
+            profile_ids = available_profiles[:num_users]
         syn_windows, syn_feedback = generate_v2_synthetic_data(
             archetype_ids=profile_ids,
             days_per_archetype=days,
@@ -235,172 +254,3 @@ def _run_v2_training(
         encoding="utf-8",
     )
     return report
-
-
-def _is_trainable_window(row: Mapping[str, Any]) -> bool:
-    if float(row.get("idle_ratio", 1.0)) >= 0.7:
-        return False
-    ratio_names = (
-        "productivity_ratio",
-        "entertainment_ratio",
-        "social_ratio",
-        "idle_ratio",
-        "activity_entropy",
-    )
-    for name in ratio_names:
-        value = float(row.get(name, 0.0))
-        if not math.isfinite(value) or value < 0.0 or value > 1.0:
-            return False
-    return True
-
-
-def _evaluate_quality_gate(
-    report: TrainingReport,
-    feature_rows: Sequence[Mapping[str, Any]],
-) -> dict[str, Any]:
-    distinct_days = {
-        str(row.get("window_start", ""))[:10]
-        for row in feature_rows
-        if row.get("window_start")
-    }
-    noise_samples = sum(
-        int(cluster.get("count", 0))
-        for cluster in report.clustering.get("clusters", [])
-        if cluster.get("id") == -1
-    )
-    steady_state = [float(value) for value in report.hmm.get("steady_state", [])]
-    checks = {
-        "minimum_days": len(distinct_days) >= 7,
-        "minimum_windows": len(feature_rows) >= 30,
-        "minimum_class_samples": report.n_focus >= 10 and report.n_distract >= 10,
-        "minimum_confidence": report.avg_confidence >= 0.5,
-        "classifier_ready": "error" not in report.classifier,
-        "clustering_ready": (
-            int(report.clustering.get("n_clusters", 0)) >= 2
-            and noise_samples < len(feature_rows) * 0.8
-        ),
-        "hmm_ready": (
-            "error" not in report.hmm
-            and bool(steady_state)
-            and max(steady_state) < 0.95
-        ),
-    }
-    return {
-        "passed": all(checks.values()),
-        "checks": checks,
-        "distinct_days": len(distinct_days),
-        "trainable_windows": len(feature_rows),
-    }
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def _build_feature_matrix(
-    rows: list[dict[str, Any]],
-    feature_names: list[str],
-) -> npt.NDArray[Any]:
-    """Build numpy feature matrix from feature dicts."""
-    X = np.zeros((len(rows), len(feature_names)), dtype=np.float64)
-    for i, row_dict in enumerate(rows):
-        for j, col in enumerate(feature_names):
-            X[i, j] = float(row_dict.get(col, 0.0))
-    return X
-
-
-def _enrich_with_process(
-    feature_rows: list[dict[str, Any]],
-    raw_rows: list[dict[str, Any]],
-) -> None:
-    """Add process_name from raw rows to feature rows by time window proximity.
-
-    This is approximate: we pick the most common app in the time range.
-    Only needed for synthetic data path (real ActivityEvent already has it).
-    """
-    from collections import Counter
-
-    # Sort raw rows by timestamp for sequential scanning
-    sorted_raw = sorted(raw_rows, key=lambda r: r["timestamp"])
-
-    window_minutes = 30
-
-    for feat in feature_rows:
-        ws_str = feat.get("window_start", "")
-        if not ws_str:
-            continue
-        # Parse window_start as ISO
-        try:
-            ws = datetime.fromisoformat(ws_str)
-        except (ValueError, TypeError):
-            continue
-
-        we = ws + timedelta(minutes=window_minutes)  # approx window end
-
-        # Collect process names within window
-        apps_in_window: list[str] = []
-        for r in sorted_raw:
-            ts = r["timestamp"]
-            if isinstance(ts, str):
-                try:
-                    ts = datetime.fromisoformat(ts)
-                except (ValueError, TypeError):
-                    continue
-            if ws <= ts < we:
-                apps_in_window.append(str(r.get("process_name", "unknown")))
-            elif ts >= we:
-                break
-
-        if apps_in_window:
-            feat["process_name"] = Counter(apps_in_window).most_common(1)[0][0]
-
-
-def _print_clustering_summary(clustering: dict[str, Any]) -> None:
-    """Print clustering summary to stdout (matching old train.py style)."""
-    print("\n  Clustering:")
-    print(f"    Clusters: {clustering.get('n_clusters', 0)}")
-    for cl in clustering.get("clusters", []):
-        print(
-            f"    {cl['label']}: {cl['count']} samples, "
-            f"focus_score={cl['avg_focus_score']:.3f}"
-        )
-
-
-def _print_classifier_summary(classifier: dict[str, Any]) -> None:
-    """Print classifier summary to stdout."""
-    print("\n  Classifier:")
-    if "error" in classifier:
-        print(f"    WARNING: {classifier['error']}")
-    else:
-        print(f"    Accuracy: {classifier.get('accuracy', 'N/A')}")
-        print(f"    Precision: {classifier.get('precision', 'N/A')}")
-        print(f"    Recall: {classifier.get('recall', 'N/A')}")
-        print(f"    F1: {classifier.get('f1', 'N/A')}")
-        print(f"    CV (5-fold): {classifier.get('cv_mean', 'N/A')} "
-              f"+/- {classifier.get('cv_std', 'N/A')}")
-        print(f"    Training samples: {classifier.get('high_confidence_samples', 'N/A')}")
-        print(f"    Filtered (low conf): {classifier.get('filtered_low_confidence', 0)}")
-
-
-def _print_hmm_summary(hmm: dict[str, Any]) -> None:
-    """Print HMM summary to stdout."""
-    print("\n  HMM:")
-    if "error" in hmm:
-        print(f"    WARNING: {hmm['error']}")
-        return
-
-    tm = hmm.get("transition_matrix", [])
-    names = hmm.get("state_names", [])
-    if tm and names:
-        print("    Transition Matrix:")
-        print(
-            "    " + " " * 15 + " ".join(f"{n:>10s}" for n in names[:5])
-        )
-        for i, row in enumerate(tm[:5]):
-            line = f"    {names[i]:15s} " + " ".join(f"{v:10.3f}" for v in row[:5])
-            print(line)
-
-    steady = hmm.get("steady_state", [])
-    if steady:
-        print("\n    Steady-state distribution:")
-        for name, p in zip(names, steady, strict=True):
-            print(f"    {name:15s}: {p:.3f}")

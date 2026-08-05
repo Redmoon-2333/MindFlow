@@ -80,6 +80,23 @@ def test_collector_status_exposes_running_boolean() -> None:
     assert response.json() == {"status": "running", "running": True, "message": None}
 
 
+def test_telemetry_delete_publishes_named_response_model() -> None:
+    """DELETE telemetry data exposes the stable deletion result contract."""
+    schema = _app_with_telemetry().openapi()
+    response_schema = schema["paths"]["/api/v1/telemetry/data"]["delete"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]
+
+    assert response_schema == {
+        "$ref": "#/components/schemas/TelemetryDeleteResponse"
+    }
+    component = schema["components"]["schemas"]["TelemetryDeleteResponse"]
+    assert set(component["properties"]) == {"deleted", "partial", "failures"}
+    assert component["properties"]["deleted"]["type"] == "integer"
+    assert component["properties"]["partial"]["type"] == "boolean"
+    assert component["properties"]["failures"]["type"] == "array"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # API contract shape assertions
 # ═══════════════════════════════════════════════════════════════════════════════
