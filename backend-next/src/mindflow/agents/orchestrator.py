@@ -533,6 +533,8 @@ class _PanelRunContext:
     call_count: int = 0
     transcript: list[TranscriptEntry] = field(default_factory=list)
     budget_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Per-role LLM-call usage for phase budgets (architecture plan G/1.3).
+    phase_usage: dict[str, int] = field(default_factory=dict)
 
 
 # Context variable to carry the mutable per-invocation runtime through the

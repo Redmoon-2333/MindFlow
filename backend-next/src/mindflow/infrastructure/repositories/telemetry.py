@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
@@ -9,12 +10,12 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 from mindflow.domain.ids import new_id
-from mindflow.infrastructure.repositories.activity import activity_events
 from mindflow.infrastructure.repositories.focus import focus_sessions
 from mindflow.infrastructure.repositories.report import daily_reports
 from mindflow.infrastructure.schema import (
+    activity_events,
     baseline_models,
     behavior_feature_windows,
     browser_segments,
@@ -118,7 +119,7 @@ class TelemetryRepository:
                     )
                     .values(duration_s=duration_s)
                 )
-                if update_result.rowcount == 1:
+                if update_result.rowcount == 1:  # type: ignore[attr-defined]
                     return {
                         "id": previous.id,
                         "timestamp": previous.timestamp,
@@ -274,6 +275,27 @@ class TelemetryRepository:
                 )
             )
 
+    async def count_focus_feedback_since(
+        self, user_id: int, *, since: str | None = None
+    ) -> int:
+        """Count explicit focus-feedback rows, optionally since a timestamp.
+
+        Used by the auto-training scheduler (architecture plan F) to decide
+        whether enough new feedback has accumulated to justify a training
+        run. ``since`` is an ISO8601 UTC string (the previous job's
+        completed_at) or None to count all rows.
+        """
+        stmt = sa.select(sa.func.count()).select_from(focus_session_feedback).where(
+            focus_session_feedback.c.user_id == user_id,
+        )
+        if since is not None:
+            stmt = stmt.where(
+                focus_session_feedback.c.created_at >= since,
+            )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return int(result.scalar() or 0)
+
     async def list_focus_feedback(self, user_id: int) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
             result = await session.execute(
@@ -376,6 +398,56 @@ class TelemetryRepository:
         async with self._session_factory() as session, session.begin():
             return await self._upsert_feature_windows_in_session(session, rows)
 
+    @staticmethod
+    def _feature_columns_from_json(features_json: str | None) -> dict[str, Any]:
+        """Parse a features_json payload into explicit f01..f24 columns.
+
+        Returns a dict of column-name -> float suitable for ``**`` expansion
+        into an insert/update row. Empty when the payload is missing or not
+        a dict (the JSON column remains the source of truth in that case).
+        """
+        if not features_json:
+            return {}
+        try:
+            payload = json.loads(features_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        cols: dict[str, Any] = {}
+        for i, name in enumerate(V2_FEATURE_NAMES, start=1):
+            value = payload.get(name)
+            # NOTE: no trailing comma — a 1-tuple would break float binding.
+            cols[f"f{i:02d}"] = (
+                float(value)
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+                else None
+            )
+        return cols
+
+    @staticmethod
+    def _row_features(row_mapping: dict[str, Any]) -> dict[str, Any]:
+        """Return the feature dict for a window row.
+
+        Prefers the explicit f01..f24 columns (architecture plan I/4.1) so
+        consumers skip JSON parsing; falls back to parsing features_json.
+        The returned dict has the canonical V2 feature names as keys.
+        """
+        explicit = {
+            name: row_mapping.get(f"f{i:02d}")
+            for i, name in enumerate(V2_FEATURE_NAMES, start=1)
+        }
+        if any(v is not None for v in explicit.values()):
+            return {k: v for k, v in explicit.items() if v is not None}
+        raw = row_mapping.get("features_json")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
     async def _upsert_feature_windows_in_session(
         self,
         session: AsyncSession,
@@ -392,6 +464,10 @@ class TelemetryRepository:
                 "features_json": row["features_json"],
                 "label": row.get("label"),
                 "created_at": now,
+                # Explicit feature columns (architecture plan I/4.1): parse
+                # the JSON payload once here so readers can select the vector
+                # without re-parsing. None when JSON is missing/malformed.
+                **self._feature_columns_from_json(row.get("features_json")),
             }
             for row in rows
         ]
@@ -530,7 +606,7 @@ class TelemetryRepository:
                     < interaction_cutoff.astimezone(UTC).isoformat()
                 )
             )
-            total += int(interaction_result.rowcount or 0)
+            total += int(interaction_result.rowcount or 0)  # type: ignore[attr-defined]
             browser_result = await session.execute(
                 sa.delete(browser_segments)
                 .where(
@@ -538,7 +614,7 @@ class TelemetryRepository:
                     < activity_cutoff.astimezone(UTC).isoformat()
                 )
             )
-            total += int(browser_result.rowcount or 0)
+            total += int(browser_result.rowcount or 0)  # type: ignore[attr-defined]
             feature_result = await session.execute(
                 sa.delete(behavior_feature_windows)
                 .where(
@@ -546,7 +622,7 @@ class TelemetryRepository:
                     < feature_cutoff.astimezone(UTC).isoformat()
                 )
             )
-            total += int(feature_result.rowcount or 0)
+            total += int(feature_result.rowcount or 0)  # type: ignore[attr-defined]
             # Raw activity events are retained under the same activity horizon
             # as browser segments (preference ``activity_retention_days``,
             # env ``event_retention_days`` as the startup default).
@@ -557,7 +633,7 @@ class TelemetryRepository:
                     < activity_cutoff.astimezone(UTC).isoformat()
                 )
             )
-            total += int(activity_result.rowcount or 0)
+            total += int(activity_result.rowcount or 0)  # type: ignore[attr-defined]
         return total
 
     async def save_browser_token(self, user_id: int, token_hash: str) -> None:

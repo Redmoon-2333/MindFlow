@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 FocusPredictionStatus = Literal[

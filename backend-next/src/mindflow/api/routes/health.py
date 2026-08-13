@@ -170,12 +170,24 @@ async def health_check(
     if scheduler_heartbeat_at is None:
         scheduler_heartbeat_at = db_scheduler_heartbeat_at
 
+    collector_payload: dict[str, Any] = (
+        {"status": collector_service.status}
+        if collector_service
+        else {"status": "unavailable"}
+    )
+    if collector_service is not None:
+        try:
+            collector_payload.update(
+                await collector_service.health_summary()
+            )
+        except Exception:
+            # health endpoints must never fail — best-effort enrichment
+            pass
+
     return {
         "status": "ok",
         **_base_payload(),
-        "collector": {
-            "status": collector_service.status if collector_service else "unavailable",
-        },
+        "collector": collector_payload,
         "database": {
             "status": "ok" if db_connected else "error",
             "connected": db_connected,

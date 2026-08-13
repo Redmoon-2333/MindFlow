@@ -26,6 +26,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.config import get_settings
 from mindflow.domain.events import ActivityEvent, WindowSnapshot
+from mindflow.infrastructure.schema import activity_events
+
+# Backward-compat alias: tests and importers used to do
+# ``activity_events.metadata.create_all``. The table now lives in the shared
+# schema module (architecture plan D); expose the same metadata here so no
+# consumer needs to change.
+metadata = activity_events.metadata
 
 # Event types eligible for heartbeat merge (manual_tag never merges).
 _MERGEABLE_EVENT_TYPES: frozenset[str] = frozenset({"window_snapshot", "idle_change"})
@@ -33,53 +40,6 @@ _MERGEABLE_EVENT_TYPES: frozenset[str] = frozenset({"window_snapshot", "idle_cha
 # Keyset page size for query_range — bounds the per-round-trip DB buffer
 # on large ranges (e.g. multi-week exports) without changing the return value.
 _QUERY_PAGE_SIZE: int = 5000
-
-# ── Table definition (matches migration 0001_create_core_tables) ─────
-
-metadata = sa.MetaData()
-
-activity_events = sa.Table(
-    "activity_events",
-    metadata,
-    sa.Column("id", sa.Text(), primary_key=True),
-    sa.Column("user_id", sa.Integer(), nullable=False),
-    sa.Column("timestamp", sa.Text(), nullable=False),
-    sa.Column("duration_s", sa.Float(), nullable=False, server_default=sa.text("0.0")),
-    sa.Column("data_json", sa.Text(), nullable=False),
-    sa.Column(
-        "app_name",
-        sa.Text(),
-        sa.Computed("json_extract(data_json, '$.app_name')", persisted=False),
-    ),
-    sa.Column(
-        "process_name",
-        sa.Text(),
-        sa.Computed("json_extract(data_json, '$.process_name')", persisted=False),
-    ),
-    sa.Column(
-        "window_title",
-        sa.Text(),
-        sa.Computed("json_extract(data_json, '$.window_title')", persisted=False),
-    ),
-    sa.Column(
-        "is_idle",
-        sa.Integer(),
-        sa.Computed("json_extract(data_json, '$.is_idle')", persisted=False),
-    ),
-    sa.Column(
-        "event_type",
-        sa.Text(),
-        nullable=False,
-        server_default=sa.text("'window_snapshot'"),
-    ),
-    sa.Column(
-        "created_at",
-        sa.Text(),
-        nullable=False,
-        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
-    ),
-)
-
 
 # ── Repository ────────────────────────────────────────────────────────
 

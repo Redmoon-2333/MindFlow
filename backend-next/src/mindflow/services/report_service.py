@@ -361,6 +361,19 @@ class ReportService:
             top_apps=top_apps_data[:3],
         )
 
+        # Human-readable insight (architecture plan J/5.3): derived from the
+        # same statistics as the pattern summary, phrased as an actionable
+        # takeaway. Kept rule-based (no extra LLM cost); a future LLM pass
+        # can upgrade this field in place.
+        ai_insight = _build_ai_insight(
+            total_focus_min=total_focus_min,
+            total_distraction_min=total_distraction_min,
+            focus_score=score,
+            switch_frequency=switch_freq,
+            session_count=len(sessions),
+            top_apps=top_apps_data[:3],
+        )
+
         report_data: dict[str, Any] = {
             "user_id": user_id,
             "date": target_date.isoformat(),
@@ -370,6 +383,7 @@ class ReportService:
             "top_apps": top_apps_data,
             "switch_frequency": round(switch_freq, 2),
             "pattern_summary": summary,
+            "ai_insight": ai_insight,
         }
 
         result = await self._report_repo.upsert(report_data)
@@ -627,3 +641,40 @@ def _build_pattern_summary(
         parts.append("。分心时间超过专注时间，建议检查通知权限并减少多任务处理")
 
     return "".join(parts)
+
+
+def _build_ai_insight(
+    total_focus_min: float,
+    total_distraction_min: float,
+    focus_score: float,
+    switch_frequency: float,
+    session_count: int,
+    top_apps: list[dict[str, Any]],
+) -> str:
+    """Build a concise actionable insight sentence (architecture plan J/5.3).
+
+    Complements ``pattern_summary`` with a forward-looking takeaway phrased
+    around the user's own numbers (focus/distraction ratio, switching) so
+    the report feels personal rather than generic.
+    """
+    total = total_focus_min + total_distraction_min
+    ratio = total_focus_min / total if total > 0 else 0.0
+    if ratio >= 0.7:
+        quality = "你的时间分配很健康，大部分时间都保持了专注"
+    elif ratio >= 0.5:
+        quality = "专注与分心时间基本相当，还有提升空间"
+    else:
+        quality = "分心时间明显偏多，值得关注"
+
+    switch_tip = (
+        "；切换频繁可能是效率瓶颈，试试固定时间块"
+        if switch_frequency > MAX_ACCEPTABLE_SWITCHES_PER_HOUR
+        else "；你的任务切换控制得不错"
+    )
+
+    app_tip = ""
+    if top_apps and focus_score < 60:
+        names = [a["app"] for a in top_apps[:2]]
+        app_tip = f"；{''.join(names)} 占用了较多时间，可考虑限制"
+
+    return f"{quality}{switch_tip}{app_tip}。明日继续保持节奏，专注是累积出来的。"

@@ -128,6 +128,13 @@ class Settings(BaseSettings):
     collect_interval_s: int = Field(
         default=5, ge=1, le=60, description="Collector tick interval in seconds"
     )
+    idle_collect_interval_s: int = Field(
+        default=30, ge=5, le=600,
+        description=(
+            "Widened collector tick interval while the machine is idle "
+            "(architecture plan H / adaptive frequency; saves battery)"
+        ),
+    )
     heartbeat_pulsetime_s: int = Field(
         default=10, ge=1, le=300, description="Heartbeat merge window in seconds"
     )

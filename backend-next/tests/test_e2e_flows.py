@@ -7,7 +7,6 @@ works correctly for both happy and error paths.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import tempfile
 from datetime import UTC, datetime, timedelta
@@ -39,7 +38,6 @@ from mindflow.api.routes import (
 from mindflow.domain.feature_schema import V2_FEATURE_NAMES
 from mindflow.domain.procrastination import RuleEngine
 from mindflow.eval.scenarios import ALL_SCENARIOS
-
 
 # ── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -441,7 +439,7 @@ class TestMLTrainingPipelineE2E:
 
 class TestEvalPipelineE2E:
     async def test_rule_engine_baseline_evaluation(self) -> None:
-        from mindflow.eval.runner import run_eval, EvalReport
+        from mindflow.eval.runner import EvalReport, run_eval
         engine = RuleEngine()
         async def analyzer(bundle):
             return engine.assess(bundle.behavior_summary)
@@ -464,7 +462,7 @@ class TestEvalPipelineE2E:
             assert "support" in metrics
 
     async def test_comparison_same_analyzer_zero_delta(self) -> None:
-        from mindflow.eval.runner import run_eval, compare
+        from mindflow.eval.runner import compare, run_eval
         engine = RuleEngine()
         async def analyzer(bundle):
             return engine.assess(bundle.behavior_summary)
@@ -529,8 +527,8 @@ class TestModelManagerVersioningE2E:
 
 class TestPanelGraphTopologyE2E:
     def test_no_dead_fanout_and_required_nodes(self) -> None:
-        from mindflow.graph.panel_graph import PanelGraph
         import mindflow.graph.panel_graph as pg
+        from mindflow.graph.panel_graph import PanelGraph
         class _GW:
             async def complete(self, **kw): return "{}"
             async def close(self): pass
@@ -571,7 +569,7 @@ class TestLLMGatewayE2E:
         assert _LLM_TEMPERATURE == 0.2
 
     async def test_raises_without_key(self) -> None:
-        from mindflow.agents.llm_gateway import LangChainGateway, GatewayNotConfiguredError
+        from mindflow.agents.llm_gateway import GatewayNotConfiguredError, LangChainGateway
         gw = LangChainGateway(api_key="", base_url="http://fake")
         with pytest.raises(GatewayNotConfiguredError):
             await gw.complete("sys", "user")
@@ -709,8 +707,8 @@ class TestInterventionThrottleE2E:
 
 class TestAutoInterventionE2E:
     async def test_autonomy_disabled_skips(self) -> None:
-        from mindflow.services.scheduler import _auto_intervention_check
         from mindflow.services.autonomy_service import AutonomyService
+        from mindflow.services.scheduler import _auto_intervention_check
         autonomy = MagicMock(spec=AutonomyService)
         autonomy.is_enabled = AsyncMock(return_value=False)
         intervention_svc = MagicMock()
@@ -728,8 +726,8 @@ class TestAutoInterventionE2E:
                 timezone="UTC")
 
     async def test_all_idle_skips(self) -> None:
-        from mindflow.services.scheduler import _auto_intervention_check
         from mindflow.domain.events import make_event
+        from mindflow.services.scheduler import _auto_intervention_check
         idle_event = make_event(user_id=1, timestamp_utc=datetime.now(UTC),
             duration_s=300, process_name="idle", is_idle=True)
         activity_repo = AsyncMock()

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -678,6 +678,15 @@ class _RecordingIntervalRepo:
     ) -> list[CollectorIntervalRecord]:
         return []
 
+    async def list_by_user_range(
+        self, user_id: int, start: datetime, end: datetime
+    ) -> list[CollectorIntervalRecord]:
+        return [
+            r for r in self.opens
+            if not r.ended_at
+            or start.isoformat() <= (r.ended_at or r.started_at) <= end.isoformat()
+        ]
+
 
 @pytest.fixture
 def wired_service(mock_collector, mock_repository):
@@ -944,6 +953,73 @@ class TestIntervalWiring:
         await asyncio.sleep(0.05)
         await service.stop()
         assert service.status == "stopped"
+
+    async def test_health_summary_reports_failure_and_sleep_counts(
+        self, mock_collector, mock_repository
+    ) -> None:
+        """Architecture plan B: health_summary aggregates interval audit data.
+        A wired interval repo with failure/sleep records surfaces them so the
+        UI can explain missing data.
+        """
+        repo = _RecordingIntervalRepo()
+        # Seed one failed and one sleep interval within the 7-day window.
+        repo.opens.append(
+            CollectorIntervalRecord(
+                id="iv-fail",
+                user_id=1,
+                started_at=(datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                ended_at=datetime.now(UTC).isoformat(),
+                reason="collector degraded (10 consecutive failures)",
+                manual_stop=False,
+                failure=True,
+                sleep=False,
+                last_error="TimeoutError: collector tick timed out",
+            )
+        )
+        repo.opens.append(
+            CollectorIntervalRecord(
+                id="iv-sleep",
+                user_id=1,
+                started_at=(datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+                ended_at=datetime.now(UTC).isoformat(),
+                reason="system sleep",
+                manual_stop=False,
+                failure=False,
+                sleep=True,
+                last_error=None,
+            )
+        )
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+            interval_repository=repo,
+        )
+
+        summary = await service.health_summary()
+
+        assert summary["status"] == "stopped"
+        assert summary["failure_count_7d"] == 1
+        assert summary["sleep_count_7d"] == 1
+        assert summary["last_failure_reason"] == \
+            "TimeoutError: collector tick timed out"
+
+    async def test_health_summary_without_repo_is_minimal(
+        self, mock_collector, mock_repository
+    ) -> None:
+        """Architecture plan B: without an interval repo the summary still
+        carries live service state (status/recovery) — no crash.
+        """
+        service = CollectorService(
+            collector=mock_collector,
+            repository=mock_repository,
+            user_id=1,
+            interval_s=0.01,
+        )
+        summary = await service.health_summary()
+        assert summary["status"] == "stopped"
+        assert "failure_count_7d" not in summary
 
 
 class TestRealSqliteLifecycle:

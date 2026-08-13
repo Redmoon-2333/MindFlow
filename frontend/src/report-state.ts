@@ -161,6 +161,7 @@ export function parseDailyReport(value: unknown): DailyReport {
     top_apps,
     switch_frequency: numbers.switch_frequency,
     pattern_summary: typeof value.pattern_summary === "string" ? value.pattern_summary : "",
+    ai_insight: typeof value.ai_insight === "string" ? value.ai_insight : null,
     created_at: typeof value.created_at === "string" ? value.created_at : null,
     total_focus_minutes: numbers.total_focus_minutes,
     total_sessions: numbers.total_sessions,

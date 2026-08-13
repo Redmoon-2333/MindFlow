@@ -169,7 +169,9 @@ def test_migration_0021_chains_from_0020_and_cycles_cleanly(tmp_path: Path) -> N
             row[1]
             for row in conn.execute("PRAGMA index_list(collector_intervals)")
         }
-    assert version == "0021_create_collector_intervals"
+    # The chain head is now 0022 (feature-window columns added after 0021);
+    # 0021 remains an intermediate link on the chain.
+    assert version == "0022_feature_window_columns"
     assert cols == {
         "id", "user_id", "started_at", "ended_at", "reason",
         "manual_stop", "failure", "sleep", "last_error",
@@ -192,5 +194,5 @@ def test_migration_0021_chains_from_0020_and_cycles_cleanly(tmp_path: Path) -> N
         cols = {
             row[1] for row in conn.execute("PRAGMA table_info(collector_intervals)")
         }
-    assert version == "0021_create_collector_intervals"
+    assert version == "0022_feature_window_columns"
     assert "last_error" in cols

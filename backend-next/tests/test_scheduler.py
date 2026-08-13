@@ -912,6 +912,7 @@ class TestSchedulerJobRegistrationContract:
             activity_repository=MagicMock(),
             panel_service=MagicMock(),
             telemetry_service=MagicMock(),
+            training_job_service=MagicMock(),
         )
         job_ids = {j.id for j in scheduler.get_jobs()}
         assert job_ids == {
@@ -923,6 +924,8 @@ class TestSchedulerJobRegistrationContract:
             "auto_intervention_check",
             "telemetry_rollup",
             "telemetry_rollup_recent",
+            # Architecture plan F: hourly auto-training check.
+            "auto_training_check",
         }
 
     async def test_interval_jobs_are_intervention_30min_and_recent_rollup_15min(

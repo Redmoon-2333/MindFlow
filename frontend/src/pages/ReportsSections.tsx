@@ -41,6 +41,17 @@ export function DailyReportBody({ report }: { report: DailyReport }) {
         </div>
       </div>
 
+      {/* AI Insight (architecture plan J/5.3) — a personal takeaway; shown
+          only when the backend produced one. */}
+      {report.data_state === "ready" && view.patternSummary && (
+        <div className="card mb24">
+          <h3 style={{ marginBottom: 8 }}>今日洞察</h3>
+          <p style={{ fontSize: 14, lineHeight: 1.8, color: "var(--color-text-secondary)", margin: 0 }}>
+            {view.patternSummary}
+          </p>
+        </div>
+      )}
+
       {/* Hourly Distribution */}
       <div className="card mb24">
         <h3>时段分布</h3>

@@ -219,6 +219,18 @@ def test_model_status_reports_shadow_mode_without_active_model() -> None:
     assert data["ready"] is False
     assert data["mode"] == "shadow"
 
+def test_ai_usage_reports_rule_engine_zero_cost() -> None:
+    """Architecture plan C: rule-engine mode reports zero-cost local usage."""
+    app = FastAPI()
+    app.include_router(analytics_router, prefix="/api/v1")
+    app.state.v2_training_mode = "rule_engine_only"
+
+    data = TestClient(app).get("/api/v1/analytics/usage").json()
+
+    assert data["mode"] == "rule_engine"
+    assert data["llm_calls_30d"] == 0
+    assert data["llm_cost_usd_30d"] == 0.0
+
 
 def test_model_status_prefers_ready_v2_model() -> None:
     class ReadyV2Manager:

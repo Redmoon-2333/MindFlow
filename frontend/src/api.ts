@@ -160,7 +160,16 @@ export interface HealthData {
   status: string;
   version: string;
   timestamp: string;
-  collector: { status: string };
+  collector: {
+    status: string;
+    recovery_attempts?: number;
+    last_error?: string | null;
+    next_retry_at?: string | null;
+    failure_count_7d?: number;
+    last_failure_at?: string | null;
+    last_failure_reason?: string | null;
+    sleep_count_7d?: number;
+  };
   database: { status: "ok" | "error"; connected: boolean };
   migration: { applied: boolean };
 }
@@ -609,6 +618,14 @@ export const getBaseline = async (): Promise<BaselineSummaryState> =>
   parseBaselineSummary(await request<unknown>("/analytics/baseline"));
 export const getProfile = (days?: number) => request<BehavioralProfile>(`/analytics/profile${days ? `?days=${days}` : ""}`);
 export const getModelStatus = () => request<ModelStatus>("/analytics/model-status");
+export const getAiUsage = () => request<AiUsage>("/analytics/usage");
+
+export interface AiUsage {
+  mode: "llm" | "rule_engine";
+  llm_calls_30d: number;
+  llm_cost_usd_30d: number;
+  panel_count_30d: number;
+}
 export const runAttribution = (body?: { date?: string; force?: boolean }) => request<AttributionResponse>("/analytics/attribution", { method: "POST", body: JSON.stringify(body || {}) }, AI_REQUEST_TIMEOUT_MS);
 
 export async function sendChat(message: string, sessionId?: string): Promise<ChatReply> {

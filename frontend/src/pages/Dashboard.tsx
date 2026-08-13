@@ -151,6 +151,22 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* First-run onboarding timeline (architecture plan C/5.2) — shown until
+          real trend data exists so a new user understands the data pipeline. */}
+      {kpi.sessionCount == null && !currentActivity && (
+        <div className="card mb16">
+          <h3 style={{ marginBottom: 8 }}>开始使用 MindFlow</h3>
+          <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 2 }}>
+            应用正在后台采集你的专注行为数据：
+            <ul style={{ margin: "8px 0 0 20px", padding: 0 }}>
+              <li>已开启活动采集，实时记录应用使用与窗口切换</li>
+              <li>专注分析报告将于明日自动生成</li>
+              <li>个人行为画像需积累约 7 天数据</li>
+              <li>可在「模型中心」查看数据与训练进度</li>
+            </ul>
+          </div>
+        </div>
+      )}
       {/* KPI Row — derived from /focus/trend daily array (see deriveFocusTrendKpi) */}
       <div className="kpi-row">
         <div className="stat-card">
@@ -229,6 +245,29 @@ export default function Dashboard() {
             {collector?.status && (
               <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
                 {collector.status} · 实时连接：{realtimeStatus}
+              </div>
+            )}
+            {/* Collector health details (architecture plan B) — explains why
+                data may be missing: recent failures, recovery backoff, sleeps. */}
+            {(health?.collector?.failure_count_7d != null || health?.collector?.last_error) && (
+              <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 12, lineHeight: 1.7 }}>
+                {health.collector.failure_count_7d != null && (
+                  <div>近 7 日异常：{health.collector.failure_count_7d} 次</div>
+                )}
+                {health.collector.last_failure_at && (
+                  <div>
+                    最近失败：
+                    {new Date(health.collector.last_failure_at).toLocaleString("zh-CN")}
+                  </div>
+                )}
+                {health.collector.last_failure_reason && (
+                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {health.collector.last_failure_reason}
+                  </div>
+                )}
+                {health.collector.sleep_count_7d != null && health.collector.sleep_count_7d > 0 && (
+                  <div>系统休眠：{health.collector.sleep_count_7d} 次</div>
+                )}
               </div>
             )}
             <button

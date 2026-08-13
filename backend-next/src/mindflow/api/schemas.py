@@ -1,4 +1,4 @@
-﻿"""Typed request and response schemas for the public MindFlow API."""
+"""Typed request and response schemas for the public MindFlow API."""
 
 from __future__ import annotations
 
@@ -367,6 +367,7 @@ class DailyReportResponse(BaseModel):
     top_apps: list[TopAppEntry] = Field(default_factory=list)
     switch_frequency: float
     pattern_summary: str
+    ai_insight: str | None = None
     created_at: str | None = None
     total_focus_minutes: float
     total_sessions: int

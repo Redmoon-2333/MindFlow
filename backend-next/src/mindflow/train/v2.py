@@ -306,7 +306,18 @@ def evaluate_v2_quality_gate(
         "stable_date_folds": bool(fold_stability.get("passed", False)),
     }
     is_passed = evaluation.get("status") == "evaluated" and all(checks.values())
-    return {"passed": is_passed, "mode": "ready" if is_passed else "shadow", "checks": checks,
+    # Progressive deployment tier (architecture plan E/2.1): instead of a
+    # binary ready/shadow, a partially-qualified model can still serve at
+    # low confidence so users get ML value before the full 7-day gate.
+    evaluated = evaluation.get("status") == "evaluated"
+    low_conf = (
+        evaluated
+        and distinct_feedback_days >= 3
+        and float(candidate.get("balanced_accuracy", 0.0)) >= 0.55
+    )
+    tier = "full_ready" if is_passed else ("low_confidence" if low_conf else "shadow")
+    return {"passed": is_passed, "mode": "ready" if is_passed else "shadow",
+            "deployment_tier": tier, "checks": checks,
             "explicit_feedback_count": explicit_feedback_count, "explicit_focus_count": explicit_focus_count,
             "explicit_distract_count": explicit_distract_count, "distinct_feedback_days": distinct_feedback_days}
 
@@ -362,14 +373,29 @@ def _finite_float(value: Any) -> float:
 
 
 def _weak_label(features: dict[str, Any]) -> int:
+    """Heuristic weak label for un-labelled windows (architecture plan E/2.1).
+
+    Explicit user feedback still wins; this rule only fills windows with no
+    overlapping feedback session. The thresholds encode high-confidence
+    behavioural signals only (a single app held for a long time, or an
+    extreme switch storm) so the weak labels stay conservative:
+      - top_app_ratio > 0.9 and idle_ratio < 0.1  -> focus (deep work)
+      - app_switch_count > 8 and input_active_ratio < 0.2 -> distract
+    Everything else is treated as mixed (excluded from training).
+    """
     sw = _finite_float(features.get("app_switch_count", 0))
     idle = _finite_float(features.get("idle_ratio", 0))
     top = _finite_float(features.get("top_app_ratio", 0))
     active = _finite_float(features.get("input_active_ratio", 0))
     if idle > 0.8:
         return -1
-    if sw > 20:
+    # Deep-focus: mostly one app, low idle, meaningful input.
+    if top > 0.9 and idle < 0.1 and active > 0.15:
+        return 1
+    # Distraction: heavy switching with little focused input.
+    if sw > 8 and active < 0.2:
         return 0
+    # Keep a couple of gentler legacy signals for early cold-start days.
     if (top > 0.7 and active > 0.3) or (sw < 5 and top > 0.5):
         return 1
     return -1

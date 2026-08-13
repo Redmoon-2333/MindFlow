@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from loguru import logger
 
@@ -81,6 +82,7 @@ class CollectorService:
         interval_repository: CollectorIntervalsPort | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
         now: Callable[[], datetime] | None = None,
+        idle_collect_interval_s: float | None = None,
     ) -> None:
         self._collector = collector
         self._repository = repository
@@ -89,6 +91,14 @@ class CollectorService:
             interval_s if interval_s is not None else float(get_settings().collect_interval_s)
         )
         self._idle_threshold_s = idle_threshold_s
+        # Widened tick gap while the machine is idle (architecture plan H):
+        # saves battery and avoids a flood of idle_change rows when nobody
+        # is at the keyboard.
+        self._idle_collect_interval_s = float(
+            idle_collect_interval_s
+            if idle_collect_interval_s is not None
+            else get_settings().idle_collect_interval_s,
+        )
         self._intervals = CollectorIntervalLifecycle(interval_repository, user_id)
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._now = now if now is not None else lambda: datetime.now(UTC)
@@ -132,6 +142,53 @@ class CollectorService:
     def recovery_attempts(self) -> int:
         """Consecutive recovery-attempt count (reset to 0 on success)."""
         return self._recovery.recovery_attempts
+
+    async def health_summary(self) -> dict[str, Any]:
+        """Aggregate collector health for observability (architecture plan B).
+
+        Combines live service state with the persisted ``collector_intervals``
+        audit trail so the UI can show *why* data may be missing (crashes,
+        system sleep, recovery backoff) instead of a bare running/stopped
+        flag.
+        """
+        summary: dict[str, Any] = {
+            "status": self._status,
+            "recovery_attempts": self.recovery_attempts,
+            "last_error": self.last_error,
+            "next_retry_at": self.next_retry_at.isoformat()
+            if self.next_retry_at is not None
+            else None,
+        }
+        # Persisted audit trail (only when an interval repository is wired).
+        interval_repo = getattr(self._intervals, "_repository", None)
+        if interval_repo is not None:
+            try:
+                cutoff = self._now() - timedelta(days=7)
+                records = await interval_repo.list_by_user_range(
+                    self._user_id, cutoff, self._now()
+                )
+                failures = [
+                    r for r in records if r.failure or (r.last_error is not None)
+                ]
+                summary["failure_count_7d"] = len(failures)
+                summary["last_failure_at"] = (
+                    failures[-1].ended_at or failures[-1].started_at
+                    if failures
+                    else None
+                )
+                summary["last_failure_reason"] = (
+                    failures[-1].last_error or failures[-1].reason
+                    if failures
+                    else None
+                )
+                sleep_count = sum(1 for r in records if r.sleep)
+                summary["sleep_count_7d"] = sleep_count
+            except Exception as exc:
+                logger.warning(
+                    "Collector health_summary interval query failed: {}",
+                    safe_error_text(exc),
+                )
+        return summary
 
     async def start(self) -> None:
         """Start the collection loop.
@@ -276,8 +333,9 @@ class CollectorService:
 
                 while not self._stop_requested:
                     tick_start = self._now()
+                    last_tick_was_idle = False
                     try:
-                        await asyncio.wait_for(
+                        last_tick_was_idle = await asyncio.wait_for(
                             self._ticker.tick(), timeout=self._interval_s * 2
                         )
                         self._consecutive_failures = 0
@@ -298,9 +356,15 @@ class CollectorService:
                     if interval_id is None:
                         interval_id = await self._intervals.open()
 
-                    # Sleep until the next tick (account for tick duration)
+                    # Adaptive frequency (architecture plan H): while the
+                    # machine is idle, widen the gap to save battery.
+                    current_interval = (
+                        self._idle_collect_interval_s
+                        if last_tick_was_idle
+                        else self._interval_s
+                    )
                     elapsed = (self._now() - tick_start).total_seconds()
-                    sleep_time = max(0.0, self._interval_s - elapsed)
+                    sleep_time = max(0.0, current_interval - elapsed)
                     if not self._stop_requested:
                         await self._sleep(sleep_time)
                         # Keep injected no-op sleeps cooperative.  Production

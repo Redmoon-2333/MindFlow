@@ -54,8 +54,14 @@ class CollectorTicker:
         """Start a fresh run cycle without carrying prior backoff time."""
         self._last_tick_time = None
 
-    async def tick(self) -> None:
-        """Execute a single collection tick."""
+    async def tick(self) -> bool:
+        """Execute a single collection tick.
+
+        Returns:
+            True when the snapshot was idle (no recent input) — the
+            supervisor uses this to widen the next tick gap (architecture
+            plan H / adaptive collection frequency).
+        """
         now = self._now()
 
         # Duration since last tick (measured, not config-based)
@@ -88,3 +94,4 @@ class CollectorTicker:
         )
 
         await self._repository.append_event(event)
+        return is_idle

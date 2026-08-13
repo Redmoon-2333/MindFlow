@@ -23,6 +23,7 @@ from mindflow.infrastructure.repositories.activity import SQLAlchemyActivityRepo
 from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.services.collector_interval_lifecycle import safe_error_text
 from mindflow.services.prediction_service import FocusPredictionService
 from mindflow.services.telemetry_features import build_v2_feature_window
 from mindflow.time_utils import TimezoneLike, resolve_timezone, utc_today
@@ -124,10 +125,15 @@ class TelemetryService:
         prediction_service: FocusPredictionService | None = None,
         baseline_repository: BaselineRepository | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        interval_repository: Any | None = None,
     ) -> None:
         self._repository = repository
         self._preferences_repository = preferences_repository
         self._data_dir = data_dir
+        # Collector-interval audit repo (architecture plan B/3.3): lets the
+        # rollup record coverage-gap failures next to the collector's own
+        # interval rows so /health can explain missing feature windows.
+        self._collector_interval_repository = interval_repository
         # Configured local ML artifact root; defaults to the same
         # data_dir-anchored "models" directory Settings resolves.
         self._models_dir = models_dir or (data_dir / "models")
@@ -486,6 +492,33 @@ class TelemetryService:
                     await self._baseline_repository.upsert(baseline, session=session)
         else:
             await self._repository.upsert_feature_windows(rows)
+
+        # ── Coverage-gap detection (architecture plan B/3.3) ──────────
+        # Expected 5-minute windows vs actually rolled rows. A gap > 20%
+        # usually means the collector was down/sleeping; record it in the
+        # collector_intervals audit trail so the UI can explain missing data.
+        try:
+            span_s = max(1.0, (end - start).total_seconds())
+            expected = max(1, int(span_s / 300))
+            if rows and len(rows) < expected * 0.8:
+                interval_repo = getattr(
+                    self, "_collector_interval_repository", None
+                )
+                if interval_repo is not None:
+                    now_utc = datetime.now(UTC)
+                    await interval_repo.open(
+                        user_id,
+                        reason=(
+                            "coverage_gap: "
+                            f"{len(rows)}/{expected} windows rolled"
+                        ),
+                        failure=True,
+                        now=now_utc,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Coverage-gap detection failed: {}", safe_error_text(exc)
+            )
         return len(rows)
 
     async def rebuild_baseline_if_needed(

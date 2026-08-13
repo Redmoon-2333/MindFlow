@@ -701,6 +701,50 @@ class TestRunAnalysis:
             "api:1:2026-07-29:daily_attribution"
         )
 
+    async def test_checkpointer_wired_compiles_and_invokes_with_thread_id(
+        self,
+        analysis_graph: AnalysisGraph,
+        mock_analysis_repo: AsyncMock,
+        mock_workflow_run_repo: AsyncMock,
+        mock_budget_repo: AsyncMock,
+    ) -> None:
+        """Architecture plan A: with a checkpointer, the graph compiles with a
+        saver and invokes with a stable thread_id so a crash can resume.
+        """
+        from mindflow.config import Settings
+        from mindflow.infrastructure.checkpointer import InMemoryCheckpointer
+
+        cp = InMemoryCheckpointer(Settings())
+        await cp.__aenter__()
+        try:
+            analysis_graph._checkpointer = cp
+            compiled = analysis_graph._build_compiled_graph()
+            assert compiled.checkpointer is not None, \
+                "checkpointer must be attached to the compiled graph"
+
+            request = AnalysisRequest(
+                user_id=1,
+                target_date=date(2026, 7, 29),
+                force=False,
+                origin="api",
+            )
+            result = await analysis_graph.run_analysis(request)
+            assert result.verdict is not None
+        finally:
+            await cp.aclose()
+            analysis_graph._checkpointer = None
+            analysis_graph._compiled = None
+
+    async def test_without_checkpointer_compiles_plain(
+        self,
+        analysis_graph: AnalysisGraph,
+    ) -> None:
+        """Architecture plan A: default (no checkpointer) keeps old behaviour."""
+        assert analysis_graph._checkpointer is None
+        compiled = analysis_graph._build_compiled_graph()
+        assert compiled.checkpointer is None, \
+            "no checkpointer means compile without one"
+
 
 class TestOneGraphServingMultipleOrigins:
     """One compiled graph serves scheduled/on-demand/chat origins."""

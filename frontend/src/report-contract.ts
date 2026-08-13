@@ -41,6 +41,7 @@ export interface DailyReportKnown {
   readonly top_apps: readonly TopAppEntry[];
   readonly switch_frequency: number;
   readonly pattern_summary: string;
+  readonly ai_insight: string | null;
   readonly created_at: string | null;
   readonly total_focus_minutes: number;
   readonly total_sessions: number;

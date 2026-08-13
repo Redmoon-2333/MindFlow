@@ -26,6 +26,7 @@ import random
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
 # ── Feature generation parameters ──────────────────────────────────────────

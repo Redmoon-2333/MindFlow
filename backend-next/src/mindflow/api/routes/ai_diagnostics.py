@@ -191,3 +191,30 @@ async def get_workflow_run(
         raise _internal_error() from None
 
     return _run_to_detail(full, events)
+
+
+
+@router.get("/ai/graph")
+async def get_analysis_graph_topology(
+    request: Request,
+) -> dict[str, Any]:
+    """Return the AnalysisGraph node/edge topology for diagnostics.
+
+    Architecture plan G/1.2: lets the user see how the analysis pipeline is
+    wired (cache check -> evidence -> crisis gate -> panel -> fallbacks ->
+    persistence). Pure structural metadata — no user data involved.
+    """
+    analysis_workflow = getattr(request.app.state, "workflow_port", None)
+    if analysis_workflow is None:
+        return {"nodes": [], "edges": [], "available": False}
+
+    try:
+        graph_obj = analysis_workflow._get_compiled_graph()
+        raw_graph = graph_obj.get_graph()
+        nodes = sorted({n for n, _ in raw_graph.edges} | {n for _, n in raw_graph.edges})
+        edges = [{"from": s, "to": t} for s, t in raw_graph.edges]
+        return {"nodes": nodes, "edges": edges, "available": True}
+    except Exception:
+        logger.exception("Failed to extract analysis graph topology")
+        return {"nodes": [], "edges": [], "available": False}
+

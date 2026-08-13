@@ -845,6 +845,7 @@ def build_scheduler(
     panel_service: Any | None = None,
     autonomy_service: AutonomyService | None = None,
     telemetry_service: Any | None = None,
+    training_job_service: Any | None = None,
     scheduled_job_runs_repository: ScheduledJobRunsPort | None = None,
     workflow_port: AnalysisWorkflowPort | None = None,
     event_retention_days: int = 30,
@@ -1259,6 +1260,25 @@ def build_scheduler(
             minutes=_RECENT_ROLLUP_INTERVAL_MINUTES,
             coro=_rollup_recent_telemetry,
             name="telemetry_rollup_recent",
+        )
+
+    # ── Hourly — Auto incremental training check (architecture plan F) ──
+    # The model improves itself when new feedback accumulates; the job runs
+    # in shadow mode and never auto-activates.
+    if training_job_service is not None:
+
+        async def _auto_train_check() -> None:
+            try:
+                started = await training_job_service.auto_train_if_due()
+                if started:
+                    logger.info("Auto-training started (new feedback accumulated)")
+            except Exception as exc:
+                logger.error("Auto-training check failed: {}", exc)
+
+        scheduler.interval_minutes(
+            minutes=60,
+            coro=_auto_train_check,
+            name="auto_training_check",
         )
 
     logger.info(

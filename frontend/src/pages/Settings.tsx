@@ -19,11 +19,12 @@ import {
   patchTelemetryPreferences,
   createBrowserPairingCode,
   clearTelemetryData,
+  getAiUsage,
   getErrorMessage,
   isAutonomyPaused,
   runTelemetryDelete,
 } from "../api";
-import type { AutonomyStatus, ClassificationRule, ClassificationRuleInput, CollectorStatus, HealthData, Preferences, TelemetryDeleteNotice, TelemetryDeleteScope, TelemetryPreferences, TelemetryStatus } from "../api";
+import type { AiUsage, AutonomyStatus, ClassificationRule, ClassificationRuleInput, CollectorStatus, HealthData, Preferences, TelemetryDeleteNotice, TelemetryDeleteScope, TelemetryPreferences, TelemetryStatus } from "../api";
 
 const CATEGORY_OPTIONS = ["code", "browser_work", "communication", "document", "entertainment", "social", "other"];
 
@@ -80,6 +81,7 @@ export default function Settings() {
   const [pairingCode, setPairingCode] = useState<{ code: string; expires_at: string } | null>(null);
   const [telemetryMessage, setTelemetryMessage] = useState<string | null>(null);
   const [telemetryDeleteNotice, setTelemetryDeleteNotice] = useState<TelemetryDeleteNotice | null>(null);
+  const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -106,6 +108,7 @@ export default function Settings() {
     else failures.push(getErrorMessage(preferencesResult.reason, "偏好设置加载失败"));
     if (telemetryResult.status === "fulfilled") setTelemetry(telemetryResult.value);
     else failures.push(getErrorMessage(telemetryResult.reason, "遥测状态加载失败"));
+    try { setAiUsage(await getAiUsage()); } catch { /* non-critical */ }
 
     if (failures.length > 0) setError(`部分设置加载失败：${failures.join("；")}`);
     setLoading(false);
@@ -367,7 +370,25 @@ export default function Settings() {
       <div className="card mb24">
         <div className="flex flex-between" style={{ alignItems: "flex-start" }}>
           <div>
-            <h3 style={{ marginBottom: 6 }}>隐私行为采集</h3>
+          <div className="card mb24">
+        <h3 style={{ marginBottom: 8 }}>AI 用量</h3>
+        {aiUsage ? (
+          <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.9 }}>
+            {aiUsage.mode === "rule_engine" ? (
+              <div>本地规则引擎模式，零 API 成本</div>
+            ) : (
+              <>
+                <div>近 30 天 AI 分析：{aiUsage.llm_calls_30d} 次</div>
+                <div>专家面板：{aiUsage.panel_count_30d} 次</div>
+                <div>估算费用： USD</div>
+              </>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>加载中...</div>
+        )}
+      </div>
+        <h3 style={{ marginBottom: 6 }}>隐私行为采集</h3>
             <p style={{ color: "var(--color-text-secondary)", fontSize: 13, margin: 0 }}>
               只保存 30 秒聚合计数和浏览器域名，不记录按键内容、鼠标坐标或完整网址。
             </p>

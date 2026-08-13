@@ -358,6 +358,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             prediction_service=prediction_service,
             baseline_repository=baseline_repository,
             session_factory=session_factory,
+            interval_repository=CollectorIntervalsRepository(session_factory),
         )
         telemetry_service.attach_input_watcher(input_telemetry_service)
         telemetry_preferences = await telemetry_service.get_preferences()
@@ -579,6 +580,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     ollama_model=settings.llm.ollama_model,
                     rule_engine=_RuleEngine(),
                     timezone=settings.timezone,
+                    checkpointer=checkpointer,
                 )
                 analysis_workflow_port = analysis_graph
                 logger.info("AnalysisGraph created as shared AnalysisWorkflowPort")
@@ -653,6 +655,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             panel_service=panel_service,
             autonomy_service=autonomy_service,
             telemetry_service=telemetry_service,
+            training_job_service=training_job_service,
             scheduled_job_runs_repository=scheduled_job_runs_repository,
             workflow_port=analysis_workflow_port,
             event_retention_days=settings.event_retention_days,

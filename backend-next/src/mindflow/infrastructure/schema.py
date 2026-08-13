@@ -10,6 +10,7 @@ Every table here mirrors an Alembic migration.  If you add a column
 here, add it in the migration too, and vice versa.
 
 Tables owned by this module:
+  - activity_events                 (migration 0001, 0008)
   - procrastination_analyses        (migration 0001, 0002, 0011)
   - intervention_logs               (migration 0001)
   - chat_messages                   (migration 0003)
@@ -25,10 +26,8 @@ Tables owned by this module:
   - workflow_node_events            (migration 0013)
   - workflow_budget_reservations    (migration 0013)
 
-NOTE: ``activity_events`` is intentionally NOT here — it lives in
-``repositories/activity.py`` because its computed columns (JSON
-extract) make the definition non-trivial to centralise.  That table
-will be moved here in a follow-up.
+NOTE: ``activity_events`` moved here in the schema consolidation (plan D);
+``repositories/activity.py`` now imports it from this module.
 """
 
 from __future__ import annotations
@@ -38,6 +37,54 @@ import sqlalchemy as sa
 # ── Shared metadata — all tables bind to this one MetaData ──────────────
 
 metadata = sa.MetaData()
+
+# ── activity_events (from repositories/activity.py) ───────────────────
+# Matches migrations 0001 and 0008. Moved here in the schema consolidation
+# (architecture plan D) so alembic autogenerate sees every table.
+# Computed columns extract window fields from data_json for indexed queries.
+
+activity_events = sa.Table(
+    "activity_events",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("timestamp", sa.Text(), nullable=False),
+    sa.Column("duration_s", sa.Float(), nullable=False, server_default=sa.text("0.0")),
+    sa.Column("data_json", sa.Text(), nullable=False),
+    sa.Column(
+        "app_name",
+        sa.Text(),
+        sa.Computed("json_extract(data_json, '$.app_name')", persisted=False),
+    ),
+    sa.Column(
+        "process_name",
+        sa.Text(),
+        sa.Computed("json_extract(data_json, '$.process_name')", persisted=False),
+    ),
+    sa.Column(
+        "window_title",
+        sa.Text(),
+        sa.Computed("json_extract(data_json, '$.window_title')", persisted=False),
+    ),
+    sa.Column(
+        "is_idle",
+        sa.Integer(),
+        sa.Computed("json_extract(data_json, '$.is_idle')", persisted=False),
+    ),
+    sa.Column(
+        "event_type",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("'window_snapshot'"),
+    ),
+    sa.Column(
+        "created_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+)
+
 
 # ── procrastination_analyses (from repositories/analysis.py) ──────────
 # Matches migrations 0001, 0002, and 0011.
@@ -232,6 +279,10 @@ behavior_feature_windows = sa.Table(
     sa.Column("features_json", sa.Text(), nullable=False),
     sa.Column("label", sa.Text(), nullable=True),
     sa.Column("created_at", sa.Text(), nullable=False),
+    # f01..f24 REAL feature columns (migration 0022, plan I): allow SQL
+    # reads of the vector without JSON parsing; features_json stays for
+    # backward compatibility and rollback.
+    *(sa.Column(f"f{i:02d}", sa.Float(), nullable=True) for i in range(1, 25)),
     sa.UniqueConstraint("user_id", "window_start_utc", "feature_schema_version"),
 )
 

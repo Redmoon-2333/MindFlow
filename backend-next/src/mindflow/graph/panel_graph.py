@@ -67,6 +67,19 @@ from mindflow.graph.reducers import append_opinion, append_transcript
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _MAX_CALLS: int = 12
+"""Total LLM-call cap per panel run (legacy name kept for tests)."""
+
+# Phase-aware budgets (architecture plan G/1.3): each expert role has its
+# own allowance so the moderator/critic debate cannot starve the analyst
+# round. The per-role budget is enforced in addition to the global
+# _MAX_CALLS cap.
+_PHASE_BUDGETS: dict[str, int] = {
+    "analyst": 1,
+    "attribution": 3,
+    "moderator": 3,
+    "critic": 2,
+    "rebuttal": 1,
+}
 
 
 @dataclass
@@ -80,6 +93,8 @@ class _PanelRunContext:
     call_count: int = 0
     transcript: list[TranscriptEntry] = field(default_factory=list)
     budget_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Per-role LLM-call usage for phase budgets (architecture plan G/1.3).
+    phase_usage: dict[str, int] = field(default_factory=dict)
 
 
 # Context variable to carry the mutable per-invocation runtime through the
@@ -94,11 +109,23 @@ async def _call_with_budget(
     expert: ExpertDef,
     user_message: str,
 ) -> str:
-    """Atomic budget check then gateway call."""
+    """Atomic budget check then gateway call.
+
+    Enforces both the global cap and the per-phase allowance keyed by the
+    expert role (architecture plan G/1.3)."""
     async with runtime.budget_lock:
         runtime.call_count += 1
         if runtime.call_count > _MAX_CALLS:
             raise PanelBudgetExceededError(call_count=runtime.call_count)
+        phase_budget = _PHASE_BUDGETS.get(expert.role, 0)
+        phase_used = runtime.phase_usage.get(expert.role, 0)
+        if phase_budget > 0 and phase_used >= phase_budget:
+            logger.warning(
+                "Phase budget exhausted for {} ({} / {})",
+                expert.role, phase_used, phase_budget,
+            )
+            raise PanelBudgetExceededError(call_count=runtime.call_count)
+        runtime.phase_usage[expert.role] = phase_used + 1
     return await gateway.complete(
         system=expert.system_prompt,
         user=user_message,

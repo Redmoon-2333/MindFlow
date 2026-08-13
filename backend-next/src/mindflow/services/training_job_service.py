@@ -206,6 +206,66 @@ class TrainingJobService:
             )
             return job.to_response()
 
+    # ── Auto incremental training (architecture plan F/2.2) ─────────────
+
+    _AUTO_MIN_NEW_FEEDBACK: int = 5
+    _AUTO_MIN_INTERVAL_HOURS: int = 24
+
+    async def auto_train_if_due(
+        self,
+        *,
+        app_state: _AppStateLike | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """Trigger a shadow training run when new feedback has accumulated.
+
+        Architecture plan F/2.2: the model should improve on its own as the
+        user keeps giving feedback, without a manual click. This method is
+        called from the scheduler (hourly). It starts a job only when:
+          - at least ``_AUTO_MIN_NEW_FEEDBACK`` explicit feedback rows were
+            created since the last run, AND
+          - the previous job finished more than ``_AUTO_MIN_INTERVAL_HOURS``
+            ago (or never ran).
+
+        The job always runs in shadow mode (never auto-activates), keeping
+        the manual activation path authoritative.
+
+        Returns:
+            True when a training job was started, False otherwise.
+        """
+        # Guard: an active job already running.
+        if self._current is not None and not _is_terminal(self._current.status):
+            return False
+
+        # Cooldown since the last completed run.
+        now = now or datetime.now(UTC)
+        if self._current is not None and self._current.completed_at is not None:
+            try:
+                last_done = datetime.fromisoformat(self._current.completed_at)
+                if (
+                    (now - last_done).total_seconds()
+                    < self._AUTO_MIN_INTERVAL_HOURS * 3600
+                ):
+                    return False
+            except (ValueError, TypeError):
+                pass
+
+        # Count feedback rows created since the last run (or all rows).
+        since = None
+        if self._current is not None and self._current.completed_at is not None:
+            since = self._current.completed_at
+        try:
+            count = await self._telemetry_repo.count_focus_feedback_since(
+                self._user_id, since=since
+            )
+        except Exception:
+            return False
+        if count < self._AUTO_MIN_NEW_FEEDBACK:
+            return False
+
+        await self.start_job(app_state=app_state)
+        return True
+
     async def cancel_job(self, job_id: str) -> TrainingJobResponse | None:
         """Cancel a job in ``pending`` or ``preparing_data``.
 

@@ -985,6 +985,7 @@ class AnalysisGraph:
         ollama_model: str = "qwen3:8b",
         rule_engine: Any = None,
         timezone: str = "local",
+        checkpointer: Any = None,
     ) -> None:
         from mindflow.domain.procrastination import RuleEngine as _RuleEngine
 
@@ -999,6 +1000,11 @@ class AnalysisGraph:
         self._ollama_model = ollama_model
         self._rule_engine = rule_engine or _RuleEngine()
         self._timezone = timezone
+        # Optional LangGraph checkpointer (ApplicationCheckpointer or None).
+        # When provided, the compiled graph persists state after every node
+        # transition so a crash can resume instead of re-running paid LLM
+        # calls (architecture plan item A). The object exposes ``.saver``.
+        self._checkpointer = checkpointer
         self._compiled: CompiledStateGraph[Any, Any, Any, Any] | None = None
 
     # ── AnalysisWorkflowPort implementation ────────────────────────────
@@ -1083,10 +1089,24 @@ class AnalysisGraph:
         except Exception as exc:
             logger.warning("Failed to mark run {} as running: {}", run_id, exc)
 
-        # Run the graph
+        # Run the graph. With a checkpointer wired, use a stable thread_id so a
+        # crash mid-run can resume from the last checkpoint (LLM cost savings).
         graph = self._get_compiled_graph()
+        invoke_config = None
+        if self._checkpointer is not None:
+            invoke_config = {
+                "configurable": {
+                    "thread_id": (
+                        f"analysis_{request.user_id}_"
+                        f"{request.target_date.isoformat()}"
+                    )
+                }
+            }
         try:
-            final_state = await graph.ainvoke(initial_state)
+            final_state = await graph.ainvoke(
+                initial_state,
+                config=invoke_config if invoke_config is not None else None,
+            )
         except NoActivityDataError:
             with contextlib.suppress(Exception):
                 await self._workflow_run_repo.update_status(
@@ -1258,8 +1278,17 @@ class AnalysisGraph:
         # Handle persistence failure → END
         graph.add_edge("handle_persistence_failure", END)
 
-        # Compile without checkpointer (feature-flagged separately)
-        self._compiled = graph.compile()
+        # Compile with the optional checkpointer (architecture plan item A).
+        # When checkpointing_enabled is True the ApplicationCheckpointer
+        # provides a SQLite-backed saver; None keeps in-memory behaviour
+        # identical to before.
+        self._compiled = graph.compile(
+            checkpointer=(
+                self._checkpointer.saver
+                if self._checkpointer is not None
+                else None
+            )
+        )
         return self._compiled
 
     def _get_compiled_graph(self) -> CompiledStateGraph[Any, Any, Any, Any]:

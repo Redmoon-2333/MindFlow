@@ -9,11 +9,11 @@ from typing import Any
 import numpy as np
 
 from mindflow.domain.events import ActivityEvent
-from mindflow.domain.features import count_confirmed_switches
 
 # Single authoritative constant in the domain layer; re-exported here so the
 # ``mindflow.services.telemetry_features`` importers keep working unchanged.
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION  # noqa: F401
+from mindflow.domain.features import count_confirmed_switches
 
 
 def build_v2_feature_window(

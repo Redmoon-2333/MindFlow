@@ -85,6 +85,8 @@ export interface DailyReportView {
   readonly hourlyChart: HourlyChartModel | null;
   readonly topApps: readonly TopAppEntry[];
   readonly stateCard: StateCardModel | null;
+  /** Rule-generated personal takeaway (architecture plan J/5.3). */
+  readonly patternSummary: string | null;
 }
 
 /** Chart model for a ready daily report: one bar per local hour bucket. */
@@ -122,6 +124,7 @@ export function toDailyReportView(report: DailyReport): DailyReportView {
         hourlyChart: buildHourlyChart(report.hourly_distribution),
         topApps: report.top_apps,
         stateCard: null,
+        patternSummary: report.ai_insight ?? report.pattern_summary,
       };
     }
     case "no_activity":
@@ -137,6 +140,7 @@ export function toDailyReportView(report: DailyReport): DailyReportView {
         hourlyChart: null,
         topApps: [],
         stateCard: DAILY_STATE_CARDS[report.data_state],
+        patternSummary: null,
       };
     }
     case "unknown": {
@@ -148,6 +152,7 @@ export function toDailyReportView(report: DailyReport): DailyReportView {
         hourlyChart: null,
         topApps: [],
         stateCard: DAILY_UNKNOWN_CARD,
+        patternSummary: null,
       };
     }
     default: {

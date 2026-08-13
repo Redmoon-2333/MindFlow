@@ -14,11 +14,13 @@ Endpoints:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 from fastapi import status as http_status
+from loguru import logger
 
 from mindflow.api.deps import get_analysis_service, get_baseline_repo
 from mindflow.api.errors import ProblemDetail, _not_found
@@ -184,6 +186,17 @@ async def get_model_status(
         "v2_training_mode",
         "rule_engine_only",
     )
+    # Progressive deployment tier from the latest training report
+    # (architecture plan E/2.1): full_ready / low_confidence / shadow.
+    tier = "shadow"
+    training_report = getattr(request.app.state, "training_report", None)
+    if isinstance(training_report, dict):
+        tier = (
+            (training_report.get("quality_gate") or {})
+            .get("deployment_tier", "shadow")
+        )
+    elif v2_training_mode == "ready":
+        tier = "full_ready"
     if v2_model_manager is not None:
         readiness = v2_model_manager.readiness_status()
         is_ready = bool(readiness["ready"])
@@ -191,6 +204,7 @@ async def get_model_status(
             "loaded": True,
             "ready": is_ready,
             "mode": "ready" if is_ready else "rule_engine_only",
+            "deployment_tier": "full_ready" if is_ready else tier,
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "v2_mode": "ready" if is_ready else v2_training_mode,
             "version": v2_model_manager.current_version_tag,
@@ -208,10 +222,75 @@ async def get_model_status(
         "loaded": False,
         "ready": False,
         "mode": v2_training_mode,
+        "deployment_tier": tier,
         "v2_mode": v2_training_mode,
         "reasons": ["v2_models_not_loaded"],
         "message": "V2 ML models not available, running with rule engine only",
     }
+
+
+
+@router.get("/analytics/usage")
+async def get_ai_usage(
+    request: Request,
+) -> dict[str, Any]:
+    """Return AI/LLM usage summary for the settings page (architecture plan C).
+
+    Aggregates persisted analysis records (llm_cost_usd, model) plus workflow
+    run counts so the user sees what the AI features actually cost. When the
+    app runs in rule-engine mode (no API key) the payload reports a zero-cost
+    local mode.
+    """
+    session_factory = getattr(request.app.state, "session_factory", None)
+    v2_training_mode = getattr(
+        request.app.state, "v2_training_mode", "rule_engine_only"
+    )
+    mode = "rule_engine" if v2_training_mode == "rule_engine_only" else "llm"
+
+    usage: dict[str, Any] = {
+        "mode": mode,
+        "llm_calls_30d": 0,
+        "llm_cost_usd_30d": 0.0,
+        "panel_count_30d": 0,
+    }
+    if session_factory is not None:
+        try:
+            import sqlalchemy as sa
+
+            from mindflow.infrastructure.schema import procrastination_analyses
+
+            cutoff = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+            async with session_factory() as session:
+                row = (
+                    await session.execute(
+                        sa.select(
+                            sa.func.count().label("n"),
+                            sa.func.coalesce(
+                                sa.func.sum(procrastination_analyses.c.llm_cost_usd),
+                                0.0,
+                            ).label("cost"),
+                            sa.func.sum(
+                                sa.case(
+                                    (
+                                        procrastination_analyses.c.source
+                                        == "panel",
+                                        1,
+                                    ),
+                                    else_=0,
+                                )
+                            ).label("panels"),
+                        )
+                        .where(
+                            procrastination_analyses.c.created_at >= cutoff,
+                        )
+                    )
+                ).one()
+                usage["llm_calls_30d"] = int(row.n or 0)
+                usage["llm_cost_usd_30d"] = round(float(row.cost or 0.0), 4)
+                usage["panel_count_30d"] = int(row.panels or 0)
+        except Exception as exc:
+            logger.warning("AI usage aggregation failed: {}", exc)
+    return usage
 
 
 @router.get(
