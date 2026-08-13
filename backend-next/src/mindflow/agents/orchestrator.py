@@ -1,4 +1,4 @@
-﻿"""Expert panel deliberation helpers for the v2 PanelGraph.
+"""Expert panel deliberation helpers for the v2 PanelGraph.
 
 This module holds the parsing, citation-validation, prompt-building, and
 per-invocation budget/transcript helpers used by the v2 ``PanelGraph``
@@ -14,7 +14,7 @@ import asyncio
 import contextvars
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -99,7 +99,7 @@ _CITATION_PATTERN = re.compile(r"\[证据[:：]\s*([A-Za-z0-9_.]+)\s*\]")
 
 def validate_citations(
     opinion: ExpertOpinion,
-    valid_metrics: frozenset[str],
+    valid_metrics: Collection[str],
 ) -> tuple[str, ...]:
     """Code-level citation validation — never trust the LLM critic alone.
 
@@ -201,7 +201,7 @@ def _parse_expert_opinion(
     raw: str,
     expert: ExpertDef,
     skipped: bool = False,
-    valid_metrics: frozenset[str] | None = None,
+    valid_metrics: Collection[str] | None = None,
 ) -> ExpertOpinion:
     """Parse an expert's raw LLM response into ``ExpertOpinion``.
 
@@ -442,7 +442,7 @@ def _build_critic_user_prompt(
     bundle_json: str,
     verdict: PanelVerdict,
     all_opinions: Sequence[ExpertOpinion],
-    valid_metrics: frozenset[str],
+    valid_metrics: Collection[str],
 ) -> str:
     """Build the critic's user prompt with verdict + opinions + valid metrics."""
     metrics_str = ", ".join(sorted(valid_metrics)) if valid_metrics else "（无）"

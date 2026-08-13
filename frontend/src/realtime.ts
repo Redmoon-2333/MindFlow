@@ -106,7 +106,16 @@ class RealtimeClient {
     }
 
     const listeners = this.listeners.get(frame.type);
-    listeners?.forEach((listener) => listener(frame.payload as never, timestamp));
+    if (listeners) {
+      for (const listener of listeners) {
+        try {
+          listener(frame.payload as never, timestamp);
+        } catch {
+          // One failing listener must not break the remaining subscribers
+          // or the WebSocket receive loop.
+        }
+      }
+    }
   }
 
   private showDesktopNotification(payload: InterventionEventPayload): void {
@@ -122,7 +131,9 @@ class RealtimeClient {
       });
       notification.onclick = () => {
         window.focus();
-        window.location.hash = "#/intervention";
+        // BrowserRouter does not listen to hash changes — a hard navigation is
+        // the reliable way to bring the user back to the intervention page.
+        window.location.href = "/intervention";
         notification.close();
       };
     } catch {

@@ -1,18 +1,14 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getDailyReport, getErrorMessage, getWeeklyReport } from "../api";
 import type { DailyReport, WeeklyReport } from "../report-state";
 import { DailyReportBody, WeeklyReportBody } from "./ReportsSections";
 
 type Tab = "daily" | "weekly";
 
-function mondayOf(date: Date): string {
-  const d = new Date(date);
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-  return d.toISOString().slice(0, 10);
-}
+import { localDateStr, mondayOf } from "../date-utils";
 
 function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+  return localDateStr();
 }
 
 export default function Reports() {
@@ -30,31 +26,42 @@ export default function Reports() {
   const [weeklyLoading, setWeeklyLoading] = useState(false);
   const [weeklyErr, setWeeklyErr] = useState("");
 
+  // Request-sequence guards so a slow response for an older date/week never
+  // overwrites the newer selection (audit report — stale-overwrite race).
+  const dailySeqRef = useRef(0);
+  const weeklySeqRef = useRef(0);
+
   const loadDaily = useCallback(async (date: string) => {
+    const seq = ++dailySeqRef.current;
     setDailyLoading(true);
     setDailyErr("");
     try {
       const data = await getDailyReport(date);
+      if (seq !== dailySeqRef.current) return;
       setDaily(data);
     } catch (e: unknown) {
+      if (seq !== dailySeqRef.current) return;
       setDailyErr(getErrorMessage(e, "加载失败"));
       setDaily(null);
     } finally {
-      setDailyLoading(false);
+      if (seq === dailySeqRef.current) setDailyLoading(false);
     }
   }, []);
 
   const loadWeekly = useCallback(async (ws: string) => {
+    const seq = ++weeklySeqRef.current;
     setWeeklyLoading(true);
     setWeeklyErr("");
     try {
       const data = await getWeeklyReport(ws);
+      if (seq !== weeklySeqRef.current) return;
       setWeekly(data);
     } catch (e: unknown) {
+      if (seq !== weeklySeqRef.current) return;
       setWeeklyErr(getErrorMessage(e, "加载失败"));
       setWeekly(null);
     } finally {
-      setWeeklyLoading(false);
+      if (seq === weeklySeqRef.current) setWeeklyLoading(false);
     }
   }, []);
 

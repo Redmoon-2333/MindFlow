@@ -50,6 +50,7 @@ export default function Analytics() {
 
   const fetchPatterns = useCallback(async () => {
     setLoading((p) => ({ ...p, patterns: true }));
+    setError(null);
     try {
       const data = await getAnalyticsPatterns(days);
       setPatterns(data);
@@ -62,6 +63,7 @@ export default function Analytics() {
 
   const fetchBaseline = useCallback(async () => {
     setLoading((p) => ({ ...p, baseline: true }));
+    setError(null);
     try {
       const state = await getBaseline();
       if (!state.ok) {
@@ -72,7 +74,13 @@ export default function Analytics() {
       }
       setBaseline(state);
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "基线数据加载失败"));
+      if (e instanceof ApiError && e.status === 404) {
+        // No baseline yet is a normal business state — show the empty card
+        // (same as ModelCenter) instead of a red error banner.
+        setBaseline(null);
+      } else {
+        setError(getErrorMessage(e, "基线数据加载失败"));
+      }
     } finally {
       setLoading((p) => ({ ...p, baseline: false }));
     }
@@ -80,6 +88,7 @@ export default function Analytics() {
 
   const fetchProfile = useCallback(async () => {
     setLoading((p) => ({ ...p, profile: true }));
+    setError(null);
     try {
       const data = await getProfile(days);
       setProfile(data);
@@ -92,6 +101,7 @@ export default function Analytics() {
 
   const fetchModelStatus = useCallback(async () => {
     setLoading((p) => ({ ...p, modelStatus: true }));
+    setError(null);
     try {
       const data = await getModelStatus();
       setModelStatusState(data);
@@ -107,6 +117,7 @@ export default function Analytics() {
 
   const handleAttribution = async () => {
     setLoading((p) => ({ ...p, attribution: true }));
+    setError(null);
     setAttribution(null);
     try {
       const data = await runAttribution();

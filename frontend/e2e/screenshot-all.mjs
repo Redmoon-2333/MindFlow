@@ -27,7 +27,7 @@ const pages = [
 for (const [path, name] of pages) {
   const page = await ctx.newPage();
   await page.addInitScript(() => localStorage.setItem("mindflow_authenticated", "1"));
-  await page.goto(`http://127.0.0.1:5173${path}`, { waitUntil: "networkidle", timeout: 15000 });
+  await page.goto(`http://127.0.0.1:4173${path}`, { waitUntil: "networkidle", timeout: 15000 });
   await page.waitForTimeout(2500);
   await page.screenshot({ path: `${OUT}/${name}.png`, fullPage: true });
   console.log(`✓ ${name}`);

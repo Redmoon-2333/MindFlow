@@ -131,7 +131,7 @@ class TestWebSocketOriginValidation:
         assert exc_info.value.code == 1008
 
     def test_vite_origin_is_allowed(self, client):
-        headers = {**_TRUSTED_HOST_HEADERS, "origin": "http://127.0.0.1:5173"}
+        headers = {**_TRUSTED_HOST_HEADERS, "origin": "http://127.0.0.1:4173"}
         with client.websocket_connect("/api/v1/ws", headers=headers):
             pass
 

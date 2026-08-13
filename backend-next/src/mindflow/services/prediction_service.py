@@ -16,6 +16,7 @@ Key design:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from collections.abc import Sequence
@@ -148,7 +149,11 @@ class FocusPredictionService:
         ):
             return FocusPrediction(status="no_model", reason="未加载 ML 模型")
 
-        return self._predict_from_windows(windows, now, model_manager)
+        # Offload CPU-bound numpy/sklearn inference to a worker thread so the
+        # event loop is not blocked for concurrent HTTP requests (audit report).
+        return await asyncio.to_thread(
+            self._predict_from_windows, windows, now, model_manager
+        )
 
     async def predict_range(
         self,
@@ -218,7 +223,9 @@ class FocusPredictionService:
         ):
             return FocusPrediction(status="no_model", reason="未加载 ML 模型")
 
-        return self._predict_from_windows(windows, now, model_manager)
+        return await asyncio.to_thread(
+            self._predict_from_windows, windows, now, model_manager
+        )
 
     # ══════════════════════════════════════════════════════════════════════
     # Internal: predict from window rows

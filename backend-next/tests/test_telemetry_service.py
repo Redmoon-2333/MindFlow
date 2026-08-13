@@ -10,7 +10,7 @@ from test_prediction_service import _make_feature_window, _make_mock_model_manag
 
 import mindflow.services.telemetry_service as telemetry_service_module
 from mindflow.services.prediction_service import FocusPredictionService
-from mindflow.services.telemetry_service import TelemetryService
+from mindflow.services.telemetry_service import TelemetryService, _PairingRecord
 from mindflow.train.v2 import V2_FEATURE_NAMES
 
 
@@ -70,7 +70,7 @@ def test_cleanup_removes_past_expiry(tmp_path) -> None:
     """Given a code with expires_at in the past, When cleanup runs, Then it is removed."""
     service = _make_service(tmp_path)
     now = datetime.now(UTC)
-    service._pairing_codes["past"] = now - timedelta(minutes=1)
+    service._pairing_codes["past"] = _PairingRecord(now - timedelta(minutes=1))
 
     service._cleanup_expired_pairing_codes(now)
 
@@ -81,7 +81,7 @@ def test_cleanup_removes_exactly_expired(tmp_path) -> None:
     """Given a code with expires_at == now, When cleanup runs, Then it is removed."""
     service = _make_service(tmp_path)
     now = datetime.now(UTC)
-    service._pairing_codes["exact"] = now
+    service._pairing_codes["exact"] = _PairingRecord(now)
 
     service._cleanup_expired_pairing_codes(now)
 
@@ -93,12 +93,12 @@ def test_cleanup_keeps_future(tmp_path) -> None:
     service = _make_service(tmp_path)
     now = datetime.now(UTC)
     future_at = now + timedelta(hours=1)
-    service._pairing_codes["future"] = future_at
+    service._pairing_codes["future"] = _PairingRecord(future_at)
 
     service._cleanup_expired_pairing_codes(now)
 
     assert "future" in service._pairing_codes
-    assert service._pairing_codes["future"] is future_at
+    assert service._pairing_codes["future"].expires_at == future_at
 
 
 def test_cleanup_bulk_1000(tmp_path) -> None:
@@ -108,9 +108,9 @@ def test_cleanup_bulk_1000(tmp_path) -> None:
     now = datetime.now(UTC)
     expired_at = now - timedelta(hours=2)
     for i in range(1000):
-        service._pairing_codes[f"expired-{i:04d}"] = expired_at
+        service._pairing_codes[f"expired-{i:04d}"] = _PairingRecord(expired_at)
     future_at = now + timedelta(hours=1)
-    service._pairing_codes["future"] = future_at
+    service._pairing_codes["future"] = _PairingRecord(future_at)
 
     service._cleanup_expired_pairing_codes(now)
 
@@ -131,19 +131,19 @@ async def test_create_pairing_code_removes_expired_and_keeps_future(tmp_path) ->
     exact_at = now
     future_at = now + timedelta(hours=1)
 
-    service._pairing_codes["past"] = past_at
-    service._pairing_codes["exact"] = exact_at
-    service._pairing_codes["future"] = future_at
+    service._pairing_codes["past"] = _PairingRecord(past_at)
+    service._pairing_codes["exact"] = _PairingRecord(exact_at)
+    service._pairing_codes["future"] = _PairingRecord(future_at)
 
     result = await service.create_pairing_code()
 
     assert "past" not in service._pairing_codes
     assert "exact" not in service._pairing_codes
     assert "future" in service._pairing_codes
-    assert service._pairing_codes["future"] is future_at
+    assert service._pairing_codes["future"].expires_at == future_at
     new_code = result["code"]
     assert new_code in service._pairing_codes
-    assert service._pairing_codes[new_code] > now
+    assert service._pairing_codes[new_code].expires_at > now
 
 
 async def test_create_pairing_code_bulk_1000_cleanup(tmp_path) -> None:
@@ -153,9 +153,9 @@ async def test_create_pairing_code_bulk_1000_cleanup(tmp_path) -> None:
     now = datetime.now(UTC)
     expired_at = now - timedelta(minutes=30)
     for i in range(1000):
-        service._pairing_codes[f"expired-{i:04d}"] = expired_at
+        service._pairing_codes[f"expired-{i:04d}"] = _PairingRecord(expired_at)
     future_at = now + timedelta(hours=2)
-    service._pairing_codes["future"] = future_at
+    service._pairing_codes["future"] = _PairingRecord(future_at)
 
     result = await service.create_pairing_code()
 
@@ -163,7 +163,7 @@ async def test_create_pairing_code_bulk_1000_cleanup(tmp_path) -> None:
     assert "future" in service._pairing_codes
     new_code = result["code"]
     assert new_code in service._pairing_codes
-    assert service._pairing_codes[new_code] > now
+    assert service._pairing_codes[new_code].expires_at > now
 
 
 # ── predict_latest_focus normalization (real FocusPredictionService) ────────

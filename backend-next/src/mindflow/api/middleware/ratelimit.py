@@ -97,32 +97,37 @@ class TokenBucket:
             return False, 0.0, self._last_refill + next_token_time
 
 
-# Default per-endpoint rate limit configurations
+# Default per-endpoint rate limit configurations.
+# These protect paid LLM endpoints (chat/panel/attribution) from a local
+# process hammering the API. Previously the defaults were ~9999/s effectively
+# disabling the limiter (audit report — rate limit default values); the values
+# below match the documented policy (global 100/min; chat 20/min, 200/day;
+# panel 10/min, 60/day; attribution 10/min, 50/day).
 _DEFAULT_ENDPOINT_LIMITS: dict[str, TokenBucket] = {
     "/api/v1/chat": TokenBucket(
-        capacity=9999,
-        refill_rate=9999.0,
-        daily_hard_limit=999999,
+        capacity=20,
+        refill_rate=20.0 / 60.0,
+        daily_hard_limit=200,
     ),
     "/api/v1/analytics/attribution": TokenBucket(
-        capacity=9999,
-        refill_rate=9999.0,
-        daily_hard_limit=999999,
+        capacity=10,
+        refill_rate=10.0 / 60.0,
+        daily_hard_limit=50,
     ),
     "/api/v1/analytics/train": TokenBucket(
-        capacity=9999,
-        refill_rate=9999.0,
-        daily_hard_limit=999999,
+        capacity=5,
+        refill_rate=5.0 / 60.0,
+        daily_hard_limit=30,
     ),
     "/api/v1/panel/today": TokenBucket(
-        capacity=9999,
-        refill_rate=9999.0,
-        daily_hard_limit=999999,
+        capacity=10,
+        refill_rate=10.0 / 60.0,
+        daily_hard_limit=60,
     ),
     "/api/v1/panel": TokenBucket(
-        capacity=9999,
-        refill_rate=9999.0,
-        daily_hard_limit=999999,
+        capacity=10,
+        refill_rate=10.0 / 60.0,
+        daily_hard_limit=60,
     ),
 }
 
@@ -169,8 +174,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app: Any,
-        global_capacity: float = 999999.0,
-        global_refill_rate: float = 999999.0,
+        global_capacity: float = 100.0,
+        global_refill_rate: float = 100.0 / 60.0,
         endpoint_limits: dict[str, TokenBucket] | None = None,
     ) -> None:
         super().__init__(app)
@@ -178,7 +183,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             capacity=global_capacity,
             refill_rate=global_refill_rate,
         )
-        self._endpoint_limits = endpoint_limits or _DEFAULT_ENDPOINT_LIMITS.copy()
+        # Deep-copy the default buckets so multiple app instances (tests,
+        # watchdog restart) never share mutable bucket state.
+        self._endpoint_limits = (
+            {
+                k: TokenBucket(v._capacity, v._refill_rate, v._daily_hard_limit)
+                for k, v in _DEFAULT_ENDPOINT_LIMITS.items()
+            }
+            if endpoint_limits is None
+            else endpoint_limits
+        )
 
     async def dispatch(
         self,

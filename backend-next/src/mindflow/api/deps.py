@@ -46,6 +46,8 @@ from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.autonomy_service import AutonomyService
 from mindflow.services.chat_service import ChatService
 from mindflow.services.collector_service import CollectorService
+from mindflow.services.effectiveness_service import EffectivenessService
+from mindflow.services.intervention_service import InterventionService
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
@@ -144,14 +146,20 @@ def get_intervention_repo(request: Request) -> InterventionLogRepository:
     )
 
 
-def get_intervention_service(request: Request) -> object:
+def get_intervention_service(request: Request) -> InterventionService | None:
     """Return the InterventionService from app.state."""
-    return getattr(request.app.state, "intervention_service", None)
+    return cast(
+        InterventionService | None,
+        getattr(request.app.state, "intervention_service", None),
+    )
 
 
-def get_effectiveness_service(request: Request) -> object:
+def get_effectiveness_service(request: Request) -> EffectivenessService | None:
     """Return the EffectivenessService from app.state."""
-    return getattr(request.app.state, "effectiveness_service", None)
+    return cast(
+        EffectivenessService | None,
+        getattr(request.app.state, "effectiveness_service", None),
+    )
 
 
 def get_chat_service(request: Request) -> ChatService:
@@ -187,4 +195,9 @@ def get_workflow_runs_repo(request: Request) -> object:
     """
     from mindflow.infrastructure.repositories.workflow_runs import WorkflowRunsRepository
 
-    return WorkflowRunsRepository(session_factory=cast(async_sessionmaker[AsyncSession], request.app.state.session_factory))
+    return WorkflowRunsRepository(
+        session_factory=cast(
+            async_sessionmaker[AsyncSession],
+            request.app.state.session_factory,
+        )
+    )

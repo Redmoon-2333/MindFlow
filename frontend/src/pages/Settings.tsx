@@ -20,6 +20,7 @@ import {
   createBrowserPairingCode,
   clearTelemetryData,
   getErrorMessage,
+  isAutonomyPaused,
   runTelemetryDelete,
 } from "../api";
 import type { AutonomyStatus, ClassificationRule, ClassificationRuleInput, CollectorStatus, HealthData, Preferences, TelemetryDeleteNotice, TelemetryDeleteScope, TelemetryPreferences, TelemetryStatus } from "../api";
@@ -73,6 +74,7 @@ export default function Settings() {
 
   const [prefLoading, setPrefLoading] = useState(false);
   const isCollectorRunning = collector?.running === true || collector?.status === "running";
+  const autonomyPaused = isAutonomyPaused(autonomy);
   const [telemetry, setTelemetry] = useState<TelemetryStatus | null>(null);
   const [telemetryLoading, setTelemetryLoading] = useState(false);
   const [pairingCode, setPairingCode] = useState<{ code: string; expires_at: string } | null>(null);
@@ -82,26 +84,31 @@ export default function Settings() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
-    try {
-      const [h, cs, au, cls, prefs, telemetryStatus] = await Promise.all([
-        getHealth(),
-        getCollectorStatus(),
-        getAutonomy(),
-        getClassifications(),
-        getPreferences(),
-        getTelemetryStatus(),
-      ]);
-      setHealth(h);
-      setCollector(cs);
-      setAutonomy(au);
-      setClassifications(Array.isArray(cls) ? cls : []);
-      setPreferences(JSON.stringify(prefs, null, 2));
-      setTelemetry(telemetryStatus);
-    } catch (e: unknown) {
-      setError(getErrorMessage(e, "加载失败"));
-    } finally {
-      setLoading(false);
-    }
+    const [healthResult, collectorResult, autonomyResult, classificationsResult, preferencesResult, telemetryResult] = await Promise.allSettled([
+      getHealth(),
+      getCollectorStatus(),
+      getAutonomy(),
+      getClassifications(),
+      getPreferences(),
+      getTelemetryStatus(),
+    ]);
+    const failures: string[] = [];
+
+    if (healthResult.status === "fulfilled") setHealth(healthResult.value);
+    else failures.push(getErrorMessage(healthResult.reason, "系统状态加载失败"));
+    if (collectorResult.status === "fulfilled") setCollector(collectorResult.value);
+    else failures.push(getErrorMessage(collectorResult.reason, "采集器状态加载失败"));
+    if (autonomyResult.status === "fulfilled") setAutonomy(autonomyResult.value);
+    else failures.push(getErrorMessage(autonomyResult.reason, "自主模式状态加载失败"));
+    if (classificationsResult.status === "fulfilled") setClassifications(Array.isArray(classificationsResult.value) ? classificationsResult.value : []);
+    else failures.push(getErrorMessage(classificationsResult.reason, "应用分类加载失败"));
+    if (preferencesResult.status === "fulfilled") setPreferences(JSON.stringify(preferencesResult.value, null, 2));
+    else failures.push(getErrorMessage(preferencesResult.reason, "偏好设置加载失败"));
+    if (telemetryResult.status === "fulfilled") setTelemetry(telemetryResult.value);
+    else failures.push(getErrorMessage(telemetryResult.reason, "遥测状态加载失败"));
+
+    if (failures.length > 0) setError(`部分设置加载失败：${failures.join("；")}`);
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -198,22 +205,30 @@ export default function Settings() {
     }
   };
 
+  /** Shared JSON parse+validate for the preferences editor. Returns null and
+   *  surfaces the error when the text is invalid (caller must then return). */
+  const parsePreferencesText = (): Parameters<typeof putPreferences>[0] | null => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(preferences);
+    } catch {
+      setError("JSON 格式无效");
+      setPrefLoading(false);
+      return null;
+    }
+    if (!isPreferences(parsed)) {
+      setError("JSON 必须是对象");
+      setPrefLoading(false);
+      return null;
+    }
+    return parsed;
+  };
+
   const handlePutPrefs = async () => {
     setPrefLoading(true);
     try {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(preferences);
-      } catch {
-        setError("JSON 格式无效");
-        setPrefLoading(false);
-        return;
-      }
-      if (!isPreferences(parsed)) {
-        setError("JSON 必须是对象");
-        setPrefLoading(false);
-        return;
-      }
+      const parsed = parsePreferencesText();
+      if (parsed === null) return; // error already surfaced
       const result = await putPreferences(parsed);
       setPreferences(JSON.stringify(result, null, 2));
     } catch (e: unknown) {
@@ -284,19 +299,8 @@ export default function Settings() {
   const handlePatchPrefs = async () => {
     setPrefLoading(true);
     try {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(preferences);
-      } catch {
-        setError("JSON 格式无效");
-        setPrefLoading(false);
-        return;
-      }
-      if (!isPreferences(parsed)) {
-        setError("JSON 必须是对象");
-        setPrefLoading(false);
-        return;
-      }
+      const parsed = parsePreferencesText();
+      if (parsed === null) return; // error already surfaced
       const result = await patchPreferences(parsed);
       setPreferences(JSON.stringify(result, null, 2));
     } catch (e: unknown) {
@@ -305,18 +309,6 @@ export default function Settings() {
       setPrefLoading(false);
     }
   };
-
-  if (loading) {
-    return (
-      <div>
-        <div className="header">
-          <h1>系统设置</h1>
-          <p>管理 MindFlow 配置与数据</p>
-        </div>
-        <div className="spinner" />
-      </div>
-    );
-  }
 
   return (
     <div>
@@ -331,6 +323,15 @@ export default function Settings() {
           <button className="btn btn-sm mt8" onClick={() => setError(null)} style={{ marginLeft: 12 }}>
             关闭
           </button>
+        </div>
+      )}
+
+      {loading && (
+        <div className="card mb24" role="status">
+          <div className="flex gap8" style={{ alignItems: "center" }}>
+            <span className="spinner" style={{ width: 16, height: 16, margin: 0, borderWidth: 2 }} />
+            正在加载设置，部分操作暂不可用
+          </div>
         </div>
       )}
 
@@ -398,17 +399,17 @@ export default function Settings() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginTop: 20 }}>
           <label className="flex flex-between" style={{ padding: 14, border: "1px solid var(--color-border)", borderRadius: 10 }}>
             <span><strong style={{ display: "block", fontSize: 14 }}>鼠标与键盘聚合统计</strong><span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>点击、滚动、移动距离和输入活跃秒数</span></span>
-            <input type="checkbox" checked={telemetry?.preferences.input_telemetry_enabled ?? false} disabled={telemetryLoading} onChange={(event) => updateTelemetryPreferences({ input_telemetry_enabled: event.target.checked })} />
+            <input type="checkbox" checked={telemetry?.preferences.input_telemetry_enabled ?? false} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ input_telemetry_enabled: event.target.checked })} />
           </label>
           <label className="flex flex-between" style={{ padding: 14, border: "1px solid var(--color-border)", borderRadius: 10 }}>
             <span><strong style={{ display: "block", fontSize: 14 }}>浏览器域名统计</strong><span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>仅 Edge / Chrome 活动标签页域名</span></span>
-            <input type="checkbox" checked={telemetry?.preferences.browser_tracking_enabled ?? false} disabled={telemetryLoading} onChange={(event) => updateTelemetryPreferences({ browser_tracking_enabled: event.target.checked })} />
+            <input type="checkbox" checked={telemetry?.preferences.browser_tracking_enabled ?? false} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ browser_tracking_enabled: event.target.checked })} />
           </label>
         </div>
         <div className="form-row mt16" style={{ alignItems: "end" }}>
-          <div className="form-group"><label>输入桶保留天数</label><select value={telemetry?.preferences.interaction_retention_days ?? 7} disabled={telemetryLoading} onChange={(event) => updateTelemetryPreferences({ interaction_retention_days: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
-          <div className="form-group"><label>活动与浏览器片段保留天数</label><select value={telemetry?.preferences.activity_retention_days ?? 30} disabled={telemetryLoading} onChange={(event) => updateTelemetryPreferences({ activity_retention_days: Number(event.target.value) })}>{[7, 14, 30, 60, 90].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
-          <button className="btn btn-primary" disabled={telemetryLoading} onClick={handleCreatePairingCode}>生成浏览器配对码</button>
+          <div className="form-group"><label>输入桶保留天数</label><select value={telemetry?.preferences.interaction_retention_days ?? 7} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ interaction_retention_days: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
+          <div className="form-group"><label>活动与浏览器片段保留天数</label><select value={telemetry?.preferences.activity_retention_days ?? 30} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ activity_retention_days: Number(event.target.value) })}>{[7, 14, 30, 60, 90].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
+          <button className="btn btn-primary" disabled={loading || telemetryLoading} onClick={handleCreatePairingCode}>生成浏览器配对码</button>
         </div>
         {pairingCode && <div style={{ marginTop: 16, padding: 16, borderRadius: 10, background: "var(--color-bg-secondary)" }}><div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>在扩展设置页输入，5 分钟内有效</div><div style={{ fontSize: 30, fontWeight: 700, letterSpacing: 8, marginTop: 6 }}>{pairingCode.code}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>到期：{formatTelemetryTime(pairingCode.expires_at)}</div></div>}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginTop: 18 }}>
@@ -419,10 +420,10 @@ export default function Settings() {
           <div><span className="text-muted">最后浏览器采集</span><strong style={{ display: "block", fontSize: 12 }}>{formatTelemetryTime(telemetry?.last_browser_at ?? null)}</strong></div>
         </div>
         <div className="flex gap8 mt16" style={{ flexWrap: "wrap" }}>
-          <button className="btn btn-ghost btn-sm" disabled={telemetryLoading} onClick={() => handleClearTelemetry("interaction")}>清除输入数据</button>
-          <button className="btn btn-ghost btn-sm" disabled={telemetryLoading} onClick={() => handleClearTelemetry("browser")}>清除浏览器数据</button>
-          <button className="btn btn-ghost btn-sm" disabled={telemetryLoading} onClick={() => handleClearTelemetry("feedback")}>清除反馈数据</button>
-          <button className="btn btn-danger btn-sm" disabled={telemetryLoading} onClick={() => handleClearTelemetry("all")}>清除全部行为数据</button>
+          <button className="btn btn-ghost btn-sm" disabled={loading || telemetryLoading} onClick={() => handleClearTelemetry("interaction")}>清除输入数据</button>
+          <button className="btn btn-ghost btn-sm" disabled={loading || telemetryLoading} onClick={() => handleClearTelemetry("browser")}>清除浏览器数据</button>
+          <button className="btn btn-ghost btn-sm" disabled={loading || telemetryLoading} onClick={() => handleClearTelemetry("feedback")}>清除反馈数据</button>
+          <button className="btn btn-danger btn-sm" disabled={loading || telemetryLoading} onClick={() => handleClearTelemetry("all")}>清除全部行为数据</button>
         </div>
       </div>
 
@@ -442,7 +443,7 @@ export default function Settings() {
         <button
           className={`btn btn-sm ${isCollectorRunning ? "btn-danger" : ""}`}
           onClick={handleCollectorToggle}
-          disabled={collectorLoading}
+          disabled={loading || collectorLoading}
         >
           {collectorLoading ? "处理中..." : isCollectorRunning ? "停止采集" : "启动采集"}
         </button>
@@ -454,20 +455,20 @@ export default function Settings() {
           <div>
             <h3 style={{ marginBottom: 4 }}>自主控制</h3>
             <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-              {autonomy?.paused
+              {autonomyPaused
                 ? `已暂停${autonomy?.paused_until ? `，预计 ${new Date(autonomy.paused_until).toLocaleString("zh-CN")} 恢复` : ""}`
                 : autonomy?.enabled !== false
                   ? "自主模式运行中"
                   : "自主模式已关闭"}
             </div>
           </div>
-          <span className={`badge ${autonomy?.paused ? "badge-warning" : autonomy?.enabled !== false ? "badge-success" : "badge-info"}`}>
-            {autonomy?.paused ? "已暂停" : autonomy?.enabled !== false ? "运行中" : "已关闭"}
+          <span className={`badge ${autonomyPaused ? "badge-warning" : autonomy?.enabled !== false ? "badge-success" : "badge-info"}`}>
+            {autonomyPaused ? "已暂停" : autonomy?.enabled !== false ? "运行中" : "已关闭"}
           </span>
         </div>
         <div className="flex gap8" style={{ alignItems: "center" }}>
-          {autonomy?.paused ? (
-            <button className="btn btn-sm" onClick={handleResume} disabled={autonomyLoading}>
+          {autonomyPaused ? (
+            <button className="btn btn-sm" onClick={handleResume} disabled={loading || autonomyLoading}>
               {autonomyLoading ? "处理中..." : "恢复自主模式"}
             </button>
           ) : (
@@ -478,10 +479,11 @@ export default function Settings() {
                 max={72}
                 value={pauseHours}
                 onChange={(e) => setPauseHours(Number(e.target.value))}
+                disabled={loading || autonomyLoading}
                 style={{ width: 80 }}
               />
               <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>小时</span>
-              <button className="btn btn-sm btn-danger" onClick={handlePause} disabled={autonomyLoading}>
+              <button className="btn btn-sm btn-danger" onClick={handlePause} disabled={loading || autonomyLoading}>
                 {autonomyLoading ? "处理中..." : "暂停"}
               </button>
             </>

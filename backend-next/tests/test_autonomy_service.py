@@ -164,7 +164,7 @@ class TestAutonomyService:
     async def test_get_status_shape(
         self, service: AutonomyService, mock_prefs: MagicMock
     ) -> None:
-        """get_status() returns dict with enabled and paused_until."""
+        """get_status() returns enabled, paused, and paused_until."""
         mock_prefs.get.return_value = {
             "autonomy": {
                 "paused_until": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
@@ -173,8 +173,10 @@ class TestAutonomyService:
 
         status = await service.get_status()
         assert "enabled" in status
+        assert "paused" in status
         assert "paused_until" in status
         assert status["enabled"] is False  # paused
+        assert status["paused"] is True
         assert isinstance(status["paused_until"], str)
 
     async def test_get_status_no_pause(
@@ -184,4 +186,5 @@ class TestAutonomyService:
         mock_prefs.get.return_value = {"autonomy": {}}
         status = await service.get_status()
         assert status["enabled"] is True
+        assert status["paused"] is False
         assert status["paused_until"] is None

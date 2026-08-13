@@ -53,6 +53,17 @@ _PAIRING_CODE_TTL_S = 300
 _BASELINE_BACKFILL_DAYS: Final = 180
 
 
+@dataclass(slots=True)
+class _PairingRecord:
+    """One pairing-code entry with expiry and failed-attempt tracking.
+
+    Mutable (not frozen) so ``pair_browser`` can increment ``attempts``.
+    """
+
+    expires_at: datetime
+    attempts: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class BaselineRebuildResult:
     """Outcome of one conditional baseline backfill run (Todo 9 seam).
@@ -121,7 +132,7 @@ class TelemetryService:
         # data_dir-anchored "models" directory Settings resolves.
         self._models_dir = models_dir or (data_dir / "models")
         self._activity_repository = activity_repository
-        self._pairing_codes: dict[str, datetime] = {}
+        self._pairing_codes: dict[str, _PairingRecord] = {}
         self._input_watcher: Any = None
         self._model_manager: Any = None
         self._prediction_service = prediction_service
@@ -194,24 +205,51 @@ class TelemetryService:
             **status,
         }
 
+    _PAIRING_CODE_MAX_ATTEMPTS: int = 5
+    """Failed pairing attempts allowed per code before it is invalidated.
+
+    The pairing endpoint is unauthenticated (browser extensions hold no
+    cookie), so a brute-force enumeration of the code space must be rate
+    limited by the code itself. Combined with the enlarged code alphabet
+    (audit report — pairing code hardening).
+    """
+
     def _cleanup_expired_pairing_codes(self, now: datetime) -> None:
-        for code, expires_at in list(self._pairing_codes.items()):
-            if expires_at <= now:
+        for code, record in list(self._pairing_codes.items()):
+            if record.expires_at <= now:
                 del self._pairing_codes[code]
 
     async def create_pairing_code(self, user_id: int = 1) -> dict[str, Any]:
         now = datetime.now(UTC)
         self._cleanup_expired_pairing_codes(now)
-        code = f"{secrets.randbelow(1_000_000):06d}"
+        # 8-char, unambiguous alphabet (no 0/O/1/I): ~1.1e12 space, plus
+        # per-code attempt cap below — the 6-digit space was brute-forceable
+        # within the 300s TTL by a local process.
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        code = "".join(secrets.choice(alphabet) for _ in range(8))
         expires_at = now + timedelta(seconds=_PAIRING_CODE_TTL_S)
-        self._pairing_codes[code] = expires_at
+        self._pairing_codes[code] = _PairingRecord(
+            expires_at=expires_at, attempts=0
+        )
         await self.patch_preferences({"browser_tracking_enabled": True}, user_id)
         return {"code": code, "expires_at": expires_at.isoformat()}
 
     async def pair_browser(self, code: str, user_id: int = 1) -> str | None:
-        expires_at = self._pairing_codes.pop(code, None)
-        if expires_at is None or expires_at < datetime.now(UTC):
+        record = self._pairing_codes.get(code)
+        if record is None:
             return None
+        now = datetime.now(UTC)
+        if record.expires_at < now:
+            del self._pairing_codes[code]
+            return None
+        # Failed attempts invalidate the code after the cap, so an attacker
+        # cannot keep guessing the same code.
+        record.attempts += 1
+        if record.attempts > self._PAIRING_CODE_MAX_ATTEMPTS:
+            del self._pairing_codes[code]
+            return None
+        # Successful pairing: consume the code.
+        del self._pairing_codes[code]
         token = secrets.token_urlsafe(32)
         await self._repository.save_browser_token(user_id, self._hash_token(token))
         return token

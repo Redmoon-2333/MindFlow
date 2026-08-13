@@ -1154,6 +1154,11 @@ export interface components {
             enabled: boolean;
             /** Paused Until */
             paused_until?: string | null;
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
         };
         /**
          * BaselineSummary

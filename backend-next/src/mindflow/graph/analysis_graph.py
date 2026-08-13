@@ -126,7 +126,9 @@ class AnalysisGraphState(TypedDict, total=False):
 
     # ── Evidence ──
     bundle_json: str
-    valid_metrics: frozenset[str]
+    # tuple (not frozenset) so the state stays JSON/checkpointer-serializable
+    # (LangGraph checkpoints serialize state; frozenset is not JSON-safe).
+    valid_metrics: tuple[str, ...]
 
     # ── Crisis ──
     crisis_detected: bool
@@ -136,6 +138,7 @@ class AnalysisGraphState(TypedDict, total=False):
     # ── Panel result ──
     panel_succeeded: bool
     panel_unavailable_reason: str
+    fallback_to_rule_engine: bool
 
     # ── Fallback state (mirrors FallbackState subset needed here) ──
     summary_json: str
@@ -189,7 +192,8 @@ def _cached_analysis_meta(cached: dict[str, Any]) -> tuple[str, bool, list[str]]
     return source, degraded, path
 
 
-_COMPETING_ANALYSIS_WAIT_TIMEOUT_S = 30.0
+_PANEL_WORKFLOW_TIMEOUT_S = 8.0
+_COMPETING_ANALYSIS_WAIT_TIMEOUT_S = 5.0
 _COMPETING_ANALYSIS_POLL_INTERVAL_S = 0.05
 
 
@@ -394,7 +398,11 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
                 "degradation_path": path,
             }
 
-        return {"budget_reserved": False}
+        return {
+            "budget_reserved": False,
+            "fallback_to_rule_engine": True,
+            "degradation_path": ["duplicate_timeout"],
+        }
 
     logger.debug("Budget reserved for {}", idempotency_key)
     runtime.budget_owned = True
@@ -434,7 +442,7 @@ async def evidence_preparation_node(
     from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
 
     catalog = build_evidence_catalog(bundle)
-    valid_metrics = frozenset(evidence_catalog_ids(catalog))
+    valid_metrics = tuple(evidence_catalog_ids(catalog))
 
     return {
         "bundle_json": bundle_json,
@@ -505,7 +513,7 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
     """
     runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())  # type: ignore[arg-type]
     bundle_json = state.get("bundle_json", "")
-    valid_metrics = state.get("valid_metrics", frozenset())
+    valid_metrics = state.get("valid_metrics", ())
 
     if not bundle_json:
         return {
@@ -540,7 +548,21 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
     }
 
     try:
-        result = await panel_graph.ainvoke(panel_state)
+        result = await asyncio.wait_for(
+            panel_graph.ainvoke(panel_state),
+            timeout=_PANEL_WORKFLOW_TIMEOUT_S,
+        )
+    except TimeoutError:
+        logger.warning(
+            "PanelGraph timed out after {}s; using RuleEngine fallback",
+            _PANEL_WORKFLOW_TIMEOUT_S,
+        )
+        return {
+            "panel_succeeded": False,
+            "panel_unavailable_reason": "PanelGraph timed out",
+            "fallback_to_rule_engine": True,
+            "degradation_path": ["panel_timeout"],
+        }
     except PanelUnavailableError as exc:
         logger.warning("PanelGraph unavailable: {}", exc)
         return {
@@ -883,14 +905,17 @@ def budget_router(state: AnalysisGraphState) -> str:
     """Route after budget reservation.
 
     If budget was NOT reserved AND we got a cache hit from the re-check,
-    route to result_conversion.  If budget was NOT reserved and no cache,
-    route to END (another run already owns this key).
+    route to result_conversion.  If the competing run does not publish in
+    time, continue through the deterministic fallback instead of returning
+    an empty verdict.
     """
     if state.get("budget_reserved", False):
         return "evidence_preparation"
     if state.get("cache_hit", False):
         # Re-check found cached result from a prior completed run
         return "result_conversion"
+    if state.get("fallback_to_rule_engine", False):
+        return "evidence_preparation"
     # Budget taken, no cache — another run owns it, let it finish
     logger.info("Budget already reserved and no cache — exiting")
     return "end"
@@ -898,7 +923,9 @@ def budget_router(state: AnalysisGraphState) -> str:
 
 def crisis_router(state: AnalysisGraphState) -> str:
     """Route: crisis_detected → prepare_fallback, no_crisis → panel_graph."""
-    if state.get("crisis_detected", False):
+    if state.get("crisis_detected", False) or state.get(
+        "fallback_to_rule_engine", False
+    ):
         return "prepare_fallback_context"
     return "panel_graph"
 
@@ -1030,12 +1057,13 @@ class AnalysisGraph:
             "cache_hit": False,
             "cached_result": None,
             "bundle_json": "",
-            "valid_metrics": frozenset(),
+            "valid_metrics": (),
             "crisis_detected": False,
             "crisis_response_text": "",
             "events_domain": [],
             "panel_succeeded": False,
             "panel_unavailable_reason": "",
+            "fallback_to_rule_engine": False,
             "summary_json": "",
             "behavior_summary": None,
             "current_result": None,
@@ -1258,6 +1286,7 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
     summary_json: str = state.get("summary_json", "")
     behavior_summary = state.get("behavior_summary")
     crisis_detected = state.get("crisis_detected", False)
+    fallback_to_rule_engine = state.get("fallback_to_rule_engine", False)
     crisis_response_text = state.get("crisis_response_text", "")
 
     # Build FallbackRunContext from AnalysisRunContext
@@ -1289,6 +1318,17 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
         "persistence_intent": "save",
         "error": None,
     }
+
+    if fallback_to_rule_engine:
+        fb_state["degradation_path"] = list(state.get("degradation_path", []) or [])
+        re_update = await rule_engine_node(fb_state)
+        return {
+            "assessment": re_update.get("assessment", {}),
+            "source": re_update.get("source", "rule_engine"),
+            "degraded": re_update.get("degraded", True),
+            "degradation_path": re_update.get("degradation_path", ["rule_engine"]),
+            "error": None,
+        }
 
     # ── Crisis path: go straight to rule_engine ───────────────────────
     if crisis_detected:

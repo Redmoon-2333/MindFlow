@@ -60,6 +60,11 @@ function formatTime(ts: string): string {
   });
 }
 
+function interventionTimestamp(item: InterventionItem): number {
+  const timestamp = Date.parse(item.triggered_at || item.created_at || "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 export default function Intervention() {
   const [loading, setLoading] = useState(false);
   const [triggering, setTriggering] = useState(false);
@@ -79,7 +84,9 @@ export default function Intervention() {
     setError(null);
     try {
       const data = await getInterventionHistory(days);
-      const items = [...data.items].reverse();
+      const items = [...data.items].sort(
+        (left, right) => interventionTimestamp(right) - interventionTimestamp(left),
+      );
       setHistory(items);
       const nextLatest = items[0] ?? null;
       setLatest(nextLatest);

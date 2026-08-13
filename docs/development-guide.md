@@ -44,7 +44,7 @@ npm install
 # 开发模式启动
 npm run dev
 
-# 访问: http://localhost:5173
+# 访问: http://localhost:4173
 ```
 
 ## 四、项目结构

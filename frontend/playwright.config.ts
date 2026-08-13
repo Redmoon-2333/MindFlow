@@ -5,16 +5,14 @@ export default defineConfig({
   timeout: 90_000,
   retries: 0,
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: "http://127.0.0.1:4173",
     headless: true,
     ignoreHTTPSErrors: true,
-    launchOptions: {
-      executablePath: "C:\\Users\\lenovo\\AppData\\Local\\ms-playwright\\chromium-1228\\chrome-win64\\chrome.exe",
-    },
+    channel: "chrome",
   },
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 5173",
-    url: "http://127.0.0.1:5173/",
+    command: "npm run dev -- --host 127.0.0.1 --port 4173",
+    url: "http://127.0.0.1:4173/",
     reuseExistingServer: true,
     timeout: 30_000,
   },

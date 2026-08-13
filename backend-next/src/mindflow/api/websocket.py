@@ -70,6 +70,13 @@ api/middleware/ratelimit.py) — this only needs to catch a misbehaving/hostile
 client hammering the socket, not implement fair global metering."""
 
 
+_SEND_TIMEOUT_S = 5.0
+"""Per-client send timeout. A half-open TCP connection (client gone without a
+clean close) can otherwise block send_text indefinitely; while holding the
+global connection lock that would stall every other broadcast and even app
+shutdown (audit report — WebSocket broadcast lock)."""
+
+
 async def broadcast(message: dict[str, Any]) -> int:
     """Send a message to all connected WebSocket clients.
 
@@ -86,9 +93,9 @@ async def broadcast(message: dict[str, Any]) -> int:
         disconnected: list[str] = []
         for cid, ws in _active_connections.items():
             try:
-                await ws.send_text(payload)
+                await asyncio.wait_for(ws.send_text(payload), timeout=_SEND_TIMEOUT_S)
                 sent += 1
-            except Exception:
+            except Exception:  # noqa: BLE001 — best-effort fan-out
                 disconnected.append(cid)
 
         for cid in disconnected:
@@ -107,7 +114,7 @@ async def close_all_connections() -> int:
         closed = 0
         for ws in _active_connections.values():
             try:
-                await ws.close(code=1001)  # going away
+                await asyncio.wait_for(ws.close(code=1001), timeout=_SEND_TIMEOUT_S)
                 closed += 1
             except Exception:  # noqa: BLE001 — best-effort during shutdown
                 pass
@@ -202,6 +209,8 @@ async def websocket_handler(websocket: WebSocket) -> None:
     allowed_origins = {
         f"http://127.0.0.1:{port}",
         f"http://localhost:{port}",
+        "http://127.0.0.1:4173",
+        "http://localhost:4173",
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     }

@@ -8,7 +8,7 @@ import { parseBaselineSummary } from "./baseline-state";
 import type { BaselineSummaryState } from "./baseline-state";
 
 const BASE = "/api/v1";
-const AUTH_MARKER = "mindflow_authenticated";
+export const AUTH_MARKER = "mindflow_authenticated";
 export const AUTH_REQUIRED_EVENT = "mindflow:auth-required";
 const client = createClient<paths>();
 
@@ -197,11 +197,6 @@ export interface FocusTrendDay {
   distraction_min: number;
   session_count: number;
   avg_score: number;
-  day?: string;
-  focus_minutes?: number;
-  focus?: number;
-  distraction_minutes?: number;
-  distraction?: number;
 }
 
 export interface FocusTrendResponse {
@@ -209,17 +204,65 @@ export interface FocusTrendResponse {
   start_date: string;
   end_date: string;
   daily: FocusTrendDay[];
-  daily_data?: FocusTrendDay[];
   total_sessions: number;
-  today_minutes?: number;
-  total_minutes?: number;
-  trend_label?: string;
-  session_count?: number;
-  avg_duration_minutes?: number;
-  avg_score?: number;
-  score_change?: number;
-  distraction_rate?: number;
-  distraction_label?: string;
+}
+
+/** Derived KPI view computed from FocusTrendResponse.daily — never
+ *  asserted from the wire payload (the backend returns only the daily array).
+ *  All values are optional so a missing/empty trend renders "--". */
+export interface FocusTrendKpi {
+  todayMinutes?: number;
+  totalMinutes?: number;
+  sessionCount?: number;
+  avgDurationMinutes?: number;
+  avgScore?: number;
+  scoreChange?: number;
+  distractionRate?: number;
+  distractionLabel?: string;
+  trendLabel?: string;
+}
+
+export function deriveFocusTrendKpi(trend: FocusTrendResponse | null): FocusTrendKpi {
+  if (!trend) return {};
+  const days = trend.daily ?? [];
+  if (days.length === 0) {
+    return { sessionCount: trend.total_sessions || 0 };
+  }
+  const today = days[days.length - 1];
+  const prev = days.length >= 2 ? days[days.length - 2] : undefined;
+  const todayMinutes = today.focus_min;
+  const totalMinutes = days.reduce((sum, d) => sum + (d.focus_min ?? 0), 0);
+  const sessionCount = trend.total_sessions ?? days.reduce((sum, d) => sum + (d.session_count ?? 0), 0);
+  const totalFocusSessions = days.reduce((sum, d) => sum + (d.session_count ?? 0), 0);
+  const avgDurationMinutes = totalFocusSessions > 0 ? totalMinutes / totalFocusSessions : undefined;
+  const avgScore = today.avg_score;
+  const scoreChange =
+    prev != null && typeof prev.avg_score === "number" && typeof today.avg_score === "number" && prev.avg_score > 0
+      ? ((today.avg_score - prev.avg_score) / prev.avg_score) * 100
+      : undefined;
+  const totalActivity = today.focus_min + (today.distraction_min ?? 0);
+  const distractionRate = totalActivity > 0 ? (today.distraction_min ?? 0) / totalActivity : undefined;
+  const distractionLabel =
+    distractionRate == null ? undefined
+      : distractionRate > 0.5 ? "分心偏高"
+        : distractionRate > 0.3 ? "分心中等"
+          : "专注良好";
+  const trendLabel =
+    scoreChange == null ? ""
+      : scoreChange > 5 ? "较昨日 +" + scoreChange.toFixed(0) + "%"
+        : scoreChange < -5 ? "较昨日 " + scoreChange.toFixed(0) + "%"
+          : "与昨日持平";
+  return {
+    todayMinutes,
+    totalMinutes,
+    sessionCount,
+    avgDurationMinutes,
+    avgScore,
+    scoreChange,
+    distractionRate,
+    distractionLabel,
+    trendLabel,
+  };
 }
 
 export interface FocusFeedbackRequest {
@@ -335,12 +378,44 @@ export interface AutonomyStatus {
   paused?: boolean;
 }
 
+export function isAutonomyPaused(status: AutonomyStatus | null, now = Date.now()): boolean {
+  if (!status) return false;
+  if (status.paused === true) return true;
+  if (!status.paused_until) return false;
+  const rawPausedUntil = status.paused_until.trim();
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(rawPausedUntil);
+  const pausedUntil = Date.parse(hasTimezone ? rawPausedUntil : `${rawPausedUntil}Z`);
+  return Number.isNaN(pausedUntil) || pausedUntil > now;
+}
+
 export function hasAuthenticatedSession(): boolean {
   return localStorage.getItem(AUTH_MARKER) === "1";
 }
 
-function requestOptions() {
-  return { credentials: "include" as const };
+function requestOptions(timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  // The caller owns the controller: openapi-fetch invokes fetch immediately,
+  // and the timer is cleared once the response settles via fetchWithTimeout
+  // semantics below — for client.* calls we clear it in the promise chain.
+  const signal = controller.signal;
+  signal.addEventListener("abort", () => clearTimeout(timeoutId), { once: true });
+  return { credentials: "include" as const, signal };
+}
+
+/** Wrap an openapi-fetch call so a hung backend cannot spin the UI forever.
+ *  AI-backed endpoints (chat/panel/intervention) get the longer budget. */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await promise;
+  } catch (error: unknown) {
+    if (controller.signal.aborted) throw new ApiError(REQUEST_TIMEOUT_MESSAGE, 408);
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -375,6 +450,9 @@ async function unwrap<T>(result: { data?: T; error?: unknown; response: Response
 }
 
 export function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError && error.status === 408) {
+    return `${fallback}：${error.message}`;
+  }
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
@@ -429,26 +507,60 @@ export async function runTelemetryDelete(
   }
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const res = await fetch(`${BASE}${url}`, { credentials: "include", ...init, headers: { ...headers, ...((init?.headers as Record<string, string>) || {}) } });
-  if (!res.ok) throw await toApiError(res);
-  return res.json() as Promise<T>;
+const REQUEST_TIMEOUT_MS = 30_000;
+const AI_REQUEST_TIMEOUT_MS = 90_000;
+const REQUEST_TIMEOUT_MESSAGE = "请求超时，请稍后重试";
+
+async function fetchWithTimeout<T>(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  parse: (response: Response) => Promise<T>,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(input, { ...init, signal: controller.signal });
+    return await parse(response);
+  } catch (error: unknown) {
+    if (controller.signal.aborted) throw new ApiError(REQUEST_TIMEOUT_MESSAGE, 408);
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function request<T>(url: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const hasBody = ["POST", "PUT", "PATCH"].includes(method);
+  const headers: Record<string, string> = hasBody ? { "Content-Type": "application/json" } : {};
+  return fetchWithTimeout(
+    `${BASE}${url}`,
+    { credentials: "include", ...init, headers: { ...headers, ...((init?.headers as Record<string, string>) || {}) } },
+    async (res) => {
+      if (!res.ok) throw await toApiError(res);
+      return res.json() as Promise<T>;
+    },
+    timeoutMs,
+  );
 }
 
 async function requestText(url: string): Promise<string> {
-  const res = await fetch(`${BASE}${url}`, { credentials: "include" });
-  if (!res.ok) throw await toApiError(res);
-  return res.text();
+  return fetchWithTimeout(`${BASE}${url}`, { credentials: "include" }, async (res) => {
+    if (!res.ok) throw await toApiError(res);
+    return res.text();
+  });
 }
 
 export async function bootstrapFromFragment(): Promise<boolean> {
   const params = new URLSearchParams(window.location.hash.slice(1));
   const ticket = params.get("bootstrap");
   if (!ticket) return false;
-  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
   const result = await client.POST("/api/v1/auth/bootstrap", { ...requestOptions(), body: { ticket } });
   if (result.error !== undefined || !result.response.ok) throw await toApiError(result.response, result.error);
+  // Only clear the one-time ticket after the exchange succeeded, so a failed
+  // attempt keeps the URL retryable (audit report 🟡-bootstrap).
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
   localStorage.setItem(AUTH_MARKER, "1");
   return true;
 }
@@ -497,16 +609,16 @@ export const getBaseline = async (): Promise<BaselineSummaryState> =>
   parseBaselineSummary(await request<unknown>("/analytics/baseline"));
 export const getProfile = (days?: number) => request<BehavioralProfile>(`/analytics/profile${days ? `?days=${days}` : ""}`);
 export const getModelStatus = () => request<ModelStatus>("/analytics/model-status");
-export const runAttribution = (body?: { date?: string; force?: boolean }) => request<AttributionResponse>("/analytics/attribution", { method: "POST", body: JSON.stringify(body || {}) });
+export const runAttribution = (body?: { date?: string; force?: boolean }) => request<AttributionResponse>("/analytics/attribution", { method: "POST", body: JSON.stringify(body || {}) }, AI_REQUEST_TIMEOUT_MS);
 
 export async function sendChat(message: string, sessionId?: string): Promise<ChatReply> {
-  return unwrap(await client.POST("/api/v1/chat", { ...requestOptions(), body: { message, session_id: sessionId } }));
+  return unwrap(await withTimeout(client.POST("/api/v1/chat", { ...requestOptions(), body: { message, session_id: sessionId } }), AI_REQUEST_TIMEOUT_MS));
 }
 export async function getChatSessions(): Promise<ChatSession[]> {
-  return unwrap(await client.GET("/api/v1/chat/sessions", requestOptions())) as unknown as ChatSession[];
+  return unwrap(await withTimeout(client.GET("/api/v1/chat/sessions", requestOptions()))) as unknown as ChatSession[];
 }
 export async function getChatMessages(sessionId: string): Promise<ChatMessageRecord[]> {
-  return unwrap(await client.GET("/api/v1/chat/{session_id}/messages", { ...requestOptions(), params: { path: { session_id: sessionId } } })) as unknown as ChatMessageRecord[];
+  return unwrap(await withTimeout(client.GET("/api/v1/chat/{session_id}/messages", { ...requestOptions(), params: { path: { session_id: sessionId } } }))) as unknown as ChatMessageRecord[];
 }
 
 export const triggerPanel = async (body?: { force?: boolean; retryIfDegraded?: boolean }): Promise<PanelResult> =>
@@ -518,39 +630,45 @@ export const triggerPanel = async (body?: { force?: boolean; retryIfDegraded?: b
         ? { retry_if_degraded: body.retryIfDegraded }
         : {}),
     }),
-  });
-export const getPanelResult = async (): Promise<PanelResult> => unwrap(await client.GET("/api/v1/panel", requestOptions()));
+  }, AI_REQUEST_TIMEOUT_MS);
+export const getPanelResult = () => request<PanelResult>("/panel");
 
 export async function triggerIntervention(intensity: InterventionIntensity): Promise<InterventionTriggerResponse> {
-  return unwrap(await client.POST("/api/v1/intervention/trigger", { ...requestOptions(), body: { intensity } }));
+  return unwrap(await withTimeout(client.POST("/api/v1/intervention/trigger", { ...requestOptions(), body: { intensity } }), AI_REQUEST_TIMEOUT_MS));
 }
 export async function respondIntervention(id: string, response: InterventionResponse, latencyS = 0): Promise<InterventionCommandResponse> {
-  return unwrap(await client.POST("/api/v1/intervention/{intervention_id}/response", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { response, latency_s: latencyS } }));
+  return unwrap(await withTimeout(client.POST("/api/v1/intervention/{intervention_id}/response", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { response, latency_s: latencyS } })));
 }
 export async function feedbackIntervention(id: string, rating: InterventionRating, comment?: string): Promise<InterventionCommandResponse> {
-  return unwrap(await client.POST("/api/v1/intervention/{intervention_id}/feedback", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { rating, comment } }));
+  return unwrap(await withTimeout(client.POST("/api/v1/intervention/{intervention_id}/feedback", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { rating, comment } })));
 }
 export async function getInterventionHistory(days = 7): Promise<InterventionHistoryResponse> {
-  return unwrap(await client.GET("/api/v1/intervention/history", { ...requestOptions(), params: { query: { days } } })) as unknown as InterventionHistoryResponse;
+  return unwrap(await withTimeout(client.GET("/api/v1/intervention/history", { ...requestOptions(), params: { query: { days } } }))) as unknown as InterventionHistoryResponse;
 }
 
-export const getCollectorStatus = async (): Promise<CollectorStatus> => unwrap(await client.GET("/api/v1/collector", requestOptions()));
-export const startCollector = async (): Promise<CollectorStatus> => unwrap(await client.POST("/api/v1/collector", requestOptions()));
-export const stopCollector = async (): Promise<CollectorStatus> => unwrap(await client.POST("/api/v1/collector/stop", requestOptions()));
+export const getCollectorStatus = () => request<CollectorStatus>("/collector");
+export const startCollector = () => request<CollectorStatus>("/collector", { method: "POST" });
+export const stopCollector = () => request<CollectorStatus>("/collector/stop", { method: "POST" });
 
 export const getTelemetryStatus = () => request<TelemetryStatus>("/telemetry/status");
 export const patchTelemetryPreferences = (data: Partial<TelemetryPreferences>) => request<TelemetryPreferences>("/telemetry/preferences", { method: "PATCH", body: JSON.stringify(data) });
 export const createBrowserPairingCode = () => request<{ code: string; expires_at: string }>("/telemetry/browser/pairing-code", { method: "POST" });
-export const clearTelemetryData = (scope: TelemetryDeleteScope) => request<TelemetryDeleteResponse>(`/telemetry/data?scope=${scope}`, { method: "DELETE" });
+export const clearTelemetryData = (scope: TelemetryDeleteScope) => request<TelemetryDeleteResponse>(`/telemetry/data?scope=${encodeURIComponent(scope)}`, { method: "DELETE" });
 export const getPreferences = () => request<Preferences>("/preferences");
 export const putPreferences = (data: Preferences) => request<Preferences>("/preferences", { method: "PUT", body: JSON.stringify(data) });
 export const patchPreferences = (data: Preferences) => request<Preferences>("/preferences", { method: "PATCH", body: JSON.stringify(data) });
 export const getClassifications = () => request<ClassificationRule[]>("/app-classifications");
 export const addClassification = (data: ClassificationRuleInput) => request<ClassificationRule>("/app-classifications", { method: "POST", body: JSON.stringify(data) });
 export const putClassifications = (data: ClassificationRuleInput[]) => request<ClassificationRule[]>("/app-classifications", { method: "PUT", body: JSON.stringify(data) });
-export const deleteClassification = (id: string) => fetch(`${BASE}/app-classifications/${id}`, { method: "DELETE", credentials: "include" });
+export const deleteClassification = (id: string) =>
+  request<unknown>(`/app-classifications/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const getUnknownApps = () => request<string[]>("/app-classifications/unknown-apps");
-export const exportData = (fmt: "csv" | "json", start?: string, end?: string) => requestText(`/export?fmt=${fmt}&start=${start || ""}&end=${end || ""}`);
+export const exportData = (fmt: "csv" | "json", start?: string, end?: string) => {
+  const params = new URLSearchParams({ fmt });
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return requestText(`/export?${params.toString()}`);
+};
 export const getAutonomy = () => request<AutonomyStatus>("/autonomy");
 export const pauseAutonomy = (hours: number) => request<AutonomyStatus>("/autonomy/pause", { method: "POST", body: JSON.stringify({ hours }) });
 export const resumeAutonomy = () => request<AutonomyStatus>("/autonomy/resume", { method: "POST" });

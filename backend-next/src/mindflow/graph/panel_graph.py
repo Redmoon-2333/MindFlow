@@ -175,7 +175,7 @@ class PanelGraphState(TypedDict, total=False):
 
     # ── Input fields (set by PanelOrchestrator._run_graph) ────────────
     bundle_json: str
-    valid_metrics: frozenset[str]
+    valid_metrics: tuple[str, ...]
     # ── Accumulated via reducers (parallel fan-in) ────────────────────
     attribution_opinions: Annotated[
         tuple[ExpertOpinion, ...],
@@ -207,7 +207,7 @@ class PanelGraphState(TypedDict, total=False):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def make_analyst_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
+def make_analyst_node(gateway: PanelLLMGateway):
     """Create the analyst call node (round 0).
 
     Calls the analyst LLM, parses the output, and performs inline
@@ -226,12 +226,12 @@ def make_analyst_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
         runtime = _PANEL_RUNTIME.get()
         logger.info("Panel round 0: Analyst")
         raw = await _call_with_budget(
-            runtime, gateway, ANALYST, state["bundle_json"],  # type: ignore[typeddict-item]
+            runtime, gateway, ANALYST, state["bundle_json"],
         )
         analyst = _parse_analyst_opinion(raw, ANALYST)
 
         # Citation validation (prevent hallucinated refs)
-        bogus = validate_citations(analyst, state["valid_metrics"])  # type: ignore[typeddict-item]
+        bogus = validate_citations(analyst, state["valid_metrics"])
         if bogus:
             logger.warning("Hallucinated citations {} in analyst — marking", bogus)
             analyst = ExpertOpinion(
@@ -266,7 +266,7 @@ def make_analyst_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
     return analyst_node
 
 
-def make_attribution_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
+def make_attribution_node(gateway: PanelLLMGateway):
     """Create the multi-expert attribution node (round 1).
 
     Calls all three attribution experts in parallel via asyncio.gather
@@ -283,16 +283,16 @@ def make_attribution_node(gateway: PanelLLMGateway):  # type: ignore[return-type
             _parse_expert_opinion,
         )
 
-        runtime = _PANEL_RUNTIME.get()  # type: ignore[typeddict-item]
+        runtime = _PANEL_RUNTIME.get()
         logger.info("Panel round 1: Attribution experts (parallel)")
 
         async def _call_and_parse(exp: ExpertDef) -> ExpertOpinion:
             raw = await _safe_call_with_budget(
                 runtime, gateway, exp,
-                state["bundle_json"],  # type: ignore[typeddict-item]
+                state["bundle_json"],
             )
             op = _parse_expert_opinion(
-                raw, exp, valid_metrics=state["valid_metrics"],  # type: ignore[typeddict-item]
+                raw, exp, valid_metrics=state["valid_metrics"],
             )
 
             # Retry once if skipped due to forbidden words
@@ -306,7 +306,7 @@ def make_attribution_node(gateway: PanelLLMGateway):  # type: ignore[return-type
                 )
                 raw2 = await _safe_call_with_budget(runtime, gateway, exp, retry_msg)
                 op2 = _parse_expert_opinion(
-                    raw2, exp, valid_metrics=state["valid_metrics"],  # type: ignore[typeddict-item]
+                    raw2, exp, valid_metrics=state["valid_metrics"],
                 )
                 if not op2.skipped:
                     return op2
@@ -352,14 +352,14 @@ async def parse_validation_node(state: PanelGraphState) -> dict[str, Any]:
     verified: int = 0
     skipped_count: int = 0
 
-    for op in state.get("attribution_opinions", ()):  # type: ignore[typeddict-item]
+    for op in state.get("attribution_opinions", ()):
         if not op.skipped and op.argument:
             verified += 1
         elif op.skipped:
             skipped_count += 1
             logger.debug("parse_validation: {} skipped (no valid JSON)", op.role)
 
-    analyst = state.get("analyst_opinion")  # type: ignore[typeddict-item]
+    analyst = state.get("analyst_opinion")
     if analyst is not None:
         if not analyst.skipped and analyst.argument:
             verified += 1
@@ -381,8 +381,8 @@ async def citation_validation_node(state: PanelGraphState) -> dict[str, Any]:
     """
     from mindflow.agents.orchestrator import validate_citations  # noqa: PLC0415
 
-    valid_metrics: frozenset[str] = state["valid_metrics"]  # type: ignore[typeddict-item]
-    opinions: tuple[ExpertOpinion, ...] = state.get("attribution_opinions", ())  # type: ignore[typeddict-item]
+    valid_metrics: tuple[str, ...] = state["valid_metrics"]
+    opinions: tuple[ExpertOpinion, ...] = state.get("attribution_opinions", ())
     new_opinions: list[ExpertOpinion] = []
     bogus_count: int = 0
 
@@ -425,7 +425,7 @@ async def forbidden_word_validation_node(state: PanelGraphState) -> dict[str, An
     Checks every opinion's argument for forbidden medical terms.
     Marks offending opinions as skipped.
     """
-    opinions: tuple[ExpertOpinion, ...] = state.get("attribution_opinions", ())  # type: ignore[typeddict-item]
+    opinions: tuple[ExpertOpinion, ...] = state.get("attribution_opinions", ())
     new_opinions: list[ExpertOpinion] = []
     violations: int = 0
 
@@ -465,7 +465,7 @@ async def forbidden_word_validation_node(state: PanelGraphState) -> dict[str, An
 async def conflict_detection_node(state: PanelGraphState) -> dict[str, Any]:
     """Pure-function conflict detection + disagreement analytics (no LLM call)."""
     logger.info("Conflict detection")
-    opinions: tuple[ExpertOpinion, ...] = state["attribution_opinions"]  # type: ignore[typeddict-item]
+    opinions: tuple[ExpertOpinion, ...] = state["attribution_opinions"]
     conflict = detect_conflict(opinions)
     escalated = conflict.has_conflict
 
@@ -493,7 +493,7 @@ async def conflict_detection_node(state: PanelGraphState) -> dict[str, Any]:
     }
 
 
-def make_rebuttal_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
+def make_rebuttal_node(gateway: PanelLLMGateway):
     """Create the rebuttal round node (round 2a).
 
     All three attribution experts rebut each other in parallel
@@ -508,15 +508,15 @@ def make_rebuttal_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
             _parse_expert_opinion,
         )
 
-        runtime = _PANEL_RUNTIME.get()  # type: ignore[typeddict-item]
+        runtime = _PANEL_RUNTIME.get()
         logger.info("Panel round 2a: Attribution rebuttal (parallel)")
-        opinions: tuple[ExpertOpinion, ...] = state["attribution_opinions"]  # type: ignore[typeddict-item]
+        opinions: tuple[ExpertOpinion, ...] = state["attribution_opinions"]
 
         prompts = [
             (
                 ATTRIBUTION_EXPERTS[i],
                 _build_rebuttal_prompt(
-                    state["bundle_json"], opinions, i,  # type: ignore[typeddict-item]
+                    state["bundle_json"], opinions, i,
                 ),
             )
             for i in range(len(ATTRIBUTION_EXPERTS))
@@ -528,7 +528,7 @@ def make_rebuttal_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
         new_opinions: list[ExpertOpinion] = []
         for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True):
             op = _parse_expert_opinion(
-                raw, exp, valid_metrics=state["valid_metrics"],  # type: ignore[typeddict-item]
+                raw, exp, valid_metrics=state["valid_metrics"],
             )
             # Retry once on forbidden words
             if op.skipped and _contains_forbidden_words(raw):
@@ -541,7 +541,7 @@ def make_rebuttal_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
                 )
                 raw2 = await _safe_call_with_budget(runtime, gateway, exp, retry_msg)
                 op2 = _parse_expert_opinion(
-                    raw2, exp, valid_metrics=state["valid_metrics"],  # type: ignore[typeddict-item]
+                    raw2, exp, valid_metrics=state["valid_metrics"],
                 )
                 if not op2.skipped:
                     op = op2
@@ -586,7 +586,7 @@ def make_rebuttal_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
     return rebuttal_node
 
 
-def make_moderator_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
+def make_moderator_node(gateway: PanelLLMGateway):
     """Create the moderator synthesis node (round 2b/3/4).
 
     Supports both first-pass and redo (when critic rejected).
@@ -602,28 +602,28 @@ def make_moderator_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
             _verdict_summary,
         )
 
-        runtime = _PANEL_RUNTIME.get()  # type: ignore[typeddict-item]
-        is_redo: bool = state.get("moderator_redo_count", 0) > 0  # type: ignore[typeddict-item]
-        analyst: ExpertOpinion | None = state.get("analyst_opinion")  # type: ignore[typeddict-item]
-        conflict: ConflictReport | None = state.get("conflict_report")  # type: ignore[typeddict-item]
+        runtime = _PANEL_RUNTIME.get()
+        is_redo: bool = state.get("moderator_redo_count", 0) > 0
+        analyst: ExpertOpinion | None = state.get("analyst_opinion")
+        conflict: ConflictReport | None = state.get("conflict_report")
         assert analyst is not None
         assert conflict is not None
 
         if is_redo:
             round_num = 4
             prompt = _build_moderator_redo_prompt(
-                state["bundle_json"],  # type: ignore[typeddict-item]
+                state["bundle_json"],
                 analyst,
-                state["attribution_opinions"],  # type: ignore[typeddict-item]
+                state["attribution_opinions"],
                 conflict,
                 cast(CriticResult, state.get("critic_result")).issues,
             )
         else:
-            round_num = 2 if not state.get("escalated", False) else 3  # type: ignore[typeddict-item]
+            round_num = 2 if not state.get("escalated", False) else 3
             prompt = _build_moderator_user_prompt(
-                state["bundle_json"],  # type: ignore[typeddict-item]
+                state["bundle_json"],
                 analyst,
-                state["attribution_opinions"],  # type: ignore[typeddict-item]
+                state["attribution_opinions"],
                 conflict,
                 state.get("disagreement_summary"),
             )
@@ -631,7 +631,7 @@ def make_moderator_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
         logger.info(
             "Panel round {}: Moderator (redo_count={})",
             round_num,
-            state.get("moderator_redo_count", 0),  # type: ignore[typeddict-item]
+            state.get("moderator_redo_count", 0),
         )
         raw = await _call_with_budget(runtime, gateway, MODERATOR, prompt)
         verdict = _parse_verdict(raw)
@@ -662,7 +662,7 @@ def make_moderator_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
     return moderator_node
 
 
-def make_critic_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
+def make_critic_node(gateway: PanelLLMGateway):
     """Create the critic validation node (round 3/4/5)."""
 
     async def critic_node(state: PanelGraphState) -> dict[str, Any]:
@@ -676,15 +676,15 @@ def make_critic_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
             analysis_dict_to_panel_verdict,
         )
 
-        runtime = _PANEL_RUNTIME.get()  # type: ignore[typeddict-item]
-        base_round = 2 if not state.get("escalated", False) else 3  # type: ignore[typeddict-item]
-        round_num = base_round + 1 + state.get("moderator_redo_count", 0)  # type: ignore[typeddict-item]
+        runtime = _PANEL_RUNTIME.get()
+        base_round = 2 if not state.get("escalated", False) else 3
+        round_num = base_round + 1 + state.get("moderator_redo_count", 0)
 
         logger.info("Panel round {}: Critic", round_num)
 
         pending_verdict = analysis_dict_to_panel_verdict(
             cast(dict[str, Any], state.get("moderator_verdict")),
-            escalated=state.get("escalated", False),  # type: ignore[typeddict-item]
+            escalated=state.get("escalated", False),
             transcript=tuple(runtime.transcript),
             call_count=runtime.call_count,
             source="panel",
@@ -692,13 +692,13 @@ def make_critic_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
 
         all_opinions: list[ExpertOpinion] = [
             cast(ExpertOpinion, state.get("analyst_opinion")),
-            *state.get("attribution_opinions", ()),  # type: ignore[typeddict-item]
+            *state.get("attribution_opinions", ()),
         ]
         prompt = _build_critic_user_prompt(
-            state["bundle_json"],  # type: ignore[typeddict-item]
+            state["bundle_json"],
             pending_verdict,
             all_opinions,
-            state["valid_metrics"],  # type: ignore[typeddict-item]
+            state["valid_metrics"],
         )
         raw = await _call_with_budget(runtime, gateway, CRITIC, prompt)
         result = _parse_critic(raw)
@@ -722,10 +722,10 @@ def make_critic_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
         }
         if not result.approved:
             updates["moderator_redo_count"] = (
-                state.get("moderator_redo_count", 0) + 1  # type: ignore[typeddict-item]
+                state.get("moderator_redo_count", 0) + 1
             )
             updates["critic_retries"] = (
-                state.get("critic_retries", 0) + 1  # type: ignore[typeddict-item]
+                state.get("critic_retries", 0) + 1
             )
         return updates
 
@@ -746,7 +746,7 @@ def make_critic_node(gateway: PanelLLMGateway):  # type: ignore[return-type]
 
 def minimum_valid_opinion_router(state: PanelGraphState) -> str:
     """Route: >= 2 valid opinions → valid, else → unavailable."""
-    opinions: tuple[ExpertOpinion, ...] = state.get("attribution_opinions", ())  # type: ignore[typeddict-item]
+    opinions: tuple[ExpertOpinion, ...] = state.get("attribution_opinions", ())
     non_skipped = [o for o in opinions if not o.skipped]
     if len(non_skipped) < 2:
         logger.warning(
@@ -759,14 +759,14 @@ def minimum_valid_opinion_router(state: PanelGraphState) -> str:
 
 def conflict_router(state: PanelGraphState) -> str:
     """Route: escalated → rebuttal, else → moderator."""
-    return "rebuttal" if state.get("escalated", False) else "moderator"  # type: ignore[typeddict-item]
+    return "rebuttal" if state.get("escalated", False) else "moderator"
 
 
 def critic_verdict(state: PanelGraphState) -> str:
     """Route: approved→END, rejected+redo<2→retry, exhausted→END."""
     if cast(CriticResult, state.get("critic_result")).approved:
         return "approved"
-    if state.get("moderator_redo_count", 0) < 2:  # type: ignore[typeddict-item]
+    if state.get("moderator_redo_count", 0) < 2:
         return "retry"
     return "exhausted"
 
@@ -780,14 +780,14 @@ async def verdict_schema_validation_node(state: PanelGraphState) -> dict[str, An
     """Deterministically validate moderator JSON before the critic LLM call."""
     from mindflow.agents.orchestrator import validate_verdict_schema  # noqa: PLC0415
 
-    verdict = state.get("moderator_verdict")  # type: ignore[typeddict-item]
+    verdict = state.get("moderator_verdict")
     if verdict is None:
         return {}
     issues = validate_verdict_schema(verdict)
     if issues:
         raise PanelUnavailableError(
             reason="主持人输出 schema 校验失败：" + "; ".join(issues),
-            call_count=state.get("call_count", 0),  # type: ignore[typeddict-item]
+            call_count=state.get("call_count", 0),
         )
     return {}
 
@@ -802,14 +802,14 @@ async def human_review_interrupt_node(state: PanelGraphState) -> dict[str, Any]:
     if not settings.human_review_enabled:
         return {}  # no-op when disabled
 
-    verdict = state.get("moderator_verdict")  # type: ignore[typeddict-item]
+    verdict = state.get("moderator_verdict")
     if verdict is None:
         return {}
 
     confidence_vals: list[float] = list(verdict.get("confidence", {}).values())
     min_conf = min(confidence_vals) if confidence_vals else 1.0
 
-    ds = state.get("disagreement_summary")  # type: ignore[typeddict-item]
+    ds = state.get("disagreement_summary")
     disagreement_strength = ds.agreement_strength if ds is not None else 1.0
 
     if min_conf < settings.human_review_confidence_threshold or (
@@ -830,7 +830,7 @@ async def human_review_interrupt_node(state: PanelGraphState) -> dict[str, Any]:
             logger.info("Human reviewer rejected verdict — raising unavailable")
             raise PanelUnavailableError(
                 reason="人工审核驳回裁决",
-                call_count=state.get("call_count", 0),  # type: ignore[typeddict-item]
+                call_count=state.get("call_count", 0),
             )
 
     return {}
@@ -904,7 +904,7 @@ class PanelGraph:
         # the two passes — these are set by conflict_detection and
         # rebuttal before re-entering the validation chain).
         def _post_validation_router(state: PanelGraphState) -> str:
-            if state.get("escalated", False) and state.get("rebuttal_delta") is not None:  # type: ignore[typeddict-item]
+            if state.get("escalated", False) and state.get("rebuttal_delta") is not None:
                 return "moderator"
             return "attribution"
 

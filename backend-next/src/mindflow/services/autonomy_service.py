@@ -116,18 +116,29 @@ class AutonomyService:
         logger.info("Autonomy resumed (paused_until cleared)")
 
     async def get_status(self, user_id: int = 1) -> dict[str, object]:
-        """Return a dict with ``enabled`` and ``paused_until`` for API responses.
+        """Return autonomy state with enabled, paused, and paused_until fields.
 
         Args:
             user_id: User identifier.
 
         Returns:
-            A dict like ``{"enabled": True, "paused_until": "2026-07-18T12:00:00+00:00"}``.
-            ``paused_until`` is None when not paused.
+            A dict like ``{"enabled": True, "paused_until": None, "paused": False}``.
+            ``paused`` is true only while the pause window is active.
         """
         prefs = await self._prefs.get(user_id)
         auto: dict[str, Any] = prefs.get(_AUTONOMY_KEY, {})
         paused_until_raw = auto.get("paused_until")
         paused_until: str | None = cast(str | None, paused_until_raw)
+        paused = False
+        if paused_until_raw is not None:
+            try:
+                paused_until_dt = datetime.fromisoformat(paused_until_raw)
+                if paused_until_dt.tzinfo is None:
+                    paused_until_dt = paused_until_dt.replace(tzinfo=UTC)
+                paused = paused_until_dt > datetime.now(UTC)
+            except (ValueError, TypeError) as exc:
+                logger.warning("Invalid paused_until timestamp: {}", exc)
+                paused = True
+
         enabled = await self.is_enabled(user_id)
-        return {"enabled": enabled, "paused_until": paused_until}
+        return {"enabled": enabled, "paused_until": paused_until, "paused": paused}

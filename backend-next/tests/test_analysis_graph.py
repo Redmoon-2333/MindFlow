@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -20,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from mindflow.agents.types import PanelUnavailableError, PanelVerdict
+from mindflow.domain.events import make_event
 from mindflow.domain.procrastination import (
     RuleEngine,
 )
@@ -253,7 +255,8 @@ class TestGraphCompilation:
         start_edges = [e for e in edges if e[0] == "__start__"]
         assert len(start_edges) == 1
         # Conditional edge from __start__ goes to cache_idempotency_check
-        assert True  # set_entry_point validated above
+        # (replaces the former assert True placeholder — audit report).
+        assert start_edges[0][1] == "cache_idempotency_check"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -319,6 +322,8 @@ class TestRunAnalysis:
         analysis_graph: AnalysisGraph,
         mock_analysis_repo: AsyncMock,
         mock_budget_repo: AsyncMock,
+        mock_evidence_builder: AsyncMock,
+        mock_panel_graph: MagicMock,
     ) -> None:
         """Cache hit → skips panel/LLM, returns cached result."""
         cached_assessment = {
@@ -350,6 +355,10 @@ class TestRunAnalysis:
         # Actually, terminal_persistence runs anyway — it's the only path to END
         # But the cache hit means the evidence builder was never called
         assert result.verdict.source == "panel"
+        # Explicit "skips analysis" assertions (audit report — cache-hit test
+        # only asserted the result source, not the skipped work).
+        mock_evidence_builder.build.assert_not_awaited()
+        mock_panel_graph.ainvoke.assert_not_awaited()
 
     async def test_force_bypasses_cache(
         self,
@@ -386,6 +395,8 @@ class TestRunAnalysis:
         mock_analysis_repo: AsyncMock,
         mock_budget_repo: AsyncMock,
         mock_workflow_run_repo: AsyncMock,
+        mock_evidence_builder: AsyncMock,
+        mock_panel_graph: MagicMock,
     ) -> None:
         """Crash-after-persist: on retry, cache hit returns existing result.
 
@@ -402,7 +413,12 @@ class TestRunAnalysis:
             "cbt_technique": "stimulus_control",
             "response_text": "Previously saved analysis",
             "source": "panel",
-            "panel_transcript": {"transcript": [], "dissent": [], "escalated": False, "call_count": 6},
+            "panel_transcript": {
+                "transcript": [],
+                "dissent": [],
+                "escalated": False,
+                "call_count": 6,
+            },
         }
         mock_analysis_repo.get_by_date.return_value = existing
 
@@ -418,6 +434,11 @@ class TestRunAnalysis:
         # Analysis repo upsert should still be called (terminal_persistence runs),
         # but it's idempotent (ON CONFLICT DO UPDATE)
         assert result.verdict is not None
+        # The whole point of the test: on cache hit, the expensive analysis
+        # steps (evidence build, expert panel) must NOT be re-run (audit
+        # report — crash-resume test lacked these assertions).
+        mock_evidence_builder.build.assert_not_awaited()
+        mock_panel_graph.ainvoke.assert_not_awaited()
 
     async def test_panel_budget_exhaustion_routes_through_fallbacks(
         self,
@@ -463,6 +484,132 @@ class TestRunAnalysis:
         # Should have gone through the fallback chain
         # With DeepSeek succeeding, source should be "deepseek"
         assert result.verdict.source in ("deepseek", "ollama", "rule_engine")
+
+    async def test_slow_panel_times_out_to_persisted_rule_engine_result(
+        self,
+        mock_analysis_repo: AsyncMock,
+        mock_workflow_run_repo: AsyncMock,
+        mock_budget_repo: AsyncMock,
+        mock_evidence_builder: AsyncMock,
+        mock_crisis_detector: MagicMock,
+        mock_deepseek_client: AsyncMock,
+        rule_engine: RuleEngine,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A hanging panel must converge to a useful persisted fallback."""
+        import mindflow.graph.analysis_graph as analysis_graph_module
+
+        monkeypatch.setattr(
+            analysis_graph_module, "_PANEL_WORKFLOW_TIMEOUT_S", 0.01, raising=False
+        )
+
+        async def slow_ainvoke(_state: AnalysisGraphState) -> dict[str, object]:
+            await asyncio.sleep(0.1)
+            return {}
+
+        slow_panel = MagicMock()
+        slow_panel.ainvoke = slow_ainvoke
+        mock_evidence_builder.build.return_value.events = (
+            make_event(
+                user_id=1,
+                timestamp_utc=datetime(2026, 7, 29, tzinfo=UTC),
+                duration_s=600.0,
+                app_name="chrome.exe",
+                process_name="chrome.exe",
+            ),
+        )
+
+        graph = AnalysisGraph(
+            analysis_repo=mock_analysis_repo,
+            workflow_run_repo=mock_workflow_run_repo,
+            budget_repo=mock_budget_repo,
+            evidence_builder=mock_evidence_builder,
+            crisis_detector=mock_crisis_detector,
+            panel_graph=slow_panel,
+            deepseek_client=mock_deepseek_client,
+            ollama_base_url=None,
+            ollama_model="qwen3:8b",
+            rule_engine=rule_engine,
+            timezone="local",
+        )
+
+        result = await asyncio.wait_for(
+            graph.run_analysis(
+                AnalysisRequest(
+                    user_id=1,
+                    target_date=date(2026, 7, 29),
+                    force=True,
+                    origin="api",
+                )
+            ),
+            timeout=0.2,
+        )
+
+        assert result.verdict.source == "rule_engine"
+        assert result.verdict.rationale != "分析暂时不可用"
+        mock_analysis_repo.upsert.assert_awaited_once()
+
+    async def test_duplicate_owner_timeout_converges_to_rule_engine_fallback(
+        self,
+        mock_analysis_repo: AsyncMock,
+        mock_workflow_run_repo: AsyncMock,
+        mock_budget_repo: AsyncMock,
+        mock_evidence_builder: AsyncMock,
+        mock_crisis_detector: MagicMock,
+        rule_engine: RuleEngine,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A duplicate that outlives its owner wait must not return empty verdict."""
+        import mindflow.graph.analysis_graph as analysis_graph_module
+
+        monkeypatch.setattr(
+            analysis_graph_module,
+            "_COMPETING_ANALYSIS_WAIT_TIMEOUT_S",
+            0.01,
+        )
+        mock_budget_repo.try_reserve.return_value = False
+        mock_analysis_repo.get_by_date.return_value = None
+        mock_workflow_run_repo.get_run.return_value = SimpleNamespace(status="running")
+        mock_evidence_builder.build.return_value.events = (
+            make_event(
+                user_id=1,
+                timestamp_utc=datetime(2026, 7, 29, tzinfo=UTC),
+                duration_s=600.0,
+                app_name="chrome.exe",
+                process_name="chrome.exe",
+            ),
+        )
+
+        graph = AnalysisGraph(
+            analysis_repo=mock_analysis_repo,
+            workflow_run_repo=mock_workflow_run_repo,
+            budget_repo=mock_budget_repo,
+            evidence_builder=mock_evidence_builder,
+            crisis_detector=mock_crisis_detector,
+            panel_graph=None,
+            deepseek_client=None,
+            ollama_base_url=None,
+            ollama_model="qwen3:8b",
+            rule_engine=rule_engine,
+            timezone="local",
+        )
+
+        result = await asyncio.wait_for(
+            graph.run_analysis(
+                AnalysisRequest(
+                    user_id=1,
+                    target_date=date(2026, 7, 29),
+                    force=True,
+                    origin="api",
+                )
+            ),
+            timeout=0.2,
+        )
+
+        assert result.verdict.source == "rule_engine"
+        assert result.verdict.rationale != "分析暂时不可用"
+        mock_analysis_repo.upsert.assert_awaited_once()
+        mock_budget_repo.release.assert_not_awaited()
 
     async def test_full_fallback_to_rule_engine(
         self,

@@ -240,7 +240,11 @@ export default function ModelCenter() {
     setError(null);
     try {
       const result = await createTrainingJob();
-      const jobResponse: TrainingJobResponse = {
+      // Optimistic view from the accepted-job response. Defaults for the
+      // lifecycle fields match backend TrainingJobResponse defaults and are
+      // immediately superseded by the poll loop (getTrainingJob) — the UI
+      // never presents fabricated training results as real.
+      setActiveJob({
         job_id: result.job_id,
         status: result.status,
         source: "db",
@@ -253,8 +257,7 @@ export default function ModelCenter() {
         quality_gate: null,
         evaluation: null,
         error: null,
-      };
-      setActiveJob(jobResponse);
+      });
       startPolling(result.job_id);
     } catch (e: unknown) {
       if (e instanceof ApiError) {

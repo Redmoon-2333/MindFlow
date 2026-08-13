@@ -26,28 +26,34 @@ export default function Activities() {
     }
   }, []);
 
+  // Server-side search is not available on /activities, so when a search term
+  // is active we pull the backend's maximum page (200) and filter client-side.
+  // This avoids the old bug where matches on other pages were invisible and
+  // the count/pagination disagreed with the filtered list.
   const fetchActivities = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
+      const searching = search.trim().length > 0;
       const params = {
-        page,
-        page_size: PAGE_SIZE,
+        page: searching ? 1 : page,
+        page_size: searching ? 200 : PAGE_SIZE,
         start_date: startDate || undefined,
         end_date: endDate || undefined,
       };
       const result = await getActivities(params);
       const activityItems = result.items ?? [];
       const normalizedSearch = search.trim().toLowerCase();
-      setItems(
-        normalizedSearch
-          ? activityItems.filter((item) =>
-              [item.data?.app_name, item.data?.process_name, item.data?.window_title]
-                .some((value) => String(value ?? "").toLowerCase().includes(normalizedSearch)),
-            )
-          : activityItems,
-      );
-      setTotal(result.total ?? 0);
+      const filtered = normalizedSearch
+        ? activityItems.filter((item) =>
+            [item.data?.app_name, item.data?.process_name, item.data?.window_title]
+              .some((value) => String(value ?? "").toLowerCase().includes(normalizedSearch)),
+          )
+        : activityItems;
+      setItems(filtered);
+      // While searching, the displayed total reflects the filtered window
+      // actually fetched (up to 200); without a search it is the server total.
+      setTotal(searching ? filtered.length : (result.total ?? 0));
     } catch (e: unknown) {
       setError(getErrorMessage(e, "Load failed"));
     } finally {
@@ -187,7 +193,7 @@ export default function Activities() {
           <div className="spinner" />
         ) : items.length === 0 ? (
           <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", textAlign: "center", padding: 40 }}>
-            暂无活动记录
+            {search.trim() ? "当前搜索无匹配记录" : "暂无活动记录"}
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -234,8 +240,8 @@ export default function Activities() {
           </div>
         )}
 
-        {/* Pagination */}
-        {!loading && total > 0 && (
+        {/* Pagination — hidden while searching (client-side filtered window) */}
+        {!loading && total > 0 && !search.trim() && (
           <div className="flex-between mt16" style={{ marginTop: 16 }}>
             <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
               共 {total} 条，第 {page} / {totalPages} 页

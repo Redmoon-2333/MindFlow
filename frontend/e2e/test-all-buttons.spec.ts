@@ -7,9 +7,11 @@
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 
 const BASE = "http://127.0.0.1:8765";
-const FRONTEND = "http://127.0.0.1:5173";
-const AUTH_TOKEN =
-  "0c3c1d2106849a067a32996e2efcb936a5e1777b8e50162fbd9ba5fda1db14b8e2f7c39a6e0bb4121d0efc18ed16498eaa80e0b984355a4c4ce27091323e1b69";
+const FRONTEND = "http://127.0.0.1:4173";
+// Real bootstrap root token must NOT be committed (audit report — hardcoded
+// token in E2E). Read it from the environment; tests skip with a clear message
+// when it is absent (CI / other machines without the token).
+const AUTH_TOKEN = process.env.MINDFLOW_TEST_TOKEN ?? "";
 
 let _sharedCookie = "";
 

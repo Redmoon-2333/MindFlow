@@ -49,7 +49,7 @@ uv run python -m mindflow.bootstrap
 cd mindflow-app/frontend
 npm install
 npm run dev
-# http://localhost:5173
+# http://localhost:4173
 ```
 
 ## 2026-07-31 升级与实验

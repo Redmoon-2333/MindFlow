@@ -52,17 +52,21 @@ export default function Chat() {
     }
   }, []);
 
+  const messagesSeqRef = useRef(0);
   const loadMessages = useCallback(async (sessionId: string) => {
+    const seq = ++messagesSeqRef.current;
     setMessagesLoading(true);
     setError(null);
     try {
       const data = await getChatMessages(sessionId);
+      if (seq !== messagesSeqRef.current) return; // stale response
       setMessages(Array.isArray(data) ? data : []);
     } catch (e: unknown) {
+      if (seq !== messagesSeqRef.current) return;
       setError(getErrorMessage(e, "Request failed"));
       setMessages([]);
     } finally {
-      setMessagesLoading(false);
+      if (seq === messagesSeqRef.current) setMessagesLoading(false);
     }
   }, []);
 
@@ -81,10 +85,17 @@ export default function Chat() {
     setInput("");
   };
 
+  // Tracks the session a reply belongs to. If the user switches sessions (or
+  // starts a new chat) while the AI reply is in flight, the reply must NOT be
+  // appended to the wrong thread (audit report — chat session cross-talk).
+  const activeSessionIdRef = useRef<string | null>(null);
+  useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+
   const handleSend = async () => {
     const trimmed = input.trim();
     if (!trimmed || loading) return;
 
+    const targetSessionId = activeSessionIdRef.current;
     const userMsg: ChatMessage = { role: "user", content: trimmed };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
@@ -96,8 +107,10 @@ export default function Chat() {
     }
 
     try {
-      const reply = await sendChat(trimmed, activeSessionId ?? undefined);
-      if (!activeSessionId && reply?.session_id) {
+      const reply = await sendChat(trimmed, targetSessionId ?? undefined);
+      // Guard: ignore the reply if the conversation changed while awaiting.
+      if (targetSessionId !== activeSessionIdRef.current) return;
+      if (!targetSessionId && reply?.session_id) {
         setActiveSessionId(reply.session_id);
         loadSessions();
       }
@@ -110,9 +123,11 @@ export default function Chat() {
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (e: unknown) {
+      if (targetSessionId !== activeSessionIdRef.current) return;
       setError(getErrorMessage(e, "Request failed"));
     } finally {
-      setLoading(false);
+      if (targetSessionId === activeSessionIdRef.current) setLoading(false);
+      else setLoading(false);
     }
   };
 

@@ -137,6 +137,16 @@ class DeepSeekClient:
             },
         )
 
+    @property
+    def client(self) -> httpx.AsyncClient:
+        """The underlying shared HTTP client (owned by ProviderRegistry).
+
+        Exposed so consumers like InterventionService can reuse the same
+        connection pool instead of creating a second one (audit report —
+        second httpx pool outside ProviderRegistry).
+        """
+        return self._client
+
     # ── Public API ────────────────────────────────────────────────────
 
     async def analyze(

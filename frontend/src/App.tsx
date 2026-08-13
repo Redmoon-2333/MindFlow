@@ -71,22 +71,28 @@ function AppRoutes() {
 export default function App() {
   const [authenticated, setAuthenticated] = useState(hasAuthenticatedSession);
   const [bootstrapping, setBootstrapping] = useState(false);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
-  // Handle bootstrap ticket from URL hash on first load
+  // Handle bootstrap ticket from URL hash on first load. The one-time ticket
+  // is only removed from the URL after a successful exchange (see api.ts), so
+  // a failed attempt stays retryable via the login page's retry button.
   useEffect(() => {
     if (authenticated) return;
     const params = new URLSearchParams(window.location.hash.slice(1));
     const ticket = params.get("bootstrap");
     if (!ticket) return;
     setBootstrapping(true);
+    setBootstrapError(null);
     bootstrapFromFragment()
       .then((ok) => {
         if (ok) {
           setAuthenticated(true);
         }
       })
-      .catch(() => {
-        // ignore — will show login page
+      .catch((error: unknown) => {
+        setBootstrapError(
+          error instanceof Error ? error.message : "认证失败，请重试",
+        );
       })
       .finally(() => setBootstrapping(false));
   }, [authenticated]);
@@ -123,7 +129,7 @@ export default function App() {
   return (
     <BrowserRouter>
       {!authenticated ? (
-        <Login />
+        <Login bootstrapError={bootstrapError} onClearBootstrapError={() => setBootstrapError(null)} />
       ) : (
         <Layout>
           <AppRoutes />

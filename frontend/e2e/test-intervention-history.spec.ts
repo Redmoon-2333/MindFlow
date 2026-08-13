@@ -76,10 +76,13 @@ async function mockInterventionHistory(page: Page) {
     });
   });
   // Block WebSocket to avoid hanging
-  await page.route("**/ws/**", (route) => route.abort());
+  await page.route("**/api/v1/ws**", (route) => route.abort());
   // Fallback: return empty 200 for any other API call not mocked
   await page.route(/\/api\/v1\//, async (route) => {
-    if (route.request().url().includes("/intervention/history")) return; // already handled
+    if (route.request().url().includes("/intervention/history")) {
+      await route.fallback();
+      return;
+    }
     await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
   });
 }
@@ -92,18 +95,18 @@ test.describe("Intervention History — title/message rendering", () => {
   test("renders concrete Chinese title and message for new-style record", async ({ page }) => {
     await mockInterventionHistory(page);
     await setupPage(page);
-    await page.goto("/intervention", { waitUntil: "networkidle" });
+    await page.goto("/intervention", { waitUntil: "domcontentloaded" });
 
     // New-style record: concrete title "减少干扰源" should be visible
-    await expect(page.locator("text=减少干扰源")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("text=减少干扰源").first()).toBeVisible({ timeout: 10_000 });
     // New-style record: concrete message should be visible
-    await expect(page.locator("text=关闭社交媒体通知，保持桌面整洁有助于提升专注力")).toBeVisible();
+    await expect(page.locator("text=关闭社交媒体通知，保持桌面整洁有助于提升专注力").first()).toBeVisible();
   });
 
   test("renders enriched fallback title/message for legacy record", async ({ page }) => {
     await mockInterventionHistory(page);
     await setupPage(page);
-    await page.goto("/intervention", { waitUntil: "networkidle" });
+    await page.goto("/intervention", { waitUntil: "domcontentloaded" });
 
     // Legacy record: fallback title should be visible
     await expect(page.locator("text=来自 MindFlow 的提醒")).toBeVisible({ timeout: 10_000 });
@@ -114,7 +117,7 @@ test.describe("Intervention History — title/message rendering", () => {
   test("raw intervention_type enum is never rendered as visible user-facing content", async ({ page }) => {
     await mockInterventionHistory(page);
     await setupPage(page);
-    await page.goto("/intervention", { waitUntil: "networkidle" });
+    await page.goto("/intervention", { waitUntil: "domcontentloaded" });
 
     // The raw enum strings must NOT appear anywhere in the visible page body
     await expect(page.locator("text=environment_optimization")).not.toBeVisible();
@@ -125,10 +128,10 @@ test.describe("Intervention History — title/message rendering", () => {
   test("history badge still shows Chinese type label (not raw enum)", async ({ page }) => {
     await mockInterventionHistory(page);
     await setupPage(page);
-    await page.goto("/intervention", { waitUntil: "networkidle" });
+    await page.goto("/intervention", { waitUntil: "domcontentloaded" });
 
     // The type badge should show the Chinese label "环境优化", not the raw enum
-    await expect(page.locator(".badge").filter({ hasText: "环境优化" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".badge").filter({ hasText: "环境优化" }).first()).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(".badge").filter({ hasText: "任务分解" })).toBeVisible();
   });
 
@@ -137,7 +140,7 @@ test.describe("Intervention History — title/message rendering", () => {
     // Since we reverse in the frontend, the highest triggered_at becomes latest.
     await mockInterventionHistory(page);
     await setupPage(page);
-    await page.goto("/intervention", { waitUntil: "networkidle" });
+    await page.goto("/intervention", { waitUntil: "domcontentloaded" });
 
     // The "最新干预" section should show the new-style record's title and message
     const latestSection = page.locator(".card").filter({ hasText: "最新干预" });

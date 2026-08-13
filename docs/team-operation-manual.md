@@ -44,7 +44,7 @@ python -m pytest tests/ -v
 ```bash
 cd mindflow-app/frontend
 npm install       # 等胡淙煜初始化前端脚手架后执行
-npm run dev       # 启动开发服务器 → http://localhost:5173
+npm run dev       # 启动开发服务器 → http://localhost:4173
 ```
 
 ---
@@ -184,7 +184,7 @@ frontend/
 ```bash
 cd mindflow-app/frontend
 npm run dev
-# 浏览器打开 http://localhost:5173
+# 浏览器打开 http://localhost:4173
 # 确保后端也在运行（http://localhost:8765）
 ```
 

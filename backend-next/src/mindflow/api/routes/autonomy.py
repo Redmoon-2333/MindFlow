@@ -5,7 +5,7 @@ Endpoints:
   POST   /api/v1/autonomy/pause  — Pause for N hours
   POST   /api/v1/autonomy/resume — Resume immediately
 
-All responses include ``{"enabled": bool, "paused_until": str|null}``.
+All responses include ``{"enabled": bool, "paused_until": str|null, "paused": bool}``.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ class AutonomyStatus(BaseModel):
 
     enabled: bool
     paused_until: str | None = None
+    paused: bool = False
 
 
 @router.get("/autonomy")

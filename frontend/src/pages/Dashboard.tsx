@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getHealth,
   getCurrentActivity,
@@ -15,6 +15,7 @@ import {
   getErrorMessage,
 } from "../api";
 import type { ActivityItem, AutonomyStatus, CollectorStatus, FocusPredictionResponse, FocusTrendResponse, HealthData, InterventionHistoryItem, ModelStatus } from "../api";
+import { deriveFocusTrendKpi } from "../api";
 import { toFocusPredictionView } from "../prediction-state";
 import { realtimeClient } from "../realtime";
 import type { RealtimeStatus } from "../realtime";
@@ -63,9 +64,13 @@ export default function Dashboard() {
   }, [fetchData]);
 
   useEffect(() => realtimeClient.subscribeStatus(setRealtimeStatus), []);
+  // Monotonic key for realtime updates — two WS frames in the same
+  // millisecond would otherwise collide on `realtime-<timestamp>`.
+  const realtimeKeyRef = useRef(0);
   useEffect(() => realtimeClient.subscribe("activity_update", (payload, timestamp) => {
+    realtimeKeyRef.current += 1;
     setCurrentActivity({
-      id: `realtime-${timestamp}`, user_id: 1, timestamp, duration_s: 0, event_type: "window_change",
+      id: `realtime-${realtimeKeyRef.current}`, user_id: 1, timestamp, duration_s: 0, event_type: "window_change",
       data: { app_name: payload.app_name, window_title: payload.window_title ?? "", process_name: payload.process_name ?? "", is_idle: payload.is_idle },
     });
   }), []);
@@ -128,6 +133,7 @@ export default function Dashboard() {
   }
 
   const predictionView = focusPrediction ? toFocusPredictionView(focusPrediction) : null;
+  const kpi = deriveFocusTrendKpi(focusTrend);
 
   return (
     <div>
@@ -145,48 +151,48 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* KPI Row */}
+      {/* KPI Row — derived from /focus/trend daily array (see deriveFocusTrendKpi) */}
       <div className="kpi-row">
         <div className="stat-card">
           <div className="label">今日专注时长</div>
           <div className="value">
-            {focusTrend?.today_minutes != null
-              ? `${Math.round(focusTrend.today_minutes)}m`
-              : focusTrend?.total_minutes != null
-                ? `${Math.round(focusTrend.total_minutes)}m`
+            {kpi.todayMinutes != null
+              ? `${Math.round(kpi.todayMinutes)}m`
+              : kpi.totalMinutes != null
+                ? `${Math.round(kpi.totalMinutes)}m`
                 : "--"}
           </div>
           <div className="sub good">
-            {focusTrend?.trend_label ?? ""}
+            {kpi.trendLabel ?? ""}
           </div>
         </div>
         <div className="stat-card">
           <div className="label">专注会话数</div>
           <div className="value">
-            {focusTrend?.session_count != null ? focusTrend.session_count : "--"}
+            {kpi.sessionCount != null ? kpi.sessionCount : "--"}
           </div>
-          <div className="sub">{focusTrend?.avg_duration_minutes != null ? `均长 ${Math.round(focusTrend.avg_duration_minutes)}m` : ""}</div>
+          <div className="sub">{kpi.avgDurationMinutes != null ? `均长 ${Math.round(kpi.avgDurationMinutes)}m` : ""}</div>
         </div>
         <div className="stat-card">
           <div className="label">平均专注评分</div>
           <div className="value">
-            {focusTrend?.avg_score != null ? focusTrend.avg_score.toFixed(1) : "--"}
+            {kpi.avgScore != null ? kpi.avgScore.toFixed(1) : "--"}
           </div>
           <div className="sub">
-            {focusTrend?.score_change != null
-              ? `${focusTrend.score_change > 0 ? "+" : ""}${focusTrend.score_change.toFixed(1)}%`
+            {kpi.scoreChange != null
+              ? `${kpi.scoreChange > 0 ? "+" : ""}${kpi.scoreChange.toFixed(1)}%`
               : ""}
           </div>
         </div>
         <div className="stat-card">
           <div className="label">分心率</div>
           <div className="value">
-            {focusTrend?.distraction_rate != null
-              ? `${(focusTrend.distraction_rate * 100).toFixed(1)}%`
+            {kpi.distractionRate != null
+              ? `${(kpi.distractionRate * 100).toFixed(1)}%`
               : "--"}
           </div>
-          <div className={focusTrend?.distraction_rate > 0.3 ? "sub bad" : "sub good"}>
-            {focusTrend?.distraction_label ?? ""}
+          <div className={kpi.distractionRate != null && kpi.distractionRate > 0.3 ? "sub bad" : "sub good"}>
+            {kpi.distractionLabel ?? ""}
           </div>
         </div>
       </div>

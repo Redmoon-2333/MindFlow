@@ -58,7 +58,11 @@ class TestGetAutonomy:
         """200 with enabled=false and paused_until."""
         future = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
         mock_svc = _make_mock_service()
-        mock_svc.get_status.return_value = {"enabled": False, "paused_until": future}
+        mock_svc.get_status.return_value = {
+            "enabled": False,
+            "paused_until": future,
+            "paused": True,
+        }
         app.state.autonomy_service = mock_svc
 
         client = TestClient(app)
@@ -68,6 +72,7 @@ class TestGetAutonomy:
         data = resp.json()
         assert data["enabled"] is False
         assert data["paused_until"] == future
+        assert data["paused"] is True
 
     def test_get_empty_state(self, app: FastAPI) -> None:
         """200 on empty/initial state."""

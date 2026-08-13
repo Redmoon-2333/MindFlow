@@ -51,9 +51,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         path = request.scope["path"]
+        # Normalize a single trailing slash so /api/v1/health/ behaves like
+        # /api/v1/health (audit report — exempt path trailing slash).
+        normalized_path = path if not path.endswith("/") or path == "/" else path[:-1]
         if (
             not path.startswith("/api/")
-            or path in _EXEMPT_PATHS
+            or normalized_path in _EXEMPT_PATHS
             or any(path.startswith(p) for p in _EXEMPT_PREFIXES)
         ):
             return await call_next(request)

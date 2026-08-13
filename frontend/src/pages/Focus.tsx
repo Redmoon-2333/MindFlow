@@ -1,24 +1,22 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getErrorMessage, getFocusSessions, getFocusTrend, submitFocusFeedback } from "../api";
 import type { FocusSession, FocusTrendDay, FocusTrendResponse } from "../api";
-
-type CompatibleTrendDay = Partial<FocusTrendDay>;
+import { dayLabel, localDateStr } from "../date-utils";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isCompatibleTrendDay(value: unknown): value is CompatibleTrendDay {
+function isCompatibleTrendDay(value: unknown): value is FocusTrendDay {
   if (!isRecord(value)) return false;
-  const numberFields = ["focus_min", "focus_minutes", "focus", "distraction_min", "distraction_minutes", "distraction", "session_count", "avg_score"];
-  return (value.date == null || typeof value.date === "string")
-    && (value.day == null || typeof value.day === "string")
+  const numberFields = ["focus_min", "distraction_min", "session_count", "avg_score"];
+  return typeof value.date === "string"
     && numberFields.every((field) => value[field] == null || typeof value[field] === "number");
 }
 
-function getTrendDays(value: unknown): CompatibleTrendDay[] {
+function getTrendDays(value: unknown): FocusTrendDay[] {
   if (!isRecord(value)) return [];
-  for (const key of ["daily", "days", "daily_data"]) {
+  for (const key of ["daily", "daily_data"]) {
     const candidate = value[key];
     if (Array.isArray(candidate)) return candidate.filter(isCompatibleTrendDay);
   }
@@ -48,15 +46,7 @@ function sessionDurationMinutes(session: FocusSession): number {
 }
 
 function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function dayLabel(dateStr: string, short?: boolean): string {
-  const names = short
-    ? ["日", "一", "二", "三", "四", "五", "六"]
-    : ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  const d = new Date(dateStr);
-  return names[d.getDay()];
+  return localDateStr();
 }
 
 export default function Focus() {
@@ -71,17 +61,24 @@ export default function Focus() {
   const [feedbackSaved, setFeedbackSaved] = useState<Set<string>>(new Set());
   const [savedFeedback, setSavedFeedback] = useState<Record<string, FeedbackDraft>>({});
 
+  // Request-sequence guard: a slow response for an older date must never
+  // overwrite the newer selection (see audit report — stale-overwrite race).
+  const requestSeqRef = useRef(0);
+
   const loadSessions = useCallback(async (d: string) => {
+    const seq = ++requestSeqRef.current;
     setLoading(true);
     setError("");
     try {
       const data = await getFocusSessions(d);
+      if (seq !== requestSeqRef.current) return; // stale response
       setSessions(data.sessions);
     } catch (e: unknown) {
+      if (seq !== requestSeqRef.current) return;
       setError(getErrorMessage(e, "加载失败"));
       setSessions([]);
     } finally {
-      setLoading(false);
+      if (seq === requestSeqRef.current) setLoading(false);
     }
   }, []);
 
@@ -114,8 +111,8 @@ export default function Focus() {
   );
 
   const trendDays = getTrendDays(trend);
-  const maxFocus = Math.max(1, ...trendDays.map((day) => day.focus_min ?? day.focus_minutes ?? day.focus ?? 0));
-  const maxDistraction = Math.max(1, ...trendDays.map((day) => day.distraction_min ?? day.distraction_minutes ?? day.distraction ?? 0));
+  const maxFocus = Math.max(1, ...trendDays.map((day) => day.focus_min ?? 0));
+  const maxDistraction = Math.max(1, ...trendDays.map((day) => day.distraction_min ?? 0));
   const chartMax = Math.max(maxFocus, maxDistraction);
 
   const saveFeedback = async (sessionId: string) => {
@@ -198,11 +195,11 @@ export default function Focus() {
         {!trendLoading && trendDays.length > 0 && (
           <div style={{ display: "flex", alignItems: "flex-end", gap: 16, height: 200, paddingTop: 8 }}>
             {trendDays.map((d, i) => {
-              const focusVal = d.focus_min ?? d.focus_minutes ?? d.focus ?? 0;
-              const distVal = d.distraction_min ?? d.distraction_minutes ?? d.distraction ?? 0;
+              const focusVal = d.focus_min ?? 0;
+              const distVal = d.distraction_min ?? 0;
               const focusPct = Math.round((focusVal / chartMax) * 100);
               const distPct = Math.round((distVal / chartMax) * 100);
-              const dateStr = d.date ?? d.day ?? "";
+              const dateStr = d.date ?? "";
               return (
                 <div
                   key={i}

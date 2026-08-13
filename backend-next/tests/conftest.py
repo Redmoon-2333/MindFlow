@@ -19,8 +19,8 @@ from mindflow.infrastructure.repositories.activity import (
 )
 from mindflow.infrastructure.repositories.preferences import (
     PreferencesRepository,
-    user_preferences,
 )
+from mindflow.infrastructure.schema import metadata as schema_metadata
 
 
 @pytest.fixture
@@ -61,10 +61,17 @@ def settings_factory(tmp_path: Path):
 
 @pytest.fixture
 async def create_tables(engine):
-    """Create all core tables that tests depend on."""
+    """Create all core tables that tests depend on.
+
+    Uses the full schema metadata (activity_events, preferences, telemetry,
+    intervention, workflow tables, ...) so new tables are covered without
+    editing this fixture (audit report — conftest only created two tables).
+    """
     async with engine.begin() as conn:
+        await conn.run_sync(schema_metadata.create_all)
+        # activity_events lives in its own module-level metadata (kept in sync
+        # with the schema module); create it too.
         await conn.run_sync(activity_events.metadata.create_all)
-        await conn.run_sync(user_preferences.metadata.create_all)
 
 
 @pytest.fixture
@@ -83,3 +90,21 @@ async def preferences_repo(session_factory, create_tables) -> PreferencesReposit
 def anyio_backend() -> str:
     """Use asyncio as the anyio backend for FastAPI test client."""
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def reset_scheduler_global_state() -> None:
+    """Reset module-level scheduler claim state before/after every test.
+
+    ``_DAILY_PANEL_RUN_DATES`` is a module-level set used as the fallback
+    claim store when no persistent repository is injected. Tests mutate it
+    directly (and some only clean up on success), which made the suite
+    order-dependent (audit report — module-level global state). Resetting
+    in an autouse fixture keeps every test hermetic regardless of what a
+    previous test did or failed to do.
+    """
+    import mindflow.services.scheduler as scheduler_module
+
+    scheduler_module._DAILY_PANEL_RUN_DATES.clear()
+    yield
+    scheduler_module._DAILY_PANEL_RUN_DATES.clear()

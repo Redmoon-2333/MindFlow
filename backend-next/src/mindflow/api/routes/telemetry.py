@@ -1,4 +1,4 @@
-﻿"""Telemetry API routes."""
+"""Telemetry API routes."""
 
 from __future__ import annotations
 
@@ -24,7 +24,9 @@ class TelemetryPreferencesPatch(BaseModel):
 
 
 class BrowserPairRequest(BaseModel):
-    code: str = Field(min_length=6, max_length=6)
+    # 8-char unambiguous alphabet codes (see TelemetryService.create_pairing_code);
+    # keep a small tolerance for legacy 6-digit codes during migration.
+    code: str = Field(min_length=6, max_length=8)
 
 
 class BrowserHeartbeatRequest(BaseModel):

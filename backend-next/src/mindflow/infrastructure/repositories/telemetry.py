@@ -1,4 +1,4 @@
-﻿"""Persistence for privacy-preserving interaction and browser telemetry."""
+"""Persistence for privacy-preserving interaction and browser telemetry."""
 
 from __future__ import annotations
 
@@ -103,16 +103,27 @@ class TelemetryRepository:
             )
             if matches and -10.0 <= gap_s <= 10.0:
                 duration_s = float(previous.duration_s) + float(values["duration_s"])
-                await session.execute(
+                # Conditional update: merge only if the previous row is still
+                # exactly as we read it. Concurrent heartbeats (multiple browser
+                # tabs) can both read the same "previous" segment; an unconditional
+                # UPDATE would let the second writer silently drop the first
+                # writer's duration (lost update). With WAL, the single-statement
+                # conditional UPDATE is atomic — rowcount == 1 means we won the
+                # merge; otherwise fall through and insert a new segment.
+                update_result = await session.execute(
                     sa.update(browser_segments)
-                    .where(browser_segments.c.id == previous.id)
+                    .where(
+                        browser_segments.c.id == previous.id,
+                        browser_segments.c.duration_s == float(previous.duration_s),
+                    )
                     .values(duration_s=duration_s)
                 )
-                return {
-                    "id": previous.id,
-                    "timestamp": previous.timestamp,
-                    "duration_s": duration_s,
-                }
+                if update_result.rowcount == 1:
+                    return {
+                        "id": previous.id,
+                        "timestamp": previous.timestamp,
+                        "duration_s": duration_s,
+                    }
 
         row = {
             "id": new_id(),
@@ -184,8 +195,11 @@ class TelemetryRepository:
                         focus_sessions.c.id == session_id,
                     )
                 )).first()
-            except Exception:
-                # Older test/schema setups may lack focus_sessions; snapshots are best-effort.
+            except (sa.exc.OperationalError, sa.exc.ProgrammingError):
+                # Older test/schema setups may lack focus_sessions; snapshots are
+                # best-effort. Narrow the catch so genuine DB errors (connection
+                # loss, query failures) still surface (audit report — exception
+                # swallowing).
                 session_row = None
             session_start = session_row.start_time if session_row else None
             session_end = session_row.end_time if session_row else None
@@ -505,45 +519,45 @@ class TelemetryRepository:
     ) -> int:
         total = 0
         async with self._session_factory() as session, session.begin():
-            interaction_result = await session.scalars(
+            # Use cursor.rowcount instead of RETURNING + .all(): under a 30-day
+            # retention the activity_events table can hold hundreds of thousands
+            # of rows, and materialising every deleted id in Python is wasteful
+            # (audit report — cleanup rowcount).
+            interaction_result = await session.execute(
                 sa.delete(interaction_buckets)
                 .where(
                     interaction_buckets.c.window_start_utc
                     < interaction_cutoff.astimezone(UTC).isoformat()
                 )
-                .returning(interaction_buckets.c.id)
             )
-            total += len(interaction_result.all())
-            browser_result = await session.scalars(
+            total += int(interaction_result.rowcount or 0)
+            browser_result = await session.execute(
                 sa.delete(browser_segments)
                 .where(
                     browser_segments.c.timestamp
                     < activity_cutoff.astimezone(UTC).isoformat()
                 )
-                .returning(browser_segments.c.id)
             )
-            total += len(browser_result.all())
-            feature_result = await session.scalars(
+            total += int(browser_result.rowcount or 0)
+            feature_result = await session.execute(
                 sa.delete(behavior_feature_windows)
                 .where(
                     behavior_feature_windows.c.window_start_utc
                     < feature_cutoff.astimezone(UTC).isoformat()
                 )
-                .returning(behavior_feature_windows.c.id)
             )
-            total += len(feature_result.all())
+            total += int(feature_result.rowcount or 0)
             # Raw activity events are retained under the same activity horizon
             # as browser segments (preference ``activity_retention_days``,
             # env ``event_retention_days`` as the startup default).
-            activity_result = await session.scalars(
+            activity_result = await session.execute(
                 sa.delete(activity_events)
                 .where(
                     activity_events.c.timestamp
                     < activity_cutoff.astimezone(UTC).isoformat()
                 )
-                .returning(activity_events.c.id)
             )
-            total += len(activity_result.all())
+            total += int(activity_result.rowcount or 0)
         return total
 
     async def save_browser_token(self, user_id: int, token_hash: str) -> None:

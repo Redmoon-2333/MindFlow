@@ -44,7 +44,7 @@ export default function Panel() {
       const data = await triggerPanel(retryIfDegraded ? { retryIfDegraded: true } : undefined);
       setResult(data);
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "Request failed"));
+      setError(getErrorMessage(e, "专家面板请求失败"));
     } finally {
       setLoading(null);
     }
@@ -57,7 +57,7 @@ export default function Panel() {
       const data = await getPanelResult();
       setResult(data);
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "Request failed"));
+      setError(getErrorMessage(e, "读取专家面板结果失败"));
     } finally {
       setLoading(null);
     }

@@ -497,21 +497,20 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             annoying_threshold=settings.throttle_annoying_threshold,
         )
 
-        # LLM client for AI-generated intervention messages
+        # LLM client for AI-generated intervention messages. Reuses the
+        # ProviderRegistry's DeepSeekClient pool instead of opening a second
+        # httpx connection pool with its own lifecycle (audit report — second
+        # httpx pool outside ProviderRegistry). None when no API key is set.
         intervention_llm_client: httpx.AsyncClient | None = None
         intervention_llm_model = "deepseek-chat"
-        if settings.llm.api_key:
-            llm_base_url = (settings.llm.base_url or "https://api.deepseek.com").rstrip("/")
-            intervention_llm_client = httpx.AsyncClient(
-                base_url=llm_base_url,
-                timeout=httpx.Timeout(10.0),
-                headers={
-                    "Authorization": f"Bearer {settings.llm.api_key}",
-                    "Content-Type": "application/json",
-                },
-            )
-            intervention_llm_model = settings.llm.model or "deepseek-chat"
-            logger.info("Intervention LLM client created for AI message generation")
+        if provider_registry is not None:
+            deepseek = provider_registry.get_structured_attribution()
+            if deepseek is not None:
+                intervention_llm_client = deepseek.client
+                intervention_llm_model = settings.llm.model or "deepseek-chat"
+                logger.info("Intervention LLM client reusing ProviderRegistry pool")
+            else:
+                logger.info("No LLM API key - intervention messages will use templates")
         else:
             logger.info("No LLM API key - intervention messages will use templates")
 
@@ -723,7 +722,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.panel_service = panel_service
         app.state.intervention_repository = intervention_repository
         app.state.intervention_service = intervention_service
-        app.state.intervention_llm_client = intervention_llm_client
         app.state.effectiveness_service = effectiveness_service
         app.state.v2_model_manager = v2_model_manager
         app.state.v2_training_mode = v2_training_mode
@@ -772,13 +770,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.debug("Closed {} active WebSocket connection(s)", n_closed)
         except Exception as exc:
             logger.warning("WebSocket close error: {}", exc)
-        # Close intervention LLM client if created
-        _ilc = getattr(app.state, "intervention_llm_client", None)
-        if _ilc is not None:
-            try:
-                await _ilc.aclose()
-            except Exception as exc:
-                logger.warning("Intervention LLM client close error: {}", exc)
+        # Note: the intervention LLM client is now the ProviderRegistry's
+        # DeepSeekClient pool (see create_app); ProviderRegistry.shutdown()
+        # closes it exactly once. No separate close here.
         logger.info("MindFlow shutdown complete")
 
 
@@ -865,10 +859,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers["X-MindFlow-Version"] = __version__
         response.headers["X-Content-Type-Options"] = "nosniff"
+        # Prevent the local docs/UI from being embedded in a malicious local
+        # page's iframe (audit report — missing frame-ancestors).
+        response.headers["X-Frame-Options"] = "DENY"
         # Hardens the HTML docs pages against XSS (security audit L1);
         # inline allowances are required by Swagger UI.
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "default-src 'self'; frame-ancestors 'none'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: "
             "https://fastapi.tiangolo.com"
         )

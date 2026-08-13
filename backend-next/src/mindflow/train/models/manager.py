@@ -284,6 +284,13 @@ class ModelManager:
 
         if activate:
             self._write_latest(names)
+            # Keep the model directory bounded: drop artifacts older than the
+            # newest N versions while never touching the active version.
+            self._prune_old_versions(
+                keep=json.loads(
+                    self.latest_path.read_text(encoding="utf-8")
+                ) if self.latest_path.exists() else None
+            )
 
         return names
 
@@ -297,6 +304,45 @@ class ModelManager:
         self.latest_path.write_text(
             json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+
+    # ── Version retention (audit report — model versions never cleaned) ──
+
+    _MAX_KEPT_VERSIONS: int = 5
+    """Number of most-recent model versions to keep after each save.
+
+    Each training run writes 6 files (3 .pkl + 3 .pkl.hmac); without
+    retention the models dir grows unboundedly (observed 666 .pkl files).
+    The currently activated version is always retained even if older.
+    """
+
+    def _prune_old_versions(self, keep: dict[str, str] | None = None) -> None:
+        """Delete old model artifacts beyond the retention window.
+
+        Args:
+            keep: Filenames to never delete (defaults to the current
+                ``latest.json`` pointers — the active version).
+        """
+        protected = set((keep or {}).values())
+        # Group artifacts by version tag parsed from filenames:
+        #   classifier-20260806_095623_1e5fcd.pkl(.hmac)
+        versions: dict[str, list[Path]] = {}
+        for path in self.models_dir.glob("*.pkl*"):
+            stem = path.name
+            # strip .pkl / .pkl.hmac suffix
+            base = stem.removesuffix(".hmac").removesuffix(".pkl")
+            if "-" not in base:
+                continue
+            tag = base.split("-", 1)[1]
+            versions.setdefault(tag, []).append(path)
+
+        sorted_tags = sorted(versions.keys(), reverse=True)
+        for tag in sorted_tags[self._MAX_KEPT_VERSIONS:]:
+            for path in versions[tag]:
+                if path.name in protected:
+                    continue
+                with suppress(OSError):
+                    path.unlink()
+                    logger.debug("Pruned old model artifact {}", path.name)
 
     def readiness_status(self) -> dict[str, Any]:
         reasons: list[str] = []
