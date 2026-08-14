@@ -247,6 +247,14 @@ export default function Dashboard() {
                 {collector.status} · 实时连接：{realtimeStatus}
               </div>
             )}
+            {/* Current collection interval (architecture plan H) — adaptive:
+                widens while idle to save battery. */}
+            {health?.collector?.current_interval_s != null && (
+              <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
+                采集间隔：{health.collector.current_interval_s}s
+                {health.collector.current_interval_s > 5 ? "（空闲节能模式）" : ""}
+              </div>
+            )}
             {/* Collector health details (architecture plan B) — explains why
                 data may be missing: recent failures, recovery backoff, sleeps. */}
             {(health?.collector?.failure_count_7d != null || health?.collector?.last_error) && (

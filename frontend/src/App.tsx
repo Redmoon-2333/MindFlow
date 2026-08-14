@@ -1,21 +1,26 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
 import "./theme.css";
 import { AUTH_REQUIRED_EVENT, bootstrapFromFragment, hasAuthenticatedSession } from "./api";
 import { realtimeClient, requestNotificationPermission } from "./realtime";
-import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
-import Focus from "./pages/Focus";
-import Activities from "./pages/Activities";
-import Analytics from "./pages/Analytics";
-import Reports from "./pages/Reports";
-import Intervention from "./pages/Intervention";
-import Panel from "./pages/Panel";
-import Chat from "./pages/Chat";
-import Settings from "./pages/Settings";
-import Diagnostics from "./pages/Diagnostics";
-import ModelCenter from "./pages/ModelCenter";
-import NotFound from "./pages/NotFound";
+import ErrorBoundary from "./components/ErrorBoundary";
+
+// Route-level code splitting (architecture review 💡 19): heavy pages
+// (ModelCenter, Diagnostics, Reports) load on demand to shrink the initial
+// bundle.
+const Login = lazy(() => import("./pages/Login"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Focus = lazy(() => import("./pages/Focus"));
+const Activities = lazy(() => import("./pages/Activities"));
+const Analytics = lazy(() => import("./pages/Analytics"));
+const Reports = lazy(() => import("./pages/Reports"));
+const Intervention = lazy(() => import("./pages/Intervention"));
+const Panel = lazy(() => import("./pages/Panel"));
+const Chat = lazy(() => import("./pages/Chat"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Diagnostics = lazy(() => import("./pages/Diagnostics"));
+const ModelCenter = lazy(() => import("./pages/ModelCenter"));
+const NotFound = lazy(() => import("./pages/NotFound"));
 
 const NAV = [
   { to: "/", label: "仪表盘" },
@@ -51,6 +56,11 @@ function Layout({ children }: { children: React.ReactNode }) {
 
 function AppRoutes() {
   return (
+    <Suspense fallback={
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "60vh" }}>
+        <div className="spinner" />
+      </div>
+    }>
     <Routes>
       <Route path="/" element={<Dashboard />} />
       <Route path="/focus" element={<Focus />} />
@@ -64,7 +74,8 @@ function AppRoutes() {
       <Route path="/diagnostics" element={<Diagnostics />} />
       <Route path="/model-center" element={<ModelCenter />} />
       <Route path="*" element={<NotFound />} />
-    </Routes>
+      </Routes>
+    </Suspense>
   );
 }
 
@@ -127,14 +138,16 @@ export default function App() {
   }
 
   return (
-    <BrowserRouter>
-      {!authenticated ? (
-        <Login bootstrapError={bootstrapError} onClearBootstrapError={() => setBootstrapError(null)} />
-      ) : (
-        <Layout>
-          <AppRoutes />
-        </Layout>
-      )}
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        {!authenticated ? (
+          <Login bootstrapError={bootstrapError} onClearBootstrapError={() => setBootstrapError(null)} />
+        ) : (
+          <Layout>
+            <AppRoutes />
+          </Layout>
+        )}
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

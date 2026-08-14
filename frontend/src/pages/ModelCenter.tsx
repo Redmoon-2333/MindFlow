@@ -698,6 +698,17 @@ export default function ModelCenter() {
                      "仅规则引擎"}
                   </span>
                 </div>
+                <div className="mc-model-mode">
+                  <span className="mode-label">部署档位</span>
+                  <span className={modelStatus.deployment_tier === "full_ready" ? "badge badge-success" :
+                    modelStatus.deployment_tier === "low_confidence" ? "badge badge-warning" :
+                    "badge badge-info"}>
+                    {modelStatus.deployment_tier === "full_ready" ? "已就绪（全量）" :
+                     modelStatus.deployment_tier === "low_confidence" ? "早期模式（低置信度）" :
+                     modelStatus.deployment_tier ? "影子模式" :
+                     "—"}
+                  </span>
+                </div>
                 {modelStatus.message && (
                   <div className="mt8" style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
                     {modelStatus.message}

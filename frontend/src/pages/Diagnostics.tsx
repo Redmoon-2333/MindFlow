@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { getAIRuns, getAIRunDetail, getFocusPrediction, getHealthLive, getHealthReady, getErrorMessage } from "../api";
-import type { AIRunItem, AIRunDetail, FocusPredictionResponse, HealthLiveResponse, HealthReadyResponse } from "../api";
+import { getAIRuns, getAIRunDetail, getFocusPrediction, getHealthLive, getHealthReady, getErrorMessage, getAnalysisGraph } from "../api";
+import type { AIRunItem, AIRunDetail, AnalysisGraphTopology, FocusPredictionResponse, HealthLiveResponse, HealthReadyResponse } from "../api";
 import { toFocusPredictionView } from "../prediction-state";
 
 function statusBadgeClass(status: string): string {
@@ -39,6 +39,8 @@ export default function Diagnostics() {
   const [live, setLive] = useState<HealthLiveResponse | null>(null);
   const [ready, setReady] = useState<HealthReadyResponse | null>(null);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const [graphTopology, setGraphTopology] = useState<AnalysisGraphTopology | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
 
   const fetchRuns = useCallback(async () => {
     setLoading(true);
@@ -51,6 +53,18 @@ export default function Diagnostics() {
       setError(getErrorMessage(e, "加载 AI 运行记录失败"));
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const fetchGraphTopology = useCallback(async () => {
+    setGraphLoading(true);
+    try {
+      const data = await getAnalysisGraph();
+      setGraphTopology(data);
+    } catch {
+      setGraphTopology(null);
+    } finally {
+      setGraphLoading(false);
     }
   }, []);
 
@@ -70,10 +84,11 @@ export default function Diagnostics() {
 
   useEffect(() => {
     fetchRuns();
+    fetchGraphTopology();
     getFocusPrediction().then(setPrediction).catch(() => {});
     getHealthLive().then(setLive).catch(() => {});
     getHealthReady().then(setReady).catch(() => {});
-  }, [fetchRuns]);
+  }, [fetchRuns, fetchGraphTopology]);
 
   const predictionView = prediction ? toFocusPredictionView(prediction) : null;
 
@@ -114,6 +129,40 @@ export default function Diagnostics() {
           </button>
         </div>
       )}
+
+      {/* Analysis graph topology (architecture plan G/1.2) — shows how the
+          analysis pipeline is wired. */}
+      <div className="card mb24">
+        <div className="flex-between mb16">
+          <h3 style={{ marginBottom: 0 }}>分析图拓扑</h3>
+          {graphLoading && <div className="spinner" />}
+        </div>
+        {graphTopology?.available ? (
+          <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+            <div style={{ marginBottom: 8 }}>
+              节点（{graphTopology.nodes.length}）：{graphTopology.nodes.join(" → ") || "—"}
+            </div>
+            <div>
+              边（{graphTopology.edges.length}）：
+              {graphTopology.edges.length > 0 ? (
+                <div style={{ fontFamily: "monospace", fontSize: 12, marginTop: 4, lineHeight: 1.8 }}>
+                  {graphTopology.edges.map((e, i) => (
+                    <div key={i}>
+                      {e.from} → {e.to}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                "—"
+              )}
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>
+            {graphLoading ? "加载中..." : "分析图当前不可用（未启用 LLM 分析工作流）"}
+          </div>
+        )}
+      </div>
 
       {/* Health & Prediction Quick Cards */}
       <div className="kpi-row">

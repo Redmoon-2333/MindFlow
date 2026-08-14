@@ -603,6 +603,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Ai Usage
+         * @description Return AI/LLM usage summary for the settings page (architecture plan C).
+         *
+         *     Aggregates persisted analysis records (llm_cost_usd, model) plus workflow
+         *     run counts so the user sees what the AI features actually cost. When the
+         *     app runs in rule-engine mode (no API key) the payload reports a zero-cost
+         *     local mode.
+         */
+        get: operations["get_ai_usage_api_v1_analytics_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analytics/training-readiness": {
         parameters: {
             query?: never;
@@ -991,6 +1016,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ai/graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Analysis Graph Topology
+         * @description Return the AnalysisGraph node/edge topology for diagnostics.
+         *
+         *     Architecture plan G/1.2: lets the user see how the analysis pipeline is
+         *     wired (cache check -> evidence -> crisis gate -> panel -> fallbacks ->
+         *     persistence). Pure structural metadata — no user data involved.
+         */
+        get: operations["get_analysis_graph_topology_api_v1_ai_graph_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/telemetry/status": {
         parameters: {
             query?: never;
@@ -1367,6 +1416,8 @@ export interface components {
             switch_frequency: number;
             /** Pattern Summary */
             pattern_summary: string;
+            /** Ai Insight */
+            ai_insight?: string | null;
             /** Created At */
             created_at?: string | null;
             /** Total Focus Minutes */
@@ -2801,6 +2852,26 @@ export interface operations {
             };
         };
     };
+    get_ai_usage_api_v1_analytics_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
     get_training_readiness_api_v1_analytics_training_readiness_get: {
         parameters: {
             query?: never;
@@ -3271,6 +3342,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_analysis_graph_topology_api_v1_ai_graph_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
                 };
             };
         };

@@ -155,6 +155,9 @@ class CollectorService:
             "status": self._status,
             "recovery_attempts": self.recovery_attempts,
             "last_error": self.last_error,
+            # Currently effective tick interval (architecture plan H): the
+            # widened idle interval when the machine is idle, else the base.
+            "current_interval_s": self._interval_s,
             "next_retry_at": self.next_retry_at.isoformat()
             if self.next_retry_at is not None
             else None,

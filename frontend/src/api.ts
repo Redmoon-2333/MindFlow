@@ -169,6 +169,7 @@ export interface HealthData {
     last_failure_at?: string | null;
     last_failure_reason?: string | null;
     sleep_count_7d?: number;
+    current_interval_s?: number;
   };
   database: { status: "ok" | "error"; connected: boolean };
   migration: { applied: boolean };
@@ -336,6 +337,9 @@ export interface ModelStatus {
   reasons?: string[];
   model_name?: string;
   last_updated?: string;
+  /** Progressive deployment tier (architecture plan E): full_ready |
+   *  low_confidence | shadow. */
+  deployment_tier?: "full_ready" | "low_confidence" | "shadow";
 }
 
 export interface AttributionResult {
@@ -748,6 +752,15 @@ export const getFocusPrediction = async (): Promise<FocusPredictionResponse> =>
 
 export const getHealthLive = () =>
   request<HealthLiveResponse>("/health/live");
+
+export const getAnalysisGraph = () =>
+  request<AnalysisGraphTopology>("/ai/graph");
+
+export interface AnalysisGraphTopology {
+  nodes: string[];
+  edges: { from: string; to: string }[];
+  available: boolean;
+}
 
 export const getHealthReady = () =>
   request<HealthReadyResponse>("/health/ready");
