@@ -13,7 +13,7 @@ Key contract:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
@@ -63,7 +63,7 @@ class FocusPrediction:
     data_age_s: float | None = None
     model_version: str | None = None
     feature_schema_version: int = FEATURE_SCHEMA_VERSION
-    top_factors: list[dict[str, float | str]] = ()
+    top_factors: list[dict[str, float | str]] = field(default_factory=list)
     explanation_method: str = ""
     reason: str = ""
 

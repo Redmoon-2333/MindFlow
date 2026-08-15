@@ -26,12 +26,17 @@ from __future__ import annotations
 import asyncio
 import contextvars
 from dataclasses import dataclass, field
-from typing import Annotated, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypedDict, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from loguru import logger
+
+if TYPE_CHECKING:
+    # Private langgraph typing alias; used only as a return-type annotation so
+    # it is never evaluated at runtime (``from __future__ import annotations``).
+    from langgraph.graph._node import StateNode
 
 from mindflow.agents.conflict import ConflictReport, detect_conflict
 from mindflow.agents.disagreement import (
@@ -134,7 +139,7 @@ async def _call_with_budget(
 
 
 async def _safe_call_with_budget(
-    runtime,
+    runtime: Any,  # object from orchestrator to avoid circular import
     gateway: PanelLLMGateway,
     expert: ExpertDef,
     user_message: str,
@@ -167,7 +172,7 @@ def _reduce_attribution_opinions(
     """
     if isinstance(update, tuple):
         # LangGraph channel merge — apply each element individually
-        result = existing
+        result: tuple[ExpertOpinion, ...] = existing or ()
         for op in update:
             result = append_opinion(result, op)
         return result
@@ -180,7 +185,7 @@ def _reduce_transcript(
 ) -> tuple[TranscriptEntry, ...]:
     """LangGraph-compatible adapter for ``append_transcript``."""
     if isinstance(update, tuple):
-        result = existing
+        result: tuple[TranscriptEntry, ...] = existing or ()
         for entry in update:
             result = append_transcript(result, entry)
         return result
@@ -234,7 +239,9 @@ class PanelGraphState(TypedDict, total=False):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def make_analyst_node(gateway: PanelLLMGateway):
+def make_analyst_node(
+    gateway: PanelLLMGateway,
+) -> StateNode[PanelGraphState, None]:
     """Create the analyst call node (round 0).
 
     Calls the analyst LLM, parses the output, and performs inline
@@ -293,7 +300,9 @@ def make_analyst_node(gateway: PanelLLMGateway):
     return analyst_node
 
 
-def make_attribution_node(gateway: PanelLLMGateway):
+def make_attribution_node(
+    gateway: PanelLLMGateway,
+) -> StateNode[PanelGraphState, None]:
     """Create the multi-expert attribution node (round 1).
 
     Calls all three attribution experts in parallel via asyncio.gather
@@ -520,7 +529,9 @@ async def conflict_detection_node(state: PanelGraphState) -> dict[str, Any]:
     }
 
 
-def make_rebuttal_node(gateway: PanelLLMGateway):
+def make_rebuttal_node(
+    gateway: PanelLLMGateway,
+) -> StateNode[PanelGraphState, None]:
     """Create the rebuttal round node (round 2a).
 
     All three attribution experts rebut each other in parallel
@@ -613,7 +624,9 @@ def make_rebuttal_node(gateway: PanelLLMGateway):
     return rebuttal_node
 
 
-def make_moderator_node(gateway: PanelLLMGateway):
+def make_moderator_node(
+    gateway: PanelLLMGateway,
+) -> StateNode[PanelGraphState, None]:
     """Create the moderator synthesis node (round 2b/3/4).
 
     Supports both first-pass and redo (when critic rejected).
@@ -689,7 +702,9 @@ def make_moderator_node(gateway: PanelLLMGateway):
     return moderator_node
 
 
-def make_critic_node(gateway: PanelLLMGateway):
+def make_critic_node(
+    gateway: PanelLLMGateway,
+) -> StateNode[PanelGraphState, None]:
     """Create the critic validation node (round 3/4/5)."""
 
     async def critic_node(state: PanelGraphState) -> dict[str, Any]:
@@ -1056,12 +1071,23 @@ class PanelGraph:
             if analyst is not None:
                 trace.append({"node": "analyst", "type": "opinion", **(_opinion_trace(analyst))})
             for opinion in result.get("attribution_opinions", ()):
-                trace.append({"node": "attribution", "type": "opinion", **(_opinion_trace(opinion))})
+                trace.append(
+                    {"node": "attribution", "type": "opinion", **(_opinion_trace(opinion))}
+                )
             if result.get("moderator_verdict") is not None:
-                trace.append({"node": "moderator", "type": "verdict", "payload": result["moderator_verdict"]})
+                trace.append(
+                    {"node": "moderator", "type": "verdict", "payload": result["moderator_verdict"]}
+                )
             if result.get("critic_result") is not None:
                 critic = result["critic_result"]
-                trace.append({"node": "critic", "type": "critic", "approved": bool(critic.approved), "issues": list(critic.issues)})
+                trace.append(
+                    {
+                        "node": "critic",
+                        "type": "critic",
+                        "approved": bool(critic.approved),
+                        "issues": list(critic.issues),
+                    }
+                )
             result["trace"] = trace
 
         return result

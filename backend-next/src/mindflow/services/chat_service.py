@@ -180,7 +180,7 @@ class ChatService:
         intervention_adapter = InterventionHistoryTool(
             intervention_repo=intervention_repo, timezone=self._timezone
         )
-        self._tool_adapters: list = [
+        self._tool_adapters: list[Any] = [
             evidence_adapter,
             analysis_adapter,
             panel_adapter,

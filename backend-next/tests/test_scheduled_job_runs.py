@@ -217,5 +217,9 @@ async def test_budget_reservation_idempotency_key_unique_insert_fails(
         await session.execute(sa.insert(workflow_budget_reservations).values(**values))
 
         with __import__("pytest").raises(Exception):
-            await session.execute(sa.insert(workflow_budget_reservations).values(**{**values, "id": "id-2"}))
+            await session.execute(
+                sa.insert(workflow_budget_reservations).values(
+                    **{**values, "id": "id-2"}
+                )
+            )
             await session.commit()

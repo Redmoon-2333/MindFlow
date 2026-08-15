@@ -32,7 +32,7 @@ from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 # ── Feature generation parameters ──────────────────────────────────────────
 
 # Interaction profiles per major category (keypress, mouse, scroll intensity)
-_INTERACTION_PROFILES: dict[str, dict[str, float | tuple[float, float]]] = {
+_INTERACTION_PROFILES: dict[str, dict[str, float]] = {
     "cs": {
         "keypress_mean": 45.0,
         "keypress_std": 25.0,
@@ -202,7 +202,7 @@ def _compute_daily_patterns(
     params: ArchetypeParams,
     target_date: date,
     rng: random.Random,
-) -> list[dict[str, float]]:
+) -> list[dict[str, Any]]:
     """Generate 288 (24h × 12 windows/h) feature windows for one day.
 
     Each window is a dict of 24 v2 feature values.
@@ -254,7 +254,7 @@ def _compute_daily_patterns(
             episode_start_window = 14 * 12
             episode_end_window = 22 * 12
 
-    windows: list[dict[str, float]] = []
+    windows: list[dict[str, Any]] = []
     interaction = _INTERACTION_PROFILES.get(params.major, _INTERACTION_PROFILES["cs"])
 
     for window_idx in range(_WINDOWS_PER_DAY):
@@ -267,7 +267,11 @@ def _compute_daily_patterns(
 
         # ---- Determine window state ----
         is_sleep = _is_sleep_hour(hour_float_sleep, hour_float_wake, window_hour)
-        is_episode = (episode_start_window <= window_idx < episode_end_window) if has_procrastination else False
+        is_episode = (
+            (episode_start_window <= window_idx < episode_end_window)
+            if has_procrastination
+            else False
+        )
         is_productive = not is_sleep and not is_episode and not is_weekend_flag
 
         # ---- Generate features ----
@@ -339,7 +343,6 @@ def _generate_window_features(
         longest_ratio = rng.uniform(0.0, 0.3)
         active_ratio = 1.0 - idle_ratio
         top_app_ratio = rng.uniform(0.0, 0.5)
-        switch_count = app_switch
         browser_ratio = rng.uniform(0.0, 0.1)
         audible_browser = 0.0
         domain_switch = 0
@@ -354,8 +357,11 @@ def _generate_window_features(
         longest_ratio = rng.uniform(0.3, 0.7)
         active_ratio = 0.85 + rng.uniform(0.0, 0.15)
         top_app_ratio = rng.uniform(0.3, 0.6)
-        switch_count = app_switch + rng.randint(0, 3)
-        browser_ratio = rng.uniform(0.6, 1.0) if params.expected_entertainment_ratio_mean > 0.3 else rng.uniform(0.2, 0.6)
+        browser_ratio = (
+            rng.uniform(0.6, 1.0)
+            if params.expected_entertainment_ratio_mean > 0.3
+            else rng.uniform(0.2, 0.6)
+        )
         audible_browser = browser_ratio * rng.uniform(0.3, 0.8)
         domain_switch = max(0, app_switch - rng.randint(0, 2))
         top_domain_ratio = rng.uniform(0.3, 0.8)
@@ -369,7 +375,6 @@ def _generate_window_features(
         longest_ratio = rng.uniform(0.6, 1.0)
         active_ratio = 0.92 + rng.uniform(0.0, 0.08)
         top_app_ratio = rng.uniform(0.5, 1.0)
-        switch_count = app_switch + rng.randint(0, 2)
         browser_ratio = rng.uniform(0.1, 0.5)
         audible_browser = browser_ratio * rng.uniform(0.0, 0.1)
         domain_switch = max(0, app_switch - rng.randint(0, 1))
@@ -384,7 +389,6 @@ def _generate_window_features(
         longest_ratio = rng.uniform(0.3, 0.7)
         active_ratio = 0.7 + rng.uniform(0.0, 0.2)
         top_app_ratio = rng.uniform(0.3, 0.6)
-        switch_count = app_switch + rng.randint(0, 4)
         browser_ratio = rng.uniform(0.3, 0.7)
         audible_browser = browser_ratio * rng.uniform(0.0, 0.3)
         domain_switch = max(0, app_switch - rng.randint(0, 2))
@@ -398,7 +402,6 @@ def _generate_window_features(
         longest_ratio = 0.5
         active_ratio = 0.9
         top_app_ratio = 0.5
-        switch_count = 1
         browser_ratio = 0.3
         audible_browser = 0.0
         domain_switch = 0
@@ -539,7 +542,10 @@ def _compute_explicit_label(
         label_str = "distracted"
 
     return {
-        "session_id": f"syn_{archetype_id}_{window_row['window_start_utc']}_{window_row['feature_schema_version']}",
+        "session_id": (
+            f"syn_{archetype_id}_{window_row['window_start_utc']}_"
+            f"{window_row['feature_schema_version']}"
+        ),
         "start_time": window_row["window_start_utc"],
         "end_time": window_row["window_end_utc"],
         "label": label_str,
@@ -580,8 +586,6 @@ def generate_v2_synthetic_data(
     """
     from mindflow.train.user_profiles import PROFILES
 
-    rng = random.Random(seed)
-
     # Select archetypes
     all_archetypes = list(PROFILES.values())
     if archetype_ids is not None:
@@ -615,10 +619,8 @@ def generate_v2_synthetic_data(
                     fb = _compute_explicit_label(w, label, archetype_id=params.profile_id)
                     all_feedback.append(fb)
 
-    # Ensure the data has multiple users scenario: prepend archetype_id to session_id
-    for fb in all_feedback:
-        pass  # session_id already has timestamp; unique across archetypes
-
+    # session_id already includes a timestamp, so it stays unique across
+    # archetypes without any extra user prefix.
     print(
         f"Generated {len(all_windows)} v2 feature windows and "
         f"{len(all_feedback)} feedback entries from {len(archetypes)} archetypes"

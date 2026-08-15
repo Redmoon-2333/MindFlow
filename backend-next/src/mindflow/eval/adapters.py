@@ -74,9 +74,9 @@ def panel_analyzer(gateway: PanelLLMGateway) -> AnalyzerFunc:
         valid_metrics = frozenset(
             evidence_catalog_ids(build_evidence_catalog(bundle))
         )
-        panel_state: PanelGraphState = {  # type: ignore[typeddict-item]
+        panel_state: PanelGraphState = {
             "bundle_json": bundle_json,
-            "valid_metrics": valid_metrics,
+            "valid_metrics": tuple(sorted(valid_metrics)),
             "attribution_opinions": (),
             "transcript": (),
             "analyst_opinion": None,

@@ -76,11 +76,12 @@ parse, but changing them no longer selects a legacy implementation.
 - Auth uses bootstrap tokens + session cookies. `/health` and `/docs` are exempt.
 - Always test against an isolated temp data dir and port, never the user's production DB.
 
-## Known Quality Debt
+## Quality Gates
 
-- **Ruff**: 94 findings (not clean; run `uv run python -m ruff check src tests` to see).
-- **Mypy strict**: 158 errors in 16 files (not clean; run `uv run python -m mypy --strict src/mindflow`).
-- These are visibility gates, tracked as known debt. Do not claim green.
+- **Ruff**: 0 findings (`uv run python -m ruff check src tests` → `All checks passed!`, 2026-08-16).
+- **Mypy strict**: 0 errors in 163 source files (`uv run python -m mypy --strict src/mindflow` → `Success`, 2026-08-16).
+- **Pytest**: 2201+ passing (baseline 2026-08-16).
+- Keep these green: any edit that regresses them must be fixed before finishing.
 
 ## Pointers
 

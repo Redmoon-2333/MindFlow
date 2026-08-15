@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.ids import new_id
-from mindflow.infrastructure.schema import baseline_models
+from mindflow.infrastructure.schema import baseline_models as baseline_models
 
 # ── Repository ────────────────────────────────────────────────────────
 

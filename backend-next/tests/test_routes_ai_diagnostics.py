@@ -53,7 +53,9 @@ _SAMPLE_RUN_ROW: dict[str, object] = {
 _CANARY_PII: dict[str, object] = {
     "prompt": "sk-xxx-api-key-secret",
     "chat_content": "用户说：我今天很焦虑，需要医生帮助诊断。我的社保号是123-45-6789。",
-    "evidence": json.dumps({"window_title": "银行账户 - 张三", "personal_id": "110101199001011234"}),
+    "evidence": json.dumps(
+        {"window_title": "银行账户 - 张三", "personal_id": "110101199001011234"}
+    ),
     "api_key": "sk-canary-api-key-000",
 }
 

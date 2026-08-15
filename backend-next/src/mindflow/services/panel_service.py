@@ -17,7 +17,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mindflow.agents.types import PanelVerdict, TranscriptEntry
+from mindflow.agents.types import PanelSource, PanelVerdict, TranscriptEntry
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
@@ -45,7 +45,7 @@ def analysis_dict_to_panel_verdict(
     escalated: bool | None = None,
     transcript: tuple[TranscriptEntry, ...] | None = None,
     call_count: int | None = None,
-    source: str | None = None,
+    source: PanelSource | None = None,
 ) -> PanelVerdict:
     """Convert an assessment dict (LLM output or storage) to a ``PanelVerdict``.
 
@@ -130,10 +130,11 @@ def analysis_dict_to_panel_verdict(
     dissent_raw: list[str] | Any = assessment.get("dissent")
     if not isinstance(dissent_raw, list):
         panel_data = assessment.get("panel_transcript", {})
-        if isinstance(panel_data, dict):
-            dissent_raw = panel_data.get("dissent", [])
-        else:
-            dissent_raw = []
+        dissent_raw = (
+            panel_data.get("dissent", [])
+            if isinstance(panel_data, dict)
+            else []
+        )
 
     if not isinstance(dissent_raw, list):
         dissent_raw = []
@@ -188,7 +189,7 @@ def analysis_dict_to_panel_verdict(
 
     # ── Parse source ────────────────────────────────────────────────────
     if source is not None:
-        final_source = source  # type: ignore[assignment]
+        final_source = source
     else:
         source_raw = assessment.get("source")
         if source_raw == "panel" or source_raw == "single_expert":
@@ -213,7 +214,9 @@ def analysis_dict_to_panel_verdict(
     retry_after_s = assessment.get("retry_after_s")
     if not isinstance(retry_after_s, int) or isinstance(retry_after_s, bool):
         retry_after_s = None
-    insufficient_data = bool(assessment.get("insufficient_data", panel_data.get("insufficient_data", False)))
+    insufficient_data = bool(
+        assessment.get("insufficient_data", panel_data.get("insufficient_data", False))
+    )
     uncertainty = assessment.get("uncertainty")
     if not isinstance(uncertainty, (int, float)) or isinstance(uncertainty, bool):
         uncertainty = None
@@ -314,7 +317,7 @@ class PanelService:
             (source="single_expert", "ollama", or "rule_engine").
         """
         # ── Framework-neutral delegation path ──────────────────────────────────
-        workflow_port = getattr(self, "_workflow_port", None)
+        workflow_port = self._workflow_port
         if workflow_port is not None:
             request = AnalysisRequest(
                 user_id=user_id,

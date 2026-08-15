@@ -378,6 +378,17 @@ class WorkflowRunStorePort(Protocol):
 
     async def get_run(self, run_id: str) -> WorkflowRunResult | None: ...
 
+    async def save_node_event(
+        self,
+        run_id: str,
+        node_name: str,
+        *,
+        status: str = "completed",
+        payload: dict[str, Any] | None = None,
+        error_category: str | None = None,
+        duration_ms: int | None = None,
+    ) -> None: ...
+
     async def update_status(
         self, run_id: str, status: RunStatus, *,
         result: AnalysisResult | None = None,

@@ -37,10 +37,10 @@ uv run python -m pytest tests/ -q
 uv run python -m pytest tests/test_llm_client.py -v
 uv run python -m pytest tests/test_features.py::test_calculate_focus_score -v
 
-# Lint — Ruff (94 findings currently open)
+# Lint — Ruff (green since 2026-08-16)
 uv run python -m ruff check src tests
 
-# Type check — strict mypy (158 errors in 16 files currently open)
+# Type check — strict mypy (green since 2026-08-16)
 uv run python -m mypy --strict src/mindflow
 
 # Database migrations
@@ -186,14 +186,16 @@ The following verification was run after the model-center implementation, not as
 - `PanelGraph` 是唯一活动面板图；旧 `PanelOrchestrator` 类已在 v2 cutover 中删除，解析/校验 helper 保留在 `agents/orchestrator.py`。
 - 实验统一使用 `scripts/run_experiments.py`，最终报告见 `data/experiments/20260731_final/`。
 
-## Quality Debt (Transparent)
+## Quality Gates (Green since 2026-08-16)
 
-The following commands are **required visibility gates** but are **not currently green**:
+The following commands are **required visibility gates** and are **green**:
 
-- **Ruff**: 94 findings (run `uv run python -m ruff check src tests`). Planned cleanup under slop-reduction workflow.
-- **Mypy (strict)**: 158 errors across 16 files (run `uv run python -m mypy --strict src/mindflow`). Strict mode enforcement is ongoing.
+- **Ruff**: 0 findings (`uv run python -m ruff check src tests` → `All checks passed!`).
+- **Mypy (strict)**: 0 errors across 163 source files (`uv run python -m mypy --strict src/mindflow` → `Success`).
+- **Pytest**: 2201+ passing (`uv run python -m pytest tests/ -q`).
 
-Do NOT claim lint or type-clean status. These are tracked as known debt, not regressions.
+Any change that regresses one of these gates must be fixed before the work is
+considered done.
 
 ## Dataset Context
 

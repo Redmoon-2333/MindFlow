@@ -1,4 +1,4 @@
-﻿"""Atomic persistence for workflow runs, node events, and budget reservations.
+"""Atomic persistence for workflow runs, node events, and budget reservations.
 
 Implements ``WorkflowRunStorePort`` and ``BudgetReservationPort`` from
 ``mindflow.ports`` against the SQLAlchemy Core tables defined in
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -106,11 +106,10 @@ class WorkflowRunsRepository:
                     .where(workflow_runs.c.idempotency_key == idempotency_key)
                 )
                 result = await session.execute(select_stmt)
-                existing = result.scalar_one()
-                return existing  # type: ignore[return-value]
+                return cast(str, result.scalar_one())
             else:
-                stmt = sa.insert(workflow_runs).values(**values)
-                await session.execute(stmt)
+                insert_stmt = sa.insert(workflow_runs).values(**values)
+                await session.execute(insert_stmt)
         return run_id
 
     async def get_run(self, run_id: str) -> WorkflowRunResult | None:
@@ -256,7 +255,9 @@ class WorkflowRunsRepository:
             "completed_at": now.isoformat(),
             "duration_ms": duration_ms,
             "error_category": error_category,
-            "payload_json": json.dumps(payload, ensure_ascii=False) if payload is not None else None,
+            "payload_json": (
+                json.dumps(payload, ensure_ascii=False) if payload is not None else None
+            ),
         }
         async with self._session_factory() as session, session.begin():
             await session.execute(sa.insert(workflow_node_events).values(**values))

@@ -228,7 +228,9 @@ class LLMService:
         summary_json = serialize_summary(summary)
 
         # ── 5-7. Three-tier degradation ───────────────────────────────
-        assessment, source, degraded, degradation_path = await self._run_degradation_chain(summary, summary_json)
+        assessment, source, degraded, degradation_path = await self._run_degradation_chain(
+            summary, summary_json
+        )
 
         # ── 8. Persist ────────────────────────────────────────────────
         await self._persist_assessment(
@@ -245,7 +247,7 @@ class LLMService:
             assessment=assessment,
             source=source,
             degraded=degraded,
-            degradation_path=degradation_path,
+            degradation_path=tuple(degradation_path),
         )
 
     async def _persist_assessment(

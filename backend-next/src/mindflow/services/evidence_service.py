@@ -459,7 +459,13 @@ class EvidenceBundleBuilder:
 
         return items
 
-    async def _build_ml_items(self, events: list[ActivityEvent], window_start: datetime, window_end: datetime, user_id: int = 1) -> list[EvidenceItem]:
+    async def _build_ml_items(
+        self,
+        events: list[ActivityEvent],
+        window_start: datetime,
+        window_end: datetime,
+        user_id: int = 1,
+    ) -> list[EvidenceItem]:
         """Run ML inference via ``FocusPredictionService`` and return enrichment EvidenceItems.
 
         Uses v2 feature windows (privacy-preserving, 5-min) instead of the
@@ -526,7 +532,9 @@ class EvidenceBundleBuilder:
                     severity=ml_focus_sev,
                     confidence=confidence,
                     source="rf_classifier_v2",
-                    human_readable=_format_ml_focus_readable(focus_proba, ml_focus_sev) + staleness_note,
+                    human_readable=(
+                        _format_ml_focus_readable(focus_proba, ml_focus_sev) + staleness_note
+                    ),
                 )
             )
 

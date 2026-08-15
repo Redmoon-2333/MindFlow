@@ -298,10 +298,12 @@ def test_span_hierarchy_parent_child(
 
     with _global_provider(provider):
         tracer = get_mindflow_tracer()
-        with tracer.start_as_current_span("workflow_run"):
-            with tracer.start_as_current_span("graph_node.analyst"):
-                with tracer.start_as_current_span("model_call"):
-                    pass
+        with (
+            tracer.start_as_current_span("workflow_run"),
+            tracer.start_as_current_span("graph_node.analyst"),
+            tracer.start_as_current_span("model_call"),
+        ):
+            pass
 
     in_memory_exporter.force_flush()
     assert len(in_memory_exporter.spans) >= 3
@@ -333,7 +335,13 @@ def test_span_hierarchy_parent_child(
 
 def test_error_category_sanitize_valid() -> None:
     """Valid error categories are preserved."""
-    for cat in ("network_timeout", "rate_limited", "invalid_response", "parser_error", "unavailable"):
+    for cat in (
+        "network_timeout",
+        "rate_limited",
+        "invalid_response",
+        "parser_error",
+        "unavailable",
+    ):
         assert _sanitize_error_category(cat) == cat
 
 
@@ -376,9 +384,11 @@ def test_workflow_run_span_context(
 ) -> None:
     """workflow_run_span context manager creates spans with correct name."""
     provider = _make_provider(in_memory_exporter)
-    with _global_provider(provider):
-        with workflow_run_span(source="scheduler", graph_version=2) as span:
-            assert span.name == "workflow_run"
+    with (
+        _global_provider(provider),
+        workflow_run_span(source="scheduler", graph_version=2) as span,
+    ):
+        assert span.name == "workflow_run"
 
 
 def test_graph_node_span_context(
@@ -395,9 +405,13 @@ def test_model_call_span_context(
 ) -> None:
     """model_call_span includes gen_ai semantic conventions."""
     provider = _make_provider(in_memory_exporter)
-    with _global_provider(provider):
-        with model_call_span(model_name="deepseek-chat", call_count=2, token_estimate=1000) as span:
-            assert span.name == "model_call"
+    with (
+        _global_provider(provider),
+        model_call_span(
+            model_name="deepseek-chat", call_count=2, token_estimate=1000
+        ) as span,
+    ):
+        assert span.name == "model_call"
 
 
 def test_tool_call_span_context(
@@ -414,9 +428,11 @@ def test_routing_decision_span_context(
 ) -> None:
     """routing_decision_span includes the route."""
     provider = _make_provider(in_memory_exporter)
-    with _global_provider(provider):
-        with routing_decision_span("panel", source="conflict_detection") as span:
-            assert span.name == "routing_decision.panel"
+    with (
+        _global_provider(provider),
+        routing_decision_span("panel", source="conflict_detection") as span,
+    ):
+        assert span.name == "routing_decision.panel"
 
 
 def test_retry_span_context(
@@ -424,9 +440,11 @@ def test_retry_span_context(
 ) -> None:
     """retry_span includes attempt number and error category."""
     provider = _make_provider(in_memory_exporter)
-    with _global_provider(provider):
-        with retry_span(attempt=3, error_category="network_timeout") as span:
-            assert span.name == "retry"
+    with (
+        _global_provider(provider),
+        retry_span(attempt=3, error_category="network_timeout") as span,
+    ):
+        assert span.name == "retry"
 
 
 def test_fallback_span_context(
@@ -434,9 +452,15 @@ def test_fallback_span_context(
 ) -> None:
     """fallback_span includes from/to tiers."""
     provider = _make_provider(in_memory_exporter)
-    with _global_provider(provider):
-        with fallback_span(from_tier="L1_deepseek", to_tier="L2_ollama", error_category="rate_limited") as span:
-            assert span.name == "fallback.L1_deepseek_to_L2_ollama"
+    with (
+        _global_provider(provider),
+        fallback_span(
+            from_tier="L1_deepseek",
+            to_tier="L2_ollama",
+            error_category="rate_limited",
+        ) as span,
+    ):
+        assert span.name == "fallback.L1_deepseek_to_L2_ollama"
 
 
 def test_persistence_span_context(
@@ -444,9 +468,11 @@ def test_persistence_span_context(
 ) -> None:
     """persistence_span includes operation name."""
     provider = _make_provider(in_memory_exporter)
-    with _global_provider(provider):
-        with persistence_span("checkpoint", token_estimate=2048) as span:
-            assert span.name == "persistence.checkpoint"
+    with (
+        _global_provider(provider),
+        persistence_span("checkpoint", token_estimate=2048) as span,
+    ):
+        assert span.name == "persistence.checkpoint"
 
 
 def test_span_context_propagation(

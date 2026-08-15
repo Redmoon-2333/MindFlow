@@ -1,10 +1,50 @@
-﻿const DEFAULT_BACKEND = "http://127.0.0.1:8765";
+const DEFAULT_BACKEND = "http://127.0.0.1:8765";
 const HEARTBEAT_SECONDS = 30;
+const BLOCKLIST_REFRESH_MINUTES = 1;
 
 let activeContext = null;
 
 async function getSettings() {
   return chrome.storage.local.get({ backendUrl: DEFAULT_BACKEND, browserToken: "" });
+}
+
+// ── Intervention execution: website blocking ─────────────────────────────
+// The backend records blocked domains when an environment_optimization
+// intervention fires (or the user manages the blocklist in the UI).  This
+// worker polls the blocklist endpoint and translates enabled domains into
+// declarativeNetRequest dynamic rules, so blocking is real execution rather
+// than a suggestion.
+
+function dynamicRuleFor(domain, index) {
+  // ``||example.com^`` matches the domain and any of its subdomains.
+  return {
+    id: index + 1,
+    priority: 1,
+    action: { type: "block" },
+    condition: { urlFilter: `||${domain}^` },
+  };
+}
+
+async function syncBlocklist() {
+  const settings = await getSettings();
+  if (!settings.browserToken) return;
+  try {
+    const response = await fetch(
+      `${settings.backendUrl}/api/v1/telemetry/browser/blocklist`,
+      { headers: { "X-Browser-Token": settings.browserToken } },
+    );
+    if (!response.ok) return;
+    const data = await response.json();
+    const domains = Array.isArray(data.domains) ? data.domains : [];
+    const rules = domains.map((domain, index) => dynamicRuleFor(domain, index));
+    const oldRules = await chrome.declarativeNetRequest.getDynamicRules();
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: oldRules.map((rule) => rule.id),
+      addRules: rules,
+    });
+  } catch {
+    // Non-fatal — the next alarm tick retries.
+  }
 }
 
 function browserName() {
@@ -70,20 +110,24 @@ async function reconcileContext({ flushCurrent = false } = {}) {
 
 function ensureAlarm() {
   chrome.alarms.create("mindflow-heartbeat", { periodInMinutes: HEARTBEAT_SECONDS / 60 });
+  chrome.alarms.create("mindflow-blocklist", { periodInMinutes: BLOCKLIST_REFRESH_MINUTES });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
   ensureAlarm();
   reconcileContext();
+  syncBlocklist();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   ensureAlarm();
   reconcileContext();
+  syncBlocklist();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "mindflow-heartbeat") reconcileContext({ flushCurrent: true });
+  if (alarm.name === "mindflow-blocklist") syncBlocklist();
 });
 
 chrome.tabs.onActivated.addListener(() => reconcileContext());
@@ -96,3 +140,4 @@ chrome.windows.onFocusChanged.addListener(() => reconcileContext());
 
 ensureAlarm();
 reconcileContext();
+syncBlocklist();

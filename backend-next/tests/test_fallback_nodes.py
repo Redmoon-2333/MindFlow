@@ -610,7 +610,7 @@ class TestRouteMatrix:
     # ── 8. DS skip + Ollama skip → RuleEngine ───────────────────────────
 
     def test_route_8_ds_skip_os_skip_to_rule_engine(self) -> None:
-        """Neither L1 nor L2 configured → "single_expert" first, then "rule_engine" after failure."""
+        """Neither L1 nor L2 configured → "single_expert" first, then "rule_engine"."""
         state = _make_state(
             summary_json='{"test": true}',
             source="",

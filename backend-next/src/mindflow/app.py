@@ -70,6 +70,9 @@ from mindflow.infrastructure.repositories.app_classification import (
 from mindflow.infrastructure.repositories.baseline import (
     BaselineRepository,
 )
+from mindflow.infrastructure.repositories.blocklist import (
+    SQLAlchemyBlocklistRepository,
+)
 from mindflow.infrastructure.repositories.chat import (
     ChatRepository,
 )
@@ -89,6 +92,7 @@ from mindflow.infrastructure.repositories.report import (
     SQLAlchemyDailyReportRepository,
 )
 from mindflow.infrastructure.repositories.scheduled_jobs import ScheduledJobRunsRepository
+from mindflow.infrastructure.repositories.tasks import SQLAlchemyTaskRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.infrastructure.repositories.workflow_runs import (
     BudgetReservationRepository,
@@ -120,6 +124,12 @@ from mindflow.services.report_service import ReportService
 from mindflow.services.scheduler import build_scheduler
 from mindflow.services.telemetry_service import TelemetryService
 from mindflow.services.training_job_service import TrainingJobService
+from mindflow.telemetry import setup_telemetry
+
+# ── Local OpenTelemetry (ADR-003) ──────────────────────────────────────────
+# One provider per process: the first app lifespan to run wires the global
+# tracer provider; later lifespans (tests create many apps) skip it.
+_telemetry_wired = False
 
 # ── Lifespan ────────────────────────────────────────────────────────────────
 
@@ -256,6 +266,28 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         session_factory = create_session_factory(engine)
 
+        # ── 0a. Local OpenTelemetry (one-shot per process) ─────────────────
+        # Wire before any service that records spans.  Failure to configure
+        # tracing must never block startup — fall back to no-op tracing.
+        global _telemetry_wired
+        telemetry_provider: Any = None
+        if not _telemetry_wired:
+            try:
+                telemetry_provider = setup_telemetry(
+                    exporter=settings.otel_exporter,
+                    db_path=settings.otel_db_path,
+                )
+                _telemetry_wired = True
+                logger.debug(
+                    "Local OTel configured (exporter={})",
+                    settings.otel_exporter,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Telemetry setup failed (continuing without traces): {}",
+                    exc,
+                )
+
         # ── 0b. Checkpointer (LangGraph persistence, same DB file) ──────────
         checkpointer_ctx = create_checkpointer(settings)
         checkpointer = await checkpointer_ctx.__aenter__()
@@ -316,6 +348,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         # ── 4b. Wave 7: Intervention repository ───────────────────────────
         intervention_repository = InterventionLogRepository(
+            session_factory=session_factory,
+        )
+
+        # ── 4b2. Intervention execution: tasks + blocked sites ────────────
+        task_repository = SQLAlchemyTaskRepository(
+            session_factory=session_factory,
+        )
+        blocklist_repository = SQLAlchemyBlocklistRepository(
             session_factory=session_factory,
         )
 
@@ -524,6 +564,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             llm_client=intervention_llm_client,
             llm_model=intervention_llm_model,
             auth_token=system_token,
+            task_repo=task_repository,
+            blocklist_repo=blocklist_repository,
+            telemetry_repo=telemetry_repository,
             ollama_base_url=(
                 settings.llm.ollama_base_url
                 if settings.llm.ollama_enabled
@@ -659,6 +702,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             scheduled_job_runs_repository=scheduled_job_runs_repository,
             workflow_port=analysis_workflow_port,
             event_retention_days=settings.event_retention_days,
+            otel_retention_days=settings.otel_retention_days,
             min_confidence=settings.auto_intervention_min_confidence,
             panel_confidence=settings.auto_intervention_panel_confidence,
             start_hour=settings.intervention_start_hour,
@@ -725,6 +769,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.panel_service = panel_service
         app.state.intervention_repository = intervention_repository
         app.state.intervention_service = intervention_service
+        app.state.task_repository = task_repository
+        app.state.blocklist_repository = blocklist_repository
         app.state.effectiveness_service = effectiveness_service
         app.state.v2_model_manager = v2_model_manager
         app.state.v2_training_mode = v2_training_mode
@@ -773,6 +819,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.debug("Closed {} active WebSocket connection(s)", n_closed)
         except Exception as exc:
             logger.warning("WebSocket close error: {}", exc)
+        # Shut down the OTel provider: flushes buffered spans and stops the
+        # BatchSpanProcessor worker thread (only when this process wired it).
+        if telemetry_provider is not None:
+            try:
+                telemetry_provider.shutdown()
+            except Exception as exc:
+                logger.warning("Telemetry shutdown error: {}", exc)
         # Note: the intervention LLM client is now the ProviderRegistry's
         # DeepSeekClient pool (see create_app); ProviderRegistry.shutdown()
         # closes it exactly once. No separate close here.

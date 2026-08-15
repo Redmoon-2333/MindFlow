@@ -119,7 +119,12 @@ def test_v2_quality_gate_requires_explicit_feedback_and_stable_metrics() -> None
         },
             "rule_baseline": {"brier_score": 0.22},
             "folds": [{}, {}, {}],
-            "fold_stability": {"passed": True, "min_balanced_accuracy": 0.68, "range": 0.08, "min_test_size": 8},
+            "fold_stability": {
+                "passed": True,
+                "min_balanced_accuracy": 0.68,
+                "range": 0.08,
+                "min_test_size": 8,
+            },
         }
 
     passed = evaluate_v2_quality_gate(

@@ -29,6 +29,9 @@ from mindflow.infrastructure.repositories.app_classification import (
     AppClassificationRulesRepository,
 )
 from mindflow.infrastructure.repositories.baseline import BaselineRepository
+from mindflow.infrastructure.repositories.blocklist import (
+    SQLAlchemyBlocklistRepository,
+)
 from mindflow.infrastructure.repositories.focus import (
     SQLAlchemyFocusSessionRepository,
 )
@@ -41,6 +44,7 @@ from mindflow.infrastructure.repositories.preferences import (
 from mindflow.infrastructure.repositories.report import (
     SQLAlchemyDailyReportRepository,
 )
+from mindflow.infrastructure.repositories.tasks import SQLAlchemyTaskRepository
 from mindflow.ports import AnalysisWorkflowPort
 from mindflow.services.analysis_service import AnalysisService
 from mindflow.services.autonomy_service import AutonomyService
@@ -179,6 +183,16 @@ def get_baseline_repo(request: Request) -> BaselineRepository:
 
 def get_telemetry_service(request: Request) -> TelemetryService:
     return cast(TelemetryService, request.app.state.telemetry_service)
+
+
+def get_task_repo(request: Request) -> SQLAlchemyTaskRepository:
+    """Return the SQLAlchemyTaskRepository from app.state."""
+    return cast(SQLAlchemyTaskRepository, request.app.state.task_repository)
+
+
+def get_blocklist_repo(request: Request) -> SQLAlchemyBlocklistRepository:
+    """Return the SQLAlchemyBlocklistRepository from app.state."""
+    return cast(SQLAlchemyBlocklistRepository, request.app.state.blocklist_repository)
 
 
 def get_workflow_port(request: Request) -> AnalysisWorkflowPort | None:

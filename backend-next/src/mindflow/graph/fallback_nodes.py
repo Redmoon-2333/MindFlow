@@ -305,7 +305,7 @@ async def cache_check_node(state: FallbackState) -> dict[str, Any]:
 
     Route: cache_hit → END, no_cache → crisis_gate_node
     """
-    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())  # type: ignore[arg-type]
+    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())
     user_id = state["user_id"]
     target_date = state["target_date"]
     force = state.get("force", False)
@@ -345,7 +345,7 @@ async def crisis_gate_node(state: FallbackState) -> dict[str, Any]:
 
     Route: crisis_detected → rule_engine_node, no_crisis → prepare_context_node
     """
-    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())  # type: ignore[arg-type]
+    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())
 
     # Use domain events if available (preferred), otherwise deserialize from dicts
     events_domain: list[ActivityEvent] = state.get("events_domain", []) or []
@@ -406,7 +406,7 @@ async def single_expert_node(state: FallbackState) -> dict[str, Any]:
     retried at the transport level — they are reported as errors and the
     degradation chain routes to the next tier.
     """
-    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())  # type: ignore[arg-type]
+    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())
     summary_json: str = state.get("summary_json", "")
 
     if not summary_json:
@@ -463,7 +463,7 @@ async def ollama_node(state: FallbackState) -> dict[str, Any]:
     Uses the same OpenAI-compatible endpoint as the existing
     ``LLMService._ollama_call``.
     """
-    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())  # type: ignore[arg-type]
+    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())
     summary_json: str = state.get("summary_json", "")
 
     if not summary_json:
@@ -507,7 +507,7 @@ async def rule_engine_node(state: FallbackState) -> dict[str, Any]:
 
     Route: always → END (terminal guarantee)
     """
-    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())  # type: ignore[arg-type]
+    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())
     crisis_detected = state.get("crisis_detected", False)
 
     # Crisis path: produce hotline response (no behavior summary needed)
@@ -653,7 +653,7 @@ def fallback_eligibility_router(state: FallbackState) -> FallbackRoute:
 
 def _route_after_single_expert_failure(state: FallbackState) -> FallbackRoute:
     """Internal: decide whether to try Ollama or go straight to RuleEngine."""
-    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())  # type: ignore[arg-type]
+    runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())
     if runtime.ollama_base_url:
         return "ollama"
     return "rule_engine"

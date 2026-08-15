@@ -15,6 +15,8 @@ import sqlalchemy as sa
 import uuid6
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mindflow.infrastructure.schema import app_classification_rules
+
 # Known categories used by the classifier (same set as AppClassifier).
 _KNOWN_CATEGORIES: frozenset[str] = frozenset({
     "code",
@@ -25,8 +27,6 @@ _KNOWN_CATEGORIES: frozenset[str] = frozenset({
     "social",
     "other",
 })
-
-from mindflow.infrastructure.schema import app_classification_rules
 
 
 class AppClassificationRulesRepository:

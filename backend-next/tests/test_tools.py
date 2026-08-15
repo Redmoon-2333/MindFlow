@@ -13,10 +13,12 @@ Covers:
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from mindflow.domain.procrastination import BehaviorSummary
 from mindflow.graph.tools import (
@@ -99,7 +101,7 @@ class TestQueryEvidenceInput:
         assert inp.days == 1
 
     def test_days_zero_raises(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             QueryEvidenceInput(user_id=1, days=0)
 
     def test_session_id_optional(self) -> None:
@@ -115,7 +117,7 @@ class TestRunAnalysisInput:
         assert inp.target_date == date(2026, 7, 29)
 
     def test_date_missing_raises(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             RunAnalysisInput(user_id=1)  # type: ignore[call-arg]
 
     def test_force_defaults_to_false(self) -> None:
@@ -655,5 +657,5 @@ class TestToolContext:
 
     def test_immutable(self) -> None:
         ctx = ToolContext(user_id=1)
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             ctx.user_id = 2  # type: ignore[misc]

@@ -94,6 +94,11 @@ class Settings(BaseSettings):
         """Path to the local API authentication token."""
         return self.data_dir / "token"
 
+    @property
+    def otel_db_path(self) -> Path:
+        """Path to the local OpenTelemetry span database (ADR-003)."""
+        return self.data_dir / "otel_traces.db"
+
     # --- Database ---
     db_url: str = Field(
         default="sqlite+aiosqlite:///{data_dir}/mindflow.db",
@@ -140,13 +145,30 @@ class Settings(BaseSettings):
     )
 
     # --- Data Retention ---
-    event_retention_days: int = Field(default=30, description="Raw event retention in days (7-90)")
+    event_retention_days: int = Field(
+        default=30, description="Raw event retention in days (7-90)"
+    )
     workflow_retention_days: int = Field(
-        default=30, description="Workflow run retention in days (7-90). Completed/failed/cancelled runs "
-        "older than this are cleaned up. Analyses and chat messages are preserved."
+        default=30,
+        description=(
+            "Workflow run retention in days (7-90). Completed/failed/cancelled "
+            "runs older than this are cleaned up. Analyses and chat messages "
+            "are preserved."
+        ),
     )
     stale_run_timeout_minutes: int = Field(
-        default=60, description="Minutes before a run stuck in 'running' status is marked as 'failed'"
+        default=60,
+        description="Minutes before a run stuck in 'running' status is marked 'failed'",
+    )
+
+    # --- OpenTelemetry (local only, ADR-003) ---
+    otel_exporter: str = Field(
+        default="sqlite",
+        description="OTel span exporter: 'console' | 'in_memory' | 'sqlite'",
+    )
+    otel_retention_days: int = Field(
+        default=30, ge=7, le=365,
+        description="OTel span retention in days (cleaned by daily maintenance)",
     )
 
     @field_validator("event_retention_days")
@@ -219,7 +241,10 @@ class Settings(BaseSettings):
     )
     human_review_disagreement_threshold: float = Field(
         default=0.3, ge=0.0, le=1.0,
-        description="Disagreement strength above which human review is triggered (1.0 - agreement_strength)",
+        description=(
+            "Disagreement strength above which human review is triggered "
+            "(1.0 - agreement_strength)"
+        ),
     )
 
     # --- Graph orchestration (ADR-005 — v2 graphs are the only paths) ---

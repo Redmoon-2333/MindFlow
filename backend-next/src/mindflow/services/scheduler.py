@@ -10,8 +10,10 @@ Registered jobs (cron and working hours use the configured local timezone):
   - 00:05  — ``daily_report``: generate the previous business day's report.
   - 03:00  — ``event_cleanup``: delete raw events past retention policy.
   - 04:00  — ``daily_backup``: crash-consistent VACUUM INTO snapshot.
-  - every 30 min — ``auto_intervention_check``: assess recent behavior
+  - every 5 min — ``auto_intervention_check``: assess recent behavior
     and intervene if significant procrastination detected (08:00-23:00).
+    Outside the working-hours window the check returns immediately
+    without recording anything.
   - every 15 min — ``telemetry_rollup_recent``: roll up the trailing
     two-hour window of feature windows (idempotent — overlaps are safe).
 
@@ -638,14 +640,10 @@ async def _auto_intervention_check(
     # ── Time-of-day guard: configurable local window (default 08:00-23:00) ─
     hour = now_local.hour
     if hour < start_hour or hour >= end_hour:
+        # Outside the intervention window: record the observation (the
+        # intervention-check ledger is the audit source for window coverage)
+        # but do not query events, run ML vetoes, or dispatch interventions.
         await _record("outside_hours")
-        logger.debug(
-            "Auto-intervention: outside working hours "
-            "({:02d}:00 not in [{:02d}:00, {:02d}:00)), skipping",
-            hour,
-            start_hour,
-            end_hour,
-        )
         return
 
     # ── Fetch recent events ─────────────────────────────────────────
@@ -849,6 +847,7 @@ def build_scheduler(
     scheduled_job_runs_repository: ScheduledJobRunsPort | None = None,
     workflow_port: AnalysisWorkflowPort | None = None,
     event_retention_days: int = 30,
+    otel_retention_days: int = 30,
     min_confidence: float = _AUTO_INTERVENTION_MIN_CONFIDENCE,
     panel_confidence: float = _AUTO_INTERVENTION_PANEL_CONFIDENCE,
     start_hour: int = _AUTO_INTERVENTION_START_HOUR,
@@ -1141,7 +1140,10 @@ def build_scheduler(
             )
 
         current_date = now_local.date()
-        if (panel_service is not None or workflow_port is not None) and (now_local.hour, now_local.minute) >= (23, 30):
+        in_panel_window = (
+            panel_service is not None or workflow_port is not None
+        ) and (now_local.hour, now_local.minute) >= (23, 30)
+        if in_panel_window:
             await _run_recovery_step(
                 f"daily_panel:{current_date}",
                 lambda: _run_panel_for_date(current_date),
@@ -1173,6 +1175,11 @@ def build_scheduler(
             # same daily maintenance window so a crashed workflow cannot keep
             # its idempotency key occupied indefinitely.
             await maintenance_service.expire_stale_budgets()
+            # Local OTel spans are pruned in the same daily window so the
+            # ``otel_traces.db`` file cannot grow without bound.
+            await maintenance_service.cleanup_old_otel_spans(
+                retention_days=otel_retention_days
+            )
 
         scheduler.daily_cron(
             hour=3,

@@ -16,9 +16,10 @@ import json
 import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from loguru import logger
+from pydantic import BaseModel
 
 from mindflow.agents.conflict import ConflictReport
 from mindflow.agents.experts import ExpertDef
@@ -66,11 +67,14 @@ def _safe_parse_json(raw: str, context: str) -> dict[str, Any] | None:
         return None
 
 
+_SchemaT = TypeVar("_SchemaT", bound=BaseModel)
+
+
 def _parse_with_pydantic(
     raw: str,
-    schema_class: type[AnalystOutput | AttributionOutput | ModeratorOutput | CriticOutput],
+    schema_class: type[_SchemaT],
     context: str,
-) -> AnalystOutput | AttributionOutput | ModeratorOutput | CriticOutput | None:
+) -> _SchemaT | None:
     """Parse *raw* LLM output with a Pydantic schema, returning None on failure."""
     text = _strip_markdown_fences(raw)
     try:
@@ -129,8 +133,8 @@ def validate_citations(
     for cite in cited:
         if cite in valid_metrics:
             resolved.add(cite)
-        elif cite in bare_to_canonical and bare_to_canonical[cite] is not None:
-            resolved.add(bare_to_canonical[cite])
+        elif (canonical := bare_to_canonical.get(cite)) is not None:
+            resolved.add(canonical)
         else:
             unresolved.add(cite)
 
@@ -386,7 +390,10 @@ def _build_moderator_user_prompt(
     if disagreement_summary is not None:
         parts.extend([
             "## 共识强度",
-            f"agreement_strength={disagreement_summary.agreement_strength:.3f}, stability={disagreement_summary.stability}",
+            (
+                f"agreement_strength={disagreement_summary.agreement_strength:.3f}, "
+                f"stability={disagreement_summary.stability}"
+            ),
             "共识强度低时请降低置信度，或设置 insufficient_data=true。",
             "",
         ])

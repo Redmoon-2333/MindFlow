@@ -245,7 +245,10 @@ class TestMigrations:
         assert "retry_reason" in wfr_cols
         assert "degradation_reason" in wfr_cols
 
-        wne_cols = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(workflow_node_events)")}
+        wne_cols = {
+            row[1]: row[2]
+            for row in conn.execute("PRAGMA table_info(workflow_node_events)")
+        }
         assert wne_cols["id"] == "TEXT"
         assert wne_cols["run_id"] == "TEXT"
         assert wne_cols["node_name"] == "TEXT"
@@ -254,7 +257,10 @@ class TestMigrations:
         assert wne_cols["duration_ms"] == "INTEGER"
         assert "error_category" in wne_cols
 
-        wbr_cols = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(workflow_budget_reservations)")}
+        wbr_cols = {
+            row[1]: row[2]
+            for row in conn.execute("PRAGMA table_info(workflow_budget_reservations)")
+        }
         assert wbr_cols["id"] == "TEXT"
         assert wbr_cols["idempotency_key"] == "TEXT"
         assert wbr_cols["origin"] == "TEXT"
@@ -276,22 +282,6 @@ class TestMigrations:
 
         conn = sqlite3.connect(sync_path)
 
-        # Check workflow_runs has unique on idempotency_key
-        wfr_indexes = {
-            row[1] for row in conn.execute(
-                "SELECT * FROM sqlite_master WHERE type='index' AND tbl_name='workflow_runs'"
-            )
-        }
-        # SQLite creates auto-named index for UNIQUE but also our explicit named indexes
-        has_unique = any(
-            "idempotency_key" in str(idx) for idx in wfr_indexes
-        )
-        # Also check via the auto index from UNIQUE constraint
-        auto_indexes = {
-            row[1] for row in conn.execute(
-                "PRAGMA index_list('workflow_runs')"
-            )
-        }
         # The UNIQUE on idempotency_key creates an auto-named unique index
         unique_wfr = {
             row[1]: row[2]
@@ -314,7 +304,9 @@ class TestMigrations:
 
         conn.close()
         assert wfr_unique, "workflow_runs idempotency_key should have UNIQUE constraint"
-        assert wbr_unique, "workflow_budget_reservations idempotency_key should have UNIQUE constraint"
+        assert wbr_unique, (
+            "workflow_budget_reservations idempotency_key should have UNIQUE constraint"
+        )
 
     async def test_workflow_tables_have_indexes(
         self, async_db_url: str, sync_db_url: str

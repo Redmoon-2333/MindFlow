@@ -16,6 +16,7 @@ Implements Wave 5 data-retention and backup policies, plus Wave 18 maintenance p
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,13 +24,14 @@ from pathlib import Path
 import platformdirs
 import sqlalchemy as sa
 from loguru import logger
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from mindflow.infrastructure.database import backup_database
 from mindflow.infrastructure.notification import NotificationService
-from mindflow.infrastructure.repositories.activity import activity_events
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository
 from mindflow.infrastructure.schema import (
+    activity_events,
     chat_messages,
     intervention_checks,
     workflow_budget_reservations,
@@ -196,7 +198,7 @@ class MaintenanceService:
                     intervention_checks.c.checked_at < cutoff
                 )
             )
-            deleted = result.rowcount or 0
+            deleted = result.rowcount if isinstance(result, CursorResult) else 0
 
         if deleted > 0:
             logger.info(
@@ -298,7 +300,9 @@ class MaintenanceService:
                         workflow_runs.c.run_id.in_(batch)
                     )
                 )
-                deleted = result.rowcount
+                deleted = (
+                    result.rowcount if isinstance(result, CursorResult) else 0
+                )
                 if deleted == 0:
                     break
                 total_deleted += deleted
@@ -349,7 +353,9 @@ class MaintenanceService:
                     retry_reason="Stale run: no update within timeout",
                 )
             )
-            stale_count = result.rowcount
+            stale_count = (
+                result.rowcount if isinstance(result, CursorResult) else 0
+            )
 
         if stale_count > 0:
             logger.warning(
@@ -443,7 +449,7 @@ class MaintenanceService:
                     )
                 )
             )
-            expired = result.rowcount
+            expired = result.rowcount if isinstance(result, CursorResult) else 0
 
         if expired > 0:
             logger.info(
@@ -454,6 +460,58 @@ class MaintenanceService:
             logger.debug("Budget expiry: no stale reservations")
 
         return expired
+
+    # ── OTel span retention ──────────────────────────────────────────
+
+    async def cleanup_old_otel_spans(self, retention_days: int = 30) -> int:
+        """Delete local OTel spans older than *retention_days*.
+
+        ``otel_spans`` lives in its own SQLite file
+        (``{data_dir}/otel_traces.db``), managed by ``SQLiteExporter`` —
+        not in the main application database — so cleanup uses a raw
+        ``sqlite3`` connection against that file.  The
+        ``ix_otel_spans_start`` index (created by the exporter) serves
+        this age-based delete.
+
+        Args:
+            retention_days: Spans older than this many days are removed.
+
+        Returns:
+            Number of spans deleted.
+        """
+        db_path = self._data_dir / "otel_traces.db"
+        if not db_path.exists():
+            return 0
+
+        cutoff_ns = int(
+            (self._now() - timedelta(days=retention_days)).timestamp()
+            * 1_000_000_000
+        )
+        try:
+            conn = sqlite3.connect(str(db_path))
+            try:
+                cur = conn.execute(
+                    "DELETE FROM otel_spans WHERE start_time_ns < ?",
+                    (cutoff_ns,),
+                )
+                conn.commit()
+                deleted = cur.rowcount or 0
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            logger.warning("OTel span cleanup failed: {}", exc)
+            return 0
+
+        if deleted > 0:
+            logger.info(
+                "OTel span cleanup: deleted {} spans older than {} days",
+                deleted,
+                retention_days,
+            )
+        else:
+            logger.debug("OTel span cleanup: no spans to delete")
+
+        return deleted
 
     def __repr__(self) -> str:
         return f"<MaintenanceService data_dir={self._data_dir}>"

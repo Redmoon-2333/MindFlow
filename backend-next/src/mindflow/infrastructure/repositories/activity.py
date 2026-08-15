@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.config import get_settings
 from mindflow.domain.events import ActivityEvent, WindowSnapshot
-from mindflow.infrastructure.schema import activity_events
+from mindflow.infrastructure.schema import activity_events as activity_events
 
 # Backward-compat alias: tests and importers used to do
 # ``activity_events.metadata.create_all``. The table now lives in the shared

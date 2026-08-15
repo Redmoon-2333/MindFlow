@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, cast
@@ -61,6 +61,7 @@ from mindflow.domain.procrastination import (
     ProcrastinationAssessment,
     ProcrastinationType,
 )
+from mindflow.domain.tasks import Task
 from mindflow.infrastructure.llm.summary import serialize_summary
 from mindflow.infrastructure.notification import NotificationService, Urgency
 from mindflow.infrastructure.repositories.intervention import (
@@ -139,6 +140,10 @@ _LLM_SYSTEM_PROMPT: str = (
 _LLM_TIMEOUT_S: float = 10.0
 _OLLAMA_TIMEOUT_S: float = 60.0
 
+# Browser-domain lookback for the environment_optimization execution path:
+# the distraction window the intervention reacts to.
+_BLOCK_LOOKBACK_MINUTES: int = 45
+
 # Intensity -> desktop-notification urgency (B3)
 _URGENCY_BY_INTENSITY: Final[dict[InterventionIntensity, Urgency]] = {
     InterventionIntensity.GENTLE: "low",
@@ -201,11 +206,68 @@ def _select_intervention_type(
     return _TYPE_MAP.get(ptype)
 
 
+def _task_context_lines(tasks: Sequence[Task]) -> list[str]:
+    """Render ranked pending tasks as one-line Chinese fragments.
+
+    Each fragment is ``标题（截止 MM-DD）``; deadline-free tasks omit the
+    suffix.  Used by both the template fallback and the LLM context.
+    """
+    lines: list[str] = []
+    for task in tasks:
+        if task.deadline_utc is not None:
+            lines.append(f"{task.title}（截止 {task.deadline_utc:%m-%d}）")
+        else:
+            lines.append(task.title)
+    return lines
+
+
+async def _top_distraction_domain(
+    telemetry_repo: object | None,
+    user_id: int,
+    start: datetime,
+    end: datetime,
+) -> str | None:
+    """Return the highest-duration browser domain in [start, end), or None.
+
+    This is the execution target for ``environment_optimization``: the
+    domain the user dwelled on most during the recent distraction window,
+    which the blocklist repository then blocks.  Any failure degrades to
+    None (the intervention itself still fires with its message).
+    """
+    if telemetry_repo is None:
+        return None
+    list_segments = getattr(telemetry_repo, "list_browser_segments", None)
+    if list_segments is None:
+        return None
+    try:
+        segments = await cast(
+            Callable[..., Awaitable[list[dict[str, Any]]]],
+            list_segments,
+        )(user_id, start, end)
+    except Exception as exc:
+        logger.debug("Blocklist: browser segment query failed: {}", exc)
+        return None
+    dwell: dict[str, float] = {}
+    for segment in segments:
+        domain = str(segment.get("domain") or "").strip().lower()
+        if not domain:
+            continue
+        try:
+            duration = float(segment.get("duration_s") or 0.0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        dwell[domain] = dwell.get(domain, 0.0) + duration
+    if not dwell:
+        return None
+    return max(dwell, key=lambda domain: dwell[domain])
+
+
 def _render_template_message(
     intervention_type: InterventionType,
     intensity: InterventionIntensity,
     cbt_technique: str | None = None,
     variant_index: int | None = None,
+    task_context: Sequence[Task] | None = None,
 ) -> tuple[str, str]:
     """Render notification title and body from templates (fallback).
 
@@ -216,6 +278,9 @@ def _render_template_message(
         variant_index: Deterministic index into the title variant pool.
             Defaults to a day-based rotation so fallback titles vary
             day to day instead of being identical every time.
+        task_context: Ranked pending tasks.  For
+            ``smart_prioritization`` these replace the static suggestion
+            with the user's real task list (intervention execution).
 
     Returns:
         A (title, body) tuple.
@@ -224,6 +289,11 @@ def _render_template_message(
     tmpl = _TYPE_TEMPLATES.get(intervention_type, _TYPE_TEMPLATES["nudge"])
     detail = tmpl["detail"]
     suggestion = tmpl["suggestion"]
+
+    if intervention_type == "smart_prioritization" and task_context:
+        lines = _task_context_lines(task_context)
+        suggestion = "建议优先处理："
+        suggestion += "；".join(lines) if lines else "先选出最重要的一个任务"
 
     if cbt_technique:
         cbt_label = CBT_TECHNIQUE_LABELS_ZH.get(cbt_technique, cbt_technique)
@@ -245,6 +315,7 @@ def _build_message_user_content(
     intervention_type: str,
     intensity: str,
     cbt_technique: str | None = None,
+    task_context: Sequence[Task] | None = None,
 ) -> str:
     """Build the user-content context lines shared by DeepSeek and Ollama."""
     context_parts = [
@@ -255,6 +326,9 @@ def _build_message_user_content(
     if cbt_technique:
         cbt_label = CBT_TECHNIQUE_LABELS_ZH.get(cbt_technique, cbt_technique)
         context_parts.append(f"建议方法: {cbt_label}")
+    if task_context:
+        lines = _task_context_lines(task_context)
+        context_parts.append(f"用户待办任务(按优先级排序): {'; '.join(lines)}")
     return "\n".join(context_parts)
 
 
@@ -303,6 +377,7 @@ async def _generate_llm_message(
     intervention_type: str,
     intensity: str,
     cbt_technique: str | None = None,
+    task_context: Sequence[Task] | None = None,
 ) -> tuple[str, str] | None:
     """Generate intervention message via DeepSeek (L1, primary path).
 
@@ -314,7 +389,7 @@ async def _generate_llm_message(
         (title, message) on success, None on any failure.
     """
     user_content = _build_message_user_content(
-        summary_json, intervention_type, intensity, cbt_technique
+        summary_json, intervention_type, intensity, cbt_technique, task_context
     )
 
     try:
@@ -365,6 +440,7 @@ async def _generate_ollama_message(
     intervention_type: str,
     intensity: str,
     cbt_technique: str | None = None,
+    task_context: Sequence[Task] | None = None,
 ) -> tuple[str, str] | None:
     """Generate intervention message via Ollama (L2 fallback).
 
@@ -376,7 +452,7 @@ async def _generate_ollama_message(
         (title, message) on success, None on any failure.
     """
     user_content = _build_message_user_content(
-        summary_json, intervention_type, intensity, cbt_technique
+        summary_json, intervention_type, intensity, cbt_technique, task_context
     )
 
     payload = {
@@ -488,6 +564,9 @@ class InterventionService:
         llm_client: httpx.AsyncClient | None = None,
         llm_model: str = "deepseek-chat",
         auth_token: str | None = None,
+        task_repo: object | None = None,
+        blocklist_repo: object | None = None,
+        telemetry_repo: object | None = None,
         ollama_base_url: str | None = None,
         ollama_model: str = "qwen3:8b",
     ) -> None:
@@ -499,8 +578,46 @@ class InterventionService:
         self._llm_client = llm_client
         self._llm_model = llm_model
         self._auth_token = auth_token
+        self._task_repo = task_repo
+        self._blocklist_repo = blocklist_repo
+        self._telemetry_repo = telemetry_repo
         self._ollama_base_url = ollama_base_url
         self._ollama_model = ollama_model
+
+    async def _execute_environment_block(
+        self,
+        user_id: int,
+        intervention_type: InterventionType,
+        now: datetime,
+    ) -> None:
+        """Execute ``environment_optimization``: block the top distraction domain.
+
+        Reads the highest-duration browser domain from the recent window and
+        records it in the blocklist repository; the browser extension polls
+        the blocklist and applies declarativeNetRequest rules.  Degrades
+        silently when either repository is absent (tests / minimal wiring).
+        """
+        if intervention_type != "environment_optimization":
+            return
+        if self._blocklist_repo is None or self._telemetry_repo is None:
+            return
+        ensure_blocked = getattr(self._blocklist_repo, "ensure_blocked", None)
+        if ensure_blocked is None:
+            return
+        try:
+            start = now - timedelta(minutes=_BLOCK_LOOKBACK_MINUTES)
+            domain = await _top_distraction_domain(
+                self._telemetry_repo, user_id, start, now
+            )
+            if domain is None:
+                return
+            await cast(
+                Callable[..., Awaitable[bool]],
+                ensure_blocked,
+            )(user_id, domain, reason="environment_optimization 干预自动拦截")
+            logger.info("environment_optimization blocked domain: {}", domain)
+        except Exception as exc:
+            logger.debug("Blocklist execution failed (non-fatal): {}", exc)
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -539,6 +656,24 @@ class InterventionService:
                 skipped=True,
                 skip_reason="未检测到显著的拖延模式，无需干预",
             )
+
+        # ── 1b. Intervention execution data: ranked task list ───────────
+        # smart_prioritization now reads real tasks (deadline + priority
+        # ranking) instead of the static suggestion.  Absence of the repo
+        # (tests, minimal wiring) degrades to the static template.
+        task_context: Sequence[Task] | None = None
+        if intervention_type == "smart_prioritization" and self._task_repo is not None:
+            rank_tasks = getattr(self._task_repo, "pending_by_priority", None)
+            if rank_tasks is not None:
+                try:
+                    task_context = await cast(
+                        Callable[..., Awaitable[list[Task]]],
+                        rank_tasks,
+                    )(user_id, limit=3)
+                except Exception as exc:
+                    logger.debug(
+                        "Task ranking unavailable, using static suggestion: {}", exc
+                    )
 
         # ── 2. Deep-work guard ────────────────────────────────────────
         if (
@@ -599,6 +734,7 @@ class InterventionService:
                     intervention_type=intervention_type,
                     intensity=str(intensity.value),
                     cbt_technique=cbt_technique,
+                    task_context=task_context,
                 )
             if llm_result is None and self._ollama_base_url is not None:
                 llm_result = await _generate_ollama_message(
@@ -608,6 +744,7 @@ class InterventionService:
                     intervention_type=intervention_type,
                     intensity=str(intensity.value),
                     cbt_technique=cbt_technique,
+                    task_context=task_context,
                 )
 
             if llm_result is not None:
@@ -616,11 +753,11 @@ class InterventionService:
             else:
                 logger.debug("LLM message generation failed, using template fallback")
                 title, message = _render_template_message(
-                    intervention_type, intensity, cbt_technique
+                    intervention_type, intensity, cbt_technique, task_context=task_context
                 )
         else:
             title, message = _render_template_message(
-                intervention_type, intensity, cbt_technique
+                intervention_type, intensity, cbt_technique, task_context=task_context
             )
 
         # ── 6. Safety guard (after rendering, before persistence) ─────
@@ -730,6 +867,13 @@ class InterventionService:
                 skip_reason="干预记录持久化失败，已释放今日槽位",
                 throttle_decision=decision,
             )
+
+        # ── 9b. Intervention execution: environment_optimization ───────
+        # The intervention is durable now, so its execution side effect
+        # (blocking the top distraction domain, applied by the browser
+        # extension) is safe to commit.  Best-effort: execution failures
+        # never fail the intervention itself.
+        await self._execute_environment_block(user_id, intervention_type, now)
 
         # ── 10. Broadcast via WebSocket ───────────────────────────────
         await self._broadcast_intervention(intervention)

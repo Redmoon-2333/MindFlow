@@ -25,6 +25,8 @@ Tables owned by this module:
   - workflow_runs                   (migration 0013)
   - workflow_node_events            (migration 0013)
   - workflow_budget_reservations    (migration 0013)
+  - tasks                           (migration 0023)
+  - blocked_sites                   (migration 0023)
 
 NOTE: ``activity_events`` moved here in the schema consolidation (plan D);
 ``repositories/activity.py`` now imports it from this module.
@@ -454,4 +456,69 @@ collector_intervals = sa.Table(
     ),
     sa.Column("last_error", sa.Text(), nullable=True),
     sa.Index("idx_collector_intervals_user_started", "user_id", "started_at"),
+)
+
+# ── tasks (smart-prioritization data source) ────────────────────────────
+# Matches migration 0023.  ``deadline_utc`` is ISO8601 text (nullable —
+# deadline-free tasks rank below deadline-bearing ones).
+
+tasks = sa.Table(
+    "tasks",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("title", sa.Text(), nullable=False),
+    sa.Column("description", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("priority", sa.Integer(), nullable=False, server_default=sa.text("3")),
+    sa.Column(
+        "status",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("'pending'"),
+    ),
+    sa.Column("deadline_utc", sa.Text(), nullable=True),
+    sa.Column("estimated_minutes", sa.Integer(), nullable=True),
+    sa.Column(
+        "created_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.Column(
+        "updated_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.CheckConstraint("priority >= 1 AND priority <= 5"),
+    sa.CheckConstraint("status IN ('pending', 'in_progress', 'done')"),
+    sa.Index("idx_tasks_user_status_deadline", "user_id", "status", "deadline_utc"),
+)
+
+# ── blocked_sites (environment_optimization execution) ──────────────────
+# Matches migration 0023.  One row per blocked domain; the browser
+# extension polls ``GET /telemetry/browser/blocklist`` and translates the
+# enabled rows into declarativeNetRequest dynamic rules.
+
+blocked_sites = sa.Table(
+    "blocked_sites",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("domain", sa.Text(), nullable=False),
+    sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+    sa.Column("reason", sa.Text(), nullable=True),
+    sa.Column(
+        "created_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.Column(
+        "updated_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.UniqueConstraint("user_id", "domain"),
 )

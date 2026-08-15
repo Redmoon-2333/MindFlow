@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
@@ -112,7 +113,11 @@ async def health_check(
         try:
             ml_status = await prediction_service.check_health()
         except Exception:
-            ml_status = {"status": "error", "model_version": None, "feature_schema_version": FEATURE_SCHEMA_VERSION}
+            ml_status = {
+                "status": "error",
+                "model_version": None,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            }
     else:
         ml_status = {
             "status": "no_service",
@@ -176,13 +181,11 @@ async def health_check(
         else {"status": "unavailable"}
     )
     if collector_service is not None:
-        try:
+        # health endpoints must never fail — best-effort enrichment
+        with suppress(Exception):
             collector_payload.update(
                 await collector_service.health_summary()
             )
-        except Exception:
-            # health endpoints must never fail — best-effort enrichment
-            pass
 
     return {
         "status": "ok",

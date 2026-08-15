@@ -417,3 +417,91 @@ class FocusPredictionResponse(BaseModel):
     status: FocusPredictionStatus
     mode: str
     reason: str
+
+
+# ── Task schemas (smart-prioritization data source) ───────────────────────
+
+TaskStatusValue = Literal["pending", "in_progress", "done"]
+
+
+class TaskCreateRequest(BaseModel):
+    """Create a task for the smart-prioritization intervention."""
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    priority: int = Field(default=3, ge=1, le=5)
+    status: TaskStatusValue = "pending"
+    deadline_utc: str | None = None
+    estimated_minutes: int | None = Field(default=None, ge=1, le=100000)
+
+
+class TaskUpdateRequest(BaseModel):
+    """Partial task update; omitted fields keep their stored values."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    priority: int | None = Field(default=None, ge=1, le=5)
+    status: TaskStatusValue | None = None
+    deadline_utc: str | None = None
+    estimated_minutes: int | None = Field(default=None, ge=1, le=100000)
+
+
+class TaskResponse(BaseModel):
+    """A single task as returned by the API."""
+
+    id: str
+    title: str
+    description: str
+    priority: int
+    status: TaskStatusValue
+    deadline_utc: str | None
+    estimated_minutes: int | None
+    created_at: str
+    updated_at: str
+
+
+class TaskListResponse(BaseModel):
+    """Task listing envelope."""
+
+    items: list[TaskResponse]
+    count: int
+
+
+class TaskCommandResponse(BaseModel):
+    """Acknowledgement envelope for task mutations."""
+
+    status: Literal["ok"] = "ok"
+    task_id: str
+
+
+# ── Blocklist schemas (environment_optimization execution) ────────────────
+
+
+class BlockedSiteCreateRequest(BaseModel):
+    """Add or re-enable a blocked domain."""
+
+    domain: str = Field(min_length=1, max_length=253)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class BlockedSiteResponse(BaseModel):
+    """One blocked-site row for the management UI."""
+
+    domain: str
+    enabled: bool
+    reason: str | None
+    created_at: str
+
+
+class BlocklistResponse(BaseModel):
+    """Blocklist listing envelope."""
+
+    items: list[BlockedSiteResponse]
+    count: int
+
+
+class BlocklistCommandResponse(BaseModel):
+    """Acknowledgement envelope for blocklist mutations."""
+
+    status: Literal["ok"] = "ok"
+    domain: str

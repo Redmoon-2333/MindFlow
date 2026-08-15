@@ -18,10 +18,11 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Literal
+from typing import Literal, cast
 
 import opentelemetry.trace as trace_api
 from opentelemetry.trace import Span, StatusCode, Tracer
+from opentelemetry.util.types import AttributeValue
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Module-level tracer (created once, reused everywhere)
@@ -101,17 +102,17 @@ _VALID_ERROR_CATEGORIES: frozenset[str] = frozenset({
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _sanitize_attributes(attrs: dict[str, object]) -> dict[str, object]:
+def _sanitize_attributes(attrs: dict[str, object]) -> dict[str, AttributeValue]:
     """Strip redacted keys from attributes, keeping only allowlisted entries.
 
     Unknown keys are silently dropped (default-deny for privacy).
     """
-    safe: dict[str, object] = {}
+    safe: dict[str, AttributeValue] = {}
     for key, value in attrs.items():
         if key in _REDACTED_KEYS:
             continue
         if key in _ALLOWLISTED_ATTRS:
-            safe[key] = value
+            safe[key] = cast(AttributeValue, value)
     return safe
 
 
@@ -136,7 +137,11 @@ def _set_safe_attrs(span: Span, attrs: dict[str, object]) -> None:
     span.set_attributes(safe)
 
 
-def _end_span(span: Span, error: Exception | None = None, error_category: str | None = None) -> None:
+def _end_span(
+    span: Span,
+    error: Exception | None = None,
+    error_category: str | None = None,
+) -> None:
     """Finalize a span: record exception (sanitized) and set status."""
     if error is not None:
         cat = _sanitize_error_category(error_category)

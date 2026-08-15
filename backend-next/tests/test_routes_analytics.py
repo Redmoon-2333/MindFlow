@@ -42,7 +42,10 @@ def _utc(iso: str) -> datetime:
     return datetime.fromisoformat(iso).replace(tzinfo=UTC)
 
 
-_BASE = _utc("2026-07-17T08:00:00")
+# Seed clock pinned to a recent whole hour so the default profile/patterns
+# windows (which are relative to "now") always include the fixtures.  A fixed
+# date would silently age out of the window and flip these tests to 404.
+_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=6)
 
 
 @pytest.fixture
@@ -78,9 +81,9 @@ async def seeded_app(engine, session_factory) -> FastAPI:
     # Seed sessions
     await focus_repo.save_sessions(1, [
         {
-            "date": "2026-07-17",
-            "start_time": _utc("2026-07-17T08:00:00").isoformat(),
-            "end_time": _utc("2026-07-17T08:30:00").isoformat(),
+            "date": _BASE.date().isoformat(),
+            "start_time": _BASE.isoformat(),
+            "end_time": (_BASE + timedelta(minutes=30)).isoformat(),
             "session_type": "focus",
             "dominant_app": "Code.exe",
             "focus_score": 85.0,
@@ -130,7 +133,7 @@ class TestPatterns:
         monkeypatch.setattr(
             analysis_service_module,
             "business_today",
-            lambda _timezone: date(2026, 7, 17),
+            lambda _timezone: _BASE.date(),
         )
         client = TestClient(seeded_app)
         resp = client.get("/api/v1/analytics/patterns")

@@ -869,12 +869,8 @@ class TestTurnId:
         await graph.ask(user_id=1, session_id="s1", message="msg1")
         await graph.ask(user_id=1, session_id="s1", message="msg2")
 
-        # Both user messages were persisted with a turn_id
+        # Both user messages were persisted
         assert repo.append.call_count >= 2
-        call_args = [
-            call.kwargs.get("message_id", call.args[4] if len(call.args) > 4 else None)
-            for call in repo.append.call_args_list
-        ]
 
     async def test_turn_id_format(self) -> None:
         """Turn ID follows the format turn:{session_id}:{uuid4()}."""

@@ -196,7 +196,7 @@ class TrainingReadinessService:
 
     def _report_gate_override(
         self,
-    ) -> dict[str, tuple[str, str, str, str]]:
+    ) -> dict[str, tuple[GateStatus, str, str, str]]:
         """Extract real post-training gate values from the training report.
 
         When a training report exists (a training job already ran), the four
@@ -219,7 +219,7 @@ class TrainingReadinessService:
         fold_stability = evaluation.get("fold_stability") or {}
         checks = (report.get("quality_gate") or {}).get("checks") or {}
 
-        overrides: dict[str, tuple[str, str, str, str]] = {}
+        overrides: dict[str, tuple[GateStatus, str, str, str]] = {}
 
         ba = candidate.get("balanced_accuracy")
         if ba is not None:

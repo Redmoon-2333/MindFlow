@@ -864,3 +864,150 @@ class TestGenerateOllamaMessage:
             intensity="standard",
         )
         assert result is None
+
+
+class TestInterventionExecution:
+    """Intervention execution — real data sources wired into dispatch.
+
+    smart_prioritization reads the ranked pending-task list and renders it
+    into the message; environment_optimization blocks the top distraction
+    domain via the blocklist repository.  Both degrade silently when the
+    repositories are absent (the legacy behaviour).
+    """
+
+    async def test_smart_prioritization_uses_task_list(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        """Template fallback embeds the ranked task titles."""
+        task_repo = MagicMock()
+        task_repo.pending_by_priority = AsyncMock(
+            return_value=[
+                _make_task("写完实验报告", deadline="2026-08-20T00:00:00+00:00"),
+                _make_task("复习高数", deadline=None),
+            ]
+        )
+        service = InterventionService(
+            intervention_repo=mock_repo,
+            throttle=mock_throttle,
+            notifier=mock_notifier,
+            broadcast_fn=mock_broadcast,
+            task_repo=task_repo,
+        )
+        assessment = ProcrastinationAssessment(
+            types=(ProcrastinationType.PERFECTIONISM,),
+            confidence={ProcrastinationType.PERFECTIONISM: 0.8},
+            recommended_technique=None,
+            rationale="多任务并行",
+            source="rule_engine",
+        )
+        result = await service.maybe_intervene(
+            assessment, bypass_throttle=True, bypass_deep_work_guard=True
+        )
+        assert result.skipped is False
+        assert result.intervention is not None
+        assert "写完实验报告" in result.intervention.message
+        assert "复习高数" in result.intervention.message
+
+    async def test_smart_prioritization_without_tasks_keeps_static_suggestion(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        """No task repository → static suggestion still renders."""
+        service = InterventionService(
+            intervention_repo=mock_repo,
+            throttle=mock_throttle,
+            notifier=mock_notifier,
+            broadcast_fn=mock_broadcast,
+        )
+        assessment = ProcrastinationAssessment(
+            types=(ProcrastinationType.PERFECTIONISM,),
+            confidence={ProcrastinationType.PERFECTIONISM: 0.8},
+            recommended_technique=None,
+            rationale="多任务并行",
+            source="rule_engine",
+        )
+        result = await service.maybe_intervene(
+            assessment, bypass_throttle=True, bypass_deep_work_guard=True
+        )
+        assert result.skipped is False
+        assert result.intervention is not None
+        assert "优先级" in result.intervention.message
+
+    async def test_environment_optimization_blocks_top_domain(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        """The intervention execution path records the top distraction domain."""
+        blocklist_repo = MagicMock()
+        blocklist_repo.ensure_blocked = AsyncMock(return_value=True)
+        telemetry_repo = MagicMock()
+        telemetry_repo.list_browser_segments = AsyncMock(
+            return_value=[
+                {"domain": "bilibili.com", "duration_s": 600.0},
+                {"domain": "bilibili.com", "duration_s": 300.0},
+                {"domain": "github.com", "duration_s": 100.0},
+            ]
+        )
+        service = InterventionService(
+            intervention_repo=mock_repo,
+            throttle=mock_throttle,
+            notifier=mock_notifier,
+            broadcast_fn=mock_broadcast,
+            blocklist_repo=blocklist_repo,
+            telemetry_repo=telemetry_repo,
+        )
+        assessment = ProcrastinationAssessment(
+            types=(ProcrastinationType.IMPULSIVITY,),
+            confidence={ProcrastinationType.IMPULSIVITY: 0.8},
+            recommended_technique=None,
+            rationale="冲动分心",
+            source="rule_engine",
+        )
+        result = await service.maybe_intervene(
+            assessment, bypass_throttle=True, bypass_deep_work_guard=True
+        )
+        assert result.skipped is False
+        blocklist_repo.ensure_blocked.assert_awaited_once()
+        args, kwargs = blocklist_repo.ensure_blocked.await_args
+        assert args[1] == "bilibili.com"
+
+    async def test_environment_optimization_without_repos_is_noop(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        """No blocklist/telemetry repos → the intervention still fires."""
+        service = InterventionService(
+            intervention_repo=mock_repo,
+            throttle=mock_throttle,
+            notifier=mock_notifier,
+            broadcast_fn=mock_broadcast,
+        )
+        assessment = ProcrastinationAssessment(
+            types=(ProcrastinationType.IMPULSIVITY,),
+            confidence={ProcrastinationType.IMPULSIVITY: 0.8},
+            recommended_technique=None,
+            rationale="冲动分心",
+            source="rule_engine",
+        )
+        result = await service.maybe_intervene(
+            assessment, bypass_throttle=True, bypass_deep_work_guard=True
+        )
+        assert result.skipped is False
+        assert result.intervention is not None
+
+
+def _make_task(title: str, deadline: str | None) -> object:
+    """Build a Task-like object without importing SQLAlchemy fixtures."""
+    from mindflow.domain.tasks import Task
+
+    return Task(
+        id=f"task-{title}",
+        user_id=1,
+        title=title,
+        description="",
+        priority=4,
+        status="pending",
+        deadline_utc=(
+            datetime.fromisoformat(deadline) if deadline else None
+        ),
+        estimated_minutes=None,
+        created_at=datetime(2026, 8, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )

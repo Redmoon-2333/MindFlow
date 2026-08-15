@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
@@ -241,7 +242,7 @@ async def crisis_gate_node(state: ChatGraphState) -> dict[str, Any]:
     """
     from mindflow.infrastructure.security.crisis_detector import CrisisLevel
 
-    runtime: ChatRunContext = state.get("runtime", ChatRunContext())  # type: ignore[arg-type]
+    runtime: ChatRunContext = state.get("runtime", ChatRunContext())
     user_message = state.get("user_message", "")
     user_id = state.get("user_id", 0)
     session_id = state.get("session_id", "")
@@ -275,7 +276,7 @@ async def user_message_persist_node(state: ChatGraphState) -> dict[str, Any]:
     This ensures no user message is lost even if the LLM call fails later.
     The message is persisted with the durable ``turn_id`` for orphan detection.
     """
-    runtime: ChatRunContext = state.get("runtime", ChatRunContext())  # type: ignore[arg-type]
+    runtime: ChatRunContext = state.get("runtime", ChatRunContext())
     session_id = state["session_id"]
     user_message = state["user_message"]
     user_id = state.get("user_id", 0)
@@ -300,7 +301,7 @@ async def history_load_node(state: ChatGraphState) -> dict[str, Any]:
     Fetches up to ``max_history_rounds * 2 + 2`` messages so the
     compression node has enough context.
     """
-    runtime: ChatRunContext = state.get("runtime", ChatRunContext())  # type: ignore[arg-type]
+    runtime: ChatRunContext = state.get("runtime", ChatRunContext())
     session_id = state["session_id"]
     max_rounds = runtime.max_history_rounds
 
@@ -323,7 +324,7 @@ async def history_compress_node(state: ChatGraphState) -> dict[str, Any]:
     earliest messages are summarised and stored in ``history_summary``.
     The summary is sanitised for forbidden words.
     """
-    runtime: ChatRunContext = state.get("runtime", ChatRunContext())  # type: ignore[arg-type]
+    runtime: ChatRunContext = state.get("runtime", ChatRunContext())
     history = state.get("messages", [])
 
     summary = _compress_history(list(history), runtime.max_history_rounds)
@@ -346,7 +347,7 @@ async def model_call_node(state: ChatGraphState) -> dict[str, Any]:
     returns the fallback reply.
     """
 
-    runtime: ChatRunContext = state.get("runtime", ChatRunContext())  # type: ignore[arg-type]
+    runtime: ChatRunContext = state.get("runtime", ChatRunContext())
     model = runtime.model
     tools = runtime.tools
 
@@ -371,11 +372,9 @@ async def model_call_node(state: ChatGraphState) -> dict[str, Any]:
     # ── Bind tools to model ───────────────────────────────────────────────
     bound_model = model
     if tools:
-        try:
-            bound_model = model.bind_tools(tools)
-        except (AttributeError, NotImplementedError):
+        with suppress(AttributeError, NotImplementedError):
             # Model doesn't support tool binding — proceed without tools
-            pass
+            bound_model = model.bind_tools(tools)
 
     # ── Invoke LLM ─────────────────────────────────────────────────────────
     try:
@@ -408,7 +407,11 @@ async def model_call_node(state: ChatGraphState) -> dict[str, Any]:
         tool_msg: dict[str, str] = {
             "type": "call",
             "name": t_name,
-            "content": str(tc.get("args", "")) if isinstance(tc, dict) else str(getattr(tc, "args", "")),
+            "content": (
+                str(tc.get("args", ""))
+                if isinstance(tc, dict)
+                else str(getattr(tc, "args", ""))
+            ),
         }
         existing_tool_msgs.append(tool_msg)
 
@@ -503,7 +506,7 @@ async def tool_execution_node(state: ChatGraphState) -> dict[str, Any]:
     """
     from langchain_core.messages import ToolMessage
 
-    runtime: ChatRunContext = state.get("runtime", ChatRunContext())  # type: ignore[arg-type]
+    runtime: ChatRunContext = state.get("runtime", ChatRunContext())
     model_messages: list[Any] = list(state.get("model_messages_raw", []))
     if not model_messages:
         return {}
@@ -643,7 +646,7 @@ async def correction_loop_node(state: ChatGraphState) -> dict[str, Any]:
     """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-    runtime: ChatRunContext = state.get("runtime", ChatRunContext())  # type: ignore[arg-type]
+    runtime: ChatRunContext = state.get("runtime", ChatRunContext())
     model = runtime.model
     answer = state.get("answer", "")
 
@@ -726,7 +729,7 @@ async def assistant_message_persist_node(state: ChatGraphState) -> dict[str, Any
     Always persists, even when ``degraded=True`` — the user should
     always see a response.
     """
-    runtime: ChatRunContext = state.get("runtime", ChatRunContext())  # type: ignore[arg-type]
+    runtime: ChatRunContext = state.get("runtime", ChatRunContext())
     session_id = state["session_id"]
     answer = state.get("answer", _SAFE_REPLY)
     user_id = state.get("user_id", 0)
@@ -977,7 +980,8 @@ class ChatGraph:
         # answer_extraction → forbidden_word_validation
         builder.add_edge("answer_extraction", "forbidden_word_validation")
 
-        # forbidden_word_validation → [forbidden? → correction_loop | clean → assistant_message_persist]
+        # forbidden_word_validation → [forbidden? → correction_loop
+        #                              | clean → assistant_message_persist]
         builder.add_conditional_edges(
             "forbidden_word_validation",
             correction_loop_router,

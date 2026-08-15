@@ -173,7 +173,14 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
     """
     mask = data.explicit_mask
     if mask.sum() < 10:
-        return {"status": "insufficient_data", "candidate": {}, "logistic_baseline": {}, "rule_baseline": {}, "folds": [], "fold_stability": {}}
+        return {
+            "status": "insufficient_data",
+            "candidate": {},
+            "logistic_baseline": {},
+            "rule_baseline": {},
+            "folds": [],
+            "fold_stability": {},
+        }
 
     X = data.features[mask]
     y = data.labels[mask]
@@ -181,7 +188,14 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
     unique_dates = sorted(set(dates))
 
     if len(unique_dates) < 3:
-        return {"status": "insufficient_data", "candidate": {}, "logistic_baseline": {}, "rule_baseline": {}, "folds": [], "fold_stability": {"reason": "need >=3 feedback dates"}}
+        return {
+            "status": "insufficient_data",
+            "candidate": {},
+            "logistic_baseline": {},
+            "rule_baseline": {},
+            "folds": [],
+            "fold_stability": {"reason": "need >=3 feedback dates"},
+        }
 
     groups = np.array(dates)
     gkf = GroupKFold(n_splits=min(4, len(unique_dates)))
@@ -219,7 +233,12 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
         yp = clf.predict(X[test_idx])
         ypr = clf.predict_proba(X[test_idx])[:, 1]
 
-        lr = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, random_state=random_state, class_weight="balanced"))
+        lr = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(
+                max_iter=1000, random_state=random_state, class_weight="balanced"
+            ),
+        )
         lr.fit(
             X[train_idx],
             y[train_idx],
@@ -248,7 +267,14 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
         })
 
     if not all_y_true:
-        return {"status": "insufficient_data", "candidate": {}, "logistic_baseline": {}, "rule_baseline": {}, "folds": folds, "fold_stability": {"reason": "no valid held-out folds"}}
+        return {
+            "status": "insufficient_data",
+            "candidate": {},
+            "logistic_baseline": {},
+            "rule_baseline": {},
+            "folds": folds,
+            "fold_stability": {"reason": "no valid held-out folds"},
+        }
 
     y_true_arr = np.array(all_y_true)
     candidate = _classification_metrics(
@@ -268,7 +294,11 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
         candidate["fold_balanced_accuracy_range"] = round(max(fold_bas) - min(fold_bas), 6)
         candidate["fold_min_balanced_accuracy"] = round(min(fold_bas), 6)
         fold_stability = {
-            "passed": bool(min(fold_bas) >= 0.50 and (max(fold_bas) - min(fold_bas)) <= 0.35 and min_test_size >= 5),
+            "passed": bool(
+                min(fold_bas) >= 0.50
+                and (max(fold_bas) - min(fold_bas)) <= 0.35
+                and min_test_size >= 5
+            ),
             "min_balanced_accuracy": round(min(fold_bas), 6),
             "range": round(max(fold_bas) - min(fold_bas), 6),
             "min_test_size": min_test_size,
@@ -316,15 +346,23 @@ def evaluate_v2_quality_gate(
         and float(candidate.get("balanced_accuracy", 0.0)) >= 0.55
     )
     tier = "full_ready" if is_passed else ("low_confidence" if low_conf else "shadow")
-    return {"passed": is_passed, "mode": "ready" if is_passed else "shadow",
-            "deployment_tier": tier, "checks": checks,
-            "explicit_feedback_count": explicit_feedback_count, "explicit_focus_count": explicit_focus_count,
-            "explicit_distract_count": explicit_distract_count, "distinct_feedback_days": distinct_feedback_days}
+    return {
+        "passed": is_passed,
+        "mode": "ready" if is_passed else "shadow",
+        "deployment_tier": tier,
+        "checks": checks,
+        "explicit_feedback_count": explicit_feedback_count,
+        "explicit_focus_count": explicit_focus_count,
+        "explicit_distract_count": explicit_distract_count,
+        "distinct_feedback_days": distinct_feedback_days,
+    }
 
 
 # ── Internal helpers ──
 
-def _parse_feedback(row: dict[str, Any]) -> tuple[str, datetime, datetime, str, int | None, str] | None:
+def _parse_feedback(
+    row: dict[str, Any],
+) -> tuple[str, datetime, datetime, str, int | None, str] | None:
     try:
         session_id = str(row["session_id"])
         start = _parse_datetime(row["start_time"])
@@ -335,7 +373,15 @@ def _parse_feedback(row: dict[str, Any]) -> tuple[str, datetime, datetime, str, 
         return None
     if end <= start:
         return None
-    label: int | None = None if (label_name == "mixed" or score == 3) else (1 if score >= 4 else 0 if score <= 2 else None)
+    label: int | None
+    if label_name == "mixed" or score == 3:
+        label = None
+    elif score >= 4:
+        label = 1
+    elif score <= 2:
+        label = 0
+    else:
+        label = None
     return session_id, start, end, label_name, label, str(row.get("task_type") or "")
 
 
@@ -410,11 +456,17 @@ def _rule_probabilities(X: np.ndarray) -> np.ndarray:
     return np.clip(p, 0.0, 1.0)
 
 
-def _classification_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray) -> dict[str, Any]:
+def _classification_metrics(
+    y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray
+) -> dict[str, Any]:
     ba = balanced_accuracy_score(y_true, y_pred)
     unique, counts = np.unique(y_true, return_counts=True)
     minority = unique[np.argmin(counts)]
-    minority_f1 = f1_score((y_true == minority).astype(int), (y_pred == minority).astype(int), zero_division=0.0)
+    minority_f1 = f1_score(
+        (y_true == minority).astype(int),
+        (y_pred == minority).astype(int),
+        zero_division=0.0,
+    )
     try:
         brier = brier_score_loss(y_true, y_proba)
     except Exception:

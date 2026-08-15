@@ -153,6 +153,7 @@ class TestBuildScheduler:
         maintenance.cleanup_old_events = AsyncMock()
         maintenance.cleanup_old_intervention_checks = AsyncMock()
         maintenance.expire_stale_budgets = AsyncMock()
+        maintenance.cleanup_old_otel_spans = AsyncMock()
         scheduler = build_scheduler(
             maintenance_service=maintenance,
             event_retention_days=45,
@@ -166,6 +167,9 @@ class TestBuildScheduler:
             retention_days=45
         )
         maintenance.expire_stale_budgets.assert_awaited_once_with()
+        maintenance.cleanup_old_otel_spans.assert_awaited_once_with(
+            retention_days=30
+        )
 
     async def test_missing_service_skips_jobs(self) -> None:
         """Without services, corresponding jobs should be skipped."""

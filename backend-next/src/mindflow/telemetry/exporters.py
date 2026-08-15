@@ -13,12 +13,15 @@ so business workflows are never disrupted by exporter failures.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
 
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+
+logger = logging.getLogger(__name__)
 
 
 class InMemoryExporter(SpanExporter):
@@ -36,6 +39,7 @@ class InMemoryExporter(SpanExporter):
             self.spans.extend(spans)
             return SpanExportResult.SUCCESS
         except Exception:
+            logger.warning("InMemoryExporter failed to capture spans", exc_info=True)
             return SpanExportResult.FAILURE
 
     def shutdown(self) -> None:
@@ -66,6 +70,7 @@ class ConsoleExporter(SpanExporter):
             self._out.flush()
             return SpanExportResult.SUCCESS
         except Exception:
+            logger.warning("ConsoleExporter failed to write spans", exc_info=True)
             return SpanExportResult.FAILURE
 
     def shutdown(self) -> None:
@@ -97,9 +102,18 @@ class SQLiteExporter(SpanExporter):
     )
     """
 
+    # Trace_id index: workflows query spans by trace; start_time_ns index:
+    # daily retention cleanup deletes by age.  Both are created idempotently
+    # alongside the table (this table is managed by the exporter, not Alembic).
+    _INDEX_SQL = (
+        "CREATE INDEX IF NOT EXISTS ix_otel_spans_trace ON otel_spans(trace_id);"
+        "CREATE INDEX IF NOT EXISTS ix_otel_spans_start ON otel_spans(start_time_ns);"
+    )
+
     _INSERT_SQL = """
     INSERT INTO otel_spans
-        (trace_id, span_id, parent_span_id, name, start_time_ns, end_time_ns, status, attributes_json, events_json)
+        (trace_id, span_id, parent_span_id, name, start_time_ns,
+         end_time_ns, status, attributes_json, events_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
@@ -109,18 +123,21 @@ class SQLiteExporter(SpanExporter):
         self._conn = sqlite3.connect(str(self._db_path))
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(self._TABLE_DDL)
+        # executescript: _INDEX_SQL carries two statements, and sqlite3
+        # refuses multi-statement strings on plain execute().
+        self._conn.executescript(self._INDEX_SQL)
         self._conn.commit()
 
     def _ensure_table(self) -> sqlite3.Connection:
         """Return the connection (table created in __init__)."""
-        return self._conn  # type: ignore[return-value]
+        return self._conn
 
     def shutdown(self) -> None:
         """Close the SQLite connection."""
         try:
             self._conn.close()
         except Exception:
-            pass
+            logger.warning("SQLiteExporter failed to close connection", exc_info=True)
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         return True
@@ -133,7 +150,11 @@ class SQLiteExporter(SpanExporter):
                 if ctx is None:
                     continue
                 parent_id = span.parent
-                parent_id_str = _format_span_id(parent_id.span_id) if parent_id is not None else None
+                parent_id_str = (
+                    _format_span_id(parent_id.span_id)
+                    if parent_id is not None
+                    else None
+                )
                 rows.append((
                     _format_trace_id(ctx.trace_id),
                     _format_span_id(ctx.span_id),
@@ -145,7 +166,11 @@ class SQLiteExporter(SpanExporter):
                     json.dumps(_span_to_safe_dict(span), ensure_ascii=False),
                     json.dumps(
                         [
-                            {"name": e.name, "timestamp_ns": e.timestamp, "attrs": dict(e.attributes or {})}
+                            {
+                                "name": e.name,
+                                "timestamp_ns": e.timestamp,
+                                "attrs": dict(e.attributes or {}),
+                            }
                             for e in (span.events or [])
                         ],
                         ensure_ascii=False,
@@ -155,10 +180,15 @@ class SQLiteExporter(SpanExporter):
             self._conn.commit()
             return SpanExportResult.SUCCESS
         except Exception:
+            logger.warning(
+                "SQLiteExporter failed to persist {} spans",
+                len(spans) if spans is not None else 0,
+                exc_info=True,
+            )
             try:
                 self._conn.rollback()
             except Exception:
-                pass
+                logger.warning("SQLiteExporter rollback failed", exc_info=True)
             return SpanExportResult.FAILURE
 
 

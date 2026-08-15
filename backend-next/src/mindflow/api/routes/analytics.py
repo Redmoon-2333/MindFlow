@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 from fastapi import status as http_status
@@ -66,7 +66,7 @@ def _load_training_report(request: Request) -> dict[str, Any] | None:
     if not report_path.is_file():
         return None
     try:
-        return json.loads(report_path.read_text(encoding="utf-8"))
+        return cast(dict[str, Any], json.loads(report_path.read_text(encoding="utf-8")))
     except (json.JSONDecodeError, OSError):
         return None
 

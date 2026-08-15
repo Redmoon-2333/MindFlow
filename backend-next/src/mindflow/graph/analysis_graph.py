@@ -19,13 +19,14 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from loguru import logger
 
-from mindflow.agents.types import PanelUnavailableError
+from mindflow.agents.types import PanelSource, PanelUnavailableError
 from mindflow.domain.evidence import EvidenceBundle, to_prompt_json
 from mindflow.errors import NoActivityDataError
 from mindflow.graph.fallback_nodes import (
@@ -294,7 +295,7 @@ async def cache_idempotency_check_node(
 
     Route: cache_hit → result_conversion, no_cache → evidence_preparation
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())  # type: ignore[arg-type]
+    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
     user_id = state["user_id"]
     target_date = state["target_date"]
     force = state.get("force", False)
@@ -337,7 +338,7 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
     we re-check the cache as a fallback — the prior run may have already
     completed the analysis.
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())  # type: ignore[arg-type]
+    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
     idempotency_key = state.get("idempotency_key", "")
     user_id = state["user_id"]
     target_date = state["target_date"]
@@ -347,7 +348,12 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
         logger.warning("No idempotency_key provided; skipping budget reservation")
         return {"budget_reserved": False}
 
-    reserved = await runtime.budget_repo.try_reserve(idempotency_key)
+    budget_repo = runtime.budget_repo
+    if budget_repo is None:
+        logger.warning("No budget repository configured; skipping budget reservation")
+        return {"budget_reserved": False}
+
+    reserved = await budget_repo.try_reserve(idempotency_key)
 
     if not reserved:
         # Another run already claimed this key.  Check if the analysis
@@ -420,7 +426,7 @@ async def evidence_preparation_node(
     """
     from mindflow.time_utils import business_day_bounds_utc
 
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())  # type: ignore[arg-type]
+    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
     user_id = state["user_id"]
     target_date = state["target_date"]
 
@@ -461,7 +467,7 @@ async def crisis_gate_node(state: AnalysisGraphState) -> dict[str, Any]:
     from mindflow.graph.fallback_nodes import collect_crisis_texts, dicts_to_events
     from mindflow.infrastructure.security.crisis_detector import CrisisLevel
 
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())  # type: ignore[arg-type]
+    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
 
     # Use domain events if available, otherwise deserialize from dicts
     events_domain: list[Any] = state.get("events_domain", []) or []
@@ -511,7 +517,7 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
     ``panel_succeeded=False`` so the router sends the flow to the
     fallback chain.
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())  # type: ignore[arg-type]
+    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
     bundle_json = state.get("bundle_json", "")
     valid_metrics = state.get("valid_metrics", ())
 
@@ -529,7 +535,7 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
         }
 
     # Build input state for the panel subgraph
-    panel_state: PanelGraphState = {  # type: ignore[typeddict-item]
+    panel_state: PanelGraphState = {
         "bundle_json": bundle_json,
         "valid_metrics": valid_metrics,
         "attribution_opinions": (),
@@ -582,10 +588,11 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
 
     # Persist per-node trace payloads so every panel run is replayable.
     trace = result.get("trace", []) if isinstance(result, dict) else []
-    if trace and state.get("run_id"):
+    run_repo = runtime.workflow_run_repo
+    if trace and state.get("run_id") and run_repo is not None:
         try:
             for entry in trace:
-                await runtime.workflow_run_repo.save_node_event(
+                await run_repo.save_node_event(
                     state["run_id"],
                     str(entry.get("node", "panel")),
                     payload=entry,
@@ -650,7 +657,7 @@ async def result_conversion_node(state: AnalysisGraphState) -> dict[str, Any]:
     is stored in ``verdict_json`` for terminal persistence.
     """
     assessment = state.get("assessment")
-    source = state.get("source", "rule_engine")
+    source = cast(PanelSource, state.get("source", "rule_engine"))
     degraded = state.get("degraded", True)
 
     if assessment is None:
@@ -697,7 +704,9 @@ async def result_conversion_node(state: AnalysisGraphState) -> dict[str, Any]:
         "call_count": verdict.call_count,
         "source": verdict.source,
         "degraded": degraded,
-        "degradation_path": list(verdict.degradation_path) or list(state.get("degradation_path", []) or []),
+        "degradation_path": (
+            list(verdict.degradation_path) or list(state.get("degradation_path", []) or [])
+        ),
         "cached": bool(state.get("cache_hit", False)),
         "insufficient_data": verdict.insufficient_data,
         "uncertainty": verdict.uncertainty,
@@ -729,12 +738,12 @@ async def terminal_persistence_node(
     ``cache_idempotency_check`` will find the existing analysis and
     route through this node again, completing the run.
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())  # type: ignore[arg-type]
+    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
     user_id = state["user_id"]
     target_date = state["target_date"]
     analysis_kind = state.get("analysis_kind", "daily_attribution")
     assessment = state.get("assessment")
-    source = state.get("source", "rule_engine")
+    source = cast(PanelSource, state.get("source", "rule_engine"))
     degraded = state.get("degraded", True)
     run_id = state.get("run_id", "")
     idempotency_key = state.get("idempotency_key", "")
@@ -840,17 +849,20 @@ async def terminal_persistence_node(
                 run_id=run_id,
                 created_at=datetime.now(UTC),
             )
-            await runtime.workflow_run_repo.update_status(
-                run_id, "completed", result=result,
-            )
+            run_repo = runtime.workflow_run_repo
+            if run_repo is not None:
+                await run_repo.update_status(
+                    run_id, "completed", result=result,
+                )
         except Exception as exc:
             logger.warning("Failed to mark run {} as completed: {}", run_id, exc)
             # Non-fatal: analysis is saved, run can be reconciled later
 
     # ── 3. Release budget ──────────────────────────────────────────────
-    if idempotency_key and state.get("budget_reserved"):
+    budget_repo = runtime.budget_repo
+    if idempotency_key and state.get("budget_reserved") and budget_repo is not None:
         try:
-            await runtime.budget_repo.release(idempotency_key)
+            await budget_repo.release(idempotency_key)
         except Exception as exc:
             logger.warning("Failed to release budget for {}: {}", idempotency_key, exc)
 
@@ -866,23 +878,26 @@ async def handle_persistence_failure_node(
     "pending" state — it transitions to "failed" so the retry
     infrastructure can pick it up.
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())  # type: ignore[arg-type]
+    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
     run_id = state.get("run_id", "")
     error = state.get("error", "persistence_failed")
     idempotency_key = state.get("idempotency_key", "")
 
     if run_id:
         try:
-            await runtime.workflow_run_repo.update_status(
-                run_id, "failed", error=error,
-            )
+            run_repo = runtime.workflow_run_repo
+            if run_repo is not None:
+                await run_repo.update_status(
+                    run_id, "failed", error=error,
+                )
         except Exception as exc:
             logger.warning("Failed to mark run {} as failed: {}", run_id, exc)
 
     # Release budget even on failure so the key can be retried
-    if idempotency_key and state.get("budget_reserved"):
+    budget_repo = runtime.budget_repo
+    if idempotency_key and state.get("budget_reserved") and budget_repo is not None:
         try:
-            await runtime.budget_repo.release(idempotency_key)
+            await budget_repo.release(idempotency_key)
         except Exception as exc:
             logger.warning("Failed to release budget on failure: {}", exc)
 
@@ -1092,7 +1107,7 @@ class AnalysisGraph:
         # Run the graph. With a checkpointer wired, use a stable thread_id so a
         # crash mid-run can resume from the last checkpoint (LLM cost savings).
         graph = self._get_compiled_graph()
-        invoke_config = None
+        invoke_config: RunnableConfig | None = None
         if self._checkpointer is not None:
             invoke_config = {
                 "configurable": {
@@ -1105,7 +1120,7 @@ class AnalysisGraph:
         try:
             final_state = await graph.ainvoke(
                 initial_state,
-                config=invoke_config if invoke_config is not None else None,
+                config=invoke_config,
             )
         except NoActivityDataError:
             with contextlib.suppress(Exception):
@@ -1179,14 +1194,19 @@ class AnalysisGraph:
         Graph topology:
 
         START → cache_idempotency_check
-                    ├── cache_hit → result_conversion → terminal_persistence → [ok→END | fail→handle_failure→END]
-                    └── no_cache → budget_reserve
-                                       ├── budget_reserved → evidence_preparation → crisis_gate
-                                       │                                            ├── crisis_detected → prepare_fallback_context
-                                       │                                            └── no_crisis → panel_graph
-                                       │                                                               ├── success → result_conversion → terminal_persistence → [ok→END | fail→handle_failure→END]
-                                       │                                                               └── failure → prepare_fallback_context
-                                       └── budget_failed → [cache_recheck_hit → result_conversion → terminal_persistence | END]
+            ├── cache_hit → result_conversion → terminal_persistence
+            │                → [ok→END | fail→handle_failure→END]
+            └── no_cache → budget_reserve
+                ├── budget_reserved → evidence_preparation → crisis_gate
+                │   ├── crisis_detected → prepare_fallback_context
+                │   └── no_crisis → panel_graph
+                │       ├── success → result_conversion
+                │       │           → terminal_persistence
+                │       │           → [ok→END | fail→handle_failure→END]
+                │       └── failure → prepare_fallback_context
+                └── budget_failed → [cache_recheck_hit
+                                    → result_conversion
+                                    → terminal_persistence | END]
 
         The fallback chain (prepare_fallback_context → fallback_chain) runs after:
           - Crisis detection (crisis_detected=True)
@@ -1311,7 +1331,7 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
     produces an ``error`` on the final state.
     """
 
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())  # type: ignore[arg-type]
+    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
     summary_json: str = state.get("summary_json", "")
     behavior_summary = state.get("behavior_summary")
     crisis_detected = state.get("crisis_detected", False)
@@ -1328,7 +1348,7 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
         rule_engine=runtime.rule_engine,
     )
 
-    fb_state: FallbackState = {  # type: ignore[typeddict-item]
+    fb_state: FallbackState = {
         "user_id": state["user_id"],
         "target_date": state["target_date"],
         "analysis_kind": state.get("analysis_kind", "daily_attribution"),

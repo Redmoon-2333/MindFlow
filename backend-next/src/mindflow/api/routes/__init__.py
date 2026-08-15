@@ -14,6 +14,7 @@ from mindflow.api.routes.app_classification import router as app_classification_
 from mindflow.api.routes.attribution import router as attribution_router
 from mindflow.api.routes.auth import router as auth_router
 from mindflow.api.routes.autonomy import router as autonomy_router
+from mindflow.api.routes.blocklist import router as blocklist_router
 from mindflow.api.routes.chat import router as chat_router
 from mindflow.api.routes.collector import router as collector_router
 from mindflow.api.routes.export import router as export_router
@@ -23,6 +24,7 @@ from mindflow.api.routes.intervention import router as intervention_router
 from mindflow.api.routes.panel import router as panel_router
 from mindflow.api.routes.preferences import router as preferences_router
 from mindflow.api.routes.reports import router as reports_router
+from mindflow.api.routes.tasks import router as tasks_router
 from mindflow.api.routes.telemetry import router as telemetry_router
 
 
@@ -45,6 +47,8 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(analytics_router, prefix="/api/v1")
     app.include_router(attribution_router, prefix="/api/v1")
     app.include_router(intervention_router, prefix="/api/v1")
+    app.include_router(blocklist_router, prefix="/api/v1")
+    app.include_router(tasks_router, prefix="/api/v1")
     app.include_router(chat_router, prefix="/api/v1")
     app.include_router(panel_router, prefix="/api/v1")
     app.include_router(ai_diagnostics_router, prefix="/api/v1")

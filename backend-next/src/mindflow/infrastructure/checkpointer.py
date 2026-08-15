@@ -36,6 +36,7 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from loguru import logger
 
 from mindflow.config import Settings
 
@@ -83,7 +84,7 @@ class ApplicationCheckpointer:
         self._closed = False
 
     @property
-    def saver(self) -> BaseCheckpointSaver:
+    def saver(self) -> BaseCheckpointSaver[Any]:
         """Return the underlying LangGraph checkpointer (for compile())."""
         if self._saver is None:
             raise RuntimeError(
@@ -193,8 +194,12 @@ class ApplicationCheckpointer:
 
         try:
             await self._saver.aprune(thread_ids, strategy="keep_latest")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Checkpoint prune failed for {} thread(s): {}",
+                len(thread_ids),
+                exc,
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -216,7 +221,7 @@ class InMemoryCheckpointer:
         self._closed = False
 
     @property
-    def saver(self) -> BaseCheckpointSaver:
+    def saver(self) -> BaseCheckpointSaver[Any]:
         """Return the underlying LangGraph MemorySaver."""
         if self._saver is None:
             raise RuntimeError(

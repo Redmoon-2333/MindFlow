@@ -109,7 +109,7 @@ async def post_attribution(
             verdict = result.verdict
             types_list = [t.value for t in verdict.types]
             conf_map = {k.value: v for k, v in verdict.confidence.items()}
-            result = {
+            response = {
                 "assessment": {
                     "procrastination_types": types_list,
                     "type_confidence": conf_map,
@@ -135,7 +135,7 @@ async def post_attribution(
                 ),
                 "evidence": verdict.rationale,
             }
-            return result
+            return response
         outcome = await llm_service.analyze(
             user_id=1,
             target_date=target_date,

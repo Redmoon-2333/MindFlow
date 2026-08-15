@@ -511,7 +511,13 @@ class ModelManager:
             return True
 
         except InconsistentVersionWarning as exc:
-            logger.error("Model artifact rejected due to sklearn version mismatch: {}", exc)
+            logger.error(
+                "Model artifact rejected: sklearn version mismatch ({}). "
+                "Re-train with the current environment to produce a "
+                "compatible artifact "
+                "(`uv run python -m mindflow.train --source db`).",
+                exc,
+            )
             return False
         except (FileNotFoundError, EOFError, KeyError, TypeError, ValueError):
             return False

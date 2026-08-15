@@ -397,11 +397,18 @@ class TestBehavioralProfile:
         """Events and sessions should produce a profile."""
         activity_repo, focus_repo = repos
 
+        # Seed against a recent clock so the default 30-day profile window
+        # always covers the fixtures (a fixed date would age out of the
+        # window and silently return an empty profile).
+        base = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(
+            hours=12
+        )
+
         # Insert events
         for i in range(10):
             ev = make_event(
                 user_id=1,
-                timestamp_utc=_BASE + timedelta(seconds=i * 5),
+                timestamp_utc=base + timedelta(seconds=i * 5),
                 duration_s=5.0,
                 process_name="Code.exe",
             )
@@ -410,9 +417,9 @@ class TestBehavioralProfile:
         # Add sessions
         await focus_repo.save_sessions(1, [
             {
-                "date": "2026-07-17",
-                "start_time": _utc("2026-07-17T08:00:00").isoformat(),
-                "end_time": _utc("2026-07-17T08:30:00").isoformat(),
+                "date": base.date().isoformat(),
+                "start_time": base.isoformat(),
+                "end_time": (base + timedelta(minutes=30)).isoformat(),
                 "session_type": "focus",
                 "dominant_app": "Code.exe",
                 "focus_score": 90.0,

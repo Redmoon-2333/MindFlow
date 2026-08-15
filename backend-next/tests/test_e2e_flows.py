@@ -307,8 +307,7 @@ class TestMLTrainingPipelineE2E:
     def test_synthetic_v2_training_completes(self, tmp_path: Path) -> None:
         from mindflow.train.pipeline import run_training
         report = run_training(source="synthetic_v2", data_dir=tmp_path / "d",
-                              models_dir=tmp_path / "m", days=3,
-                              samples_per_hour=6, seed=42)
+                              models_dir=tmp_path / "m", days=3, seed=42)
         assert report.source == "synthetic_v2"
         assert report.feature_schema_version == 3
 
@@ -483,7 +482,7 @@ class TestModelManagerVersioningE2E:
         mgr = ModelManager(models_dir=tmp_path, use_ensemble=False)
         X = np.random.default_rng(42).random((50, 14))
         mgr.train_all(X, [f"f{i}" for i in range(14)], np.array([1]*25+[0]*25))
-        saved = mgr.save_all(activate=True, manifest={"test": True})
+        mgr.save_all(activate=True, manifest={"test": True})
         tag = mgr.current_version_tag
         assert tag is not None
         manifest = json.loads((tmp_path / "manifest.json").read_text())
@@ -555,7 +554,10 @@ class TestPanelGraphTopologyE2E:
     def test_critic_json_bool_parsing(self) -> None:
         from mindflow.agents.schemas import CriticOutput
         assert CriticOutput.model_validate_json('{"approved": true, "issues": []}').approved is True
-        assert CriticOutput.model_validate_json('{"approved": false, "issues": []}').approved is False
+        assert (
+            CriticOutput.model_validate_json('{"approved": false, "issues": []}').approved
+            is False
+        )
         assert CriticOutput.model_validate_json('{"approved": 1, "issues": []}').approved is True
         assert CriticOutput.model_validate_json('{"approved": 0, "issues": []}').approved is False
 

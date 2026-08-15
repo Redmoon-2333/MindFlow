@@ -211,8 +211,15 @@ async def get_analysis_graph_topology(
     try:
         graph_obj = analysis_workflow._get_compiled_graph()
         raw_graph = graph_obj.get_graph()
-        nodes = sorted({n for n, _ in raw_graph.edges} | {n for _, n in raw_graph.edges})
-        edges = [{"from": s, "to": t} for s, t in raw_graph.edges]
+        # LangGraph Edge objects expose source/target attributes (not tuples).
+        nodes = sorted(
+            {str(e.source) for e in raw_graph.edges}
+            | {str(e.target) for e in raw_graph.edges}
+        )
+        edges = [
+            {"from": str(e.source), "to": str(e.target)}
+            for e in raw_graph.edges
+        ]
         return {"nodes": nodes, "edges": edges, "available": True}
     except Exception:
         logger.exception("Failed to extract analysis graph topology")
