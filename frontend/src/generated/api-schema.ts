@@ -848,6 +848,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/interventions/blocklist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Blocklist
+         * @description List the user's blocked sites.
+         */
+        get: operations["list_blocklist_api_v1_interventions_blocklist_get"];
+        put?: never;
+        /**
+         * Add Blocked Site
+         * @description Add (or re-enable) a blocked domain.
+         */
+        post: operations["add_blocked_site_api_v1_interventions_blocklist_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/interventions/blocklist/{domain}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Blocked Site
+         * @description Permanently remove a blocked domain.
+         */
+        delete: operations["remove_blocked_site_api_v1_interventions_blocklist__domain__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Toggle Blocked Site
+         * @description Enable or disable blocking for one domain.
+         */
+        patch: operations["toggle_blocked_site_api_v1_interventions_blocklist__domain__patch"];
+        trace?: never;
+    };
+    "/api/v1/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Tasks
+         * @description List the user's tasks, optionally filtered by status.
+         */
+        get: operations["list_tasks_api_v1_tasks_get"];
+        put?: never;
+        /**
+         * Create Task
+         * @description Create a task.
+         */
+        post: operations["create_task_api_v1_tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tasks/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Task
+         * @description Delete one task.
+         */
+        delete: operations["delete_task_api_v1_tasks__task_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Task
+         * @description Update one task; omitted fields keep their stored values.
+         */
+        patch: operations["update_task_api_v1_tasks__task_id__patch"];
+        trace?: never;
+    };
     "/api/v1/chat": {
         parameters: {
             query?: never;
@@ -1159,6 +1255,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/telemetry/browser/blocklist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Browser Blocklist
+         * @description Return the enabled blocklist for the paired browser extension.
+         *
+         *     Authenticated by the browser pairing token (same credential as the
+         *     heartbeat endpoint), then mapped to declarativeNetRequest dynamic
+         *     rules by the extension's service worker.
+         */
+        get: operations["browser_blocklist_api_v1_telemetry_browser_blocklist_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1247,6 +1367,41 @@ export interface components {
             productivity_ratio: number | null;
         };
         /**
+         * BlockedSiteCreateRequest
+         * @description Add or re-enable a blocked domain.
+         */
+        BlockedSiteCreateRequest: {
+            /** Domain */
+            domain: string;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * BlockedSiteResponse
+         * @description One blocked-site row for the management UI.
+         */
+        BlockedSiteResponse: {
+            /** Domain */
+            domain: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Reason */
+            reason: string | null;
+            /** Created At */
+            created_at: string;
+        };
+        /**
+         * BlockedSiteToggleRequest
+         * @description Enable/disable toggle for one blocked domain.
+         */
+        BlockedSiteToggleRequest: {
+            /**
+             * Enabled
+             * @description True to block, False to pause blocking
+             */
+            enabled: boolean;
+        };
+        /**
          * Blocker
          * @description A single gate-blocker with machine code and Chinese message.
          */
@@ -1255,6 +1410,30 @@ export interface components {
             code: string;
             /** Message */
             message: string;
+        };
+        /**
+         * BlocklistCommandResponse
+         * @description Acknowledgement envelope for blocklist mutations.
+         */
+        BlocklistCommandResponse: {
+            /**
+             * Status
+             * @default ok
+             * @constant
+             */
+            status: "ok";
+            /** Domain */
+            domain: string;
+        };
+        /**
+         * BlocklistResponse
+         * @description Blocklist listing envelope.
+         */
+        BlocklistResponse: {
+            /** Items */
+            items: components["schemas"]["BlockedSiteResponse"][];
+            /** Count */
+            count: number;
         };
         /** BootstrapRequest */
         BootstrapRequest: {
@@ -1782,6 +1961,103 @@ export interface components {
              * @default false
              */
             degraded: boolean;
+        };
+        /**
+         * TaskCommandResponse
+         * @description Acknowledgement envelope for task mutations.
+         */
+        TaskCommandResponse: {
+            /**
+             * Status
+             * @default ok
+             * @constant
+             */
+            status: "ok";
+            /** Task Id */
+            task_id: string;
+        };
+        /**
+         * TaskCreateRequest
+         * @description Create a task for the smart-prioritization intervention.
+         */
+        TaskCreateRequest: {
+            /** Title */
+            title: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Priority
+             * @default 3
+             */
+            priority: number;
+            /**
+             * Status
+             * @default pending
+             * @enum {string}
+             */
+            status: "pending" | "in_progress" | "done";
+            /** Deadline Utc */
+            deadline_utc?: string | null;
+            /** Estimated Minutes */
+            estimated_minutes?: number | null;
+        };
+        /**
+         * TaskListResponse
+         * @description Task listing envelope.
+         */
+        TaskListResponse: {
+            /** Items */
+            items: components["schemas"]["TaskResponse"][];
+            /** Count */
+            count: number;
+        };
+        /**
+         * TaskResponse
+         * @description A single task as returned by the API.
+         */
+        TaskResponse: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Description */
+            description: string;
+            /** Priority */
+            priority: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "in_progress" | "done";
+            /** Deadline Utc */
+            deadline_utc: string | null;
+            /** Estimated Minutes */
+            estimated_minutes: number | null;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /**
+         * TaskUpdateRequest
+         * @description Partial task update; omitted fields keep their stored values.
+         */
+        TaskUpdateRequest: {
+            /** Title */
+            title?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Priority */
+            priority?: number | null;
+            /** Status */
+            status?: ("pending" | "in_progress" | "done") | null;
+            /** Deadline Utc */
+            deadline_utc?: string | null;
+            /** Estimated Minutes */
+            estimated_minutes?: number | null;
         };
         /** TelemetryDeleteResponse */
         TelemetryDeleteResponse: {
@@ -3144,6 +3420,260 @@ export interface operations {
             };
         };
     };
+    list_blocklist_api_v1_interventions_blocklist_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlocklistResponse"];
+                };
+            };
+        };
+    };
+    add_blocked_site_api_v1_interventions_blocklist_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockedSiteCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlocklistCommandResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_blocked_site_api_v1_interventions_blocklist__domain__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Blocked domain */
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlocklistCommandResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    toggle_blocked_site_api_v1_interventions_blocklist__domain__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Blocked domain */
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockedSiteToggleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlocklistCommandResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_tasks_api_v1_tasks_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by status */
+                status?: ("pending" | "in_progress" | "done") | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_task_api_v1_tasks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_task_api_v1_tasks__task_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Task UUID */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskCommandResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_task_api_v1_tasks__task_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Task UUID */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_chat_api_v1_chat_post: {
         parameters: {
             query?: never;
@@ -3539,6 +4069,37 @@ export interface operations {
                 "application/json": components["schemas"]["BrowserHeartbeatRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    browser_blocklist_api_v1_telemetry_browser_blocklist_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-browser-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

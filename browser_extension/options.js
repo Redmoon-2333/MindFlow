@@ -20,7 +20,9 @@ document.querySelector("#pair").addEventListener("click", async () => {
   const code = codeInput.value.trim();
   statusElement.textContent = "正在配对…";
   try {
-    if (!/^\d{6}$/.test(code)) throw new Error("请输入六位数字配对码");
+    // Backend generates 8-char codes from an unambiguous alphabet (no 0/O/1/I)
+    // in telemetry_service.create_pairing_code — validate that exact format.
+    if (!/^[A-Z2-9]{8}$/.test(code)) throw new Error("请输入八位配对码（大写字母与数字 2-9）");
     const backendUrl = normalizeBackend(backendInput.value);
     const response = await fetch(`${backendUrl}/api/v1/telemetry/browser/pair`, {
       method: "POST",

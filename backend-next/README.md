@@ -198,16 +198,16 @@ uv run python -m mindflow.eval --mode both --live --yes
 ### 运行测试
 
 ```bash
-# 全量测试（1956 passed, 12 skipped, 1 warning as of 2026-07-29）
+# 全量测试（2228 passed as of 2026-08-16）
 uv run python -m pytest tests/ -v
 
 # 带覆盖率报告
 uv run python -m pytest --cov=src/mindflow --cov-report=term-missing
 
-# 类型检查（注意：strict mypy 目前有 158 个已知错误，见质量债务说明）
+# 类型检查（strict mypy 已全绿，见「质量门禁」）
 uv run python -m mypy --strict src/mindflow
 
-# 代码风格（注意：Ruff 目前有 94 个已知发现，见质量债务说明）
+# 代码风格（Ruff 已全绿，见「质量门禁」）
 uv run python -m ruff check src tests
 
 # 数据库迁移
@@ -319,14 +319,15 @@ uv run alembic upgrade head     # 应用所有待定迁移
 
 ---
 
-## 质量债务
+## 质量门禁
 
-以下命令是**必需的可见性门禁**，但**当前未通过**：
+以下命令是**必需的可见性门禁**，**当前全部通过**（green since 2026-08-16）：
 
-- **Ruff**: 94 个发现（`uv run python -m ruff check src tests`）
-- **Mypy (strict)**: 158 个错误，涉及 16 个文件（`uv run python -m mypy --strict src/mindflow`）
+- **Ruff**: 0 findings（`uv run python -m ruff check src tests` → `All checks passed!`）
+- **Mypy (strict)**: 0 errors across 163 source files（`uv run python -m mypy --strict src/mindflow` → `Success`）
+- **Pytest**: 2228 passing（`uv run python -m pytest tests/ -q`）
 
-这些是已知债务，而非回归问题。不要声称代码风格或类型检查为绿色。
+任何回归上述门禁的改动必须在完成前修复。
 
 ---
 
@@ -398,8 +399,8 @@ backend-next/
 
 - **包管理**：使用 `uv sync --extra dev --extra ml` 安装依赖，不使用 pip/conda/poetry
 - **TDD 驱动**：所有新功能先写测试，再实现
-- **严格类型**：`mypy --strict` 强制类型标注（当前 158 个已知错误，见质量债务）
-- **代码风格**：`ruff` 自动检查（行宽 100，Python 3.11 目标，当前 94 个已知发现）
+- **严格类型**：`mypy --strict` 强制类型标注（全绿，见质量门禁）
+- **代码风格**：`ruff` 自动检查（行宽 100，Python 3.11 目标，全绿，见质量门禁）
 - **提交规范**：遵循 Conventional Commits（`feat:` / `fix:` / `refactor:`）
 - **回滚安全**：功能标记全部默认关闭（旧路径），无需代码回滚（见 ADR-005）
 
