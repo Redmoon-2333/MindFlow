@@ -15,6 +15,7 @@ const Activities = lazy(() => import("./pages/Activities"));
 const Analytics = lazy(() => import("./pages/Analytics"));
 const Reports = lazy(() => import("./pages/Reports"));
 const Intervention = lazy(() => import("./pages/Intervention"));
+const Execution = lazy(() => import("./pages/Execution"));
 const Panel = lazy(() => import("./pages/Panel"));
 const Chat = lazy(() => import("./pages/Chat"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -30,6 +31,7 @@ const NAV = [
   { to: "/model-center", label: "模型中心" },
   { to: "/reports", label: "报告中心" },
   { to: "/intervention", label: "干预中心" },
+  { to: "/execution", label: "干预执行" },
   { to: "/panel", label: "专家面板" },
   { to: "/chat", label: "AI 对话" },
   { to: "/settings", label: "系统设置" },
@@ -68,6 +70,7 @@ function AppRoutes() {
       <Route path="/analytics" element={<Analytics />} />
       <Route path="/reports" element={<Reports />} />
       <Route path="/intervention" element={<Intervention />} />
+      <Route path="/execution" element={<Execution />} />
       <Route path="/panel" element={<Panel />} />
       <Route path="/chat" element={<Chat />} />
       <Route path="/settings" element={<Settings />} />

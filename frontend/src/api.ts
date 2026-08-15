@@ -667,6 +667,86 @@ export async function getInterventionHistory(days = 7): Promise<InterventionHist
   return unwrap(await withTimeout(client.GET("/api/v1/intervention/history", { ...requestOptions(), params: { query: { days } } }))) as unknown as InterventionHistoryResponse;
 }
 
+// ── Intervention execution: tasks (smart_prioritization) ──
+
+export interface TaskItem {
+  id: string;
+  title: string;
+  description: string;
+  priority: number;
+  status: "pending" | "in_progress" | "done";
+  deadline_utc: string | null;
+  estimated_minutes: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskListResponse {
+  items: TaskItem[];
+  count: number;
+}
+
+export interface TaskCreateInput {
+  title: string;
+  description?: string;
+  priority?: number;
+  status?: TaskItem["status"];
+  deadline_utc?: string | null;
+  estimated_minutes?: number | null;
+}
+
+export const getTasks = (status?: TaskItem["status"]) =>
+  request<TaskListResponse>(`/tasks${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+
+export const createTask = (data: TaskCreateInput) =>
+  request<TaskItem>("/tasks", { method: "POST", body: JSON.stringify(data) });
+
+export const updateTask = (id: string, data: Partial<TaskCreateInput>) =>
+  request<TaskItem>(`/tasks/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+export const deleteTask = (id: string) =>
+  request<{ status: string; task_id: string }>(`/tasks/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+
+// ── Intervention execution: site blocking (environment_optimization) ──
+
+export interface BlockedSiteItem {
+  domain: string;
+  enabled: boolean;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface BlocklistResponse {
+  items: BlockedSiteItem[];
+  count: number;
+}
+
+export const getBlocklist = () =>
+  request<BlocklistResponse>("/interventions/blocklist");
+
+export const addBlockedSite = (domain: string, reason?: string) =>
+  request<{ status: string; domain: string }>("/interventions/blocklist", {
+    method: "POST",
+    body: JSON.stringify({ domain, reason: reason || undefined }),
+  });
+
+export const toggleBlockedSite = (domain: string, enabled: boolean) =>
+  request<{ status: string; domain: string }>(
+    `/interventions/blocklist/${encodeURIComponent(domain)}`,
+    { method: "PATCH", body: JSON.stringify({ enabled }) },
+  );
+
+export const removeBlockedSite = (domain: string) =>
+  request<{ status: string; domain: string }>(
+    `/interventions/blocklist/${encodeURIComponent(domain)}`,
+    { method: "DELETE" },
+  );
+
 export const getCollectorStatus = () => request<CollectorStatus>("/collector");
 export const startCollector = () => request<CollectorStatus>("/collector", { method: "POST" });
 export const stopCollector = () => request<CollectorStatus>("/collector/stop", { method: "POST" });
