@@ -42,8 +42,13 @@ from mindflow.services.collector_interval_lifecycle import (
 from mindflow.services.collector_recovery import RecoveryState
 from mindflow.services.collector_ticker import CollectorTicker
 
-_IDLE_THRESHOLD_S: int = 60
-"""Seconds of inactivity before marking a snapshot as idle."""
+_IDLE_THRESHOLD_S: int = 120
+"""Seconds of inactivity before marking a snapshot as idle.
+
+Defaults to 120s (2 minutes) rather than 60s: deep reading/thinking often
+means no input for a minute or two, and treating a focused-but-quiet user
+as "away" pollutes every downstream focus feature.  Overridable per
+instance via ``idle_threshold_s`` (wired from settings)."""
 
 
 class CollectorService:

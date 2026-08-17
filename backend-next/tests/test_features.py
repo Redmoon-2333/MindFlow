@@ -465,6 +465,92 @@ class TestLongestFocusBlock:
         ]
         assert longest_focus_block_s(events) == 0.0
 
+    # ── idle_tolerance_s: quiet reading must not splinter the block ─────
+
+    def test_quiet_pause_tolerated_within_same_app(self):
+        """A short idle event on the same app keeps the block intact."""
+        events = [
+            make_event(
+                user_id=1,
+                timestamp_utc=_ts(0),
+                duration_s=10.0,
+                process_name="code.exe",
+                is_idle=False,
+            ),
+            make_event(
+                user_id=1,
+                timestamp_utc=_ts(1),
+                duration_s=30.0,
+                process_name="code.exe",
+                is_idle=True,
+            ),
+            make_event(
+                user_id=1,
+                timestamp_utc=_ts(2),
+                duration_s=20.0,
+                process_name="code.exe",
+                is_idle=False,
+            ),
+        ]
+        # idle 30s <= tolerance 300s, same app -> 10 + 30 + 20 = 60
+        assert longest_focus_block_s(events, idle_tolerance_s=300.0) == 60.0
+
+    def test_legacy_strict_break_preserved_by_default(self):
+        """Without idle_tolerance_s the idle event still breaks the block."""
+        events = [
+            make_event(
+                user_id=1,
+                timestamp_utc=_ts(0),
+                duration_s=10.0,
+                process_name="code.exe",
+                is_idle=False,
+            ),
+            make_event(
+                user_id=1,
+                timestamp_utc=_ts(1),
+                duration_s=30.0,
+                process_name="code.exe",
+                is_idle=True,
+            ),
+            make_event(
+                user_id=1,
+                timestamp_utc=_ts(2),
+                duration_s=20.0,
+                process_name="code.exe",
+                is_idle=False,
+            ),
+        ]
+        assert longest_focus_block_s(events) == 20.0  # post-idle block only
+
+    def test_quiet_pause_does_not_bridge_app_switch(self):
+        """An idle pause on a *different* app still ends the current block."""
+        events = [
+            make_event(
+                user_id=1,
+                timestamp_utc=_ts(0),
+                duration_s=10.0,
+                process_name="code.exe",
+                is_idle=False,
+            ),
+            make_event(
+                user_id=1,
+                timestamp_utc=_ts(1),
+                duration_s=30.0,
+                process_name="chrome.exe",
+                is_idle=True,
+            ),
+            make_event(
+                user_id=1,
+                timestamp_utc=_ts(2),
+                duration_s=20.0,
+                process_name="chrome.exe",
+                is_idle=False,
+            ),
+        ]
+        # idle changed the foreground app, so code block is closed; chrome 20
+        # becomes its own new block.
+        assert longest_focus_block_s(events, idle_tolerance_s=300.0) == 20.0
+
 
 # ── app_usage_ranking ────────────────────────────────────────────────────────
 

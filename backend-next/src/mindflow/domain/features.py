@@ -56,6 +56,14 @@ DEFAULT_FOCUS_WEIGHTS: Mapping[str, float] = {
 }
 """Weight distribution for the two focus-score components (must sum to 100)."""
 
+QUIET_IDLE_TOLERANCE_S: float = 300.0
+"""Max seconds of same-app idle treated as *quiet focus* (reading/thinking).
+
+Deep reading often produces short input pauses on the same foreground app.
+Feature consumers that want to keep a focused reader's block intact pass this
+to ``longest_focus_block_s``; the legacy strict behaviour (any idle breaks)
+remains the default (idle_tolerance_s=0)."""
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # AppUsage
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -372,8 +380,23 @@ def switch_rate_per_hour(events: list[ActivityEvent]) -> float:
     return switches / (observed_seconds / 3600.0)
 
 
-def longest_focus_block_s(events: list[ActivityEvent]) -> float:
-    """Return the longest same-app block without idle or collection gaps."""
+def longest_focus_block_s(
+    events: list[ActivityEvent],
+    *,
+    idle_tolerance_s: float = 0.0,
+) -> float:
+    """Return the longest same-app block without idle or collection gaps.
+
+    Args:
+        events: Activity events to scan.
+        idle_tolerance_s: Optional tolerance in seconds.  When > 0, an idle
+            event whose process matches the current block's app and whose
+            duration is within this tolerance is treated as a *quiet pause*
+            rather than a block break — deep reading/thinking often shows up
+            as short idle spikes on the same foreground window, and slicing
+            those into separate 30s blocks makes a focused reader look
+            impulsive.  Default 0 preserves the legacy strict behaviour.
+    """
     sorted_events = _sorted_events(events)
     sorted_events = [
         event for event in _sorted_events(events)
@@ -390,7 +413,15 @@ def longest_focus_block_s(events: list[ActivityEvent]) -> float:
             and (event.timestamp_utc - previous_timestamp).total_seconds()
             > MAX_COLLECTION_GAP_S
         )
-        if event.data.is_idle or has_collection_gap:
+        is_quiet_pause = (
+            event.data.is_idle
+            and idle_tolerance_s > 0
+            and current_app is not None
+            and event.data.process_name == current_app
+            and not has_collection_gap
+            and event.duration_s <= idle_tolerance_s
+        )
+        if (event.data.is_idle and not is_quiet_pause) or has_collection_gap:
             longest = max(longest, current_block)
             current_block = 0.0
             current_app = None
@@ -401,6 +432,11 @@ def longest_focus_block_s(events: list[ActivityEvent]) -> float:
                 current_block = max(0.0, event.duration_s)
             else:
                 current_block += max(0.0, event.duration_s)
+        elif is_quiet_pause:
+            # The quiet pause is itself part of the engaged stretch: the user
+            # stayed in the same app while thinking/reading, so its duration
+            # counts toward the block.
+            current_block += max(0.0, event.duration_s)
         previous_timestamp = event.timestamp_utc
 
     return max(longest, current_block)

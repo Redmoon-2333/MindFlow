@@ -374,6 +374,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 repository=activity_repository,
                 interval_repository=CollectorIntervalsRepository(session_factory),
                 interval_s=float(settings.collect_interval_s),
+                idle_threshold_s=settings.idle_threshold_s,
             )
             logger.info("CollectorService created (not started)")
         except Exception as exc:

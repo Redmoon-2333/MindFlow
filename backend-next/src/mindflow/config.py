@@ -140,6 +140,14 @@ class Settings(BaseSettings):
             "(architecture plan H / adaptive frequency; saves battery)"
         ),
     )
+    idle_threshold_s: int = Field(
+        default=120, ge=30, le=1800,
+        description=(
+            "Seconds of no input before a snapshot is marked idle. Larger "
+            "values keep focused-but-quiet reading/thinking from being "
+            "classified as away from the keyboard."
+        ),
+    )
     heartbeat_pulsetime_s: int = Field(
         default=10, ge=1, le=300, description="Heartbeat merge window in seconds"
     )

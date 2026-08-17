@@ -73,6 +73,43 @@ class TestDeepWorkGuard:
         """No events → not deep work."""
         assert _deep_work_guard([]) is False
 
+    def test_quiet_reader_not_interrupted(self) -> None:
+        """Long same-app stay with short idle pauses is quiet deep work.
+
+        threshold=999 isolates the quiet-deep-work branch from the ordinary
+        focus-score branch (a real focus score maxes out at 100).
+        """
+        base = datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC)
+        events = []
+        # 30 minutes in one app: alternating active + short idle (reading).
+        for i in range(180):
+            events.append(make_event(
+                user_id=1,
+                timestamp_utc=base + timedelta(seconds=i * 10),
+                duration_s=10.0,
+                process_name="Code.exe",
+                is_idle=(i % 2 == 0),
+            ))
+        assert _deep_work_guard(events, threshold=999.0) is True
+
+    def test_quiet_video_session_is_not_deep_work(self) -> None:
+        """Quiet entertainment must not satisfy the quiet-deep-work path."""
+        base = datetime(2026, 7, 17, 8, 0, 0, tzinfo=UTC)
+        events = [
+            make_event(
+                user_id=1,
+                timestamp_utc=base + timedelta(seconds=i * 10),
+                duration_s=10.0,
+                process_name="chrome.exe",
+                window_title="youtube.com/watch?v=abc",
+                is_idle=(i % 2 == 0),
+            )
+            for i in range(180)
+        ]
+        # The block length qualifies, but entertainment ratio ~1.0 > 0.25, so
+        # the quiet path must reject the session.
+        assert _deep_work_guard(events, threshold=999.0) is False
+
 
 class TestSelectInterventionType:
     """_select_intervention_type mapping."""

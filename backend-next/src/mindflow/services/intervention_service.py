@@ -175,15 +175,47 @@ class InterventionResult:
         self.throttle_decision = throttle_decision
 
 
+# Worked block length (seconds) that signals genuine deep work even when the
+# event-level focus score is diluted by short idle pauses.
+_QUIET_DEEP_WORK_BLOCK_S: float = 20 * 60
+
+# Max entertainment share allowed for the quiet-deep-work path.  A user who
+# stares at a video/feed for 20 minutes is not in deep work.
+_QUIET_DEEP_WORK_MAX_ENTERTAINMENT_RATIO: float = 0.25
+
+
 def _deep_work_guard(
     events: list[ActivityEvent],
     threshold: float = 80.0,
 ) -> bool:
-    """Return True if the user appears to be in deep work (>threshold)."""
+    """Return True if the user appears to be in deep work.
+
+    Two complementary signals:
+      1. A high event-level focus score (> *threshold*), which rewards
+         single-app, low-switch activity.
+      2. *Quiet deep work*: the same foreground app for a long stretch
+         (>= ``_QUIET_DEEP_WORK_BLOCK_S``) while tolerating short input
+         pauses, provided the window is not entertainment content.  This
+         stops a focused-but-mouse-still reader from being misread as idle
+         and interrupted.
+    """
     if not events:
         return False
     score = focus_score(events)
-    return score > threshold
+    if score > threshold:
+        return True
+
+    from mindflow.domain.features import QUIET_IDLE_TOLERANCE_S, longest_focus_block_s
+    from mindflow.infrastructure.llm.summary import build_behavior_summary
+
+    block = longest_focus_block_s(events, idle_tolerance_s=QUIET_IDLE_TOLERANCE_S)
+    if block < _QUIET_DEEP_WORK_BLOCK_S:
+        return False
+    try:
+        summary = build_behavior_summary(events)
+    except ValueError:
+        return False
+    return summary.social_media_ratio <= _QUIET_DEEP_WORK_MAX_ENTERTAINMENT_RATIO
 
 
 def _select_intervention_type(

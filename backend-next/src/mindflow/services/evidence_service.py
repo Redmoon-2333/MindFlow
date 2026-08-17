@@ -34,6 +34,7 @@ from mindflow.domain.evidence import (
 )
 from mindflow.domain.features import (
     MAX_ACCEPTABLE_SWITCHES_PER_HOUR,
+    QUIET_IDLE_TOLERANCE_S,
     app_usage_ranking,
     focus_score,
     longest_focus_block_s,
@@ -425,7 +426,9 @@ class EvidenceBundleBuilder:
         )
 
         # --- longest_focus_block_s ---
-        longest_block = longest_focus_block_s(events)
+        longest_block = longest_focus_block_s(
+            events, idle_tolerance_s=QUIET_IDLE_TOLERANCE_S
+        )
         sev = _block_severity(longest_block)
         items.append(
             EvidenceItem(

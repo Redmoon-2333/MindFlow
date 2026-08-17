@@ -20,6 +20,7 @@ from typing import Any
 
 from mindflow.domain.events import ActivityEvent
 from mindflow.domain.features import (
+    QUIET_IDLE_TOLERANCE_S,
     longest_focus_block_s,
     switch_rate_per_hour,
     title_features,
@@ -33,9 +34,6 @@ _ENTERTAINMENT_APPS: frozenset[str] = frozenset({
     "微信",
     "qq",
     "tim",
-    "chrome.exe",
-    "firefox.exe",
-    "msedge.exe",
     "bilibili",
     "哔哩哔哩",
     "douyin",
@@ -54,6 +52,45 @@ _ENTERTAINMENT_APPS: frozenset[str] = frozenset({
     "spotify",
     "netease",
     "网易云音乐",
+})
+
+# Browser processes are NOT blanket-entertainment: the same Chrome/Edge window
+# may be a paper or a YouTube tab.  They are classified by window title plus
+# the visible URL domain instead of the process name alone.
+_BROWSER_PROCESSES: frozenset[str] = frozenset({
+    "chrome.exe",
+    "firefox.exe",
+    "msedge.exe",
+    "chrome",
+    "firefox",
+    "msedge",
+    "edge",
+})
+
+# Known entertainment/social video domains.  A browser event whose visible URL
+# (`title_features.url_domain`) is in this set counts as entertainment; every
+# other browser tab is treated as neutral work content.
+_ENTERTAINMENT_DOMAINS: frozenset[str] = frozenset({
+    "bilibili.com",
+    "www.bilibili.com",
+    "youtube.com",
+    "www.youtube.com",
+    "douyin.com",
+    "www.douyin.com",
+    "tiktok.com",
+    "www.tiktok.com",
+    "weibo.com",
+    "www.weibo.com",
+    "zhihu.com",
+    "www.zhihu.com",
+    "xiaohongshu.com",
+    "www.xiaohongshu.com",
+    "kuaishou.com",
+    "www.kuaishou.com",
+    "netflix.com",
+    "www.netflix.com",
+    "open.spotify.com",
+    "music.163.com",
 })
 
 _FOCUS_APPS: frozenset[str] = frozenset({
@@ -118,13 +155,18 @@ def build_behavior_summary(
 
     # Core metrics from domain/features
     switches_per_hour = switch_rate_per_hour(sorted_events)
-    longest_block_s = longest_focus_block_s(sorted_events)
-
-    total_duration_s = sum(max(0.0, event.duration_s) for event in sorted_events)
-    total_duration_min = total_duration_s / 60.0 if total_duration_s > 0 else 1.0
+    longest_block_s = longest_focus_block_s(
+        sorted_events, idle_tolerance_s=QUIET_IDLE_TOLERANCE_S
+    )
 
     non_idle_events = [event for event in sorted_events if not event.data.is_idle]
-    total_non_idle_s = sum(max(0.0, event.duration_s) for event in non_idle_events)
+    # `duration_min` is the *active* (non-idle) window length.  Using wall-clock
+    # time that includes idle stretches would dilute the focus ratio below and
+    # make a quiet-but-present reader look like they are avoiding the task.
+    total_active_s = sum(max(0.0, event.duration_s) for event in non_idle_events)
+    total_duration_min = total_active_s / 60.0 if total_active_s > 0 else 1.0
+
+    total_non_idle_s = total_active_s
     entertainment_duration_s = _entertainment_duration(non_idle_events)
     social_media_ratio = (
         entertainment_duration_s / total_non_idle_s if total_non_idle_s > 0 else 0.0
@@ -207,19 +249,40 @@ def serialize_summary(summary: BehaviorSummary) -> str:
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
 
+def _is_entertainment_event(ev: ActivityEvent) -> bool:
+    """Classify a single event as (entertaining) or not.
+
+    Dedicated entertainment/social apps (wechat, douyin, bilibili client, …)
+    count by process name.  Browsers are special-cased: an Entertainment
+    title *or* a known entertainment URL domain counts; productive-learning
+    content (lectures, docs, papers) and any other tab does not — so reading
+    a paper in Edge is no longer mislabelled as social media.
+    """
+    app_lower = ev.data.process_name.lower()
+    # Match both ``douyin`` and ``douyin.exe`` against the app list.
+    app_stem = app_lower[:-4] if app_lower.endswith(".exe") else app_lower
+    if app_lower in _ENTERTAINMENT_APPS or app_stem in _ENTERTAINMENT_APPS:
+        return True
+
+    features = title_features(ev.data.window_title)
+    if app_lower in _BROWSER_PROCESSES or app_stem in _BROWSER_PROCESSES:
+        if features.is_likely_productive_learning:
+            return False
+        if features.url_domain in _ENTERTAINMENT_DOMAINS:
+            return True
+        return features.is_likely_entertainment
+
+    # Non-browser apps: log by window title only.
+    return features.is_likely_entertainment
+
+
 def _entertainment_duration(events: list[ActivityEvent]) -> float:
     """Compute total seconds spent on entertainment/social-media apps."""
     total = 0.0
     for ev in events:
         if ev.data.is_idle:
             continue
-        app_lower = ev.data.process_name.lower()
-        if app_lower in _ENTERTAINMENT_APPS:
-            total += ev.duration_s
-            continue
-        # Check window title for entertainment patterns
-        features = title_features(ev.data.window_title)
-        if features.is_likely_entertainment:
+        if _is_entertainment_event(ev):
             total += ev.duration_s
     return total
 
@@ -279,9 +342,7 @@ def _estimate_start_delay(events: list[ActivityEvent]) -> float:
     for ev in events:
         if ev.data.is_idle:
             continue
-        app_lower = ev.data.process_name.lower()
-        is_entertainment = title_features(ev.data.window_title).is_likely_entertainment
-        if app_lower not in _ENTERTAINMENT_APPS and not is_entertainment:
+        if not _is_entertainment_event(ev):
             delay_s = (ev.timestamp_utc - first_ts).total_seconds()
             return max(0.0, delay_s / 60.0)
 
