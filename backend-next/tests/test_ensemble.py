@@ -136,6 +136,75 @@ class TestEnsembleClassifier:
             assert isinstance(val, float)
             assert 0.0 <= val <= 1.0
 
+    def test_calibration_off_by_default(
+        self,
+        sample_features: np.ndarray,
+        binary_labels: np.ndarray,
+        feature_names: list[str],
+    ) -> None:
+        """calibration is OFF by default (legacy raw probabilities)."""
+        clf = EnsembleClassifier()
+        clf.fit(sample_features, binary_labels, feature_names)
+        assert clf.calibration is None
+        assert clf.calibrator is None
+
+        proba = clf.predict_proba(sample_features[:3])
+        assert proba.shape == (3, 2)
+        assert float(np.abs(proba.sum(axis=1) - 1.0).max()) < 1e-9
+
+    def test_calibration_none_returns_raw_probabilities(
+        self,
+        sample_features: np.ndarray,
+        binary_labels: np.ndarray,
+        feature_names: list[str],
+    ) -> None:
+        """calibration=None disables post-hoc calibration (legacy behaviour)."""
+        clf = EnsembleClassifier(calibration=None)
+        clf.fit(sample_features, binary_labels, feature_names)
+        assert clf.calibrator is None
+
+        proba = clf.predict_proba(sample_features[:3])
+        assert proba.shape == (3, 2)
+        assert float(np.abs(proba.sum(axis=1) - 1.0).max()) < 1e-9
+
+    def test_sigmoid_calibration_opt_in(self) -> None:
+        """calibration='sigmoid' fits a Platt calibrator when opted in."""
+        rng = np.random.default_rng(7)
+        features = rng.normal(size=(80, 4))
+        labels = (features[:, 0] > 0).astype(np.int32)
+        clf = EnsembleClassifier(calibration="sigmoid")
+        clf.fit(features, labels, [f"f{i}" for i in range(4)])
+        assert clf.calibrator is not None
+        proba = clf.predict_proba(features[:5])
+        assert proba.shape == (5, 2)
+        assert float(proba.min()) >= 0.0 and float(proba.max()) <= 1.0
+
+    def test_isotonic_calibration_opt_in(self) -> None:
+        """calibration='isotonic' is available as an opt-in variant."""
+        rng = np.random.default_rng(3)
+        features = rng.normal(size=(80, 4))
+        labels = (features[:, 0] > 0).astype(np.int32)
+        clf = EnsembleClassifier(calibration="isotonic")
+        clf.fit(features, labels, [f"f{i}" for i in range(4)])
+        assert clf.calibrator is not None
+        proba = clf.predict_proba(features[:5])
+        assert proba.shape == (5, 2)
+
+    def test_sigmoid_calibration_roundtrip(self) -> None:
+        """calibration='sigmoid' serializes its calibrator after round-trip."""
+        rng = np.random.default_rng(9)
+        features = rng.normal(size=(60, 4))
+        labels = (features[:, 0] + features[:, 1] * 0.5 > 0).astype(np.int32)
+        clf = EnsembleClassifier(calibration="sigmoid")
+        clf.fit(features, labels, [f"f{i}" for i in range(4)])
+        assert clf.calibrator is not None
+
+        data = clf.to_dict()
+        clf2 = EnsembleClassifier.from_dict(data)
+        assert clf2.calibration == "sigmoid"
+        assert clf2.calibrator is not None
+        assert np.allclose(clf.predict_proba(features[:5]), clf2.predict_proba(features[:5]))
+
     def test_to_dict_from_dict_roundtrip(
         self,
         sample_features: np.ndarray,

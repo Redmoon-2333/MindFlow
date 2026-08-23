@@ -259,6 +259,16 @@ class Settings(BaseSettings):
     checkpointing_enabled: bool = Field(
         default=False, description="Enable LangGraph checkpoint persistence"
     )
+    training_use_window_labels: bool = Field(
+        default=True,
+        description=(
+            "Use user-calibrated behavior_feature_windows.label values as an "
+            "additional training signal. Measured on real data (2026-08-20) to "
+            "lift balanced accuracy 0.46->0.64, Brier 0.40->0.23 and make "
+            "date-fold stability pass, activating the ML model. Quality-gate "
+            "counts remain feedback-only. Set 0/False to disable."
+        ),
+    )
     new_analysis_graph: bool = Field(
         default=True,
         description=(

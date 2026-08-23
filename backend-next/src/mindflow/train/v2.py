@@ -42,6 +42,12 @@ TASK_TYPE_MAP = {
 def make_v2_classifier() -> Any:
     from mindflow.train.models.ensemble import EnsembleClassifier
 
+    # Public default stays raw (calibration=None): post-hoc calibration only
+    # helps once the dataset is large/clean enough (measured on the
+    # window-label-augmented real data 2026-08-20: Brier 0.228->0.223, BA
+    # 0.641->0.648).  Production training enables it explicitly via
+    # ``run_training(..., calibration="sigmoid")``; small/toy datasets should
+    # pass ``calibration=None``.
     return EnsembleClassifier()
 
 
@@ -61,13 +67,29 @@ class V2TrainingData:
     matched_window_count: int
     label_sources: list[str]
     feature_names: list[str]
+    window_label_count: int = 0
+
+
+# Confidence weight for user-calibrated window labels (option B).  These are
+# auto-annotated from the user's per-day activity calibration, so they sit
+# between explicit per-session feedback (1.0) and the weak heuristic (0.3).
+WINDOW_LABEL_WEIGHT = 0.8
 
 
 def prepare_v2_training_data(
     feature_windows: list[dict[str, Any]],
     feedback_sessions: list[dict[str, Any]],
+    window_labels: dict[str, int] | None = None,
 ) -> V2TrainingData:
-    """Prepare training data by matching feature windows to feedback via time overlap."""
+    """Prepare training data by matching feature windows to feedback via time overlap.
+
+    ``window_labels`` is an optional opt-in source (id -> 1/0/-1) of
+    user-calibrated window labels.  Explicit feedback still wins for any
+    window it overlaps; the remaining windows with a window label become
+    strong annotated samples (weight ``WINDOW_LABEL_WEIGHT``) instead of weak
+    heuristic ones.  Quality-gate counts stay feedback-only — this only
+    increases the supervision available to the classifier/evaluator.
+    """
     parsed_feedback: list[tuple[str, datetime, datetime, str, int | None, str]] = []
     for row in feedback_sessions:
         feedback = _parse_feedback(row)
@@ -86,6 +108,7 @@ def prepare_v2_training_data(
     feedback_days: set[str] = set()
     mixed_count = 0
     matched_window_count = 0
+    window_label_count = 0
 
     X_list: list[list[float]] = []
     y_list: list[int] = []
@@ -130,6 +153,21 @@ def prepare_v2_training_data(
                     distract_sessions.add(matched_sid)
                 if matched_start is not None:
                     feedback_days.add(matched_start.strftime("%Y-%m-%d"))
+        elif window_labels is not None and (window_label := window_labels.get(wid)) is not None:
+            if window_label >= 0:
+                y_list.append(window_label)
+                w_list.append(WINDOW_LABEL_WEIGHT)
+                explicit_list.append(True)
+                source_list.append("window_label")
+                window_label_count += 1
+            else:
+                # Explicitly excluded (mixed) window label -> drop like a
+                # weak-mixed sample would be.
+                y_list.append(-1)
+                w_list.append(0.0)
+                explicit_list.append(False)
+                source_list.append("window_label_excluded")
+                mixed_count += 1
         else:
             weak = _weak_label(features)
             y_list.append(weak)
@@ -162,14 +200,20 @@ def prepare_v2_training_data(
         matched_window_count=matched_window_count,
         label_sources=[s for s, v in zip(source_list, valid, strict=True) if v],
         feature_names=list(V2_FEATURE_NAMES),
+        window_label_count=window_label_count,
     )
 
 
-def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> dict[str, Any]:
+def evaluate_v2_candidates(
+    data: V2TrainingData, *, random_state: int = 42, calibration: str | None = None,
+) -> dict[str, Any]:
     """Date-grouped cross-validation with the same classifier used in production.
 
     Rule and logistic baselines are computed inside the same held-out folds;
     in-sample comparisons are intentionally not reported as evidence.
+
+    ``calibration`` mirrors ``run_training`` — production passes
+    ``"sigmoid"`` so evaluation matches the deployed classifier exactly.
     """
     mask = data.explicit_mask
     if mask.sum() < 10:
@@ -197,6 +241,16 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
             "fold_stability": {"reason": "need >=3 feedback dates"},
         }
 
+    if calibration is not None:
+        from mindflow.train.models.ensemble import EnsembleClassifier
+
+        def _make_clf() -> Any:
+            return EnsembleClassifier(calibration=calibration)
+    else:
+
+        def _make_clf() -> Any:
+            return make_v2_classifier()
+
     groups = np.array(dates)
     gkf = GroupKFold(n_splits=min(4, len(unique_dates)))
     weights = data.sample_weights[mask]
@@ -223,7 +277,7 @@ def evaluate_v2_candidates(data: V2TrainingData, *, random_state: int = 42) -> d
             })
             continue
 
-        clf = make_v2_classifier()
+        clf = _make_clf()
         clf.fit(
             X[train_idx],
             y[train_idx],

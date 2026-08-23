@@ -263,6 +263,7 @@ def test_v2_training_activates_only_after_all_gates_pass(work_dir: Path) -> None
         events=[make_event(user_id=1, timestamp_utc=start, duration_s=300)],
         feature_windows=feature_windows,
         feedback_sessions=feedback_sessions,
+        calibration=None,  # toy data: skip post-hoc calibration
     )
 
     assert report.quality_gate["passed"] is True

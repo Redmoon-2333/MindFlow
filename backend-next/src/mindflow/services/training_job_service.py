@@ -373,6 +373,13 @@ class TrainingJobService:
 
             # Once we enter asyncio.to_thread, cancellation is no longer
             # accepted — the thread may call save_all(activate=True).
+            use_window_labels = bool(
+                getattr(
+                    getattr(app_state, "settings", None),
+                    "training_use_window_labels",
+                    False,
+                )
+            )
             report = await asyncio.to_thread(
                 run_training,
                 source="db",
@@ -380,6 +387,7 @@ class TrainingJobService:
                 models_dir=models_dir,
                 feature_windows=windows,
                 feedback_sessions=feedback_with_times,
+                use_window_labels=use_window_labels,
             )
 
             # ── After training thread returns ──────────────────────────

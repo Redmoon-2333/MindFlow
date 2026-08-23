@@ -331,7 +331,8 @@ class TestMLTrainingPipelineE2E:
                     "score": 5 if cls else 1, "task_type": "coding"})
         report = run_training(source="db", data_dir=tmp_path / "d",
                               models_dir=tmp_path / "m",
-                              feature_windows=windows, feedback_sessions=feedback)
+                              feature_windows=windows, feedback_sessions=feedback,
+                              calibration=None)  # toy data: skip post-hoc calibration
         assert report.model_mode == "shadow"
         assert not (tmp_path / "m" / "v2" / "latest.json").exists()
 
@@ -354,7 +355,8 @@ class TestMLTrainingPipelineE2E:
                 idx += 1
         report = run_training(source="db", data_dir=tmp_path / "d",
                               models_dir=tmp_path / "m",
-                              feature_windows=windows, feedback_sessions=feedback)
+                              feature_windows=windows, feedback_sessions=feedback,
+                              calibration=None)  # toy data: skip post-hoc calibration
         assert report.model_mode == "ready"
         assert report.activated is True
         assert (tmp_path / "m" / "v2" / "latest.json").exists()

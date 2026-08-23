@@ -260,6 +260,13 @@ def main() -> None:
         help="Inclusive UTC end date in YYYY-MM-DD format",
     )
     parser.add_argument(
+        "--use-window-labels",
+        action="store_true",
+        dest="use_window_labels",
+        help="Also train on user-calibrated behavior_feature_windows.label "
+             "values (option B; quality-gate counts stay feedback-only).",
+    )
+    parser.add_argument(
         "--list-versions",
         action="store_true",
         dest="list_versions",
@@ -362,6 +369,7 @@ def main() -> None:
         events=events,
         feature_windows=feature_windows,
         feedback_sessions=feedback_sessions,
+        use_window_labels=args.use_window_labels,
     )
 
     if report.total_records == 0:

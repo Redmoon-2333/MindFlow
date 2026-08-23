@@ -70,12 +70,14 @@ class ModelManager:
         self,
         models_dir: str | Path = Path("data/models"),
         use_ensemble: bool = True,
+        calibration: str | None = None,
     ) -> None:
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.latest_path = self.models_dir / "latest.json"
         self.clustering = BehaviorClustering()
         self.hmm = BehaviorHMM()
+        self._calibration = calibration
 
         self._use_ensemble: bool = False
         self.classifier: FocusClassifier | EnsembleClassifier = FocusClassifier()
@@ -84,7 +86,7 @@ class ModelManager:
             try:
                 from xgboost import XGBClassifier  # noqa: F401 — probe availability
 
-                self.classifier = EnsembleClassifier()
+                self.classifier = EnsembleClassifier(calibration=calibration)
                 self._use_ensemble = True
             except ImportError:
                 logger.warning(

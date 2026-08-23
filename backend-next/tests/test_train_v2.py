@@ -63,6 +63,76 @@ def test_prepare_v2_training_data_prioritizes_explicit_feedback() -> None:
     assert data.mixed_window_count == 0
 
 
+def test_window_labels_become_explicit_annotated_samples() -> None:
+    """Option B: user-calibrated window labels become strong annotated samples."""
+    start = datetime(2026, 7, 1, 9, tzinfo=UTC)
+    windows = [
+        _feature_window(start, idle_ratio=0.05),
+        _feature_window(start + timedelta(hours=1), idle_ratio=0.05),
+        _feature_window(start + timedelta(hours=2), idle_ratio=0.05),
+    ]
+    windows[0]["id"] = "w-focus"
+    windows[1]["id"] = "w-distract"
+    windows[2]["id"] = "w-unlabeled"
+    window_labels = {"w-focus": 1, "w-distract": 0, "w-unlabeled": -1}
+
+    data = prepare_v2_training_data(windows, [], window_labels=window_labels)
+
+    # -1 (mixed) window label drops the window entirely.
+    assert data.labels.tolist() == [1, 0]
+    assert data.sample_weights.tolist() == [0.8, 0.8]
+    assert data.label_sources == ["window_label", "window_label"]
+    assert data.explicit_mask.tolist() == [True, True]
+    assert data.window_label_count == 2
+    # Quality-gate counts remain feedback-only.
+    assert data.explicit_feedback_count == 0
+    assert data.distinct_feedback_days == 0
+
+
+def test_explicit_feedback_wins_over_window_label() -> None:
+    """A window overlapping explicit feedback keeps the feedback label."""
+    start = datetime(2026, 7, 1, 9, tzinfo=UTC)
+    windows = [_feature_window(start, idle_ratio=0.05)]
+    windows[0]["id"] = "w1"
+    feedback = [_feedback("focus", start, 5, "focus")]
+    window_labels = {"w1": 0}  # contradicted by explicit feedback
+
+    data = prepare_v2_training_data(windows, feedback, window_labels=window_labels)
+
+    assert data.labels.tolist() == [1]
+    assert data.sample_weights.tolist() == [1.0]
+    assert data.label_sources == ["explicit"]
+    assert data.explicit_feedback_count == 1
+    assert data.window_label_count == 0
+
+
+def test_window_label_excluded_mixed_increments_mixed_count() -> None:
+    start = datetime(2026, 7, 1, 9, tzinfo=UTC)
+    windows = [_feature_window(start, idle_ratio=0.05)]
+    windows[0]["id"] = "w1"
+    data = prepare_v2_training_data(windows, [], window_labels={"w1": -1})
+    assert len(data.features) == 0
+    assert data.mixed_window_count == 1
+    assert data.window_label_count == 0
+
+
+def test_extract_window_labels_supports_strings_and_ints() -> None:
+    from mindflow.train.pipeline import _extract_window_labels
+
+    windows = [
+        {"id": "a", "label": "focus"},
+        {"id": "b", "label": "distracted"},
+        {"id": "c", "label": 1},
+        {"id": "d", "label": "mixed"},
+        {"id": "e", "label": None},
+        {"id": "f"},  # no label key
+        {"id": "g", "label": "bogus"},
+    ]
+    labels = _extract_window_labels(windows)
+    assert labels == {"a": 1, "b": 0, "c": 1, "d": -1}
+
+
+
 def test_evaluate_v2_candidates_keeps_dates_out_of_training_folds() -> None:
     windows: list[dict[str, object]] = []
     feedback: list[dict[str, object]] = []

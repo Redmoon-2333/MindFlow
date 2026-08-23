@@ -15,8 +15,10 @@ from typing import Any, cast
 import numpy as np
 import numpy.typing as npt
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, train_test_split
 from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
@@ -51,7 +53,7 @@ class EnsembleClassifier:
         "verbosity": 0,
     }
 
-    def __init__(self) -> None:
+    def __init__(self, calibration: str | None = None) -> None:
         self.scaler = StandardScaler()
         self.rf_model = RandomForestClassifier(**self._RF_PARAMS)
         self.xgb_model: Any = None
@@ -62,6 +64,18 @@ class EnsembleClassifier:
         else:
             logger.info("xgboost not installed — ensemble will use RF only")
 
+        # Post-hoc probability calibration.
+        #   None     (default) — legacy raw soft-vote probabilities.
+        #   "sigmoid"          — Platt scaling (1-D logistic).
+        #   "isotonic"         — isotonic regression.
+        # Production observations showed tree ensembles are overconfident at
+        # the extremes (0.9-1.0 confidence bin -> ~3% actual positives), but
+        # measurements on BOTH a real-data replay (2026-08-20) and the clean
+        # synthetic eval show calibration degrades Brier/Balanced-Accuracy at
+        # the current small data sizes, so it stays OFF by default and is an
+        # explicit opt-in for once training data is large/clean enough.
+        self.calibration: str | None = calibration if calibration else None
+        self.calibrator: Any = None
         self.feature_names_: list[str] = []
         self._is_fitted: bool = False
 
@@ -72,7 +86,11 @@ class EnsembleClassifier:
         feature_names: list[str],
         sample_weight: npt.NDArray[Any] | None = None,
     ) -> EnsembleClassifier:
-        """Train both RF and XGBoost on scaled data.
+        """Train both RF and XGBoost on scaled data, then calibrate.
+
+        A stratified 25% holdout is kept out of the base models and used to
+        fit the probability calibrator out-of-sample, so calibrated
+        probabilities are honest (no leakage from the training set).
 
         Args:
             X: feature matrix of shape (n_samples, n_features).
@@ -84,41 +102,110 @@ class EnsembleClassifier:
             self
         """
         self.feature_names_ = feature_names
+        y_arr = np.asarray(y)
         X_scaled = self.scaler.fit_transform(X)
 
-        rf_sw = sample_weight if sample_weight is not None else None
-        self.rf_model.fit(X_scaled, y, sample_weight=rf_sw)
+        # Honest holdout for calibration (only when we have enough of both
+        # classes to both train and calibrate).
+        calib_ix: npt.NDArray[Any] | None = None
+        train_ix: npt.NDArray[Any] | None = None
+        if (
+            self.calibration in ("isotonic", "sigmoid")
+            and len(y_arr) >= 20
+            and len(np.unique(y_arr)) == 2
+        ):
+            try:
+                tr, ca = train_test_split(
+                    np.arange(len(y_arr)),
+                    test_size=0.25,
+                    stratify=y_arr,
+                    random_state=42,
+                )
+                train_ix, calib_ix = tr, ca
+            except Exception:  # noqa: BLE001 — calibration is best-effort
+                train_ix, calib_ix = None, None
+
+        if train_ix is not None:
+            Xt = X_scaled[train_ix]
+            yt = y_arr[train_ix]
+            swt = sample_weight[train_ix] if sample_weight is not None else None
+        else:
+            Xt, yt, swt = X_scaled, y_arr, sample_weight
+
+        self.rf_model.fit(Xt, yt, sample_weight=swt)
 
         if self._xgb_available and self.xgb_model is not None:
-            xgb_sw = sample_weight if sample_weight is not None else None
-            self.xgb_model.fit(X_scaled, y, sample_weight=xgb_sw)
+            self.xgb_model.fit(Xt, yt, sample_weight=swt)
+
+        # Fit calibrator on the holdout (out-of-sample probabilities).
+        self.calibrator = None
+        if calib_ix is not None:
+            raw_p = self._soft_vote_proba(X_scaled[calib_ix])[:, 1]
+            self.calibrator = self._fit_calibrator(raw_p, y_arr[calib_ix])
 
         self._is_fitted = True
         return self
 
+    # ── Calibration helpers ─────────────────────────────────────────────
+
+    def _fit_calibrator(
+        self,
+        raw_p: npt.NDArray[Any],
+        y_true: npt.NDArray[Any],
+    ) -> Any:
+        """Fit a probability→probability calibrator on out-of-sample scores."""
+        if self.calibration == "sigmoid":
+            lr = LogisticRegression(max_iter=1000, random_state=42)
+            lr.fit(np.asarray(raw_p, dtype=float).reshape(-1, 1), np.asarray(y_true))
+            return lr
+        # Isotonic regression restores monotonicity; clips outside the fitted
+        # range instead of extrapolating (safer on small data).
+        iso = IsotonicRegression(out_of_bounds="clip")
+        iso.fit(np.asarray(raw_p, dtype=float), np.asarray(y_true))
+        return iso
+
+    def _apply_calibration(self, proba: npt.NDArray[Any]) -> npt.NDArray[Any]:
+        """Map a raw (n,2) probability array through the fitted calibrator."""
+        if self.calibrator is None:
+            return proba
+        raw_p = np.asarray(proba[:, 1], dtype=float)
+        if self.calibration == "sigmoid":
+            cal_p = np.asarray(
+                self.calibrator.predict_proba(raw_p.reshape(-1, 1))[:, 1],
+                dtype=float,
+            )
+        else:
+            cal_p = np.asarray(self.calibrator.predict(raw_p), dtype=float)
+        cal_p = np.clip(cal_p, 0.0, 1.0)
+        return np.column_stack([1.0 - cal_p, cal_p])
+
+    def _soft_vote_proba(self, X_scaled: npt.NDArray[Any]) -> npt.NDArray[Any]:
+        """Raw soft-vote class probabilities (RF + XGB mean, or RF only)."""
+        rf_proba = np.asarray(self.rf_model.predict_proba(X_scaled))
+        if self._xgb_available and self.xgb_model is not None:
+            xgb_proba = np.asarray(self.xgb_model.predict_proba(X_scaled))
+            return cast(npt.NDArray[Any], (rf_proba + xgb_proba) / 2.0)
+        return rf_proba
+
     def predict(self, X: npt.NDArray[Any]) -> npt.NDArray[Any]:
         """Soft-vote class labels (1=focus, 0=distraction).
 
-        Averages RF and XGBoost predicted probabilities, then argmax.
-        Falls back to RF-only when xgboost is unavailable.
+        Averages RF and XGBoost predicted probabilities (then applies
+        probability calibration), and argmax.  Falls back to RF-only when
+        xgboost is unavailable.
         """
         proba = self.predict_proba(X)
         return np.asarray(proba.argmax(axis=1))
 
     def predict_proba(self, X: npt.NDArray[Any]) -> npt.NDArray[Any]:
-        """Soft-vote class probabilities.
+        """Soft-vote class probabilities, calibrated.
 
         Returns the element-wise mean of RF and XGBoost probability arrays
-        when xgboost is available, otherwise RF-only probabilities.
+        (RF-only when xgboost is unavailable) mapped through the post-hoc
+        probability calibrator when one was fitted.
         """
         X_scaled = self.scaler.transform(X)
-        rf_proba = np.asarray(self.rf_model.predict_proba(X_scaled))
-
-        if self._xgb_available and self.xgb_model is not None:
-            xgb_proba = np.asarray(self.xgb_model.predict_proba(X_scaled))
-            return cast(npt.NDArray[Any], (rf_proba + xgb_proba) / 2.0)
-
-        return rf_proba
+        return self._apply_calibration(self._soft_vote_proba(X_scaled))
 
     def get_feature_importance(self) -> dict[str, Any]:
         """Return feature importance scores.
@@ -193,6 +280,8 @@ class EnsembleClassifier:
             "feature_names": self.feature_names_,
             "is_fitted": self._is_fitted,
             "xgb_available": self._xgb_available,
+            "calibration": self.calibration,
+            "calibrator": self.calibrator,
         }
 
         if self._xgb_available and self.xgb_model is not None:
@@ -215,5 +304,7 @@ class EnsembleClassifier:
         instance._is_fitted = bool(data.get("is_fitted", False))
         instance._xgb_available = bool(data.get("xgb_available", _xgb_available))
         instance.xgb_model = data.get("xgb_model")
+        instance.calibration = data.get("calibration")
+        instance.calibrator = data.get("calibrator")
 
         return instance

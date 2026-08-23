@@ -84,6 +84,8 @@ def run_training(
     min_baseline_samples: int = 30,
     feature_windows: list[dict[str, Any]] | None = None,
     feedback_sessions: list[dict[str, Any]] | None = None,
+    use_window_labels: bool = False,
+    calibration: str | None = "sigmoid",
 ) -> TrainingReport:
     """Run the full training pipeline.
 
@@ -134,6 +136,8 @@ def run_training(
                 feedback_sessions=feedback_sessions or [],
                 models_path=models_path,
                 source=source,
+                use_window_labels=use_window_labels,
+                calibration=calibration,
             )
         raise ValueError(
             "No V2 feature windows found in database. "
@@ -168,6 +172,8 @@ def run_training(
             feedback_sessions=syn_feedback,
             models_path=models_path,
             source=source,
+            use_window_labels=False,  # synthetic data has no window-label source
+            calibration=calibration,
         )
 
     # V1 pipeline (raw-event-based feature extraction) has been removed.
@@ -180,12 +186,41 @@ def run_training(
     )
 
 
+def _extract_window_labels(
+    feature_windows: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Map feature-window id -> int label (1=focus, 0=distracted, -1=mixed).
+
+    Reads the ``label`` column that user-calibrated window annotations store
+    (``focus``/``distracted`` strings, or raw ints).  Returns an empty dict
+    when no usable labels exist; unknown/None labels are skipped.
+    """
+    labels: dict[str, int] = {}
+    for row in feature_windows:
+        wid = str(row.get("id", ""))
+        raw = row.get("label")
+        if not wid or raw is None:
+            continue
+        if isinstance(raw, str):
+            label = {"focus": 1, "distracted": 0, "mixed": -1}.get(raw.strip().lower())
+        else:
+            try:
+                label = int(raw)
+            except (TypeError, ValueError):
+                continue
+        if label is not None:
+            labels[wid] = label
+    return labels
+
+
 def _run_v2_training(
     *,
     feature_windows: list[dict[str, Any]],
     feedback_sessions: list[dict[str, Any]],
     models_path: Path,
     source: str,
+    use_window_labels: bool = False,
+    calibration: str | None = "sigmoid",
 ) -> TrainingReport:
     report = TrainingReport(
         source=source,
@@ -193,7 +228,10 @@ def _run_v2_training(
         windows_extracted=len(feature_windows),
         feature_schema_version=FEATURE_SCHEMA_VERSION,
     )
-    training_data = prepare_v2_training_data(feature_windows, feedback_sessions)
+    window_labels = _extract_window_labels(feature_windows) if use_window_labels else None
+    training_data = prepare_v2_training_data(
+        feature_windows, feedback_sessions, window_labels=window_labels,
+    )
     # Evaluation and deployment use the same explicit-only, weighted samples.
     explicit_mask = training_data.explicit_mask
     train_X = training_data.features[explicit_mask]
@@ -203,7 +241,7 @@ def _run_v2_training(
     report.n_focus = int(np.sum(train_y == 1))
     report.n_distract = int(np.sum(train_y == 0))
     report.avg_confidence = round(float(np.mean(train_w)), 4) if len(train_w) else 0.0
-    evaluation = evaluate_v2_candidates(training_data)
+    evaluation = evaluate_v2_candidates(training_data, calibration=calibration)
     report.evaluation = evaluation
     report.quality_gate = evaluate_v2_quality_gate(
         evaluation,
@@ -217,7 +255,11 @@ def _run_v2_training(
     v2_models_path = models_path / "v2"
     v2_models_path.mkdir(parents=True, exist_ok=True)
     if len(train_X) >= 10 and len(np.unique(train_y)) >= 2:
-        manager = ModelManager(models_dir=v2_models_path, use_ensemble=True)
+        manager = ModelManager(
+            models_dir=v2_models_path,
+            use_ensemble=True,
+            calibration=calibration,  # matches evaluate_v2_candidates()
+        )
         summary = manager.train_all(
             train_X,
             training_data.feature_names,
