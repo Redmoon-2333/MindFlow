@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Add feedback columns to intervention_logs.
 
 Adds user-provided feedback on intervention effectiveness:

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Add panel_transcript_json column to procrastination_analyses.
 
 Stores expert panel deliberation transcripts (human-readable expert remarks)

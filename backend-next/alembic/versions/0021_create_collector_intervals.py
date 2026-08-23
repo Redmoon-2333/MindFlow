@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Create the collector_intervals runtime lifecycle table.
 
 One row per CollectorService run: ``open()`` inserts a row with

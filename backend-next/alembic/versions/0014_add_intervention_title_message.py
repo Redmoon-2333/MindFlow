@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Add title and message columns to intervention_logs.
 
 Revision ID: 0014_add_intervention_title_message

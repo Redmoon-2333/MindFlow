@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Add degradation metadata to procrastination_analyses.
 
 Revision ID: 0015_add_panel_degradation_meta

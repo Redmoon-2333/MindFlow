@@ -26,6 +26,12 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
+
+# Force UTF-8 encoding for reading migration files on Windows (GBK default)
+import sys, os
+if sys.platform == "win32":
+    os.environ["PYTHONUTF8"] = "1"
+
 # Alembic Config object
 config = context.config
 

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Add f01..f24 REAL columns to behavior_feature_windows (plan I).
 
 The 24-dim feature vector was stored as a single features_json blob, forcing

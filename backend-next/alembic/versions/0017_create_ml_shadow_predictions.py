@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Create ml_shadow_predictions table.
 
 Revision ID: 0017_create_ml_shadow_predictions

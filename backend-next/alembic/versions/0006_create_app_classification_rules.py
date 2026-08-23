@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Create app_classification_rules table.
 
 Stores per-process-name and per-window-title classification rules that
@@ -8,7 +9,7 @@ Columns:
   - id:                  UUIDv7 primary key
   - user_id:             1 (single-user desktop app)
   - process_name:        e.g. "bilibili.exe", "notion.exe"
-  - window_title_pattern:  optional SQL LIKE pattern, e.g. "高等数学"
+  - window_title_pattern:  optional SQL LIKE pattern for matching window titles
   - category:            one of "code"/"document"/"browser_work"/
                          "communication"/"entertainment"/"social"/"other"
   - priority:            higher value = checked first (default 0)

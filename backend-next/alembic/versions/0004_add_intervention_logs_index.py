@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Add (user_id, triggered_at) index to intervention_logs.
 
 intervention_logs was created in 0001 without an index, despite being

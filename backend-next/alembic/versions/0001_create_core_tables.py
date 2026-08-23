@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """MindFlow database schema — initial migration.
 
 Creates all 7 core tables per architecture design (§2.2, §2.3):

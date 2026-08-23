@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Create chat_messages table for G004 conversational assistant.
 
 Stores conversation history for the L2 chat interface:

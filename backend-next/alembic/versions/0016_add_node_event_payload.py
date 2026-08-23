@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Add trace payload to workflow_node_events.
 
 Revision ID: 0016_add_node_event_payload

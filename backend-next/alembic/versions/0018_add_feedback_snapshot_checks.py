@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Add feedback time snapshots and intervention check audit table.
 
 Revision ID: 0018_add_feedback_snapshot_checks

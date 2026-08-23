@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Create tasks and blocked_sites tables (intervention execution, plan G).
 
 ``tasks`` is the first real data source for the ``smart_prioritization``

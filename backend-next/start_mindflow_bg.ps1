@@ -36,6 +36,9 @@ if ($env:PYTHONPATH -and $env:PYTHONPATH -notlike "*$srcPath*") {
     $env:PYTHONPATH = $srcPath
 }
 
+# Force UTF-8 mode to prevent GBK encoding errors on Windows
+$env:PYTHONUTF8 = "1"
+
 $proc = Start-Process -FilePath $python.Source `
     -ArgumentList @("-m", "mindflow.main") `
     -WorkingDirectory $root `

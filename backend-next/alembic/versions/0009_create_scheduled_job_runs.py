@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Create persistent scheduled job run claims.
 
 Revision ID: 0009_create_scheduled_job_runs
