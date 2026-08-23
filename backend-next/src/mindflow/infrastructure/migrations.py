@@ -37,8 +37,11 @@ def _run_migrations_sync(db_url: str) -> None:
 
     from alembic import command
 
-    cfg = Config(str(BASE_DIR / "alembic.ini"))
+    ini_path = BASE_DIR / "alembic.ini"
+    cfg = Config(str(ini_path))
     cfg.set_main_option("sqlalchemy.url", db_url)
+    # Resolve script_location as absolute path (not relative to CWD)
+    cfg.set_main_option("script_location", str(BASE_DIR / "alembic"))
     command.upgrade(cfg, "head")
 
     # Verify the DB really reached the script head. A missing migration file
