@@ -67,6 +67,13 @@ parse, but changing them no longer selects a legacy implementation.
 | `MINDFLOW_CHECKPOINTING_ENABLED` | `False` | Use SQLite-backed instead of in-memory checkpoints |
 | `MINDFLOW_NEW_ANALYSIS_GRAPH` | `True` | Deprecated compatibility flag; v2 AnalysisGraph is always active |
 | `MINDFLOW_NEW_CHAT_GRAPH` | `True` | Deprecated compatibility flag; v2 ChatGraph is always active |
+| `MINDFLOW_TRAINING_USE_WINDOW_LABELS` | `True` | Also train on user-calibrated `behavior_feature_windows.label` (weight 0.8; feedback still wins; quality-gate counts stay feedback-only). Measured 2026-08-20: BA 0.46→0.64, Brier 0.40→0.23, folds stable — activated the model. Set `0` to disable. |
+
+## 2026-08-20 补充
+
+- **生产训练默认带 Platt(sigmoid)校准**:`run_training(calibration="sigmoid")`(默认)令评估 `evaluate_v2_candidates` 与部署 `ModelManager` 一致;校准器随 `to_dict/from_dict` 序列化。`make_v2_classifier()` 公开默认保持原始;合成/小数据集显式传 `calibration=None`(校准只在大而干净的数据上有效)。
+- **面板/归因真实 LLM 跑通的先决条件**:`_PANEL_WORKFLOW_TIMEOUT_S` 为 120s(此前 8s 在真实 DeepSeek ~4s/次多次调用下必然超时);critic 提示词强制 `critique_detail ≤300字` 防撞 8192 token 截断。
+- 面板并行专家调用在 DeepSeek 瞬时连接错误时会整链退化到 rule_engine(待后续加 per-call 隔离)。**2026-08-20 已加整批重试**:`_fanout_raw_with_batch_retry` 在并行专家批全部返回空(瞬时连接故障特征)时整批重试一次(3s 回退,预算兜底);`tests/test_panel_batch_retry.py` 覆盖。
 
 ## Real QA Expectations
 

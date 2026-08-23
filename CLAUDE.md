@@ -120,8 +120,11 @@ deprecated compatibility inputs for older `.env` files, but they do not change r
 | Flag | Type | Default | Meaning |
 |------|------|---------|---------|
 | `checkpointing_enabled` | bool | `False` | Use SQLite-backed LangGraph checkpoints instead of the in-memory checkpointer. |
+| `training_use_window_labels` | bool | `True` | Also train on user-calibrated `behavior_feature_windows.label` (weight 0.8; feedback still wins; quality-gate counts stay feedback-only). Measured 2026-08-20: BA 0.46→0.64, Brier 0.40→0.23 — activated the model. |
 | `new_analysis_graph` | bool | `True` | Deprecated compatibility input; v2 AnalysisGraph is always active |
 | `new_chat_graph` | bool | `True` | Deprecated compatibility input; v2 ChatGraph is always active |
+
+**2026-08-20 additions**: production training defaults to Platt(sigmoid) calibration (`run_training(calibration="sigmoid")` makes `evaluate_v2_candidates` and `ModelManager` share it; `make_v2_classifier()` public default stays raw — small/toy datasets pass `calibration=None`); `_PANEL_WORKFLOW_TIMEOUT_S=120` (was 8, which always timed out against real DeepSeek); critic prompt capped (`critique_detail ≤300字`) to avoid the 8192-token truncation that broke JSON parsing.
 
 **Rollback**: The pre-v2 implementations are no longer shipped. Roll back by deploying a
 previous application revision; changing the deprecated graph flags only preserves config
