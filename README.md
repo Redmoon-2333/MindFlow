@@ -61,6 +61,11 @@ npm run dev
 - 实验与报告：`backend-next/scripts/run_experiments.py` 可一键跑 3 轮 ML 和 3 轮 LangGraph，产物落在 `data/experiments/`。
 - 历史 `docs/optimization-plan-codex-review.md` 已删除，相关结论并入本文档与架构文档。
 
+## 2026-08-20 后端与 ML 优化
+
+- 后端: msgpack `AnalysisRunContext` Crash fix、面板 8s→120s、critic 限长、`_fanout_raw_with_batch_retry` 整批重试；2250 测试全绿
+- ML: 1850 个窗口标签增广(→2004 显式样本)与 Platt(sigmoid)校准 → BA 0.46→0.64、Brier 0.40→0.23，质量门 7/7 通过并激活 `20260820_052217_0724fc`
+
 ## 数据流水线
 
 ```

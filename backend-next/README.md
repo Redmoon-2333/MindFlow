@@ -142,15 +142,15 @@ uv run python -m mindflow.train --rollback 20260717
 
 | 门禁键 | 阈值 | 当前实现状态 |
 |--------|------|-------------|
-| `minimum_days` | >= 1 天 | 正常评估 |
+| `minimum_days` | >= 7 天 | 正常评估 |
 | `minimum_explicit_feedback` | >= 20 条显式反馈 | 正常评估 |
 | `minimum_class_feedback` | 专注 >= 5 且 分心 >= 5 | 正常评估 |
-| `balanced_accuracy` | >= 0.50 | `not_evaluated`（需训练后才有报告） |
-| `minority_f1` | >= 0.30 | `not_evaluated`（需训练后才有报告） |
-| `calibration_better_than_rule` | 训练报告提供证据 | **`not_implemented`** — 硬编码为通过，不可视为绿色 |
-| `stable_date_folds` | 训练报告提供证据 | **`not_implemented`** — 硬编码为通过，不可视为绿色 |
+| `balanced_accuracy` | >= 0.55 | 正常评估（生产默认带 Platt(sigmoid)校准） |
+| `minority_f1` | >= 0.40 | 正常评估 |
+| `calibration_better_than_rule` | 训练报告提供证据 | 正常评估（candidate Brier ≤ rule Brier + 0.01） |
+| `stable_date_folds` | 训练报告提供证据 | 正常评估（GroupKFold 最小 BA 与全距考核） |
 
-后两项 `not_implemented` 在 readiness 响应中暴露为 `not_implemented` 状态，不应解释为通过。
+> 已在真实数据上通过并激活：2026-08-20 版本 `20260820_052217_0724fc`（`training_use_window_labels=True`, 1850 个窗口标签增广后 BA 0.64 / Brier 0.23）。小/合成数据显式传 `calibration=None`。
 
 #### 训练任务语义
 
@@ -198,7 +198,7 @@ uv run python -m mindflow.eval --mode both --live --yes
 ### 运行测试
 
 ```bash
-# 全量测试（2228 passed as of 2026-08-16）
+# 全量测试（2250 passed as of 2026-08-20，已激活 ML 模型）
 uv run python -m pytest tests/ -v
 
 # 带覆盖率报告
@@ -314,6 +314,7 @@ uv run alembic upgrade head     # 应用所有待定迁移
 | 环境变量 | 类型 | 默认值 | 说明 |
 |---------|------|--------|------|
 | `MINDFLOW_CHECKPOINTING_ENABLED` | bool | `False` | 使用 SQLite 持久化 checkpoint；关闭时使用内存实现 |
+| `MINDFLOW_TRAINING_USE_WINDOW_LABELS` | bool | `True` | 训练时同时使用用户校准窗口标签(权重 0.8；反馈仍优先,质量门口径保持只数反馈会话)。实测 BA 0.46→0.64、Brier 0.40→0.23 后激活了模型。设 `0` 关闭。 |
 | `MINDFLOW_NEW_ANALYSIS_GRAPH` | bool | `True` | 已弃用的兼容字段；始终使用 v2 AnalysisGraph |
 | `MINDFLOW_NEW_CHAT_GRAPH` | bool | `True` | 已弃用的兼容字段；始终使用 v2 ChatGraph |
 
@@ -321,11 +322,11 @@ uv run alembic upgrade head     # 应用所有待定迁移
 
 ## 质量门禁
 
-以下命令是**必需的可见性门禁**，**当前全部通过**（green since 2026-08-16）：
+以下命令是**必需的可见性门禁**，**当前全部通过**（green since 2026-08-16，ML 于 2026-08-20 已激活）：
 
 - **Ruff**: 0 findings（`uv run python -m ruff check src tests` → `All checks passed!`）
 - **Mypy (strict)**: 0 errors across 163 source files（`uv run python -m mypy --strict src/mindflow` → `Success`）
-- **Pytest**: 2228 passing（`uv run python -m pytest tests/ -q`）
+- **Pytest**: 2250 passing（`uv run python -m pytest tests/ -q`），最新已激活版本 `20260820_052217_0724fc`
 
 任何回归上述门禁的改动必须在完成前修复。
 
@@ -413,6 +414,20 @@ MIT License © 2026 RedMoon (胡淙煜)
 ---
 
 *MindFlow — 理解你的专注，守护你的效率*
+
+
+## 2026-07-31 ML/LangGraph 实施更新
+
+- 特征 schema v3：`count_confirmed_switches()` 为唯一切换计数实现，默认驻留 10 秒，忽略 `TRANSIENT_PROCESSES`。
+- ML 质量门：唯一反馈会话数、7 个反馈日、日期 GroupKFold、规则基线在折内计算；`make_v2_classifier()` 同时用于评估与生产。
+- Panel：`POST /panel/today` 支持 `retry_if_degraded`；缓存命中保留 `source/degraded/degradation_path`。
+- LangGraph：`PanelGraph` 为唯一活动图；新增确定性 schema 校验、共识强度、`insufficient_data/uncertainty/evidence_gaps` 与 `workflow_node_events` trace。
+- 实验：`python scripts/run_experiments.py`；结果见 `data/experiments/20260731_final/`。
+
+## 2026-08-20 ML/面板与后端优化
+
+- 后端: msgpack `AnalysisRunContext` Crash fix(ContextVar)、面板总超时 8s→120s、critic 限长、`_fanout_raw_with_batch_retry` 整批重试（防 DeepSeek 瞬断整链退化）；行为分类规则补 7 条；2250 测试全绿
+- ML: 窗口标签增广(1850 窗口→2004 显式样本)与 Platt(sigmoid)校准默认接入生产训练(`run_training`/`ModelManager`) → BA 0.46→0.64、Brier 0.40→0.23；质量门 7/7 通过已激活 `20260820_052217_0724fc`；小数据可 `calibration=None`
 
 
 ## 2026-07-31 ML/LangGraph 实施更新
