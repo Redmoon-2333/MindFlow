@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, TypedDict, cast
 
@@ -152,6 +153,45 @@ async def _safe_call_with_budget(
     except Exception as exc:
         logger.error("Parallel call to {} failed: {}", expert.role, exc)
         return ""
+
+
+# Backoff before re-running an all-empty expert batch (a transient provider
+# blip usually takes the whole parallel batch down at once).
+_BATCH_RETRY_DELAY_S = 3.0
+
+
+async def _fanout_raw_with_batch_retry(
+    task_factories: list[Callable[[], Awaitable[str]]],
+    *,
+    batch_label: str,
+) -> list[str]:
+    """Run a parallel expert batch, retrying the whole batch once when empty.
+
+    ``_safe_call_with_budget`` swallows transport/API failures into an empty
+    string, so an all-empty batch is the signature of a transient connectivity
+    failure (e.g. DeepSeek connection blip) rather than a content/prompt issue.
+    In that case retry the entire batch once after a short backoff.  The retry
+    is naturally bounded: every attempt bills against ``runtime.call_count``
+    and the panel's global call budget, so it cannot loop forever.
+
+    Args:
+        task_factories: Zero-argument async factories (must be re-runnable).
+        batch_label: Human label for logging (e.g. ``"attribution"``).
+
+    Returns:
+        The (possibly retried) raw responses, in task order.
+    """
+    if not task_factories:
+        return []
+    results = list(await asyncio.gather(*(f() for f in task_factories)))
+    if all(not r for r in results):
+        logger.warning(
+            "{} all-empty responses (transient failure?); retrying batch once",
+            batch_label,
+        )
+        await asyncio.sleep(_BATCH_RETRY_DELAY_S)
+        results = list(await asyncio.gather(*(f() for f in task_factories)))
+    return results
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -322,15 +362,27 @@ def make_attribution_node(
         runtime = _PANEL_RUNTIME.get()
         logger.info("Panel round 1: Attribution experts (parallel)")
 
-        async def _call_and_parse(exp: ExpertDef) -> ExpertOpinion:
-            raw = await _safe_call_with_budget(
-                runtime, gateway, exp,
-                state["bundle_json"],
+        async def _call_raw(exp: ExpertDef) -> str:
+            return await _safe_call_with_budget(
+                runtime, gateway, exp, state["bundle_json"],
             )
+
+        def _mk_att_task(exp: ExpertDef) -> Callable[[], Awaitable[str]]:
+            async def _task() -> str:
+                return await _call_raw(exp)
+            return _task
+
+        # Batch retry: a transient provider blip takes all parallel calls down
+        # at once (all raw responses empty) — retry the whole batch once.
+        raws = await _fanout_raw_with_batch_retry(
+            [_mk_att_task(exp) for exp in ATTRIBUTION_EXPERTS],
+            batch_label="attribution",
+        )
+
+        async def _parse_one(exp: ExpertDef, raw: str) -> ExpertOpinion:
             op = _parse_expert_opinion(
                 raw, exp, valid_metrics=state["valid_metrics"],
             )
-
             # Retry once if skipped due to forbidden words
             if op.skipped and _contains_forbidden_words(raw):
                 logger.warning(
@@ -349,13 +401,12 @@ def make_attribution_node(
                 logger.warning(
                     "{} retry still failed, using original", exp.role,
                 )
-
             return op
 
-        results = await asyncio.gather(*[
-            _call_and_parse(exp) for exp in ATTRIBUTION_EXPERTS
-        ])
-        opinions = list(results)
+        opinions = [
+            await _parse_one(exp, raw)
+            for exp, raw in zip(ATTRIBUTION_EXPERTS, raws, strict=True)
+        ]
 
         for op in opinions:
             runtime.transcript.append(
@@ -559,10 +610,17 @@ def make_rebuttal_node(
             )
             for i in range(len(ATTRIBUTION_EXPERTS))
         ]
-        responses = await asyncio.gather(*[
-            _safe_call_with_budget(runtime, gateway, exp, msg)
-            for exp, msg in prompts
-        ])
+        def _mk_rebuttal_task(
+            exp: ExpertDef, msg: str,
+        ) -> Callable[[], Awaitable[str]]:
+            async def _task() -> str:
+                return await _safe_call_with_budget(runtime, gateway, exp, msg)
+            return _task
+
+        responses = await _fanout_raw_with_batch_retry(
+            [_mk_rebuttal_task(exp, msg) for exp, msg in prompts],
+            batch_label="rebuttal",
+        )
         new_opinions: list[ExpertOpinion] = []
         for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True):
             op = _parse_expert_opinion(

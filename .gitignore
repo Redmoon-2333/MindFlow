@@ -53,6 +53,8 @@ backend-next/_label_policy.py
 backend-next/_screenshot.js
 backend-next/_test_label_policy.py
 backend-next/_verify_app_labels.py
+backend-next/_dsh_*.py
+backend-next/docs/data-analysis-report*.md
 mindflow-frontend-design/
 frontend/e2e/screenshots/
 frontend/runtime_logs/

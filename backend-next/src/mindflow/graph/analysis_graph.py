@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, TypedDict, cast
@@ -59,8 +61,7 @@ class AnalysisRunContext:
     repository references, HTTP clients, or compiled subgraphs.
 
     All fields default to None so node functions can use
-    ``state.get("runtime", AnalysisRunContext())`` as a safe fallback
-    during testing.
+    ``_runtime_of(state)`` as a safe fallback during testing.
     """
 
     # ── Repositories ──
@@ -92,6 +93,31 @@ class AnalysisRunContext:
 
     # ── Timezone ──
     timezone: str = "local"
+
+
+# Context variable that carries the live per-invocation runtime through the
+# LangGraph StateGraph WITHOUT including it in checkpointable state.
+# LangGraph checkpoints serialise every state channel (e.g. MemorySaver /
+# AsyncSqliteSaver put() calls `serde.dumps_typed` per channel value), so a
+# dataclass holding repository/HTTP-client references can never live in a
+# checkpoint channel — msgpack raises "Type is not msgpack serializable".
+# We therefore set the ContextVar before ``ainvoke`` (reset in ``finally``)
+# and have node functions read it via ``_runtime_of(state)`` instead of the
+# state dict.  Falls back to ``state.get("runtime")`` for callers that still
+# pass runtime directly (e.g. isolated node unit tests).
+_ANALYSIS_RUNTIME: contextvars.ContextVar[
+    AnalysisRunContext
+] = contextvars.ContextVar("analysis_runtime")
+
+
+def _runtime_of(state: Mapping[str, Any]) -> AnalysisRunContext:
+    """Resolve the live AnalysisRunContext for a graph node invocation."""
+    try:
+        return _ANALYSIS_RUNTIME.get()
+    except LookupError:
+        pass
+    value = state.get("runtime")
+    return value if isinstance(value, AnalysisRunContext) else AnalysisRunContext()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -193,7 +219,15 @@ def _cached_analysis_meta(cached: dict[str, Any]) -> tuple[str, bool, list[str]]
     return source, degraded, path
 
 
-_PANEL_WORKFLOW_TIMEOUT_S = 8.0
+# Wall-clock budget for the whole PanelGraph invocation (analyst → 3×
+# attribution → rebuttal → moderator → critic).  Real DeepSeek latency is
+# ~3-6s per small call, but the moderator/critic prompts ingest every expert
+# opinion, making those calls 30-60s+ (measured 2026-08-20: with a 45s budget
+# the panel reached round 3 "Moderator" and then hit the wall 30s into that
+# single call).  This budget is therefore set to match the per-call
+# ``LLM_TIMEOUT_S`` (120s) so a full real panel can complete end-to-end while
+# still failing fast on a genuinely hung model.
+_PANEL_WORKFLOW_TIMEOUT_S = 120.0
 _COMPETING_ANALYSIS_WAIT_TIMEOUT_S = 5.0
 _COMPETING_ANALYSIS_POLL_INTERVAL_S = 0.05
 
@@ -295,7 +329,7 @@ async def cache_idempotency_check_node(
 
     Route: cache_hit → result_conversion, no_cache → evidence_preparation
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
+    runtime: AnalysisRunContext = _runtime_of(state)
     user_id = state["user_id"]
     target_date = state["target_date"]
     force = state.get("force", False)
@@ -338,7 +372,7 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
     we re-check the cache as a fallback — the prior run may have already
     completed the analysis.
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
+    runtime: AnalysisRunContext = _runtime_of(state)
     idempotency_key = state.get("idempotency_key", "")
     user_id = state["user_id"]
     target_date = state["target_date"]
@@ -426,7 +460,7 @@ async def evidence_preparation_node(
     """
     from mindflow.time_utils import business_day_bounds_utc
 
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
+    runtime: AnalysisRunContext = _runtime_of(state)
     user_id = state["user_id"]
     target_date = state["target_date"]
 
@@ -467,7 +501,7 @@ async def crisis_gate_node(state: AnalysisGraphState) -> dict[str, Any]:
     from mindflow.graph.fallback_nodes import collect_crisis_texts, dicts_to_events
     from mindflow.infrastructure.security.crisis_detector import CrisisLevel
 
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
+    runtime: AnalysisRunContext = _runtime_of(state)
 
     # Use domain events if available, otherwise deserialize from dicts
     events_domain: list[Any] = state.get("events_domain", []) or []
@@ -517,7 +551,7 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
     ``panel_succeeded=False`` so the router sends the flow to the
     fallback chain.
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
+    runtime: AnalysisRunContext = _runtime_of(state)
     bundle_json = state.get("bundle_json", "")
     valid_metrics = state.get("valid_metrics", ())
 
@@ -738,7 +772,7 @@ async def terminal_persistence_node(
     ``cache_idempotency_check`` will find the existing analysis and
     route through this node again, completing the run.
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
+    runtime: AnalysisRunContext = _runtime_of(state)
     user_id = state["user_id"]
     target_date = state["target_date"]
     analysis_kind = state.get("analysis_kind", "daily_attribution")
@@ -878,7 +912,7 @@ async def handle_persistence_failure_node(
     "pending" state — it transitions to "failed" so the retry
     infrastructure can pick it up.
     """
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
+    runtime: AnalysisRunContext = _runtime_of(state)
     run_id = state.get("run_id", "")
     error = state.get("error", "persistence_failed")
     idempotency_key = state.get("idempotency_key", "")
@@ -1064,7 +1098,9 @@ class AnalysisGraph:
             timezone=self._timezone,
         )
 
-        # Build initial state
+        # Build initial state.  NOTE: ``runtime`` is intentionally NOT part of
+        # the graph state — it is carried through ``_ANALYSIS_RUNTIME`` so the
+        # checkpointer never serializes live repository/HTTP-client references.
         initial_state: AnalysisGraphState = {
             "user_id": request.user_id,
             "target_date": request.target_date,
@@ -1072,7 +1108,6 @@ class AnalysisGraph:
             "origin": request.origin,
             "force": request.force or request.retry_if_degraded,
             "idempotency_key": idempotency_key,
-            "runtime": runtime,
             "run_id": run_id,
             "budget_reserved": False,
             "cache_hit": False,
@@ -1117,47 +1152,53 @@ class AnalysisGraph:
                     )
                 }
             }
+        # Expose the live runtime to graph nodes via the ContextVar for the
+        # duration of this invocation (reset in finally even on failure).
+        runtime_token = _ANALYSIS_RUNTIME.set(runtime)
         try:
-            final_state = await graph.ainvoke(
-                initial_state,
-                config=invoke_config,
-            )
-        except NoActivityDataError:
-            with contextlib.suppress(Exception):
-                await self._workflow_run_repo.update_status(
-                    run_id, "failed", error="暂无活动数据，请先开始采集",
+            try:
+                final_state = await graph.ainvoke(
+                    initial_state,
+                    config=invoke_config,
                 )
-            if runtime.budget_owned and self._budget_repo is not None:
-                try:
-                    await self._budget_repo.release(idempotency_key)
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to release budget for {}: {}", idempotency_key, exc
+            except NoActivityDataError:
+                with contextlib.suppress(Exception):
+                    await self._workflow_run_repo.update_status(
+                        run_id, "failed", error="暂无活动数据，请先开始采集",
                     )
-            raise
-        except Exception as exc:
-            logger.error("AnalysisGraph invocation failed: {}", exc)
-            # Mark run as failed
-            with contextlib.suppress(Exception):
-                await self._workflow_run_repo.update_status(
-                    run_id, "failed", error=str(exc),
+                if runtime.budget_owned and self._budget_repo is not None:
+                    try:
+                        await self._budget_repo.release(idempotency_key)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to release budget for {}: {}", idempotency_key, exc
+                        )
+                raise
+            except Exception as exc:
+                logger.error("AnalysisGraph invocation failed: {}", exc)
+                # Mark run as failed
+                with contextlib.suppress(Exception):
+                    await self._workflow_run_repo.update_status(
+                        run_id, "failed", error=str(exc),
+                    )
+                # Release the reservation ONLY if this run actually won it — a
+                # failing non-owner concurrent run must never delete the winner's
+                # reservation.
+                if runtime.budget_owned and self._budget_repo is not None:
+                    try:
+                        await self._budget_repo.release(idempotency_key)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to release budget for {}: {}", idempotency_key, exc
+                        )
+                # Return an empty verdict
+                return AnalysisResult(
+                    verdict=_empty_verdict(),
+                    run_id=run_id,
+                    created_at=datetime.now(UTC),
                 )
-            # Release the reservation ONLY if this run actually won it — a
-            # failing non-owner concurrent run must never delete the winner's
-            # reservation.
-            if runtime.budget_owned and self._budget_repo is not None:
-                try:
-                    await self._budget_repo.release(idempotency_key)
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to release budget for {}: {}", idempotency_key, exc
-                    )
-            # Return an empty verdict
-            return AnalysisResult(
-                verdict=_empty_verdict(),
-                run_id=run_id,
-                created_at=datetime.now(UTC),
-            )
+        finally:
+            _ANALYSIS_RUNTIME.reset(runtime_token)
 
         if isinstance(final_state, dict) and final_state.get("persistence_failed"):
             raise RuntimeError(final_state.get("error") or "analysis persistence failed")
@@ -1331,7 +1372,7 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
     produces an ``error`` on the final state.
     """
 
-    runtime: AnalysisRunContext = state.get("runtime", AnalysisRunContext())
+    runtime: AnalysisRunContext = _runtime_of(state)
     summary_json: str = state.get("summary_json", "")
     behavior_summary = state.get("behavior_summary")
     crisis_detected = state.get("crisis_detected", False)
