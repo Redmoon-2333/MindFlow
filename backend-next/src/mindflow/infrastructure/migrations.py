@@ -11,7 +11,6 @@ health endpoint is not a substitute for a successful migration.
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 
 from loguru import logger
@@ -28,9 +27,12 @@ def _run_migrations_sync(db_url: str) -> None:
     Args:
         db_url: Synchronous SQLite URL for Alembic's sync engine.
     """
-    # Force UTF-8 for reading migration scripts on Windows (GBK default)
-    os.environ["PYTHONUTF8"] = "1"
-
+    # NOTE: do NOT bother setting PYTHONUTF8 here — UTF-8 mode is decided at
+    # interpreter startup, so changing os.environ mid-process has no effect on
+    # this process (it only propagates to child processes), and Alembic's
+    # command.upgrade() runs in-process. The historical GBK crash came from
+    # configparser reading alembic.ini with the locale codec; the fix is to
+    # keep alembic.ini ASCII-only and pass absolute paths below.
     from alembic.config import Config
     from alembic.script import ScriptDirectory
     from sqlalchemy import create_engine, text

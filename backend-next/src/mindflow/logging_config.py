@@ -65,7 +65,7 @@ def _resolve_log_dir() -> Path:
     project_log = Path(__file__).resolve().parent.parent.parent / "logs"
     candidates.append(("project-local", project_log))
 
-    for label, candidate in candidates:
+    for _label, candidate in candidates:
         try:
             probe = candidate / ".write_test"
             probe.touch(exist_ok=True)
@@ -134,7 +134,7 @@ def setup_logging(settings: Settings) -> None:
         )
     except OSError as exc:
         loguru.logger.warning(
-            "File log handler skipped (fallback to console-only): %s", exc
+            f"File log handler skipped (fallback to console-only): {exc}"
         )
 
     # JSON-structured handler (separate file, shorter retention)
@@ -149,12 +149,10 @@ def setup_logging(settings: Settings) -> None:
                 serialize=True,
             )
         except OSError as exc:
-            loguru.logger.warning(
-                "JSON log handler skipped: %s", exc
-            )
+            loguru.logger.warning(f"JSON log handler skipped: {exc}")
 
     loguru.logger.info(
-        "Logging configured — level={}, rotation={}, retention={}, dir=%s",
+        "Logging configured — level={}, rotation={}, retention={}, dir={}",
         settings.log.level,
         settings.log.rotation,
         settings.log.retention,
