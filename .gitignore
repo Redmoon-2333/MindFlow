@@ -25,6 +25,7 @@ venv/
 # Local private data and runtime state
 data/
 backend-next/data/
+backend-next/data2/
 .uploads/
 *.db
 *.db-*
