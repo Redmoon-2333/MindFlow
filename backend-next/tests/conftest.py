@@ -5,6 +5,7 @@ Uses tmp_path for database isolation and overridable settings.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -90,6 +91,28 @@ async def preferences_repo(session_factory, create_tables) -> PreferencesReposit
 def anyio_backend() -> str:
     """Use asyncio as the anyio backend for FastAPI test client."""
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def isolate_file_logging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Keep setup_logging() file sinks out of the production log directory.
+
+    ``create_app()`` calls ``setup_logging()``, which points the process-global
+    loguru at the shared user-data log dir. Without this fixture, running the
+    test suite writes fault-injection noise (and test-only analysis runs)
+    into the real application logs on this machine. Redirect the resolver to
+    *tmp_path* and remove any file sinks added during the test afterwards.
+    """
+    from loguru import logger
+
+    import mindflow.logging_config as logging_config
+
+    monkeypatch.setattr(logging_config, "_resolve_log_dir", lambda: tmp_path / "logs")
+    handlers_before = set(logger._core.handlers)  # noqa: SLF001 - test teardown only
+    yield
+    for handler_id in set(logger._core.handlers) - handlers_before:
+        with contextlib.suppress(ValueError):
+            logger.remove(handler_id)
 
 
 @pytest.fixture(autouse=True)

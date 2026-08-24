@@ -751,7 +751,9 @@ class TestHealthIntegrationE2E:
         """If the backend is running, live endpoint should return alive."""
         import httpx
         try:
-            r = httpx.get("http://127.0.0.1:8765/api/v1/health/live", timeout=3.0)
+            r = httpx.get(
+                "http://127.0.0.1:8765/api/v1/health/live", timeout=3.0, trust_env=False
+            )
             assert r.status_code == 200
             assert r.json()["status"] == "alive"
         except (httpx.ConnectError, httpx.ConnectTimeout):
@@ -761,7 +763,9 @@ class TestHealthIntegrationE2E:
         """If the backend is running, health should have observability fields."""
         import httpx
         try:
-            r = httpx.get("http://127.0.0.1:8765/api/v1/health", timeout=3.0)
+            r = httpx.get(
+                "http://127.0.0.1:8765/api/v1/health", timeout=3.0, trust_env=False
+            )
             data = r.json()
             assert "observability" in data
             obs = data["observability"]
@@ -774,7 +778,7 @@ class TestHealthIntegrationE2E:
         """Backend should serve the frontend at /"""
         import httpx
         try:
-            r = httpx.get("http://127.0.0.1:8765/", timeout=3.0)
+            r = httpx.get("http://127.0.0.1:8765/", timeout=3.0, trust_env=False)
             assert r.status_code == 200
             assert len(r.text) > 0
         except (httpx.ConnectError, httpx.ConnectTimeout):
@@ -794,6 +798,7 @@ class TestHealthIntegrationE2E:
                 "http://127.0.0.1:8765/api/v1/collector",
                 timeout=3.0,
                 headers=headers,
+                trust_env=False,
             )
             assert r.status_code == 200
         except (httpx.ConnectError, httpx.ConnectTimeout):
