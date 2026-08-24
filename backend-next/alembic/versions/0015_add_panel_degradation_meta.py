@@ -1,11 +1,11 @@
-# -*- coding: utf-8 -*-
 """Add degradation metadata to procrastination_analyses.
 
 Revision ID: 0015_add_panel_degradation_meta
 """
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision: str = "0015_add_panel_degradation_meta"
 down_revision: str | None = "0014_add_intervention_title_message"

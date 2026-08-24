@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Create the intervention_slot_reservations atomic daily-slot table.
 
 Supports the intervention reliability transaction in

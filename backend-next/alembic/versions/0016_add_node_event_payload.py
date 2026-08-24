@@ -1,11 +1,11 @@
-# -*- coding: utf-8 -*-
 """Add trace payload to workflow_node_events.
 
 Revision ID: 0016_add_node_event_payload
 """
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision: str = "0016_add_node_event_payload"
 down_revision: str | None = "0015_add_panel_degradation_meta"

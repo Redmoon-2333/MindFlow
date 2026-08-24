@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Create workflow_runs, workflow_node_events, and workflow_budget_reservations.
 
 Adds durable workflow telemetry tables for tracking workflow runs, node-level

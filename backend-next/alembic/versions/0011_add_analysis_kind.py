@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Add analysis_kind and source columns to procrastination_analyses.
 
 Separates workflow identity (analysis_kind) from degradation provider (source),

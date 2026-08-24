@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Add scheduled job ownership heartbeat.
 
 Revision ID: 0010_add_scheduled_job_heartbeat

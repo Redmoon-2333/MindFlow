@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Drop the obsolete ml_shadow_predictions table (V1 legacy, unused).
 
 This migration is intentionally destructive: the table is no longer read by

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """MindFlow database schema — initial migration.
 
 Creates all 7 core tables per architecture design (§2.2, §2.3):
@@ -17,15 +16,16 @@ All timestamps use TEXT (ISO8601 UTC with timezone).
 
 from __future__ import annotations
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0001_create_core_tables"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -39,8 +39,18 @@ def upgrade() -> None:
         sa.Column("timestamp", sa.Text(), nullable=False),
         sa.Column("duration_s", sa.Float(), nullable=False, server_default=sa.text("0.0")),
         sa.Column("data_json", sa.Text(), nullable=False),
-        sa.Column("event_type", sa.Text(), nullable=False, server_default=sa.text("'window_snapshot'")),
-        sa.Column("created_at", sa.Text(), nullable=False, server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))")),
+        sa.Column(
+            "event_type",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("'window_snapshot'"),
+        ),
+                sa.Column(
+            "created_at",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("idx_events_user_time", "activity_events", ["user_id", "timestamp"])
@@ -58,7 +68,12 @@ def upgrade() -> None:
         sa.Column("dominant_app", sa.Text(), nullable=True),
         sa.Column("focus_score", sa.Float(), nullable=True),
         sa.Column("switch_count", sa.Integer(), nullable=True),
-        sa.Column("created_at", sa.Text(), nullable=False, server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))")),
+                sa.Column(
+            "created_at",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("idx_sessions_user_date", "focus_sessions", ["user_id", "date"])
@@ -70,12 +85,19 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("date", sa.Text(), nullable=False),
         sa.Column("total_focus_min", sa.Float(), nullable=False, server_default=sa.text("0.0")),
-        sa.Column("total_distraction_min", sa.Float(), nullable=False, server_default=sa.text("0.0")),
+        sa.Column(
+            "total_distraction_min", sa.Float(), nullable=False, server_default=sa.text("0.0")
+        ),
         sa.Column("focus_score", sa.Float(), nullable=False, server_default=sa.text("0.0")),
         sa.Column("top_apps_json", sa.Text(), nullable=True),
         sa.Column("switch_frequency", sa.Float(), nullable=False, server_default=sa.text("0.0")),
         sa.Column("pattern_summary", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.Text(), nullable=False, server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))")),
+                sa.Column(
+            "created_at",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("user_id", "date"),
     )
@@ -93,7 +115,12 @@ def upgrade() -> None:
         sa.Column("response_text", sa.Text(), nullable=True),
         sa.Column("llm_model", sa.Text(), nullable=True),
         sa.Column("llm_cost_usd", sa.Float(), nullable=True),
-        sa.Column("created_at", sa.Text(), nullable=False, server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))")),
+                sa.Column(
+            "created_at",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("user_id", "date"),
     )
@@ -109,7 +136,12 @@ def upgrade() -> None:
         sa.Column("context_json", sa.Text(), nullable=True),
         sa.Column("user_response", sa.Text(), nullable=True),
         sa.Column("response_latency_s", sa.Float(), nullable=True),
-        sa.Column("created_at", sa.Text(), nullable=False, server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))")),
+                sa.Column(
+            "created_at",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
 
@@ -119,9 +151,21 @@ def upgrade() -> None:
         sa.Column("id", sa.Text(), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("model_json", sa.Text(), nullable=False),
-        sa.Column("training_events_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
-        sa.Column("created_at", sa.Text(), nullable=False, server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))")),
-        sa.Column("updated_at", sa.Text(), nullable=False, server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))")),
+        sa.Column(
+            "training_events_count", sa.Integer(), nullable=False, server_default=sa.text("0")
+        ),
+                sa.Column(
+            "created_at",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("user_id"),
     )
@@ -132,7 +176,12 @@ def upgrade() -> None:
         sa.Column("id", sa.Text(), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("preferences_json", sa.Text(), nullable=False, server_default=sa.text("'{}'")),
-        sa.Column("updated_at", sa.Text(), nullable=False, server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))")),
+        sa.Column(
+            "updated_at",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("user_id"),
     )

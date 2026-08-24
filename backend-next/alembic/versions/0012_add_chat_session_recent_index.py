@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Add composite index idx_chat_session_recent for ChatRepository.recent().
 
 The ``recent()`` query filters on ``session_id``, then orders by
