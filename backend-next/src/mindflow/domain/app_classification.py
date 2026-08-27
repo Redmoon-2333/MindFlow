@@ -62,6 +62,31 @@ _PRODUCTIVITY_SCORES: dict[str, float] = {
     "other": 0.3,
 }
 
+_WORK_CATEGORY_ALIASES = {
+    "work": "code",
+    "working": "code",
+    "entertainment": "entertainment",
+    "other": "other",
+}
+_WORK_CATEGORIES = {"code", "document", "browser_work"}
+
+
+def normalize_work_soft_category(category: str) -> str | None:
+    """Resolve user-facing work/entertainment soft labels to stored categories."""
+    value = str(category).strip().lower()
+    if not value or value in {"not_sure", "uncertain", "maybe", "不一定", "unknown"}:
+        return None
+    if value in _WORK_CATEGORY_ALIASES:
+        return _WORK_CATEGORY_ALIASES[value]
+    if value in _VALID_CATEGORIES:
+        return value
+    return None
+
+
+def is_work_category(category: str) -> bool:
+    """Return True for categories treated as a work state."""
+    return str(category).strip().lower() in _WORK_CATEGORIES
+
 
 class UserAppClassifier:
     """User-customizable app classifier with rule- and context-awareness.

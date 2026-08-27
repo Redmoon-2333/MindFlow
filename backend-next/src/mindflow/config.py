@@ -255,6 +255,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Intervention work suppression ---
+    intervention_work_suppress_enabled: bool = Field(
+        default=True,
+        description="Skip automated interventions while a work-state signal is active",
+    )
+    intervention_work_suppress_focus_threshold: float = Field(
+        default=80.0,
+        ge=0.0,
+        le=100.0,
+        description="Deep-work focus_score threshold that implies a work state",
+    )
+    intervention_work_suppress_keypress_rate: float = Field(
+        default=60.0,
+        ge=0.0,
+        le=1000.0,
+        description="Sustained keypress rate per minute that implies a work state",
+    )
+    intervention_work_suppress_browser_work: bool = Field(
+        default=False,
+        description="Treat current browser work browsing as a work-state signal",
+    )
+
     # --- Graph orchestration (ADR-005 — v2 graphs are the only paths) ---
     checkpointing_enabled: bool = Field(
         default=False, description="Enable LangGraph checkpoint persistence"

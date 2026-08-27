@@ -416,16 +416,28 @@ function requestOptions(timeoutMs = REQUEST_TIMEOUT_MS) {
   return { credentials: "include" as const, signal };
 }
 
-/** Wrap an openapi-fetch call so a hung backend cannot spin the UI forever.
- *  AI-backed endpoints (chat/panel/intervention) get the longer budget. */
+/** Ensure a hang on AI-backed routes surfaces as a typed timeout instead
+ *  of a forever spinner.  `requestOptions()` already carries a per-request
+ *  `signal`; the `client.*` path is therefore covered.  This wrapper only
+ *  adds an external deadline for callers that still pass a raw promise
+ *  (notably `sendChat/triggerPanel/triggerIntervention` via legacy
+ *  `withTimeout` paths).
+ *
+ *  The difference between the old no-op version and this one: the controller
+ *  here is actually wired to the promise via `Promise.race`; the timeout
+ *  can now abort the await, so `408 请求超时` is reachable in practice. */
 async function withTimeout<T>(promise: Promise<T>, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    controller.signal.addEventListener(
+      "abort",
+      () => reject(new ApiError(REQUEST_TIMEOUT_MESSAGE, 408)),
+      { once: true },
+    );
+  });
   try {
-    return await promise;
-  } catch (error: unknown) {
-    if (controller.signal.aborted) throw new ApiError(REQUEST_TIMEOUT_MESSAGE, 408);
-    throw error;
+    return await Promise.race([promise, timeoutPromise]);
   } finally {
     clearTimeout(timeoutId);
   }

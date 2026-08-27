@@ -26,7 +26,16 @@ import {
 } from "../api";
 import type { AiUsage, AutonomyStatus, ClassificationRule, ClassificationRuleInput, CollectorStatus, HealthData, Preferences, TelemetryDeleteNotice, TelemetryDeleteScope, TelemetryPreferences, TelemetryStatus } from "../api";
 
-const CATEGORY_OPTIONS = ["code", "browser_work", "communication", "document", "entertainment", "social", "other"];
+const CATEGORY_OPTIONS = ["code", "browser_work", "communication", "document", "entertainment", "social", "other"] as const;
+const USER_SOFT_CLASSIFICATION_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: ClassificationRuleInput["category"];
+  hint: string;
+}> = [
+  { label: "工作软件", value: "code", hint: "训练与提醒中按工作软件处理" },
+  { label: "娱乐软件", value: "entertainment", hint: "参与训练与统计" },
+  { label: "不一定", value: "other", hint: "不建新类别,回退自动与弱标签" },
+];
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
@@ -61,7 +70,7 @@ export default function Settings() {
   const [newRule, setNewRule] = useState<ClassificationRuleInput>({
     process_name: "",
     window_title_pattern: "",
-    category: "neutral",
+    category: "other",
     priority: 0,
   });
   const [unknownApps, setUnknownApps] = useState<string[]>([]);
@@ -171,7 +180,7 @@ export default function Settings() {
     setAddingRule(true);
     try {
       await addClassification(newRule);
-      setNewRule({ process_name: "", window_title_pattern: "", category: "neutral", priority: 0 });
+      setNewRule({ process_name: "", window_title_pattern: "", category: "other", priority: 0 });
       const cls = await getClassifications();
       setClassifications(Array.isArray(cls) ? cls : []);
     } catch (e: unknown) {
@@ -523,10 +532,18 @@ export default function Settings() {
 
         {unknownApps.length > 0 && (
           <div className="mb16" style={{ background: "var(--color-bg-inset)", padding: 12, borderRadius: 8 }}>
-            <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 8 }}>未分类应用</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 8 }}>未分类应用 · 点击直接填入下方三档分类表单</div>
             <div className="flex gap8" style={{ flexWrap: "wrap" }}>
               {unknownApps.map((app, idx) => (
-                <span key={idx} className="badge badge-warning">{app}</span>
+                <button
+                  key={idx}
+                  type="button"
+                  className="badge badge-warning"
+                  onClick={() => setNewRule((prev) => ({ ...prev, process_name: app, category: prev.category ?? "other" }))}
+                  title={`为 ${app} 新建分类规则`}
+                >
+                  {app}
+                </button>
               ))}
             </div>
           </div>
@@ -545,11 +562,18 @@ export default function Settings() {
           />
           <select
             value={newRule.category}
-            onChange={(e) => setNewRule((r) => ({ ...r, category: e.target.value }))}
+            onChange={(e) => setNewRule((r) => ({ ...r, category: e.target.value as ClassificationRuleInput["category"] }))}
           >
-            {CATEGORY_OPTIONS.map((c) => (
-              <option key={c} value={c}>{c}</option>
+            {USER_SOFT_CLASSIFICATION_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{`${option.label} · ${option.hint}`}</option>
             ))}
+            <optgroup label="高级分类(按需)">
+              {CATEGORY_OPTIONS.filter(
+                (value) => !USER_SOFT_CLASSIFICATION_OPTIONS.some((option) => option.value === value)
+              ).map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </optgroup>
           </select>
           <input
             type="number"

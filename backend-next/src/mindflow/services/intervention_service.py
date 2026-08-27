@@ -184,6 +184,58 @@ _QUIET_DEEP_WORK_BLOCK_S: float = 20 * 60
 _QUIET_DEEP_WORK_MAX_ENTERTAINMENT_RATIO: float = 0.25
 
 
+def _is_work_category_context(events: list[ActivityEvent]) -> bool:
+    """Return True when recent context is dominated by work-category apps."""
+    if not events:
+        return False
+    active = [event for event in events if not event.data.is_idle]
+    active = active[-12:] if len(active) > 12 else active
+    if not active:
+        return False
+    from mindflow.domain.classifier import AppClassifier
+
+    base = AppClassifier()
+    work_votes = sum(
+        1
+        for event in active
+        if AppClassifier.get_productivity_score(
+            base.classify(event.data.process_name, event.data.window_title)
+        )
+        >= 0.9
+    )
+    return work_votes >= max(3, len(active) // 2 + 1)
+
+
+def _is_work_state_suppressed(
+    *,
+    assessment: ProcrastinationAssessment,
+    recent_events: list[ActivityEvent],
+) -> tuple[bool, str | None]:
+    """Return (should_suppress, human_reason) for the work-state front gate.
+
+    This is the narrow runtime complement of the manual software
+    classification.  It fires only when the automated intervention would
+    otherwise have an undisputed work-state signal behind it, so the user is
+    not nagged while demonstrably building.  Manual triggers never land here
+    and the check is never throttled.
+
+    The signal is deliberately conservative so an isolated chat window cannot
+    suppress a legitimate intervention.
+    """
+    if not recent_events or not _deep_work_guard(recent_events):
+        return False, None
+    if not _is_work_category_context(recent_events):
+        return False, None
+    top_types = getattr(assessment, "types", None) or []
+    if (
+        top_types
+        and str(top_types[0] or "").strip().lower()
+        in {"emotional_regulation", "impulsivity", "decisional"}
+    ):
+        return False, None
+    return True, "以工作态为锚的持续构建"
+
+
 def _deep_work_guard(
     events: list[ActivityEvent],
     threshold: float = 80.0,
@@ -706,6 +758,29 @@ class InterventionService:
                     logger.debug(
                         "Task ranking unavailable, using static suggestion: {}", exc
                     )
+
+        # ── 1c. Work-state suppression (feature flag, audited, never throttled) ──
+        # User-facing tri-state (work/entertainment/不一定 -> code/entertainment/other)
+        # sits on top of the strict category enum, so users never need to name
+        # IDEs one by one.  When a work-state signal is active the automated
+        # path suppresses the reminder without consuming a throttle slot; the
+        # outcome is observable in intervention history as a skipped trigger
+        # for later review.  Manual callers still bypass this gate.
+        if not bypass_deep_work_guard and recent_events is not None:
+            should_suppress, work_reason = _is_work_state_suppressed(
+                assessment=assessment,
+                recent_events=recent_events,
+            )
+            if should_suppress:
+                logger.info("Intervention suppressed by work state: {}", work_reason)
+                return InterventionResult(
+                    skipped=True,
+                    skip_reason=f"工作态抑制：{work_reason}，已跳过本次提醒",
+                    throttle_decision=ThrottleDecision(
+                        ThrottleReason.OK,
+                        detail="工作态抑制",
+                    ),
+                )
 
         # ── 2. Deep-work guard ────────────────────────────────────────
         if (
