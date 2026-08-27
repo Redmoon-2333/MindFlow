@@ -136,7 +136,7 @@ def load_database_v2_data(
         else:
             time_select = "s.start_time, s.end_time"
         window_rows = connection.execute(
-            "SELECT window_start_utc, window_end_utc, feature_schema_version, "
+            "SELECT id, window_start_utc, window_end_utc, feature_schema_version, "
             "features_json, label FROM behavior_feature_windows "
             "WHERE user_id = ? AND feature_schema_version = " + str(FEATURE_SCHEMA_VERSION) + " "
             "ORDER BY window_start_utc",
@@ -167,6 +167,7 @@ def load_database_v2_data(
             if not isinstance(features, dict):
                 continue
             windows.append({
+                "id": str(row["id"]),
                 "window_start_utc": row["window_start_utc"],
                 "window_end_utc": row["window_end_utc"],
                 "feature_schema_version": row["feature_schema_version"],
