@@ -1,222 +1,253 @@
 # MindFlow - 智能专注助手
 
-本地优先的智能专注力追踪应用，监控计算机使用行为，分析注意力模式，生成个性化的抗拖延干预策略。
+MindFlow 是一个**本地优先的智能专注助手**：记录电脑使用行为的聚合指标，识别专注与拖延模式，结合规则、机器学习和大模型生成可解释的反馈与干预。
+
+> 设计原则：数据默认留在本机；用户可以控制采集、浏览器追踪、自动干预和数据清理；模型必须通过可复现的质量门禁后才能进入 `ready`。
+
+## 核心能力
+
+| 能力 | 说明 | 当前状态 |
+|------|------|---------|
+| 行为采集 | 活动窗口、空闲状态、5 秒窗口快照 | 已实现 |
+| 输入统计 | 30 秒聚合的键盘敲击、鼠标点击、滚动、移动距离、输入活跃时长和交互突发次数 | 已实现 |
+| 专注分析 | 会话识别、专注评分、切换频率、个人基线与趋势 | 已实现 |
+| 手动软件分类 | 用户把软件设为工作、娱乐或不确定，并支持进程名/窗口标题模式 | API/UI 已实现 |
+| 智能干预 | 深度工作保护、节流、内容安全、任务排序、站点拦截 | 已实现；工作态规则仍在持续收敛 |
+| LLM 分析 | DeepSeek → Ollama → RuleEngine 三层降级，支持归因、面板和聊天 | 已实现 |
+| ML 训练 | V3 特征窗口、用户窗口标签、显式反馈、分类器/聚类/HMM、7 项质量门禁 | 已实现 |
+| 数据控制 | 导出、按范围清理、输入/浏览器追踪开关、采集器启停 | 已实现 |
+| 可观测性 | 工作流运行、节点事件、本地 OpenTelemetry SQLite exporter | 已实现 |
+
+## 当前推荐判断策略
+
+MindFlow 不把“应用切换次数多”直接等同于分心，而是采用分层判断：
+
+1. **用户规则**：手动分类优先于内置启发式，覆盖长尾软件。
+2. **软件语义**：工作类、娱乐类、通信类和不确定类分别处理。
+3. **输入行为**：键盘敲击、鼠标点击、输入活跃比、空闲比和切换频率共同判断。
+4. **模型预测**：使用经过日期分组评估和校准的 ML 分类器。
+5. **干预前置保护**：工作态/深度工作时优先不打扰；不确定时宁可降低提醒，也不把一次切换直接判成拖延。
+
+因此，“一边看教学视频、一边在代码编辑器敲代码”的分屏场景不应仅凭切换次数判定为分心；用户可以把相关工具设为工作软件，模型训练也可使用用户确认过的窗口标签。
 
 ## 技术栈
 
 | 层 | 技术 |
 |------|------|
-| 后端 | Python 3.11+ / FastAPI / SQLAlchemy 2.0 / SQLite / LangGraph |
-| 前端 | React 19 / TypeScript / Vite / react-router-dom / openapi-fetch / plain CSS |
-| ML | scikit-learn / hmmlearn / Welford 在线基线 / 弱监督学习 |
-| 包管理 | **uv**（取代 pip/conda） |
+| 后端 | Python 3.11+ / FastAPI / SQLAlchemy 2 / SQLite / Alembic |
+| 编排 | LangGraph `AnalysisGraph`、`PanelGraph`、`ChatGraph` |
+| LLM | DeepSeek、Ollama、本地 RuleEngine；ProviderRegistry 统一生命周期 |
+| ML | scikit-learn / XGBoost（可选）/ hmmlearn / Platt sigmoid 校准 |
+| 前端 | React 19 / TypeScript / Vite / `openapi-fetch` / plain CSS |
+| 包管理 | **uv**（后端）；npm（前端） |
 
 ## 快速开始
 
 ### 环境要求
 
-- Windows 10/11（采集器支持 macOS/Linux）
 - Python 3.11+
-- 前端需要 Node.js 18+
+- uv
+- Node.js 18+
+- Windows 10/11；采集器另支持 macOS/Linux 的对应实现
 
-### 一键启动（推荐）
-
-双击 `start.bat`，选择"系统托盘模式"。
-
-### 手动启动
+### 启动后端
 
 ```bash
 cd mindflow-app/backend-next
-
-# 安装依赖（dev + ML extras）
 uv sync --extra dev --extra ml
-
-# 启动后端
 uv run python -m mindflow.main
-
-# 生成一次性本地登录链接
-uv run python -m mindflow.bootstrap
-
-# 浏览器打开
-# http://localhost:8765/docs
 ```
 
-启动时 Alembic 迁移和 SQLite 完整性检查必须成功；迁移失败会终止启动。
+后端默认监听 `http://127.0.0.1:8765`。启动时会执行 Alembic 迁移和 SQLite 完整性检查；失败时不会在不兼容 schema 上继续运行。
 
-### 前端启动
+### 本地登录
+
+```bash
+cd mindflow-app/backend-next
+uv run python -m mindflow.bootstrap
+```
+
+启动器使用本地 root token 换取一次性 bootstrap ticket，浏览器最终使用 `HttpOnly`、`SameSite=Strict` 的 session cookie；root token 不进入 URL 或网页脚本。
+
+### 启动前端开发服务器
 
 ```bash
 cd mindflow-app/frontend
 npm install
 npm run dev
-# http://localhost:4173
 ```
 
-## 2026-07-31 升级与实验
+生产桌面入口仍由本地后端/桌面启动脚本提供；Vite 开发服务器不是独立的桌面应用。
 
-- 特征 schema 已升级到 v3：应用切换采用“确认切换”计数（默认驻留 10 秒），系统瞬时窗口不计数；历史窗口通过回填脚本重建。
-- ML 质量门改为统计唯一反馈会话数，要求至少 7 个反馈日、20 条唯一反馈、每类 5 条；评估与部署共用同一 EnsembleClassifier，规则基线在日期 GroupKFold 折内计算。
-- `POST /panel/today` 支持 `force` / `retry_if_degraded`；降级结果再次点击会重新尝试 DeepSeek，缓存命中保留真实的 `source/degraded/degradation_path`。
-- LangGraph `PanelGraph` 为唯一活动编排；新增确定性 schema 校验、共识强度注入、`insufficient_data/uncertainty/evidence_gaps` 输出和 `workflow_node_events` trace。
-- 实验与报告：`backend-next/scripts/run_experiments.py` 可一键跑 3 轮 ML 和 3 轮 LangGraph，产物落在 `data/experiments/`。
-- 历史 `docs/optimization-plan-codex-review.md` 已删除，相关结论并入本文档与架构文档。
+## 数据与隐私
 
-## 2026-08-20 后端与 ML 优化
+### 数据流水线
 
-- 后端: msgpack `AnalysisRunContext` Crash fix、面板 8s→120s、critic 限长、`_fanout_raw_with_batch_retry` 整批重试；2250 测试全绿
-- ML: 1850 个窗口标签增广(→2004 显式样本)与 Platt(sigmoid)校准 → BA 0.46→0.64、Brier 0.40→0.23，质量门 7/7 通过并激活 `20260820_052217_0724fc`
-
-## 数据流水线
-
-```
-activity_events（原始活动事件）
-    ↓ 5s 采集 + 心跳合并
-telemetry rollup（V2 特征窗口，schema_version=2）
-telemetry rollup（V3 特征窗口，schema_version=3）
-    ↓ 时间窗口重叠匹配
-focus_session_feedback（用户显式标注）
-    ↓ join focus_sessions 得到带时间戳的反馈
-prepare_v2_training_data()
-    ↓ 时间重叠过滤 + 显式反馈优先
-V2TrainingData（合格窗口 + 标签）
-    ↓ 质量门禁 7 项检查
-训练 → shadow / ready 模型
+```text
+活动窗口/空闲状态
+        ↓ 5 秒采集
+交互输入聚合桶（默认 30 秒，仅计数）
+        ↓ 5 分钟 rollup
+behavior_feature_windows（FEATURE_SCHEMA_VERSION=3，24 维）
+        ↓ 反馈时间重叠匹配 + 用户窗口标签
+V2TrainingData
+        ↓ 日期 GroupKFold + 7 项质量门禁
+shadow / ready 模型
 ```
 
-**核心概念**：
-- **基线（Baseline）**：Welford 在线统计，日常行为的实时对比基准，非 ML 模型
-- **ML 训练**：批量离线训练（分类器 + 聚类 + HMM），通过模型中心或 CLI 触发
-- **数据存在 ≠ 可训练**：原始事件需先经 telemetry rollup 成 V2 特征窗口；显式反馈的时间必须与窗口范围重叠
+V3 特征包含 `keypress_rate_per_min`、`mouse_click_rate_per_min`、`scroll_rate_per_min`、`mouse_distance_per_min`、`input_active_ratio`、`interaction_bursts_per_min`、`click_key_ratio`、应用切换和空闲等指标。输入统计不保存按键字符、鼠标坐标或原始轨迹。
+
+浏览器追踪若开启，只保存规范化域名、时长和是否外放，不保存完整 URL。LLM 分析发送的是聚合行为摘要，不发送原始窗口标题、文件路径或个人文件内容。
+
+所有原始数据、反馈和模型制品默认存储在本机。设置页支持关闭输入统计/浏览器追踪、导出数据和按 `interaction`、`browser`、`feedback`、`all` 范围清理数据。
+
+## 用户手动软件分类
+
+后端分类规则表为 `app_classification_rules`，支持：
+
+- 精确进程名匹配（不区分大小写）
+- 可选 SQL-LIKE 风格窗口标题模式（`%` 表示通配）
+- `priority` 0-100，数值越大越先匹配
+
+用户界面提供三档常用语义：
+
+| 用户选择 | 存储映射 | 用途 |
+|---------|---------|------|
+| 工作软件 | `code` | 作为工作语义与训练标注来源 |
+| 娱乐软件 | `entertainment` | 作为娱乐语义与训练标注来源 |
+| 不一定 | `other` / 不建立强规则 | 回退自动分类和模型判断 |
+
+API：
+
+```text
+GET    /api/v1/app-classifications
+POST   /api/v1/app-classifications
+PUT    /api/v1/app-classifications
+DELETE /api/v1/app-classifications/{rule_id}
+GET    /api/v1/app-classifications/unknown-apps
+```
+
+设置页可以先获取未知应用，再点击应用名填入进程名，选择三档分类后保存。
+
+## ML 训练与当前制品
+
+### 训练命令
+
+```bash
+cd mindflow-app/backend-next
+
+# 真实数据库训练：默认使用用户窗口标签与 sigmoid 校准
+uv run python -m mindflow.train --source db --use-window-labels
+
+# 合成数据训练
+uv run python -m mindflow.train --source synthetic_v2
+
+# 版本管理
+uv run python -m mindflow.train --list-versions
+uv run python -m mindflow.train --rollback <version-tag>
+```
+
+`MINDFLOW_TRAINING_USE_WINDOW_LABELS=True` 时，用户确认过的 `behavior_feature_windows.label` 作为附加训练信号，权重为 0.8；显式会话反馈权重为 1.0，且质量门统计仍以唯一反馈会话为准。生产训练默认使用 `calibration="sigmoid"`；小型合成测试可以显式传 `calibration=None`。
+
+### 质量门禁
+
+模型必须同时满足：
+
+- 至少 7 个反馈日
+- 至少 20 个唯一显式反馈会话
+- focus 和 distracted 各至少 5 个反馈会话
+- balanced accuracy ≥ 0.55
+- minority F1 ≥ 0.40
+- candidate Brier ≤ rule Brier + 0.01
+- 日期 GroupKFold 稳定性通过
+
+截至 2026-08-27，正式模型目录中最新已验证制品为 `20260827_173356_a48c0c`：训练报告为 `ready`、`activated=true`、质量门 7/7 通过，训练样本为 focus 2440、distracted 955。运行中的后端进程需要重启后才会重新加载磁盘上的最新模型。
+
+## LLM 与干预
+
+### LLM 降级顺序
+
+```text
+DeepSeek / PanelGraph
+        ↓ 失败、超时或解析失败
+DeepSeek 单专家 / Ollama
+        ↓ 仍不可用
+RuleEngine / 模板干预
+```
+
+面板采用分析师 → 三路归因 → 校验 → 主持人 → 批评家的显式图；真实 DeepSeek 调用使用 120 秒面板总预算，批评家输出有限长，并在并行专家全部失败时做一次整批重试。任何 LLM 输出都会经过 schema、禁词、危机和证据边界校验。
+
+### 工作态保护
+
+自动干预在深度工作或明显工作态时会优先跳过提醒，手动触发仍可绕过。当前工作态判定是保守实现，用户分类规则、输入阈值和运行时抑制策略仍在持续融合；不要把“某个软件被标为工作”理解为所有上下文下都绝对静默。
+
+## API 与诊断
+
+启动后访问 `http://localhost:8765/docs` 查看完整 OpenAPI。
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/health/live` | GET | 存活检查，免认证 |
+| `/api/v1/health/ready` | GET | 迁移、数据库、checkpoint/run-store 就绪检查 |
+| `/api/v1/collector` | GET/POST | 查看/启动采集器 |
+| `/api/v1/collector/stop` | POST | 停止采集器 |
+| `/api/v1/telemetry/status` | GET | 输入/浏览器追踪状态与桶数量 |
+| `/api/v1/panel/today` | POST | 触发当日专家面板，可 `force/retry_if_degraded` |
+| `/api/v1/analytics/attribution` | POST | 触发单日归因，可指定日期 |
+| `/api/v1/chat` | POST | 对话式分析 |
+| `/api/v1/analytics/model-status` | GET | ML 加载状态、版本和部署层级 |
+| `/api/v1/analytics/training-readiness` | GET | 训练就绪度与质量门状态 |
+| `/api/v1/analytics/training-jobs` | POST | 启动后台训练任务 |
+| `/api/v1/ai/runs` | GET | 脱敏工作流运行记录 |
+| `/api/v1/intervention/trigger` | POST | 手动触发干预 |
+| `/api/v1/intervention/history` | GET | 干预历史和用户反馈 |
+
+成功响应为类型化 JSON；错误遵循 RFC 9457 Problem Details。工作流诊断只暴露运行元数据和脱敏节点事件，不重复存储 prompt、原始证据或 PII。
+
+## 测试与质量门
+
+```bash
+cd mindflow-app/backend-next
+uv run python -m ruff check src tests
+uv run python -m mypy --strict src/mindflow
+uv run python -m pytest tests/ -q
+
+cd ../frontend
+npm run lint
+npm run build
+```
+
+最近一次完整后端验收结果：`2250 passed`、Ruff 通过、mypy strict 在 163 个源文件中 0 错误；前端 lint 为 0 error（现有 E2E 文件有 10 条 unused-variable warning），生产构建成功。
 
 ## 项目结构
 
-```
+```text
 mindflow-app/
-├── backend-next/               # 当前活动后端（FastAPI + LangGraph）
+├── backend-next/
+│   ├── alembic/                 # 数据库迁移
 │   ├── src/mindflow/
-│   │   ├── main.py             # 入口
-│   │   ├── app.py              # FastAPI 应用工厂
-│   │   ├── api/routes/         # 路由（含 analytics/training-readiness 等）
-│   │   ├── services/           # 业务服务层
-│   │   │   ├── training_readiness_service.py
-│   │   │   └── training_job_service.py
-│   │   ├── train/              # ML 训练流水线
-│   │   └── domain/             # 领域模型
-│   └── tests/                  # pytest 测试套件
-├── frontend/                   # React / Vite / TypeScript
-│   └── src/pages/
-│       └── ModelCenter.tsx     # 模型中心页面（/model-center）
-├── docs/                       # 设计文档 + API 规范 + ADR
-├── start.bat                   # 一键启动
-└── CLAUDE.md
+│   │   ├── api/                # REST、WebSocket、中间件
+│   │   ├── domain/             # 领域模型与纯规则
+│   │   ├── graph/              # AnalysisGraph / PanelGraph / ChatGraph
+│   │   ├── infrastructure/     # 采集器、仓库、LLM、通知
+│   │   ├── services/           # 分析、干预、调度、训练服务
+│   │   └── train/              # V3 训练、评估、版本管理
+│   └── tests/                  # 后端 pytest 套件
+├── frontend/                   # React + TypeScript + Vite
+├── docs/                       # 架构、API、实验和设计文档
+├── start.bat                   # 桌面启动入口
+├── AGENTS.md                   # 后端执行约束
+└── CLAUDE.md                   # 开发指南
 ```
 
-**注意**：遗留 `backend/` 目录（Phase 0）已删除。`backend-next` 与之零依赖。
+## 开发规范
 
-## API 端点一览
-
-### 基础 & 健康
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/v1/health/live` | 存活检查（免认证） |
-| GET | `/api/v1/health/ready` | 就绪检查（503 表示未就绪） |
-| GET | `/api/v1/health` | 兼容健康检查 |
-
-### 活动采集
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/v1/activities` | 活动事件流（分页、过滤） |
-| GET | `/api/v1/activities/current` | 当前活动窗口 |
-
-### 专注分析
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/v1/focus` | 专注会话列表 |
-| GET | `/api/v1/focus/trend` | N 天专注趋势 |
-| POST | `/api/v1/focus/{session_id}/feedback` | 提交会话反馈标注 |
-| GET | `/api/v1/reports/daily` | 日报查询/生成 |
-| GET | `/api/v1/reports/weekly` | 周报 |
-| GET | `/api/v1/analytics/patterns` | 专注时段分析 |
-| GET | `/api/v1/analytics/profile` | 行为画像 |
-| GET | `/api/v1/analytics/baseline` | 个人行为基线 |
-| GET | `/api/v1/analytics/model-status` | ML 模型状态 |
-
-### 模型中心（V2 训练）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/v1/analytics/training-readiness` | 训练就绪评估（含 7 项质量门禁） |
-| POST | `/api/v1/analytics/training-jobs` | 启动训练任务（202 / 409 / 412） |
-| GET | `/api/v1/analytics/training-jobs/{job_id}` | 训练任务状态与报告 |
-| POST | `/api/v1/analytics/training-jobs/{job_id}/cancel` | 取消待定/准备中的任务 |
-
-更多端点详见 [`docs/api/model-training.md`](docs/api/model-training.md) 和 `backend-next/README.md`。
-
-### WebSocket
-
-| 路径 | 说明 |
-|------|------|
-| `/api/v1/ws` | 实时 WebSocket（需会话 Cookie） |
-
-> **响应格式**：成功返回类型化 JSON 模型（无统一信封）；错误遵循 RFC 9457 Problem Details（`type`, `title`, `status`, `detail`, `instance` + 合并的额外字段）。
-
-## 训练 ML 模型
-
-### Web UI
-
-访问前端 `/model-center` 页面查看训练就绪状态、质量门禁结果，启动和监控训练任务。
-
-### CLI
-
-```bash
-cd backend-next
-# 合成数据训练
-uv run python -m mindflow.train --source synthetic_v2
-# 真实数据训练
-uv run python -m mindflow.train --source db
-# 模型版本管理
-uv run python -m mindflow.train --list-versions
-```
-
-### 模型模式
-
-| 模式 | 说明 |
-|------|------|
-| `rule_engine_only` | 仅使用规则引擎，无 ML 模型 |
-| `shadow` | 训练完成但不替换活跃模型（评估期） |
-| `ready` | 训练完成且通过质量门禁，替换为当前活跃模型 |
-
-## 隐私
-
-- **所有数据存储在本地 SQLite 文件**，不会上传到任何服务器
-- LLM 分析仅发送聚合后的行为摘要（无窗口标题、文件路径等敏感信息）
-- 用户可通过导出功能获取完整数据副本，通过数据保留设置控制存储周期
-
-## 架构决策
-
-### 本地桌面应用
-
-采用前后端分离架构，但本质是本地桌面应用——"后端"是本地分析引擎，"前端"连的是 localhost。系统托盘模式对其进行了封装。
-
-### 双层编排设计
-
-外层调度器（纯 asyncio + SQLite claims/heartbeats）与内层 LangGraph 分析图分离，通过框架无关端口解耦。详见 [`backend-next/README.md`](backend-next/README.md) 和 ADR-001。
-
-### 时区
-
-所有 datetime 值在内部使用 timezone-aware UTC；业务边界通过 `MINDFLOW_TIMEZONE` 配置（默认 `local` 或 IANA 名称如 `Asia/Shanghai`）转换显示。
-
-## 团队
-
-| 成员 | 职责 |
-|------|------|
-| 胡淙煜 | 后端架构、数据采集、ML、LLM 集成 |
-| 张皓 | 前端 Dashboard、数据可视化 |
-| 杨智杰 | 前端组件、数据清洗、API 对接 |
+- 后端依赖只使用 uv，不使用 pip、conda 或 poetry。
+- 新功能先写测试，修改后必须跑 Ruff、mypy、pytest 和受影响的前端构建。
+- 维持 V3 schema、确认切换计数、反馈会话统计、LLM schema 校验和隐私边界。
+- 不把真实数据库、token、模型制品或含个人行为明细的报告提交到 Git。
+- 使用 Conventional Commits；未明确要求时不要自动 commit/push。
 
 ## License
 
-MIT
+MIT License © 2026 RedMoon (胡淙煜)
