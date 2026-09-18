@@ -483,11 +483,21 @@ class TestInterventionService:
     # ── Record response ──────────────────────────────────────────────
 
     async def test_record_response(self, service, mock_repo) -> None:
-        """record_response delegates to repo."""
+        """record_response delegates to repo, tagging the human provenance."""
         result = await service.record_response("some-id", "accepted", 3.0)
         assert result is not None
         mock_repo.update_response.assert_awaited_once_with(
-            "some-id", "accepted", 3.0
+            "some-id", "accepted", 3.0, source="human"
+        )
+
+    async def test_record_response_can_mark_auto(self, mock_repo, service) -> None:
+        """An automatic default must be distinguishable from a user action."""
+        result = await service.record_response(
+            "some-id", "ignored", 30.0, source="auto"
+        )
+        assert result is not None
+        mock_repo.update_response.assert_awaited_once_with(
+            "some-id", "ignored", 30.0, source="auto"
         )
 
     async def test_record_response_not_found(self, mock_repo, service) -> None:

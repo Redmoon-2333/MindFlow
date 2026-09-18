@@ -23,9 +23,11 @@ from mindflow.infrastructure.repositories.activity import SQLAlchemyActivityRepo
 from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.ports import CollectorIntervalRecord
 from mindflow.services.collector_interval_lifecycle import safe_error_text
 from mindflow.services.prediction_service import FocusPredictionService
 from mindflow.services.telemetry_features import build_v2_feature_window
+from mindflow.services.window_quality import build_window_quality
 from mindflow.time_utils import TimezoneLike, resolve_timezone, utc_today
 
 _DEFAULTS: dict[str, Any] = {
@@ -351,6 +353,41 @@ class TelemetryService:
 
 
 
+    async def _collector_intervals_for_range(
+        self, start: datetime, end: datetime, user_id: int
+    ) -> list[CollectorIntervalRecord] | None:
+        """Fetch audit evidence once; missing/failed history stays unknown."""
+        interval_repo = self._collector_interval_repository
+        if interval_repo is None:
+            return None
+        try:
+            rows: list[CollectorIntervalRecord] = await interval_repo.list_overlapping_range(
+                user_id, start, end,
+            )
+            return rows
+        except Exception as exc:  # noqa: BLE001 — quality metadata is best-effort
+            logger.debug("Collector interval lookup failed: {}", safe_error_text(exc))
+            return None
+
+    @staticmethod
+    def _collector_state_for_window(
+        start: datetime, end: datetime, intervals: list[CollectorIntervalRecord] | None,
+    ) -> dict[str, dict[str, bool | None]]:
+        enabled: dict[str, bool | None] = dict.fromkeys(("activity", "browser", "input"))
+        available: dict[str, bool | None] = dict(enabled)
+        for interval in intervals or []:
+            if (interval.reason or "").startswith("coverage_gap:"):
+                continue
+            if (
+                _as_utc(interval.started_at) < end
+                and (interval.ended_at is None or _as_utc(interval.ended_at) > start)
+            ):
+                enabled["activity"] = True
+                break
+        # Run history does not record auxiliary switches or prove delivery.
+        # Window payloads supply positive evidence in build_window_quality().
+        return {"enabled": enabled, "available": available}
+
     async def rollup_feature_windows(
         self,
         start: datetime,
@@ -359,6 +396,13 @@ class TelemetryService:
     ) -> int:
         if self._activity_repository is None:
             return 0
+        if end <= start:
+            return 0
+        start = _as_utc(start)
+        start = start.replace(
+            minute=(start.minute // 5) * 5, second=0, microsecond=0,
+        )
+        end = _as_utc(end)
 
         events = await self._activity_repository.query_range(user_id, start, end)
         previous_event = await self._activity_repository.last_event_before(user_id, start)
@@ -371,7 +415,9 @@ class TelemetryService:
             events.insert(0, previous_event)
         events.sort(key=lambda event: (event.timestamp_utc, event.id))
 
-        buckets = await self._repository.list_interaction_buckets(user_id, start, end)
+        buckets = await self._repository.list_interaction_buckets(
+            user_id, start, end, overlapping=True,
+        )
         buckets.sort(key=lambda bucket: str(bucket["window_start_utc"]))
 
         browser = await self._repository.list_browser_segments(user_id, start, end)
@@ -397,7 +443,12 @@ class TelemetryService:
         bucket_index = 0
         browser_index = 0
         active_events: list[Any] = []
+        active_buckets: list[dict[str, Any]] = []
         active_browser: list[tuple[datetime, datetime, dict[str, Any]]] = []
+
+        # Reuse audit history across windows; historical auxiliary switches
+        # are unknown unless the window contains positive delivery evidence.
+        collector_intervals = await self._collector_intervals_for_range(start, end, user_id)
         window_start = start.replace(
             minute=(start.minute // 5) * 5,
             second=0,
@@ -422,17 +473,23 @@ class TelemetryService:
                     active_events.append(event)
                 event_index += 1
 
-            while (
-                bucket_index < len(buckets)
-                and _as_utc(buckets[bucket_index]["window_start_utc"]) < window_start
-            ):
-                bucket_index += 1
+            active_buckets = [
+                bucket for bucket in active_buckets
+                if _as_utc(bucket["window_start_utc"])
+                + timedelta(seconds=max(0.0, float(bucket.get("duration_s", 0))))
+                > window_start
+            ]
             window_buckets: list[dict[str, Any]] = []
             while (
                 bucket_index < len(buckets)
                 and _as_utc(buckets[bucket_index]["window_start_utc"]) < window_end
             ):
-                window_buckets.append(buckets[bucket_index])
+                bucket = buckets[bucket_index]
+                active_buckets.append(bucket)
+                # V3 aggregate counts stay attributed to the bucket's start;
+                # quality coverage spans every overlapping window.
+                if _as_utc(bucket["window_start_utc"]) >= window_start:
+                    window_buckets.append(bucket)
                 bucket_index += 1
 
             active_browser = [
@@ -448,13 +505,30 @@ class TelemetryService:
                 browser_index += 1
             window_browser = [span[2] for span in active_browser]
 
-            if active_events or window_buckets or window_browser:
+            if active_events or active_buckets or window_browser:
+                collector_state = self._collector_state_for_window(
+                    window_start, window_end, collector_intervals,
+                )
                 features = build_v2_feature_window(
                     active_events,
                     window_buckets,
                     window_browser,
                     window_start,
                     window_end,
+                )
+                # Record what was actually observed. Without this record, a
+                # window built while the browser collector was off looks
+                # identical to one where the user simply did not browse (both
+                # carry browser_ratio == 0), so the model would read an absence
+                # of measurement as measured non-browsing.
+                quality = build_window_quality(
+                    window_start=window_start,
+                    window_end=window_end,
+                    events=active_events,
+                    interaction_buckets=active_buckets,
+                    browser_segments=window_browser,
+                    enabled=collector_state.get("enabled"),
+                    available=collector_state.get("available"),
                 )
                 rows.append({
                     "user_id": user_id,
@@ -463,6 +537,7 @@ class TelemetryService:
                     "feature_schema_version": FEATURE_SCHEMA_VERSION,
                     "features_json": json.dumps(features, ensure_ascii=False),
                     "label": None,
+                    "quality_json": json.dumps(quality.to_dict(), ensure_ascii=False),
                 })
             window_start = window_end
 
@@ -506,7 +581,7 @@ class TelemetryService:
                 )
                 if interval_repo is not None:
                     now_utc = datetime.now(UTC)
-                    await interval_repo.open(
+                    gap = await interval_repo.open(
                         user_id,
                         reason=(
                             "coverage_gap: "
@@ -514,6 +589,9 @@ class TelemetryService:
                         ),
                         failure=True,
                         now=now_utc,
+                    )
+                    await interval_repo.close(
+                        gap.id, failure=True, reason=gap.reason, now=now_utc,
                     )
         except Exception as exc:
             logger.warning(

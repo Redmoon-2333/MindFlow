@@ -14,6 +14,9 @@ export interface InterventionEventPayload {
   message: string;
   dismissible: boolean;
   cbt_technique?: string | null;
+  /** True when the OS-level popup already showed this reminder. The browser
+   *  notification is then skipped so the user is not notified twice. */
+  native_delivered?: boolean;
 }
 
 interface RealtimeEvents {
@@ -77,8 +80,13 @@ class RealtimeClient {
     };
     socket.onmessage = (event) => this.handleMessage(event.data);
     socket.onclose = (event) => {
+      // Only the *current* socket may mutate shared connection state. A stale
+      // socket's close handler used to clear the timers and schedule a retry
+      // even after a newer socket had connected, which killed the live
+      // connection's heartbeat and produced duplicate reconnect loops.
+      if (this.socket !== socket) return;
       this.clearTimers();
-      if (this.socket === socket) this.socket = null;
+      this.socket = null;
       if (this.stopped || event.code === 4001) {
         this.setStatus("disconnected");
         return;
@@ -119,6 +127,9 @@ class RealtimeClient {
   }
 
   private showDesktopNotification(payload: InterventionEventPayload): void {
+    // The OS popup already notified the user — a browser notification for the
+    // same intervention would be the second one they see.
+    if (payload.native_delivered === true) return;
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
     try {
       const title = payload.title || "MindFlow 干预提醒";

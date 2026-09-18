@@ -32,21 +32,68 @@ class LLMSettings(BaseSettings):
     """LLM API configuration for attribution pipeline (Wave 6).
 
     Three-tier degradation chain (Architecture §3.3):
-      L1: DeepSeek / OpenAI-compatible API (api_key + base_url + model)
+      L1: primary OpenAI-compatible API (ECNU campus gateway by default,
+          DeepSeek-compatible) via api_key + base_url + model
       L2: Ollama local (ollama_enabled + ollama_base_url + ollama_model)
       L3: RuleEngine (always available, zero config)
     """
 
-    timeout_s: int = Field(default=30, ge=1, le=300, description="LLM request timeout in seconds")
+    timeout_s: int = Field(default=180, ge=1, le=600, description="LLM request timeout in seconds")
     max_retries: int = Field(default=1, ge=0, le=10, description="LLM retry budget")
-    api_key: str | None = Field(default=None, description="LLM API key (e.g. DeepSeek)")
+    api_key: str | None = Field(default=None, description="LLM API key (e.g. ECNU)")
     base_url: str | None = Field(default=None, description="LLM API base URL")
     model: str | None = Field(default=None, description="LLM model identifier")
+    # ── Provider identity / thinking-mode controls ──────────────────────
+    provider: str = Field(
+        default="auto",
+        description=(
+            "Primary provider: 'auto' (infer from base_url/model), 'ecnu', "
+            "or 'generic' (plain OpenAI-compatible, no thinking fields)"
+        ),
+    )
+    thinking_enabled: bool = Field(
+        default=True,
+        description="Request the campus gateway's thinking mode on every generation",
+    )
+    reasoning_effort: str = Field(
+        default="max",
+        description=(
+            "Thinking intensity. ecnu-max supports low/high/max. Downgrades are "
+            "validated against the model's documented tiers and reported."
+        ),
+    )
+    max_output_tokens: int = Field(
+        default=16384,
+        ge=256,
+        le=131072,
+        description="Explicit output cap per generation; recorded in the audit trail.",
+    )
+    max_concurrent_requests: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description=(
+            "In-flight generation cap for this process. The campus gateway "
+            "allows 3 concurrent requests per user per model, so the default "
+            "stays at 1 until measured."
+        ),
+    )
     ollama_enabled: bool = Field(default=False, description="Enable Ollama local fallback (L2)")
     ollama_base_url: str = Field(
         default="http://localhost:11434", description="Ollama API base URL"
     )
     ollama_model: str = Field(default="qwen3:8b", description="Ollama model name")
+
+    @property
+    def is_ecnu(self) -> bool:
+        """True when this configuration targets the campus gateway."""
+        if self.provider.strip().lower() == "ecnu":
+            return True
+        if self.provider.strip().lower() == "generic":
+            return False
+        return "ecnu.edu.cn" in (self.base_url or "").lower() or (
+            (self.model or "").lower().startswith("ecnu-")
+        )
 
 
 _cached_data_dir: Path | None = None

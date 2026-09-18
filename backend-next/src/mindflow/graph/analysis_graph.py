@@ -48,6 +48,14 @@ from mindflow.ports import (
 )
 from mindflow.services.panel_service import analysis_dict_to_panel_verdict
 
+
+def _safe_error_metadata(exc: Exception) -> str:
+    """Never include provider response bodies or exception chains."""
+    status = getattr(exc, "status_code", None)
+    suffix = f" status={status}" if type(status) is int else ""
+    return f"type={type(exc).__name__}{suffix}"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Runtime context — holds live dependencies injected at graph invocation time
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -71,10 +79,11 @@ class AnalysisRunContext:
 
     # ── Reservation ownership ──
     # True only when THIS run won the budget reservation (set by
-    # budget_reserve_node on a successful try_reserve).  Used by the
+    # the invocation's initial try_reserve). Used by the
     # run_analysis failure handler so a failing non-owner concurrent run
     # never deletes the winner's reservation.
     budget_owned: bool = False
+    budget_checked: bool = False
 
     # ── Evidence ──
     evidence_builder: Any = None  # EvidenceBundleBuilder
@@ -219,15 +228,11 @@ def _cached_analysis_meta(cached: dict[str, Any]) -> tuple[str, bool, list[str]]
     return source, degraded, path
 
 
-# Wall-clock budget for the whole PanelGraph invocation (analyst → 3×
-# attribution → rebuttal → moderator → critic).  Real DeepSeek latency is
-# ~3-6s per small call, but the moderator/critic prompts ingest every expert
-# opinion, making those calls 30-60s+ (measured 2026-08-20: with a 45s budget
-# the panel reached round 3 "Moderator" and then hit the wall 30s into that
-# single call).  This budget is therefore set to match the per-call
-# ``LLM_TIMEOUT_S`` (120s) so a full real panel can complete end-to-end while
-# still failing fast on a genuinely hung model.
-_PANEL_WORKFLOW_TIMEOUT_S = 120.0
+# Reserve room after the panel for fallback/persistence. The outer deadline
+# bounds the entire chain, including late panel failures and provider queueing.
+# Cancellation cleanup has at most 10 additional seconds; frontend allows 660s.
+_PANEL_WORKFLOW_TIMEOUT_S = 540.0
+_ANALYSIS_WORKFLOW_TIMEOUT_S = 600.0
 _COMPETING_ANALYSIS_WAIT_TIMEOUT_S = 5.0
 _COMPETING_ANALYSIS_POLL_INTERVAL_S = 0.05
 
@@ -256,7 +261,9 @@ async def _wait_for_competing_analysis(
     try:
         owner_run = await workflow_repo.get_run(run_id)
     except Exception as exc:
-        logger.debug("Could not inspect competing workflow run {}: {}", run_id, exc)
+        logger.opt(exception=False).debug(
+            "Could not inspect competing workflow run: {}", _safe_error_metadata(exc),
+        )
         return None
 
     status = getattr(owner_run, "status", None)
@@ -272,10 +279,8 @@ async def _wait_for_competing_analysis(
                 analysis_kind=analysis_kind,
             )
         except Exception as exc:
-            logger.debug(
-                "Competing analysis cache lookup failed for {}: {}",
-                run_id,
-                exc,
+            logger.opt(exception=False).debug(
+                "Competing analysis cache lookup failed: {}", _safe_error_metadata(exc),
             )
             cached = None
         if isinstance(cached, dict):
@@ -285,7 +290,9 @@ async def _wait_for_competing_analysis(
         try:
             owner_run = await workflow_repo.get_run(run_id)
         except Exception as exc:
-            logger.debug("Could not poll competing workflow run {}: {}", run_id, exc)
+            logger.opt(exception=False).debug(
+                "Could not poll competing workflow run: {}", _safe_error_metadata(exc),
+            )
             return None
         status = getattr(owner_run, "status", None)
         if status not in {"pending", "running"}:
@@ -387,7 +394,11 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
         logger.warning("No budget repository configured; skipping budget reservation")
         return {"budget_reserved": False}
 
-    reserved = await budget_repo.try_reserve(idempotency_key)
+    # The public entry point claims ownership before any shared run status write.
+    reserved = (
+        runtime.budget_owned if runtime.budget_checked
+        else await budget_repo.try_reserve(idempotency_key)
+    )
 
     if not reserved:
         # Another run already claimed this key.  Check if the analysis
@@ -604,16 +615,18 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
             "degradation_path": ["panel_timeout"],
         }
     except PanelUnavailableError as exc:
-        logger.warning("PanelGraph unavailable: {}", exc)
+        logger.opt(exception=False).warning("PanelGraph unavailable: {}", _safe_error_metadata(exc))
         return {
             "panel_succeeded": False,
-            "panel_unavailable_reason": str(exc),
+            "panel_unavailable_reason": _safe_error_metadata(exc),
         }
     except Exception as exc:
-        logger.warning("PanelGraph unexpected error: {}", exc)
+        logger.opt(exception=False).warning(
+            "PanelGraph unexpected error: {}", _safe_error_metadata(exc),
+        )
         return {
             "panel_succeeded": False,
-            "panel_unavailable_reason": f"PanelGraph error: {exc}",
+            "panel_unavailable_reason": f"PanelGraph error: {_safe_error_metadata(exc)}",
         }
 
     verdict_dict = result.get("moderator_verdict") if isinstance(result, dict) else None
@@ -632,7 +645,9 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
                     payload=entry,
                 )
         except Exception as exc:
-            logger.warning("Failed to persist panel trace: {}", exc)
+            logger.opt(exception=False).warning(
+                "Failed to persist panel trace: {}", _safe_error_metadata(exc),
+            )
 
     if verdict_dict is None or not isinstance(verdict_dict, dict):
         return {
@@ -713,10 +728,12 @@ async def result_conversion_node(state: AnalysisGraphState) -> dict[str, Any]:
     try:
         verdict = analysis_dict_to_panel_verdict(assessment, source=source)
     except Exception as exc:
-        logger.warning("Verdict conversion failed: {}", exc)
+        logger.opt(exception=False).warning(
+            "Verdict conversion failed: {}", _safe_error_metadata(exc),
+        )
         return {
             "verdict_json": None,
-            "error": f"verdict_conversion: {exc}",
+            "error": f"verdict_conversion: {_safe_error_metadata(exc)}",
         }
 
     # Serialize the verdict back to a dict for checkpointable state
@@ -773,6 +790,9 @@ async def terminal_persistence_node(
     route through this node again, completing the run.
     """
     runtime: AnalysisRunContext = _runtime_of(state)
+    if not state.get("budget_reserved", False):
+        # Cache readers and timed-out waiters do not own the shared run or result.
+        return {"error": None, "persistence_failed": False}
     user_id = state["user_id"]
     target_date = state["target_date"]
     analysis_kind = state.get("analysis_kind", "daily_attribution")
@@ -860,9 +880,11 @@ async def terminal_persistence_node(
             analysis_kind,
         )
     except Exception as exc:
-        logger.error("Analysis persistence failed: {}", exc)
+        logger.opt(exception=False).error(
+            "Analysis persistence failed: {}", _safe_error_metadata(exc),
+        )
         return {
-            "error": f"persistence: {exc}",
+            "error": f"persistence: {_safe_error_metadata(exc)}",
             "persistence_failed": True,
         }
 
@@ -889,7 +911,9 @@ async def terminal_persistence_node(
                     run_id, "completed", result=result,
                 )
         except Exception as exc:
-            logger.warning("Failed to mark run {} as completed: {}", run_id, exc)
+            logger.opt(exception=False).warning(
+                "Failed to mark run as completed: {}", _safe_error_metadata(exc),
+            )
             # Non-fatal: analysis is saved, run can be reconciled later
 
     # ── 3. Release budget ──────────────────────────────────────────────
@@ -897,8 +921,11 @@ async def terminal_persistence_node(
     if idempotency_key and state.get("budget_reserved") and budget_repo is not None:
         try:
             await budget_repo.release(idempotency_key)
+            runtime.budget_owned = False
         except Exception as exc:
-            logger.warning("Failed to release budget for {}: {}", idempotency_key, exc)
+            logger.opt(exception=False).warning(
+                "Failed to release budget: {}", _safe_error_metadata(exc),
+            )
 
     return {"error": None, "persistence_failed": False}
 
@@ -917,7 +944,7 @@ async def handle_persistence_failure_node(
     error = state.get("error", "persistence_failed")
     idempotency_key = state.get("idempotency_key", "")
 
-    if run_id:
+    if run_id and state.get("budget_reserved", False):
         try:
             run_repo = runtime.workflow_run_repo
             if run_repo is not None:
@@ -925,15 +952,20 @@ async def handle_persistence_failure_node(
                     run_id, "failed", error=error,
                 )
         except Exception as exc:
-            logger.warning("Failed to mark run {} as failed: {}", run_id, exc)
+            logger.opt(exception=False).warning(
+                "Failed to mark run as failed: {}", _safe_error_metadata(exc),
+            )
 
     # Release budget even on failure so the key can be retried
     budget_repo = runtime.budget_repo
     if idempotency_key and state.get("budget_reserved") and budget_repo is not None:
         try:
             await budget_repo.release(idempotency_key)
+            runtime.budget_owned = False
         except Exception as exc:
-            logger.warning("Failed to release budget on failure: {}", exc)
+            logger.opt(exception=False).warning(
+                "Failed to release budget on failure: {}", _safe_error_metadata(exc),
+            )
 
     return {"persistence_failed": True}
 
@@ -1063,6 +1095,12 @@ class AnalysisGraph:
 
         Implements ``AnalysisWorkflowPort.run_analysis``.
         """
+        # Unlike the panel-only limit, this also bounds preparation, fallback
+        # and persistence. Cancellation reaches the currently awaited provider.
+        async with asyncio.timeout(_ANALYSIS_WORKFLOW_TIMEOUT_S):
+            return await self._run_analysis(request)
+
+    async def _run_analysis(self, request: AnalysisRequest) -> AnalysisResult:
         # Build idempotency key if not provided
         idempotency_key = request.idempotency_key or build_idempotency_key(
             origin=request.origin,
@@ -1132,13 +1170,6 @@ class AnalysisGraph:
             "persistence_failed": False,
         }
 
-        # Mark the run as running before executing the graph so stale-run
-        # recovery can observe it if the process dies mid-flight.
-        try:
-            await self._workflow_run_repo.update_status(run_id, "running")
-        except Exception as exc:
-            logger.warning("Failed to mark run {} as running: {}", run_id, exc)
-
         # Run the graph. With a checkpointer wired, use a stable thread_id so a
         # crash mid-run can resume from the last checkpoint (LLM cost savings).
         graph = self._get_compiled_graph()
@@ -1157,30 +1188,61 @@ class AnalysisGraph:
         runtime_token = _ANALYSIS_RUNTIME.set(runtime)
         try:
             try:
+                # save_run may return another caller's run_id. Only the atomic
+                # reservation winner may update it, including on cache replays.
+                if self._budget_repo is not None:
+                    runtime.budget_owned = await self._budget_repo.try_reserve(idempotency_key)
+                runtime.budget_checked = True
+                initial_state["budget_reserved"] = runtime.budget_owned
+                if runtime.budget_owned:
+                    try:
+                        await self._workflow_run_repo.update_status(run_id, "running")
+                    except Exception as exc:
+                        logger.opt(exception=False).warning(
+                            "Failed to mark run as running: {}", _safe_error_metadata(exc),
+                        )
                 final_state = await graph.ainvoke(
                     initial_state,
                     config=invoke_config,
                 )
+            except asyncio.CancelledError:
+                # A cancelled run must not look running or retain its budget.
+                # Bound cleanup separately; never start another provider here.
+                if runtime.budget_owned:
+                    with contextlib.suppress(Exception):
+                        async with asyncio.timeout(5):
+                            await self._workflow_run_repo.update_status(
+                                run_id, "failed", error="analysis cancelled or deadline exceeded",
+                            )
+                if runtime.budget_owned and self._budget_repo is not None:
+                    with contextlib.suppress(Exception):
+                        async with asyncio.timeout(5):
+                            await self._budget_repo.release(idempotency_key)
+                raise
             except NoActivityDataError:
-                with contextlib.suppress(Exception):
-                    await self._workflow_run_repo.update_status(
-                        run_id, "failed", error="暂无活动数据，请先开始采集",
-                    )
+                if runtime.budget_owned:
+                    with contextlib.suppress(Exception):
+                        await self._workflow_run_repo.update_status(
+                            run_id, "failed", error="暂无活动数据，请先开始采集",
+                        )
                 if runtime.budget_owned and self._budget_repo is not None:
                     try:
                         await self._budget_repo.release(idempotency_key)
                     except Exception as exc:
-                        logger.warning(
-                            "Failed to release budget for {}: {}", idempotency_key, exc
+                        logger.opt(exception=False).warning(
+                            "Failed to release budget: {}", _safe_error_metadata(exc),
                         )
                 raise
             except Exception as exc:
-                logger.error("AnalysisGraph invocation failed: {}", exc)
+                logger.opt(exception=False).error(
+                    "AnalysisGraph invocation failed: {}", _safe_error_metadata(exc),
+                )
                 # Mark run as failed
-                with contextlib.suppress(Exception):
-                    await self._workflow_run_repo.update_status(
-                        run_id, "failed", error=str(exc),
-                    )
+                if runtime.budget_owned:
+                    with contextlib.suppress(Exception):
+                        await self._workflow_run_repo.update_status(
+                            run_id, "failed", error=_safe_error_metadata(exc),
+                        )
                 # Release the reservation ONLY if this run actually won it — a
                 # failing non-owner concurrent run must never delete the winner's
                 # reservation.
@@ -1188,8 +1250,8 @@ class AnalysisGraph:
                     try:
                         await self._budget_repo.release(idempotency_key)
                     except Exception as exc:
-                        logger.warning(
-                            "Failed to release budget for {}: {}", idempotency_key, exc
+                        logger.opt(exception=False).warning(
+                            "Failed to release budget: {}", _safe_error_metadata(exc),
                         )
                 # Return an empty verdict
                 return AnalysisResult(

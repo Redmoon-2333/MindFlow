@@ -193,6 +193,12 @@ export interface FocusSession {
   app_name?: string;
   score?: number;
   switches?: number;
+  /** Feedback already recorded for this session (merged in by the backend).
+   *  Present so the focus page can seed its editor from the saved values
+   *  instead of a default draft that would overwrite them. */
+  feedback_label?: "focus" | "distracted" | "mixed";
+  feedback_score?: number;
+  feedback_task_type?: string | null;
 }
 
 export interface FocusSessionsResponse {
@@ -419,9 +425,9 @@ function requestOptions(timeoutMs = REQUEST_TIMEOUT_MS) {
 /** Ensure a hang on AI-backed routes surfaces as a typed timeout instead
  *  of a forever spinner.  `requestOptions()` already carries a per-request
  *  `signal`; the `client.*` path is therefore covered.  This wrapper only
- *  adds an external deadline for callers that still pass a raw promise
- *  (notably `sendChat/triggerPanel/triggerIntervention` via legacy
- *  `withTimeout` paths).
+ *  adds an external deadline for callers that still pass a raw promise.
+ *  AI mutations use request()/fetchWithTimeout() instead, with one timer
+ *  directly bound to fetch and optional caller cancellation.
  *
  *  The difference between the old no-op version and this one: the controller
  *  here is actually wired to the promise via `Promise.race`; the timeout
@@ -533,7 +539,13 @@ export async function runTelemetryDelete(
 }
 
 const REQUEST_TIMEOUT_MS = 30_000;
-const AI_REQUEST_TIMEOUT_MS = 90_000;
+/** AI-backed routes need room for a real thinking-mode generation. The
+ *  backend allows a single ECNU call 180s and a whole interactive workflow
+ *  600s, so the frontend deadline sits above the workflow budget instead of
+ *  aborting a request the server would have completed. */
+const AI_REQUEST_TIMEOUT_MS = 660_000;
+/** Chat's 600s turn deadline includes tools and repeated model calls. */
+const CHAT_REQUEST_TIMEOUT_MS = 660_000;
 const REQUEST_TIMEOUT_MESSAGE = "请求超时，请稍后重试";
 
 async function fetchWithTimeout<T>(
@@ -543,15 +555,41 @@ async function fetchWithTimeout<T>(
   timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort(init?.signal?.reason);
+  init?.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  if (init?.signal?.aborted) abortFromCaller();
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await fetch(input, { ...init, signal: controller.signal });
     return await parse(response);
   } catch (error: unknown) {
-    if (controller.signal.aborted) throw new ApiError(REQUEST_TIMEOUT_MESSAGE, 408);
+    if (timedOut) throw new ApiError(REQUEST_TIMEOUT_MESSAGE, 408);
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    init?.signal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
+/** Parse a JSON response body, tolerating an empty body.
+ *
+ *  Endpoints that return `204 No Content` — notably the intervention delete
+ *  route — have no body at all. Calling `res.json()` on those throws a
+ *  SyntaxError *after* the request already succeeded, which surfaces to the
+ *  user as "delete failed" even though the record is gone.
+ */
+async function parseJsonBody<T>(res: Response): Promise<T> {
+  if (res.status === 204 || res.status === 205) return undefined as T;
+  const text = await res.text();
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError("响应格式无法解析", res.status);
   }
 }
 
@@ -564,7 +602,7 @@ async function request<T>(url: string, init?: RequestInit, timeoutMs = REQUEST_T
     { credentials: "include", ...init, headers: { ...headers, ...((init?.headers as Record<string, string>) || {}) } },
     async (res) => {
       if (!res.ok) throw await toApiError(res);
-      return res.json() as Promise<T>;
+      return parseJsonBody<T>(res);
     },
     timeoutMs,
   );
@@ -644,8 +682,12 @@ export interface AiUsage {
 }
 export const runAttribution = (body?: { date?: string; force?: boolean }) => request<AttributionResponse>("/analytics/attribution", { method: "POST", body: JSON.stringify(body || {}) }, AI_REQUEST_TIMEOUT_MS);
 
-export async function sendChat(message: string, sessionId?: string): Promise<ChatReply> {
-  return unwrap(await withTimeout(client.POST("/api/v1/chat", { ...requestOptions(), body: { message, session_id: sessionId } }), AI_REQUEST_TIMEOUT_MS));
+export async function sendChat(message: string, sessionId?: string, signal?: AbortSignal): Promise<ChatReply> {
+  return request<ChatReply>("/chat", {
+    method: "POST",
+    body: JSON.stringify({ message, session_id: sessionId }),
+    signal,
+  }, CHAT_REQUEST_TIMEOUT_MS);
 }
 export async function getChatSessions(): Promise<ChatSession[]> {
   return unwrap(await withTimeout(client.GET("/api/v1/chat/sessions", requestOptions()))) as unknown as ChatSession[];
@@ -666,11 +708,20 @@ export const triggerPanel = async (body?: { force?: boolean; retryIfDegraded?: b
   }, AI_REQUEST_TIMEOUT_MS);
 export const getPanelResult = () => request<PanelResult>("/panel");
 
-export async function triggerIntervention(intensity: InterventionIntensity): Promise<InterventionTriggerResponse> {
-  return unwrap(await withTimeout(client.POST("/api/v1/intervention/trigger", { ...requestOptions(), body: { intensity } }), AI_REQUEST_TIMEOUT_MS));
+export async function triggerIntervention(intensity: InterventionIntensity, signal?: AbortSignal): Promise<InterventionTriggerResponse> {
+  return request<InterventionTriggerResponse>("/intervention/trigger", {
+    method: "POST",
+    body: JSON.stringify({ intensity }),
+    signal,
+  }, AI_REQUEST_TIMEOUT_MS);
 }
-export async function respondIntervention(id: string, response: InterventionResponse, latencyS = 0): Promise<InterventionCommandResponse> {
-  return unwrap(await withTimeout(client.POST("/api/v1/intervention/{intervention_id}/response", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { response, latency_s: latencyS } })));
+export async function respondIntervention(
+  id: string,
+  response: InterventionResponse,
+  latencyS = 0,
+  source: "human" | "auto" = "human",
+): Promise<InterventionCommandResponse> {
+  return unwrap(await withTimeout(client.POST("/api/v1/intervention/{intervention_id}/response", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { response, latency_s: latencyS, source } })));
 }
 export async function feedbackIntervention(id: string, rating: InterventionRating, comment?: string): Promise<InterventionCommandResponse> {
   return unwrap(await withTimeout(client.POST("/api/v1/intervention/{intervention_id}/feedback", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { rating, comment } })));

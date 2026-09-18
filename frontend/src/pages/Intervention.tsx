@@ -77,6 +77,7 @@ export default function Intervention() {
   const [feedbackRating, setFeedbackRating] = useState<InterventionRating | "">("");
   const [feedbackComment, setFeedbackComment] = useState("");
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const [skipNotice, setSkipNotice] = useState<string | null>(null);
   const shownAtRef = useRef<number>(0);
 
   const loadHistory = useCallback(async () => {
@@ -112,9 +113,16 @@ export default function Intervention() {
   const handleTrigger = async (intensity: InterventionIntensity) => {
     setTriggering(true);
     setError(null);
+    setSkipNotice(null);
     try {
       const result = await triggerIntervention(intensity);
-      if (result.intervention) setLatest(result.intervention);
+      if (result.intervention) {
+        setLatest(result.intervention);
+      } else if (result.skipped) {
+        // A suppressed reminder is a real outcome, not a silent no-op: the
+        // user asked for an intervention and deserves to know why none came.
+        setSkipNotice(result.skip_reason || "本次提醒已跳过");
+      }
       await loadHistory();
     } catch (e: unknown) {
       setError(getErrorMessage(e, "操作失败"));
@@ -141,13 +149,22 @@ export default function Intervention() {
 
   const handleFeedback = async (id: string) => {
     if (!feedbackRating) return;
+    // Capture the record this submission belongs to. The follow-up
+    // `loadHistory()` can resolve after the user opened a different record's
+    // editor, so the response must only clear the editor the user is still on.
+    const submittedFor = id;
+    const submittedRating = feedbackRating;
+    const submittedComment = feedbackComment;
     setSubmittingFeedback(true);
     setError(null);
     try {
-      await feedbackIntervention(id, feedbackRating, feedbackComment || undefined);
-      setFeedbackId(null);
-      setFeedbackRating("");
-      setFeedbackComment("");
+      await feedbackIntervention(submittedFor, submittedRating, submittedComment || undefined);
+      setFeedbackId((current) => {
+        if (current !== submittedFor) return current;
+        setFeedbackRating("");
+        setFeedbackComment("");
+        return null;
+      });
       await loadHistory();
     } catch (e: unknown) {
       setError(getErrorMessage(e, "操作失败"));
@@ -187,6 +204,17 @@ export default function Intervention() {
       </div>
 
       {error && <div className="error-box mb16">{error}</div>}
+
+      {skipNotice && (
+        <div
+          className="card mb16"
+          style={{ borderLeft: "3px solid var(--color-warning, #d97706)", fontSize: 13 }}
+          role="status"
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>本次提醒已跳过</div>
+          <div style={{ color: "var(--color-text-secondary)" }}>{skipNotice}</div>
+        </div>
+      )}
 
       <div className="card mb24">
         <h3>手动触发干预</h3>
@@ -347,7 +375,7 @@ export default function Intervention() {
                       <option value="">选择评分</option>
                       <option value="helpful">有用</option>
                       <option value="neutral">一般</option>
-                      <option value="annoying">无效</option>
+                      <option value="annoying">打扰（令人烦扰）</option>
                     </select>
                     <textarea
                       placeholder="补充评论（可选）"
@@ -383,7 +411,17 @@ export default function Intervention() {
                   </div>
                 ) : (
                   canFeedback(item) && (
-                    <button type="button" className="btn btn-sm btn-ghost mt8" onClick={() => setFeedbackId(item.id)}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost mt8"
+                      onClick={() => {
+                        // Opening the editor for one record must not inherit
+                        // another record's half-written draft.
+                        setFeedbackRating("");
+                        setFeedbackComment("");
+                        setFeedbackId(item.id);
+                      }}
+                    >
                       评价
                     </button>
                   )

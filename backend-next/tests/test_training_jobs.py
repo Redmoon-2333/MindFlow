@@ -233,6 +233,12 @@ def _make_app(engine: Any, session_factory) -> FastAPI:
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def isolate_job_artifact_paths(tmp_path, monkeypatch):
+    """Legacy app fixtures use relative paths; keep synthetic artifacts isolated."""
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture
 async def tables(engine) -> None:
     async with engine.begin() as conn:

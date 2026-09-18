@@ -23,11 +23,24 @@ import numpy as np
 from mindflow.domain.events import ActivityEvent
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.train.models import ModelManager
+from mindflow.train.models.ensemble import CalibrationUnavailableError, EnsembleClassifier
+from mindflow.train.models.manager import ModelPublicationError
 from mindflow.train.v2 import (
+    V2TrainingData,
+    evaluate_auxiliary_signal,
     evaluate_v2_candidates,
     evaluate_v2_quality_gate,
     prepare_v2_training_data,
+    training_sample_weights,
 )
+
+
+def _label_source_counts(data: V2TrainingData) -> dict[str, int]:
+    """Count samples per label source so provenance is auditable in reports."""
+    counts: dict[str, int] = {}
+    for source in data.label_sources:
+        counts[source] = counts.get(source, 0) + 1
+    return counts
 
 
 def _tag_from_filename(filename: str) -> str:
@@ -63,6 +76,11 @@ class TrainingReport:
     feature_schema_version: int = FEATURE_SCHEMA_VERSION
     model_mode: str = "rule_engine_only"
     evaluation: dict[str, Any] = field(default_factory=dict)
+    auxiliary_signal: dict[str, Any] = field(default_factory=dict)
+    label_source_counts: dict[str, int] = field(default_factory=dict)
+    conflict_window_count: int = 0
+    ambiguous_window_count: int = 0
+    activation_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -232,17 +250,31 @@ def _run_v2_training(
     training_data = prepare_v2_training_data(
         feature_windows, feedback_sessions, window_labels=window_labels,
     )
-    # Evaluation and deployment use the same explicit-only, weighted samples.
-    explicit_mask = training_data.explicit_mask
-    train_X = training_data.features[explicit_mask]
-    train_y = training_data.labels[explicit_mask]
-    train_w = training_data.sample_weights[explicit_mask]
+    # Supervision for the deployed classifier: explicit feedback + auxiliary
+    # window labels. Evaluation stays explicit-only so the quality gate keeps
+    # measuring accuracy against the user's own judgements.
+    train_mask = (
+        training_data.train_mask
+        if training_data.train_mask is not None
+        else training_data.explicit_mask
+    )
+    train_X = training_data.features[train_mask]
+    train_y = training_data.labels[train_mask]
+    train_w = training_sample_weights(training_data, train_mask)
+    train_groups = np.asarray(
+        [g for g, m in zip(training_data.group_ids, train_mask, strict=True) if m]
+    )
+    report.label_source_counts = _label_source_counts(training_data)
+    report.conflict_window_count = training_data.conflict_window_count
+    report.ambiguous_window_count = training_data.ambiguous_window_count
     report.filtered_windows = len(feature_windows) - len(training_data.features)
     report.n_focus = int(np.sum(train_y == 1))
     report.n_distract = int(np.sum(train_y == 0))
     report.avg_confidence = round(float(np.mean(train_w)), 4) if len(train_w) else 0.0
     evaluation = evaluate_v2_candidates(training_data, calibration=calibration)
     report.evaluation = evaluation
+    auxiliary = evaluate_auxiliary_signal(training_data)
+    report.auxiliary_signal = auxiliary
     report.quality_gate = evaluate_v2_quality_gate(
         evaluation,
         explicit_feedback_count=training_data.explicit_feedback_count,
@@ -260,39 +292,98 @@ def _run_v2_training(
             use_ensemble=True,
             calibration=calibration,  # matches evaluate_v2_candidates()
         )
-        summary = manager.train_all(
-            train_X,
-            training_data.feature_names,
-            train_y,
-            sample_weight=train_w,
-            min_confidence=0.0,
-        )
+        try:
+            summary = manager.train_all(
+                train_X,
+                training_data.feature_names,
+                train_y,
+                sample_weight=train_w,
+                min_confidence=0.0,
+                groups=train_groups,
+                label_sources=np.asarray(training_data.label_sources)[train_mask],
+                session_ids=np.asarray(training_data.sample_feedback_ids)[train_mask],
+            )
+            if calibration is not None and (
+                not isinstance(manager.classifier, EnsembleClassifier)
+                or manager.classifier.calibrator is None
+            ):
+                raise CalibrationUnavailableError("Requested deployment calibration was not fitted")
+        except CalibrationUnavailableError as exc:
+            report.classifier = {
+                "grouped_evaluation": evaluation,
+                "calibration": {
+                    "method": calibration, "status": "unavailable", "reason": str(exc),
+                },
+            }
+            report.quality_gate["checks"]["calibration_available"] = False
+            report.quality_gate.update(
+                passed=False, mode="shadow", deployment_tier="shadow",
+            )
+            report.model_mode = "shadow"
+            return _write_training_report(report, v2_models_path)
         report.clustering = summary.clustering
-        report.classifier = {**summary.classifier, "grouped_evaluation": evaluation}
+        report.classifier = {
+            **summary.classifier,
+            "grouped_evaluation": evaluation,
+            "calibration": {
+                "method": calibration,
+                "status": "fitted" if calibration is not None else "not_requested",
+            },
+        }
         if evaluation.get("candidate", {}).get("balanced_accuracy") is not None:
             report.classifier["balanced_accuracy"] = evaluation["candidate"]["balanced_accuracy"]
         report.hmm = summary.hmm
         should_activate = bool(report.quality_gate["passed"])
-        saved = manager.save_all(
-            activate=should_activate,
-            manifest={
-                "feature_schema_version": FEATURE_SCHEMA_VERSION,
-                "feature_names": list(training_data.feature_names),
-                "explicit_feedback_count": training_data.explicit_feedback_count,
-                "distinct_feedback_days": training_data.distinct_feedback_days,
-                "quality_gate": report.quality_gate,
-                "evaluation": evaluation,
-                "source": source,
-            },
-        )
-        report.saved_models = saved
-        report.activated = should_activate
-        report.model_mode = "ready" if should_activate else "shadow"
-        report.version_tag = _tag_from_filename(saved.get("classifier", "")) or None
+        manifest_payload = {
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "feature_names": list(training_data.feature_names),
+            "explicit_feedback_count": training_data.explicit_feedback_count,
+            "distinct_feedback_days": training_data.distinct_feedback_days,
+            "quality_gate": report.quality_gate,
+            "evaluation": evaluation,
+            "calibration": report.classifier["calibration"],
+            "auxiliary_signal": auxiliary,
+            "label_source_counts": _label_source_counts(training_data),
+            "conflict_window_count": training_data.conflict_window_count,
+            "ambiguous_window_count": training_data.ambiguous_window_count,
+            "trained_samples": int(len(train_X)),
+            "trained_on_window_labels": bool(
+                int(training_data.window_label_mask.sum()) > 0
+                if training_data.window_label_mask is not None else False
+            ),
+            "source": source,
+        }
+        try:
+            saved = manager.save_all(
+                activate=should_activate,
+                manifest=manifest_payload,
+            )
+        except ModelPublicationError as exc:
+            # The candidate failed its trial load. Keep the previous active
+            # version in place and report a shadow result instead of leaving
+            # disk and memory disagreeing about what is deployed.
+            warnings.warn(
+                f"Model publication refused: {exc}", UserWarning, stacklevel=2
+            )
+            report.activation_error = str(exc)
+            report.activated = False
+            report.model_mode = "shadow"
+            saved = {}
+        else:
+            report.saved_models = saved
+            report.activated = should_activate
+            report.model_mode = "ready" if should_activate else "shadow"
+            report.version_tag = _tag_from_filename(saved.get("classifier", "")) or None
 
-    report_path = v2_models_path / "training_report.json"
-    report_path.write_text(
-        json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    return _write_training_report(report, v2_models_path)
+
+
+def _write_training_report(report: TrainingReport, models_path: Path) -> TrainingReport:
+    """Serialize one complete snapshot for both shared and versioned reports."""
+    payload = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+    if report.version_tag:
+        (models_path / f"training_report-{report.version_tag}.json").write_text(
+            payload, encoding="utf-8",
+        )
+    (models_path / "training_report.json").write_text(payload, encoding="utf-8")
     return report

@@ -77,6 +77,10 @@ class InterventionTriggerRequest(BaseModel):
 class InterventionResponseRequest(BaseModel):
     response: InterventionUserResponse
     latency_s: float = Field(default=0.0, ge=0.0)
+    #: "human" (default) for a real user action, "auto" when a reminder client
+    #: is reporting its own timeout default. Auto responses may only fill an
+    #: empty slot and never replace a human answer.
+    source: Literal["auto", "human"] = "human"
 
 
 class InterventionFeedbackRequest(BaseModel):
@@ -231,7 +235,7 @@ class Blocker(BaseModel):
 
 JobStatus = Literal[
     "pending", "preparing_data", "training",
-    "succeeded", "failed", "cancelled",
+    "succeeded", "failed", "cancelled", "interrupted",
 ]
 
 

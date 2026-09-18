@@ -60,7 +60,7 @@ try {
     (error: unknown) => error instanceof ApiError && error.status === 408,
   );
   assert.equal(signalWasAborted, true);
-  assert.equal(timeoutDelay, 90_000);
+  assert.equal(timeoutDelay, 660_000);
 } finally {
   globalThis.fetch = originalFetch;
   globalThis.setTimeout = originalSetTimeout;

@@ -608,7 +608,8 @@ class TestRunAnalysis:
 
         assert result.verdict.source == "rule_engine"
         assert result.verdict.rationale != "分析暂时不可用"
-        mock_analysis_repo.upsert.assert_awaited_once()
+        mock_analysis_repo.upsert.assert_not_awaited()
+        mock_workflow_run_repo.update_status.assert_not_awaited()
         mock_budget_repo.release.assert_not_awaited()
 
     async def test_full_fallback_to_rule_engine(
@@ -689,13 +690,13 @@ class TestRunAnalysis:
             origin="api",
         )
 
-        with pytest.raises(RuntimeError, match="persistence: DB connection lost"):
+        with pytest.raises(RuntimeError, match="persistence: type=RuntimeError"):
             await graph.run_analysis(request)
 
         mock_workflow_run_repo.update_status.assert_any_await(
             "run-test-001",
             "failed",
-            error="persistence: DB connection lost",
+            error="persistence: type=RuntimeError",
         )
         mock_budget_repo.release.assert_awaited_once_with(
             "api:1:2026-07-29:daily_attribution"

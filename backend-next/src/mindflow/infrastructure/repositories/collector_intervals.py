@@ -204,6 +204,27 @@ class CollectorIntervalsRepository:
             return [_row_to_record(row) for row in result.fetchall()]
 
 
+    async def list_overlapping_range(
+        self, user_id: int, start: datetime, end: datetime,
+    ) -> list[CollectorIntervalRecord]:
+        """Return runs overlapping [start, end), including still-open runs."""
+        stmt = (
+            sa.select(collector_intervals)
+            .where(
+                collector_intervals.c.user_id == user_id,
+                collector_intervals.c.started_at < end.astimezone(UTC).isoformat(),
+                sa.or_(
+                    collector_intervals.c.ended_at.is_(None),
+                    collector_intervals.c.ended_at > start.astimezone(UTC).isoformat(),
+                ),
+            )
+            .order_by(collector_intervals.c.started_at.asc())
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return [_row_to_record(row) for row in result.fetchall()]
+
+
 # ── Serialisation helpers ─────────────────────────────────────────────
 
 

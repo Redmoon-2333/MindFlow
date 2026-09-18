@@ -54,17 +54,21 @@ def test_prepare_v2_training_data_prioritizes_explicit_feedback() -> None:
 
     data = prepare_v2_training_data(windows, feedback)
 
-    assert data.labels.tolist() == [1, 1, 1]
-    assert data.sample_weights.tolist() == [1.0, 0.3, 0.3]
-    assert data.label_sources == ["explicit", "weak", "weak"]
+    # The middle window is covered by a `mixed` session, so it carries no
+    # label at all: it must not silently fall through to the weak heuristic.
+    assert data.labels.tolist() == [1, 1]
+    assert data.label_sources == ["explicit", "weak"]
+    # Weights are session-balanced: the one feedback session contributes 1.0
+    # in total, and weak heuristics supervise nothing (they are not evidence).
+    assert data.sample_weights.tolist() == [1.0, 0.0]
     assert data.explicit_feedback_count == 1
     assert data.explicit_focus_count == 1
     assert data.explicit_distract_count == 0
-    assert data.mixed_window_count == 0
+    assert data.ambiguous_window_count == 1
 
 
-def test_window_labels_become_explicit_annotated_samples() -> None:
-    """Option B: user-calibrated window labels become strong annotated samples."""
+def test_window_labels_are_auxiliary_not_explicit() -> None:
+    """Window labels widen supervision but stay out of the explicit eval mask."""
     start = datetime(2026, 7, 1, 9, tzinfo=UTC)
     windows = [
         _feature_window(start, idle_ratio=0.05),
@@ -80,9 +84,17 @@ def test_window_labels_become_explicit_annotated_samples() -> None:
 
     # -1 (mixed) window label drops the window entirely.
     assert data.labels.tolist() == [1, 0]
-    assert data.sample_weights.tolist() == [0.8, 0.8]
+    # Auxiliary labels share one bounded budget rather than taking a fixed
+    # weight each, so they cannot outvote the user's own feedback.
+    assert data.sample_weights.tolist() == [0.5, 0.5]
     assert data.label_sources == ["window_label", "window_label"]
-    assert data.explicit_mask.tolist() == [True, True]
+    # Auxiliary labels must NOT enter the explicit evaluation mask...
+    assert data.explicit_mask.tolist() == [False, False]
+    # ...but they ARE part of the supervision set used for training.
+    assert data.train_mask is not None
+    assert data.train_mask.tolist() == [True, True]
+    assert data.window_label_mask is not None
+    assert data.window_label_mask.tolist() == [True, True]
     assert data.window_label_count == 2
     # Quality-gate counts remain feedback-only.
     assert data.explicit_feedback_count == 0
@@ -130,6 +142,87 @@ def test_extract_window_labels_supports_strings_and_ints() -> None:
     ]
     labels = _extract_window_labels(windows)
     assert labels == {"a": 1, "b": 0, "c": 1, "d": -1}
+
+
+def test_insufficient_overlap_does_not_label_window() -> None:
+    """A session covering <50% of a window is not evidence about that window."""
+    start = datetime(2026, 7, 1, 9, tzinfo=UTC)
+    # Window is 09:00-09:05; the feedback session only touches the last 30s.
+    windows = [_feature_window(start, idle_ratio=0.05)]
+    feedback = [{
+        "session_id": "tiny",
+        "start_time": (start + timedelta(minutes=4, seconds=30)).isoformat(),
+        "end_time": (start + timedelta(minutes=10)).isoformat(),
+        "score": 5,
+        "label": "focus",
+        "task_type": "coding",
+    }]
+
+    data = prepare_v2_training_data(windows, feedback)
+
+    assert data.matched_window_count == 0
+    assert data.explicit_feedback_count == 0
+    assert data.label_sources == ["weak"]
+
+
+def test_sufficient_overlap_labels_window() -> None:
+    start = datetime(2026, 7, 1, 9, tzinfo=UTC)
+    windows = [_feature_window(start, idle_ratio=0.05)]
+    feedback = [{
+        "session_id": "covers",
+        "start_time": (start + timedelta(minutes=2)).isoformat(),
+        "end_time": (start + timedelta(minutes=30)).isoformat(),
+        "score": 5,
+        "label": "focus",
+        "task_type": "coding",
+    }]
+
+    data = prepare_v2_training_data(windows, feedback)
+
+    assert data.matched_window_count == 1
+    assert data.explicit_feedback_count == 1
+    assert data.label_sources == ["explicit"]
+
+
+def test_conflicting_feedback_on_same_window_is_excluded() -> None:
+    """Two sessions with opposite labels over one window -> no winner chosen."""
+    start = datetime(2026, 7, 1, 9, tzinfo=UTC)
+    windows = [_feature_window(start, idle_ratio=0.05)]
+    feedback = [
+        {
+            "session_id": "sess-focus",
+            "start_time": start.isoformat(),
+            "end_time": (start + timedelta(minutes=30)).isoformat(),
+            "score": 5, "label": "focus", "task_type": "coding",
+        },
+        {
+            "session_id": "sess-distract",
+            "start_time": start.isoformat(),
+            "end_time": (start + timedelta(minutes=30)).isoformat(),
+            "score": 1, "label": "distracted", "task_type": "coding",
+        },
+    ]
+
+    data = prepare_v2_training_data(windows, feedback)
+
+    assert data.conflict_window_count == 1
+    assert len(data.features) == 0
+    assert data.explicit_feedback_count == 0
+
+
+def test_explicit_sample_dates_come_from_session_start() -> None:
+    """The evaluation date is the feedback day, so GroupKFold splits by day."""
+    start = datetime(2026, 7, 1, 9, tzinfo=UTC)
+    windows = [_feature_window(start, idle_ratio=0.05)]
+    feedback = [_feedback("s1", start, 5, "focus")]
+
+    data = prepare_v2_training_data(windows, feedback)
+
+    assert data.dates == ["2026-07-01"]
+    assert data.explicit_mask.tolist() == [True]
+    # session_ids stay window ids (callers use them to align rows), while
+    # explicit_feedback_count counts the real feedback sessions.
+    assert data.explicit_feedback_count == 1
 
 
 
@@ -181,6 +274,7 @@ def test_evaluate_v2_candidates_keeps_dates_out_of_training_folds() -> None:
 def test_v2_quality_gate_requires_explicit_feedback_and_stable_metrics() -> None:
     evaluation = {
         "status": "evaluated",
+        "calibration": {"method": "sigmoid", "status": "fitted"},
         "candidate": {
             "balanced_accuracy": 0.72,
             "minority_f1": 0.66,

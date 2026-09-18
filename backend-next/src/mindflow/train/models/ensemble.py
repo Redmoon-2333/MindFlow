@@ -18,8 +18,10 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.model_selection import GroupShuffleSplit, cross_val_score, train_test_split
 from sklearn.preprocessing import StandardScaler
+
+from mindflow.train.grouping import session_balanced_weights
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,10 @@ try:
     _xgb_available = True
 except ImportError:
     _xgb_available = False
+
+
+class CalibrationUnavailableError(ValueError):
+    """Requested out-of-sample calibration could not be fitted safely."""
 
 
 class EnsembleClassifier:
@@ -85,52 +91,106 @@ class EnsembleClassifier:
         y: npt.NDArray[Any],
         feature_names: list[str],
         sample_weight: npt.NDArray[Any] | None = None,
+        groups: npt.NDArray[Any] | None = None,
+        *,
+        label_sources: npt.NDArray[Any] | None = None,
+        session_ids: npt.NDArray[Any] | None = None,
     ) -> EnsembleClassifier:
         """Train both RF and XGBoost on scaled data, then calibrate.
 
-        A stratified 25% holdout is kept out of the base models and used to
-        fit the probability calibrator out-of-sample, so calibrated
-        probabilities are honest (no leakage from the training set).
+        A grouped (or, without groups, stratified) 25% holdout is kept out of
+        the base models and used to fit the probability calibrator out-of-sample.
+
+        The scaler is fitted on the base-model training split only; fitting it
+        on all rows would leak the holdout's mean/variance into the model that
+        is later evaluated on that holdout.
 
         Args:
             X: feature matrix of shape (n_samples, n_features).
             y: binary labels (1=focus, 0=distraction).
             feature_names: names for each feature column.
             sample_weight: per-sample confidence weights.
+            groups: optional group id per row (e.g. the capture date). When
+                given, the calibration holdout is split by group so rows from
+                one day cannot sit in both the base-model and calibrator sets.
+            label_sources: optional aligned provenance. Together with session_ids,
+                recomputes each internal split's weights instead of slicing the
+                caller's full-data budget. Without provenance, sample_weight
+                keeps its generic per-row meaning.
+            session_ids: feedback session id per row; empty for auxiliary rows.
 
         Returns:
             self
+
+        Raises:
+            CalibrationUnavailableError: requested calibration cannot be fitted.
         """
+        self._is_fitted = False
+        self.calibrator = None
         self.feature_names_ = feature_names
         y_arr = np.asarray(y)
-        X_scaled = self.scaler.fit_transform(X)
+        if (label_sources is None) != (session_ids is None):
+            raise ValueError("label_sources and session_ids must be supplied together")
+        if label_sources is not None and session_ids is not None:
+            label_sources, session_ids = np.asarray(label_sources), np.asarray(session_ids)
+            if (
+                label_sources.ndim != 1 or session_ids.ndim != 1
+                or len(label_sources) != len(y_arr) or len(session_ids) != len(y_arr)
+            ):
+                raise ValueError("Training provenance must align with rows")
+            if np.any((label_sources == "explicit") & (session_ids == "")):
+                raise ValueError("Explicit training rows need feedback session ids")
+            if self.calibration is not None and groups is None:
+                raise CalibrationUnavailableError("Calibration with provenance requires groups")
 
         # Honest holdout for calibration (only when we have enough of both
         # classes to both train and calibrate).
         calib_ix: npt.NDArray[Any] | None = None
         train_ix: npt.NDArray[Any] | None = None
-        if (
-            self.calibration in ("isotonic", "sigmoid")
-            and len(y_arr) >= 20
-            and len(np.unique(y_arr)) == 2
-        ):
-            try:
-                tr, ca = train_test_split(
-                    np.arange(len(y_arr)),
-                    test_size=0.25,
-                    stratify=y_arr,
-                    random_state=42,
+        if self.calibration is not None:
+            if self.calibration not in ("isotonic", "sigmoid"):
+                raise CalibrationUnavailableError(f"Unsupported calibration: {self.calibration}")
+            if len(y_arr) < 20 or len(np.unique(y_arr)) != 2:
+                raise CalibrationUnavailableError(
+                    "Calibration needs at least 20 rows and both classes"
                 )
-                train_ix, calib_ix = tr, ca
-            except Exception:  # noqa: BLE001 — calibration is best-effort
-                train_ix, calib_ix = None, None
+            try:
+                train_ix, calib_ix = self._calibration_split(X, y_arr, groups)
+            except Exception as exc:
+                raise CalibrationUnavailableError(f"Calibration split unavailable: {exc}") from exc
+
+        def subset_weights(indices: npt.NDArray[Any]) -> npt.NDArray[Any] | None:
+            if label_sources is None or session_ids is None:
+                return sample_weight[indices] if sample_weight is not None else None
+            weights = np.asarray(session_balanced_weights(
+                sources=label_sources[indices].tolist(),
+                session_ids=session_ids[indices].tolist(),
+                allow_auxiliary_only=calib_ix is None,
+            ), dtype=np.float64)
+            if calib_ix is not None and any(
+                weights[y_arr[indices] == label].sum() <= 0 for label in (0, 1)
+            ):
+                raise CalibrationUnavailableError(
+                    "Calibration split needs positive local supervision weight for both classes"
+                )
+            return weights
+
+        base_ix = train_ix if train_ix is not None else np.arange(len(y_arr))
+        swt = subset_weights(base_ix)
+        swc = subset_weights(calib_ix) if calib_ix is not None else None
+
+        # Fit the scaler on the base-model training rows only.
+        if train_ix is not None:
+            self.scaler.fit(X[train_ix])
+        else:
+            self.scaler.fit(X)
+        X_scaled = self.scaler.transform(X)
 
         if train_ix is not None:
             Xt = X_scaled[train_ix]
             yt = y_arr[train_ix]
-            swt = sample_weight[train_ix] if sample_weight is not None else None
         else:
-            Xt, yt, swt = X_scaled, y_arr, sample_weight
+            Xt, yt = X_scaled, y_arr
 
         self.rf_model.fit(Xt, yt, sample_weight=swt)
 
@@ -138,13 +198,56 @@ class EnsembleClassifier:
             self.xgb_model.fit(Xt, yt, sample_weight=swt)
 
         # Fit calibrator on the holdout (out-of-sample probabilities).
-        self.calibrator = None
         if calib_ix is not None:
-            raw_p = self._soft_vote_proba(X_scaled[calib_ix])[:, 1]
-            self.calibrator = self._fit_calibrator(raw_p, y_arr[calib_ix])
+            try:
+                raw_p = self._soft_vote_proba(X_scaled[calib_ix])[:, 1]
+                self.calibrator = self._fit_calibrator(
+                    raw_p, y_arr[calib_ix],
+                    sample_weight=swc,
+                )
+            except Exception as exc:
+                raise CalibrationUnavailableError(f"Calibration fit unavailable: {exc}") from exc
 
         self._is_fitted = True
         return self
+
+    @staticmethod
+    def _calibration_split(
+        X: npt.NDArray[Any],
+        y_arr: npt.NDArray[Any],
+        groups: npt.NDArray[Any] | None,
+    ) -> tuple[npt.NDArray[Any], npt.NDArray[Any]]:
+        """Split rows into (base-train, calibrate), keeping supplied groups whole.
+
+        Try a bounded, deterministic set of group holdouts. If none supports
+        both classes on both sides, calibration is unavailable, never row-wise.
+        """
+        n = len(y_arr)
+        if groups is not None:
+            groups_arr = np.asarray(groups)
+            if groups_arr.ndim != 1 or len(groups_arr) != n:
+                raise CalibrationUnavailableError("Calibration groups must align with rows")
+            if len(np.unique(groups_arr)) >= 2:
+                splitter = GroupShuffleSplit(n_splits=100, test_size=0.25, random_state=42)
+                for train_ix, calib_ix in splitter.split(X, y_arr, groups_arr):
+                    if (
+                        len(calib_ix) >= 5
+                        and len(train_ix) >= 5
+                        and len(np.unique(y_arr[calib_ix])) == 2
+                        and len(np.unique(y_arr[train_ix])) == 2
+                    ):
+                        return train_ix, calib_ix
+            raise CalibrationUnavailableError(
+                "No valid grouped calibration split found with both classes on each side"
+            )
+
+        tr, ca = train_test_split(
+            np.arange(n),
+            test_size=0.25,
+            stratify=y_arr,
+            random_state=42,
+        )
+        return tr, ca
 
     # ── Calibration helpers ─────────────────────────────────────────────
 
@@ -152,16 +255,20 @@ class EnsembleClassifier:
         self,
         raw_p: npt.NDArray[Any],
         y_true: npt.NDArray[Any],
+        sample_weight: npt.NDArray[Any] | None = None,
     ) -> Any:
         """Fit a probability→probability calibrator on out-of-sample scores."""
         if self.calibration == "sigmoid":
             lr = LogisticRegression(max_iter=1000, random_state=42)
-            lr.fit(np.asarray(raw_p, dtype=float).reshape(-1, 1), np.asarray(y_true))
+            lr.fit(
+                np.asarray(raw_p, dtype=float).reshape(-1, 1), np.asarray(y_true),
+                sample_weight=sample_weight,
+            )
             return lr
         # Isotonic regression restores monotonicity; clips outside the fitted
         # range instead of extrapolating (safer on small data).
         iso = IsotonicRegression(out_of_bounds="clip")
-        iso.fit(np.asarray(raw_p, dtype=float), np.asarray(y_true))
+        iso.fit(np.asarray(raw_p, dtype=float), np.asarray(y_true), sample_weight=sample_weight)
         return iso
 
     def _apply_calibration(self, proba: npt.NDArray[Any]) -> npt.NDArray[Any]:

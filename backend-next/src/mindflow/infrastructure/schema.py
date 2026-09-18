@@ -135,6 +135,9 @@ intervention_logs = sa.Table(
     sa.Column("message", sa.Text(), nullable=True),
     sa.Column("user_response", sa.Text(), nullable=True),
     sa.Column("response_latency_s", sa.Float(), nullable=True),
+    # "human" for a real click, "auto" for a reminder-client timeout default.
+    # NULL on rows written before the distinction existed.
+    sa.Column("response_source", sa.Text(), nullable=True),
     sa.Column("feedback_rating", sa.Text(), nullable=True),
     sa.Column("feedback_comment", sa.Text(), nullable=True),
     sa.Column(
@@ -257,6 +260,12 @@ focus_session_feedback = sa.Table(
     sa.UniqueConstraint("user_id", "session_id"),
     sa.Column("session_start_utc", sa.Text(), nullable=True),
     sa.Column("session_end_utc", sa.Text(), nullable=True),
+    # Optional task-relationship context (migration 0026). NULL means the user
+    # did not answer — reported as `unknown`, never back-filled by a guess.
+    sa.Column("context_type", sa.Text(), nullable=True),
+    sa.Column("goal_alignment", sa.Text(), nullable=True),
+    # Where this label came from; NULL on historical rows reads as `unknown`.
+    sa.Column("label_source", sa.Text(), nullable=True),
 )
 
 browser_tokens = sa.Table(
@@ -285,6 +294,10 @@ behavior_feature_windows = sa.Table(
     # reads of the vector without JSON parsing; features_json stays for
     # backward compatibility and rollback.
     *(sa.Column(f"f{i:02d}", sa.Float(), nullable=True) for i in range(1, 25)),
+    # Per-window observability record (migration 0026): which collectors were
+    # enabled/available, coverage and gaps. NULL on historical rows means "not
+    # recorded", which is different from "fully observed".
+    sa.Column("quality_json", sa.Text(), nullable=True),
     sa.UniqueConstraint("user_id", "window_start_utc", "feature_schema_version"),
 )
 
@@ -521,4 +534,50 @@ blocked_sites = sa.Table(
         server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
     ),
     sa.UniqueConstraint("user_id", "domain"),
+)
+
+# ── training_jobs (persistent training lifecycle) ───────────────────────
+# Matches migration 0024.  Job state used to live only in memory, so a restart
+# erased every trace of an in-flight run. Non-terminal rows are marked
+# ``interrupted`` on startup rather than being presented as still running.
+
+training_jobs = sa.Table(
+    "training_jobs",
+    metadata,
+    sa.Column("job_id", sa.Text(), primary_key=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("status", sa.Text(), nullable=False, server_default=sa.text("'pending'")),
+    sa.Column("source", sa.Text(), nullable=False, server_default=sa.text("'db'")),
+    sa.Column(
+        "model_mode",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("'rule_engine_only'"),
+    ),
+    sa.Column("started_at", sa.Text(), nullable=True),
+    sa.Column("completed_at", sa.Text(), nullable=True),
+    sa.Column("activated", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+    sa.Column("version_tag", sa.Text(), nullable=True),
+    sa.Column("feature_schema_version", sa.Integer(), nullable=True),
+    sa.Column("quality_gate_json", sa.Text(), nullable=True),
+    sa.Column("evaluation_json", sa.Text(), nullable=True),
+    sa.Column("error", sa.Text(), nullable=True),
+    sa.Column(
+        "created_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.Column(
+        "updated_at",
+        sa.Text(),
+        nullable=False,
+        server_default=sa.text("(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"),
+    ),
+    sa.CheckConstraint(
+        "status IN ('pending', 'preparing_data', 'training', 'succeeded', "
+        "'failed', 'cancelled', 'interrupted')"
+    ),
+    sa.Index("idx_training_jobs_user_started", "user_id", "started_at"),
+    sa.Index("idx_training_jobs_status", "status"),
 )

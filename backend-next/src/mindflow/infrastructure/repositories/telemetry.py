@@ -336,13 +336,22 @@ class TelemetryRepository:
         user_id: int,
         start: datetime,
         end: datetime,
+        *,
+        overlapping: bool = False,
     ) -> list[dict[str, Any]]:
+        lower_bound = (
+            sa.func.julianday(interaction_buckets.c.window_start_utc)
+            + interaction_buckets.c.duration_s / 86400.0
+            > sa.func.julianday(start.astimezone(UTC).isoformat())
+            if overlapping else
+            interaction_buckets.c.window_start_utc >= start.astimezone(UTC).isoformat()
+        )
         async with self._session_factory() as session:
             result = await session.execute(
                 sa.select(interaction_buckets)
                 .where(
                     interaction_buckets.c.user_id == user_id,
-                    interaction_buckets.c.window_start_utc >= start.astimezone(UTC).isoformat(),
+                    lower_bound,
                     interaction_buckets.c.window_start_utc < end.astimezone(UTC).isoformat(),
                 )
                 .order_by(interaction_buckets.c.window_start_utc.asc())
@@ -463,6 +472,7 @@ class TelemetryRepository:
                 "feature_schema_version": row["feature_schema_version"],
                 "features_json": row["features_json"],
                 "label": row.get("label"),
+                "quality_json": row.get("quality_json"),
                 "created_at": now,
                 # Explicit feature columns (architecture plan I/4.1): parse
                 # the JSON payload once here so readers can select the vector
@@ -508,7 +518,24 @@ class TelemetryRepository:
                 set_={
                     "window_end_utc": statement.excluded.window_end_utc,
                     "features_json": statement.excluded.features_json,
-                    "label": statement.excluded.label,
+                    # Never let a routine re-roll erase a user label. The
+                    # rollup always submits label=None ("no new label"), and
+                    # the scheduler re-processes overlapping ranges, so
+                    # `label = excluded.label` destroyed every calibration
+                    # label as soon as its window was rolled again (reproduced
+                    # 2026-09-19: label 'focus' -> NULL). Clearing a label must
+                    # be an explicit operation, never a side effect.
+                    "label": sa.func.coalesce(
+                        statement.excluded.label,
+                        behavior_feature_windows.c.label,
+                    ),
+                    # Quality metadata describes the latest observation, so it
+                    # is refreshed when supplied; coalesce keeps an older-style
+                    # caller from blanking a recorded state.
+                    "quality_json": sa.func.coalesce(
+                        statement.excluded.quality_json,
+                        behavior_feature_windows.c.quality_json,
+                    ),
                     "created_at": statement.excluded.created_at,
                 },
             )

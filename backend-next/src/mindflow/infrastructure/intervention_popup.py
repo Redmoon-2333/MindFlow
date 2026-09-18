@@ -47,11 +47,19 @@ def post_response(
     response: Response,
     latency_s: float,
     opener: Callable[..., Any] | None = None,
+    *,
+    source: str = "human",
 ) -> bool:
+    """POST one response back to the API.
+
+    ``source="auto"`` marks a dialog timeout default. The server only lets an
+    auto response fill an empty slot, so a timeout that fires while the user is
+    clicking "接受" can never overwrite the click.
+    """
     request = urllib.request.Request(
         api_url,
         data=json.dumps(
-            {"response": response, "latency_s": latency_s},
+            {"response": response, "latency_s": latency_s, "source": source},
             ensure_ascii=False,
         ).encode("utf-8"),
         headers={
@@ -146,12 +154,15 @@ class InterventionPopup:
         self._finish(_BUTTON_RESPONSES[button_text])
 
     def _on_close(self) -> None:
-        self._finish(ACTION_RESPONSES["close"])
+        # Closing the window is still a deliberate user action.
+        self._finish(ACTION_RESPONSES["close"], source="human")
 
     def _on_timeout(self) -> None:
-        self._finish(ACTION_RESPONSES["timeout"])
+        # No user action happened: report it as an automatic default so the
+        # server will not let it overwrite a real answer.
+        self._finish(ACTION_RESPONSES["timeout"], source="auto")
 
-    def _finish(self, response: Response) -> None:
+    def _finish(self, response: Response, *, source: str = "human") -> None:
         if self._responded:
             return
         self._responded = True
@@ -162,6 +173,7 @@ class InterventionPopup:
                 auth_token=os.environ.get("MINDFLOW_POPUP_TOKEN", ""),
                 response=response,
                 latency_s=latency_s,
+                source=source,
             )
         if self._root is not None:
             self._root.destroy()

@@ -10,7 +10,7 @@ Concepts:
   - v2 windows       — schema-v2 feature windows + matched eligibility
   - explicit labels  — feedback distribution from focus_session_feedback
   - trainable        — >=10 eligible matched windows with >=2 unique labels
-  - evaluable        — >=10 explicit matched samples with >=3 distinct days
+  - evaluable        — >=10 explicit feedback sessions, >=3 days and >=3 date groups
   - baseline-ready   — BaselineModel with >=30 total samples
   - activatable      — all seven gate checks pass
 """
@@ -48,11 +48,12 @@ _MIN_ELIGIBLE_WINDOWS = 10
 _MIN_EXPLICIT_FEEDBACK = 20
 _MIN_FOCUS = 5
 _MIN_DISTRACT = 5
-_MIN_DAYS = 1
+_MIN_DAYS = 7
 _MIN_BALANCED_ACCURACY = 0.50
 _MIN_MINORITY_F1 = 0.30
 _BASELINE_MIN_SAMPLES = 30
-_MIN_EVAL_DATES = 3  # GroupKFold requires >=3 distinct dates
+_MIN_EVAL_DATES = 3  # Raw feedback days are necessary but not sufficient.
+_MIN_EVAL_GROUPS = 3  # GroupKFold needs independent merged explicit date groups.
 
 
 # ── Typed gate definitions ─────────────────────────────────────────────────
@@ -79,7 +80,7 @@ class _MinimumDaysGate(_GateDef):
             return "passed", str(days), "", ""
         return (
             "failed", str(days),
-            "反馈天数不足，至少需要连续使用并标记 1 天",
+            f"反馈天数不足，至少需要 {_MIN_DAYS} 个不同反馈日才能激活模型",
             "insufficient_days",
         )
 
@@ -120,14 +121,6 @@ class _NotEvaluatedGate(_GateDef):
         return "not_evaluated", "-", self.reason, "metric_not_evaluated"
 
 
-@dataclass(frozen=True)
-class _NotImplementedGate(_GateDef):
-    reason: str = "需训练报告提供真实证据"
-
-    def compute(self, data: V2TrainingData) -> tuple[GateStatus, str, str, str]:
-        return "not_implemented", "-", self.reason, "not_implemented"
-
-
 _GATES: list[_GateDef] = [
     _MinimumDaysGate(
         key="minimum_days", label="最少反馈天数",
@@ -151,15 +144,15 @@ _GATES: list[_GateDef] = [
         threshold=f">= {_MIN_MINORITY_F1}",
         reason="尚未运行训练评估，无法确定少数类 F1",
     ),
-    _NotImplementedGate(
+    _NotEvaluatedGate(
         key="calibration_better_than_rule", label="校准优于规则引擎",
         threshold="训练报告提供证据",
-        reason="校准比较需训练报告提供真实证据，当前硬编码为通过，不可作为绿色通行",
+        reason="尚未运行训练评估，校准比较需要训练报告提供证据",
     ),
-    _NotImplementedGate(
+    _NotEvaluatedGate(
         key="stable_date_folds", label="日期折叠稳定性",
         threshold="训练报告提供证据",
-        reason="日期折叠稳定性需训练报告提供真实证据，当前硬编码为通过，不可作为绿色通行",
+        reason="尚未运行训练评估，日期折叠稳定性需要训练报告提供证据",
     ),
 ]
 
@@ -210,7 +203,7 @@ class TrainingReadinessService:
         available (callers keep the placeholder behaviour).
         """
         report = self._training_report
-        if not report:
+        if report is None:
             return {}
 
         evaluation = report.get("evaluation") or {}
@@ -243,11 +236,46 @@ class TrainingReadinessService:
 
         cand_brier = candidate.get("brier_score")
         rule_brier = rule_baseline.get("brier_score")
-        if cand_brier is not None and rule_brier is not None:
+        has_brier = cand_brier is not None and rule_brier is not None
+        actual_brier = (
+            f"候选 {cand_brier:.3f} vs 规则 {rule_brier:.3f}" if has_brier else "-"
+        )
+        calibration = evaluation.get("calibration") or {}
+        deployment_calibration = (report.get("classifier") or {}).get("calibration") or {}
+        # Preserve the seven UI gates; calibration availability is a prerequisite
+        # for the Brier gate, including the trainer's explicit opt-out contract.
+        not_requested = (
+            calibration.get("status") == "not_requested"
+            and "method" in calibration and calibration["method"] is None
+        )
+        calibration_valid = not_requested or (
+            calibration.get("status") == "fitted"
+            and calibration.get("method") in ("sigmoid", "isotonic")
+        )
+        calibration_available = (
+            checks.get("calibration_available") is True
+            and calibration_valid
+            and deployment_calibration.get("status") != "unavailable"
+        )
+        if not calibration_available:
+            if "calibration_available" not in checks:
+                reason = "训练报告缺少校准可用性门控结果（calibration_available）"
+            elif not calibration:
+                reason = "训练报告缺少校准状态"
+            else:
+                reason = (
+                    deployment_calibration.get("reason") or calibration.get("reason")
+                    or "校准状态未满足训练门控"
+                )
+            overrides["calibration_better_than_rule"] = (
+                "failed", actual_brier, "校准状态有效且候选 Brier <= 规则 Brier + 0.01",
+                f"校准不可用：{reason}",
+            )
+        elif has_brier:
             passed = bool(checks.get("calibration_better_than_rule", False))
             overrides["calibration_better_than_rule"] = (
                 "passed" if passed else "failed",
-                f"候选 {cand_brier:.3f} vs 规则 {rule_brier:.3f}",
+                f"未请求校准；{actual_brier}" if not_requested else actual_brier,
                 "候选 Brier <= 规则 Brier + 0.01",
                 "" if passed else "候选模型校准不优于规则引擎",
             )
@@ -348,12 +376,21 @@ class TrainingReadinessService:
         # ── 7. Evaluability ────────────────────────────────────────────
         explicit_count = training_data.explicit_feedback_count
         eval_dates = training_data.distinct_feedback_days
-        evaluable = explicit_count >= _MIN_ELIGIBLE_WINDOWS and eval_dates >= _MIN_EVAL_DATES
+        explicit_group_count = len({
+            group for group, explicit in zip(
+                training_data.group_ids, training_data.explicit_mask, strict=True,
+            ) if explicit
+        })
+        evaluable = (
+            explicit_count >= _MIN_ELIGIBLE_WINDOWS
+            and eval_dates >= _MIN_EVAL_DATES
+            and explicit_group_count >= _MIN_EVAL_GROUPS
+        )
 
         # ── 8. V2 windows summary ──────────────────────────────────────
         v2_windows = V2WindowsSummary(
             total=len(windows),
-            schema_version=2,
+            schema_version=FEATURE_SCHEMA_VERSION,
             date_range_days=date_range,
             eligible_count=eligible_count,
             matched_focus_count=training_data.explicit_focus_count,
@@ -409,6 +446,14 @@ class TrainingReadinessService:
         for gate in gates:
             if not gate.passed and gate.blocker_code:
                 blockers.append(Blocker(code=gate.blocker_code, message=gate.message))
+        if explicit_group_count < _MIN_EVAL_GROUPS:
+            blockers.append(Blocker(
+                code="insufficient_independent_date_groups",
+                message=(
+                    f"显式反馈的独立日期组不足（当前 {explicit_group_count}，"
+                    f"评估需要至少 {_MIN_EVAL_GROUPS}）；跨午夜会话关联的日期合并为同一组"
+                ),
+            ))
         if not trainable:
             if eligible_count < _MIN_ELIGIBLE_WINDOWS:
                 msg = (

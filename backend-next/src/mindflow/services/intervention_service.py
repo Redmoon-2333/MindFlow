@@ -39,7 +39,7 @@ import json
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, cast
+from typing import Any, Final, Literal, cast
 
 import httpx
 from loguru import logger
@@ -62,8 +62,13 @@ from mindflow.domain.procrastination import (
     ProcrastinationType,
 )
 from mindflow.domain.tasks import Task
+from mindflow.infrastructure.llm.safety import safe_error_metadata
 from mindflow.infrastructure.llm.summary import serialize_summary
-from mindflow.infrastructure.notification import NotificationService, Urgency
+from mindflow.infrastructure.notification import (
+    NotificationService,
+    Urgency,
+    send_notification,
+)
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
 )
@@ -184,8 +189,19 @@ _QUIET_DEEP_WORK_BLOCK_S: float = 20 * 60
 _QUIET_DEEP_WORK_MAX_ENTERTAINMENT_RATIO: float = 0.25
 
 
-def _is_work_category_context(events: list[ActivityEvent]) -> bool:
-    """Return True when recent context is dominated by work-category apps."""
+def _is_work_category_context(
+    events: list[ActivityEvent],
+    *,
+    user_rules: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Return True when recent context is dominated by work-category apps.
+
+    ``user_rules`` are the user's own classification rules (as returned by
+    ``ClassificationRulesRepository.get_all``). They are applied first, so a
+    process the user has explicitly marked as work counts as work here — the
+    gate must agree with what the user told the product. Built-in
+    classification remains the fallback for processes with no user rule.
+    """
     if not events:
         return False
     active = [event for event in events if not event.data.is_idle]
@@ -199,17 +215,42 @@ def _is_work_category_context(events: list[ActivityEvent]) -> bool:
         1
         for event in active
         if AppClassifier.get_productivity_score(
-            base.classify(event.data.process_name, event.data.window_title)
+            _classify_with_user_rules(
+                base, user_rules, event.data.process_name, event.data.window_title
+            )
         )
         >= 0.9
     )
     return work_votes >= max(3, len(active) // 2 + 1)
 
 
+def _classify_with_user_rules(
+    base: Any,
+    user_rules: list[dict[str, Any]] | None,
+    process_name: str,
+    window_title: str,
+) -> str:
+    """Classify one app, preferring an explicit user rule over the built-in table."""
+    if user_rules:
+        from mindflow.domain import app_classification
+        from mindflow.domain.features import title_features
+
+        for rule in user_rules:
+            if app_classification.UserAppClassifier._rule_matches(
+                rule, process_name, window_title
+            ):
+                return str(rule.get("category", ""))
+        # Match UserAppClassifier's own tier order for the no-rule-hit case.
+        if title_features(window_title).is_likely_productive_learning:
+            return "browser_work"
+    return str(base.classify(process_name, window_title))
+
+
 def _is_work_state_suppressed(
     *,
     assessment: ProcrastinationAssessment,
     recent_events: list[ActivityEvent],
+    user_rules: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str | None]:
     """Return (should_suppress, human_reason) for the work-state front gate.
 
@@ -219,12 +260,15 @@ def _is_work_state_suppressed(
     not nagged while demonstrably building.  Manual triggers never land here
     and the check is never throttled.
 
+    ``user_rules`` (the user's own classification rules) take precedence over
+    the built-in table, so the gate honours what the user marked as work.
+
     The signal is deliberately conservative so an isolated chat window cannot
     suppress a legitimate intervention.
     """
     if not recent_events or not _deep_work_guard(recent_events):
         return False, None
-    if not _is_work_category_context(recent_events):
+    if not _is_work_category_context(recent_events, user_rules=user_rules):
         return False, None
     top_types = getattr(assessment, "types", None) or []
     if (
@@ -329,7 +373,7 @@ async def _top_distraction_domain(
             list_segments,
         )(user_id, start, end)
     except Exception as exc:
-        logger.debug("Blocklist: browser segment query failed: {}", exc)
+        logger.debug("Blocklist: browser segment query failed: {}", safe_error_metadata(exc))
         return None
     dwell: dict[str, float] = {}
     for segment in segments:
@@ -435,7 +479,7 @@ def _parse_message_response(content: str) -> tuple[str, str] | None:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
-        logger.warning("LLM intervention message: parse error: {}", exc)
+        logger.warning("LLM intervention message: parse error: {}", safe_error_metadata(exc))
         return None
 
     title = str(parsed.get("title", "")).strip()
@@ -503,17 +547,21 @@ async def _generate_llm_message(
 
         result = _parse_message_response(content)
         if result is not None:
-            logger.debug("LLM generated intervention message: title={!r}", result[0])
+            logger.debug("LLM generated intervention message")
         return result
 
-    except httpx.TimeoutException:
-        logger.warning("LLM intervention message: timeout ({}s)", _LLM_TIMEOUT_S)
+    except httpx.TimeoutException as exc:
+        logger.warning("LLM intervention message: {}", safe_error_metadata(exc))
         return None
     except (KeyError, IndexError) as exc:
-        logger.warning("LLM intervention message: malformed response: {}", exc)
+        logger.warning(
+            "LLM intervention message: malformed response: {}", safe_error_metadata(exc)
+        )
         return None
     except Exception as exc:
-        logger.warning("LLM intervention message: unexpected error: {}", exc)
+        logger.warning(
+            "LLM intervention message: unexpected error: {}", safe_error_metadata(exc)
+        )
         return None
 
 
@@ -567,17 +615,21 @@ async def _generate_ollama_message(
 
         result = _parse_message_response(content)
         if result is not None:
-            logger.debug("Ollama generated intervention message: title={!r}", result[0])
+            logger.debug("Ollama generated intervention message")
         return result
 
     except httpx.TimeoutException:
         logger.warning("Ollama intervention message: timeout ({}s)", _OLLAMA_TIMEOUT_S)
         return None
     except (KeyError, IndexError) as exc:
-        logger.warning("Ollama intervention message: malformed response: {}", exc)
+        logger.warning(
+            "Ollama intervention message: malformed response: {}", safe_error_metadata(exc)
+        )
         return None
     except Exception as exc:
-        logger.warning("Ollama intervention message: unexpected error: {}", exc)
+        logger.warning(
+            "Ollama intervention message: unexpected error: {}", safe_error_metadata(exc)
+        )
         return None
 
 
@@ -653,6 +705,7 @@ class InterventionService:
         telemetry_repo: object | None = None,
         ollama_base_url: str | None = None,
         ollama_model: str = "qwen3:8b",
+        classification_repo: object | None = None,
     ) -> None:
         self._repo = intervention_repo
         self._throttle = throttle
@@ -667,6 +720,26 @@ class InterventionService:
         self._telemetry_repo = telemetry_repo
         self._ollama_base_url = ollama_base_url
         self._ollama_model = ollama_model
+        self._classification_repo = classification_repo
+
+    async def _load_user_rules(self, user_id: int) -> list[dict[str, Any]] | None:
+        """Load the user's app-classification rules for the work-state gate.
+
+        Returns ``None`` when no rules repository is wired (minimal test
+        wiring) or the lookup fails, so the gate falls back to the built-in
+        classifier instead of breaking the intervention path.
+        """
+        if self._classification_repo is None:
+            return None
+        get_all = getattr(self._classification_repo, "get_all", None)
+        if get_all is None:
+            return None
+        try:
+            rules = await cast(Callable[..., Awaitable[list[dict[str, Any]]]], get_all)(user_id)
+        except Exception as exc:
+            logger.debug("User classification rules unavailable: {}", safe_error_metadata(exc))
+            return None
+        return rules or None
 
     async def _execute_environment_block(
         self,
@@ -701,7 +774,7 @@ class InterventionService:
             )(user_id, domain, reason="environment_optimization 干预自动拦截")
             logger.info("environment_optimization blocked domain: {}", domain)
         except Exception as exc:
-            logger.debug("Blocklist execution failed (non-fatal): {}", exc)
+            logger.debug("Blocklist execution failed (non-fatal): {}", safe_error_metadata(exc))
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -756,7 +829,8 @@ class InterventionService:
                     )(user_id, limit=3)
                 except Exception as exc:
                     logger.debug(
-                        "Task ranking unavailable, using static suggestion: {}", exc
+                        "Task ranking unavailable, using static suggestion: {}",
+                        safe_error_metadata(exc),
                     )
 
         # ── 1c. Work-state suppression (feature flag, audited, never throttled) ──
@@ -770,6 +844,7 @@ class InterventionService:
             should_suppress, work_reason = _is_work_state_suppressed(
                 assessment=assessment,
                 recent_events=recent_events,
+                user_rules=await self._load_user_rules(user_id),
             )
             if should_suppress:
                 logger.info("Intervention suppressed by work state: {}", work_reason)
@@ -829,7 +904,7 @@ class InterventionService:
                     summary = build_behavior_summary(recent_events)
                     summary_json = serialize_summary(summary)
                 except Exception as exc:
-                    logger.debug("Could not build summary for LLM: {}", exc)
+                    logger.debug("Could not build summary for LLM: {}", safe_error_metadata(exc))
 
             # L1 DeepSeek → L2 Ollama → L3 template fallback
             llm_result = None
@@ -963,7 +1038,7 @@ class InterventionService:
                 logger.debug("Released reserved intervention slot {}", reserved_slot)
             raise
         except Exception as exc:
-            logger.error("Failed to persist intervention log: {}", exc)
+            logger.error("Failed to persist intervention log: {}", safe_error_metadata(exc))
             if reserved_slot is not None:
                 await self._release_reserved_slot(
                     user_id=user_id, slot_index=reserved_slot, date_str=slot_date,
@@ -982,16 +1057,28 @@ class InterventionService:
         # never fail the intervention itself.
         await self._execute_environment_block(user_id, intervention_type, now)
 
-        # ── 10. Broadcast via WebSocket ───────────────────────────────
-        await self._broadcast_intervention(intervention)
+        # ── 10. Desktop notification (native first, browser is the fallback) ──
+        # Sending the native popup before the WebSocket frame lets the frame
+        # carry whether the OS actually showed something. Without that flag the
+        # browser notification was unconditional, so a user with the desktop
+        # app running saw the same reminder twice.
+        native_delivered = False
+        try:
+            delivery = await send_notification(
+                self._notifier,
+                title=intervention.title,
+                body=intervention.message,
+                urgency=_URGENCY_BY_INTENSITY[intensity],
+                intervention_id=intervention.id,
+                auth_token=self._auth_token,
+            )
+            native_delivered = delivery.delivered
+        except Exception as exc:
+            logger.warning("Desktop notification failed: {}", safe_error_metadata(exc))
 
-        # ── 11. Desktop notification ──────────────────────────────────
-        await self._notifier.send(
-            title=intervention.title,
-            body=intervention.message,
-            urgency=_URGENCY_BY_INTENSITY[intensity],
-            intervention_id=intervention.id,
-            auth_token=self._auth_token,
+        # ── 11. Broadcast via WebSocket ───────────────────────────────
+        await self._broadcast_intervention(
+            intervention, native_delivered=native_delivered
         )
 
         return InterventionResult(intervention=intervention)
@@ -1021,7 +1108,7 @@ class InterventionService:
                 logger.error(
                     "Failed to release reserved intervention slot {}: {}",
                     slot_index,
-                    exc,
+                    safe_error_metadata(exc),
                 )
 
         release_task = asyncio.create_task(_delete())
@@ -1041,6 +1128,8 @@ class InterventionService:
         intervention_id: str,
         response: str,
         latency_s: float = 0.0,
+        *,
+        source: Literal["auto", "human"] = "human",
     ) -> dict[str, Any] | None:
         """Record a user's response to an intervention.
 
@@ -1059,12 +1148,13 @@ class InterventionService:
                 intervention_id,
                 cast("ResponseType", response),
                 latency_s,
+                source=source,
             )
             if result is None:
                 logger.warning("Intervention {} not found for response", intervention_id)
             return result
         except Exception as exc:
-            logger.error("Failed to record intervention response: {}", exc)
+            logger.error("Failed to record intervention response: {}", safe_error_metadata(exc))
             return None
 
     async def record_feedback(
@@ -1095,7 +1185,7 @@ class InterventionService:
                 logger.warning("Intervention {} not found for feedback", intervention_id)
             return result
         except Exception as exc:
-            logger.error("Failed to record intervention feedback: {}", exc)
+            logger.error("Failed to record intervention feedback: {}", safe_error_metadata(exc))
             return None
 
     async def get_history(
@@ -1126,8 +1216,16 @@ class InterventionService:
 
     # ── Internal helpers ──────────────────────────────────────────────
 
-    async def _broadcast_intervention(self, intervention: Intervention) -> None:
-        """Broadcast an intervention frame via WebSocket (best-effort)."""
+    async def _broadcast_intervention(
+        self, intervention: Intervention, *, native_delivered: bool = False,
+    ) -> None:
+        """Broadcast an intervention frame via WebSocket (best-effort).
+
+        ``native_delivered`` tells the browser whether the OS already displayed
+        this reminder. When it did, the client must not raise a second browser
+        notification for the same intervention; the flag is the signal that
+        keeps the two surfaces from double-notifying the user.
+        """
         if self._broadcast_fn is None:
             return
         try:
@@ -1140,8 +1238,11 @@ class InterventionService:
                     "message": intervention.message,
                     "dismissible": intervention.dismissible,
                     "cbt_technique": intervention.cbt_technique,
+                    "native_delivered": native_delivered,
                 },
             }
             await self._broadcast_fn(message)
         except Exception as exc:
-            logger.warning("WebSocket broadcast failed for intervention: {}", exc)
+            logger.warning(
+                "WebSocket broadcast failed for intervention: {}", safe_error_metadata(exc)
+            )

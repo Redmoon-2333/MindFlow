@@ -115,8 +115,26 @@ export default function Focus() {
   const maxDistraction = Math.max(1, ...trendDays.map((day) => day.distraction_min ?? 0));
   const chartMax = Math.max(maxFocus, maxDistraction);
 
-  const saveFeedback = async (sessionId: string) => {
-    const draft = feedbackDrafts[sessionId] ?? { label: "mixed", score: 3, taskType: "" };
+  /** Editable draft for a session, seeded from any feedback already recorded.
+   *
+   *  Seeding from the saved values matters: falling back to a literal
+   *  ``mixed``/3 draft meant that opening a previously-rated session and
+   *  pressing save again silently replaced the user's original label with
+   *  "mixed", destroying the very signal this page collects.
+   */
+  const draftFor = useCallback((session: FocusSession): FeedbackDraft => {
+    const existing = feedbackDrafts[session.id];
+    if (existing) return existing;
+    return {
+      label: session.feedback_label ?? "mixed",
+      score: session.feedback_score ?? 3,
+      taskType: session.feedback_task_type ?? "",
+    };
+  }, [feedbackDrafts]);
+
+  const saveFeedback = async (session: FocusSession) => {
+    const draft = feedbackDrafts[session.id] ?? draftFor(session);
+    const sessionId = session.id;
     setFeedbackSaving(sessionId);
     setError("");
     try {
@@ -278,14 +296,14 @@ export default function Focus() {
               const sessionTypeLabel = sessionType === "focus" ? "专注" : sessionType === "neutral" ? "中性" : sessionType === "distraction" ? "分心" : null;
               const sessionTypeClass = sessionType === "focus" ? "badge-success" : sessionType === "neutral" ? "badge-info" : sessionType === "distraction" ? "badge-danger" : "badge-warning";
               const switches = session.switch_count ?? session.switches ?? 0;
-              const draft = feedbackDrafts[sessionId] ?? { label: "mixed", score: 3, taskType: "" };
+              const draft = draftFor(session);
               const savedDraft = savedFeedback[sessionId];
               const feedbackLabel =
                 savedDraft?.label ??
-                ("feedback_label" in session && typeof session.feedback_label === "string" ? session.feedback_label : undefined);
+                (typeof session.feedback_label === "string" ? session.feedback_label : undefined);
               const feedbackScore =
                 savedDraft?.score ??
-                ("feedback_score" in session && typeof session.feedback_score === "number" ? session.feedback_score : undefined);
+                (typeof session.feedback_score === "number" ? session.feedback_score : undefined);
               return (
                 <div
                   key={sessionId}
@@ -326,7 +344,7 @@ export default function Focus() {
                       <div className="form-group" style={{ margin: 0, minWidth: 150 }}><label>这次状态</label><select value={draft.label} onChange={(event) => setFeedbackDrafts((current) => ({ ...current, [sessionId]: { ...draft, label: event.target.value as FeedbackDraft["label"] } }))}><option value="focus">专注</option><option value="distracted">分心</option><option value="mixed">混合</option></select></div>
                       <div className="form-group" style={{ margin: 0, minWidth: 150 }}><label>自评分数</label><select value={draft.score} onChange={(event) => setFeedbackDrafts((current) => ({ ...current, [sessionId]: { ...draft, score: Number(event.target.value) } }))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} 分</option>)}</select></div>
                       <div className="form-group" style={{ margin: 0, minWidth: 180 }}><label>任务类型（可选）</label><select value={draft.taskType} onChange={(event) => setFeedbackDrafts((current) => ({ ...current, [sessionId]: { ...draft, taskType: event.target.value } }))}><option value="">未选择</option><option value="coding">编程</option><option value="writing">写作</option><option value="study">学习</option><option value="meeting">会议</option><option value="admin">事务</option><option value="creative">创作</option><option value="other">其他</option></select></div>
-                      <button className="btn btn-primary btn-sm" disabled={feedbackSaving === sessionId} onClick={() => saveFeedback(sessionId)}>{feedbackSaving === sessionId ? "保存中..." : feedbackSaved.has(sessionId) ? "已保存，可更新" : "保存反馈"}</button>
+                      <button className="btn btn-primary btn-sm" disabled={feedbackSaving === sessionId} onClick={() => saveFeedback(session)}>{feedbackSaving === sessionId ? "保存中..." : feedbackSaved.has(sessionId) ? "已保存，可更新" : "保存反馈"}</button>
                     </div>
                     <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 8 }}>1–2 分用于分心标签，4–5 分用于专注标签，3 分或混合只用于不确定性评估。</div>
                   </div>

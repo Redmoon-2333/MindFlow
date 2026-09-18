@@ -30,7 +30,10 @@ Design constraints:
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import uuid
+from collections import OrderedDict
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
@@ -47,6 +50,16 @@ from mindflow.agents.types import FORBIDDEN_WORDS
 
 _MAX_HISTORY_ROUNDS: int = 10
 _RECURSION_LIMIT: int = 12
+_CHAT_TURN_TIMEOUT_S: float = 600.0
+_MAX_PROTOCOL_TURNS: int = 128
+
+
+def _safe_error_metadata(exc: Exception) -> str:
+    """Never include provider response bodies or exception chains."""
+    status = getattr(exc, "status_code", None)
+    suffix = f" status={status}" if type(status) is int else ""
+    return f"type={type(exc).__name__}{suffix}"
+
 
 _EVIDENCE_TOOLS: frozenset[str] = frozenset({"query_evidence", "get_latest_analysis"})
 
@@ -102,7 +115,11 @@ class ChatRunContext:
     recursion_limit: int = _RECURSION_LIMIT
 
     # ── Session lock ──
-    session_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    session_locks: dict[tuple[int, str], asyncio.Lock] = field(default_factory=dict)
+    # Private complete assistant/tool exchanges, never written to display history.
+    protocol_turns: OrderedDict[tuple[int, str, str], list[Any]] = field(
+        default_factory=OrderedDict,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -306,10 +323,15 @@ async def history_load_node(state: ChatGraphState) -> dict[str, Any]:
     max_rounds = runtime.max_history_rounds
 
     history = await runtime.chat_repo.recent(
-        session_id, limit=max_rounds * 2 + 2,
+        session_id, limit=max_rounds * 2 + 2, user_id=state["user_id"],
     )
 
-    return {"messages": history}
+    # Recheck ownership before summarisation/model input, including injected repositories.
+    return {"messages": [
+        row for row in history
+        if row.get("user_id") == state["user_id"]
+        and row.get("session_id") == session_id
+    ]}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -380,7 +402,9 @@ async def model_call_node(state: ChatGraphState) -> dict[str, Any]:
     try:
         result = await bound_model.ainvoke(messages)
     except Exception as exc:
-        logger.warning("ChatGraph: Model invocation failed: {}", exc)
+        logger.opt(exception=False).warning(
+            "ChatGraph: Model invocation failed: {}", _safe_error_metadata(exc),
+        )
         return {
             "answer": _LLM_DOWN_REPLY,
             "degraded": True,
@@ -397,11 +421,12 @@ async def model_call_node(state: ChatGraphState) -> dict[str, Any]:
     existing_tool_msgs: list[dict[str, str]] = list(state.get("tool_messages", []))
     for tc in tool_call_objects:
         t_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
-        if t_name:
-            if t_name not in tools_used:
-                tools_used.append(t_name)
-            if t_name in _EVIDENCE_TOOLS:
-                evidence_cited = True
+        if t_name and t_name not in tools_used:
+            tools_used.append(t_name)
+            # NOTE: proposing a tool call is not evidence. `evidence_cited` is
+            # only set once the tool actually returns data (see
+            # tool_execution_node), because an unsuccessful or fabricated call
+            # would otherwise be reported to the user as sourced.
 
         # Record as tool message
         tool_msg: dict[str, str] = {
@@ -438,27 +463,75 @@ def _build_messages_from_state(state: ChatGraphState) -> list[Any]:
     history = state.get("messages", [])
     user_message = state["user_message"]
     summary = state.get("history_summary")
+    runtime = state.get("runtime", ChatRunContext())
 
     messages: list[Any] = [SystemMessage(content=CHAT_SYSTEM_PROMPT)]
     if summary:
         messages.append(SystemMessage(content=summary))
 
     for msg in history:
+        if (
+            msg.get("user_id") != state.get("user_id")
+            or msg.get("session_id") != state.get("session_id")
+        ):
+            continue
         role = msg.get("role", "")
         content = str(msg.get("content", ""))
         if role == "user":
             messages.append(HumanMessage(content=content))
         elif role == "assistant":
-            messages.append(AIMessage(content=content))
+            protocol = runtime.protocol_turns.get((
+                state["user_id"], state["session_id"], str(msg.get("id", "")),
+            ))
+            if protocol:
+                messages.extend(protocol)
+            else:
+                # Eviction/restart drops the whole protocol exchange, not half
+                # of a tool call. The durable final answer remains usable.
+                messages.append(AIMessage(content=content))
 
     # Ensure current user message is the last user message
-    if not any(
-        isinstance(m, HumanMessage) and m.content == user_message
-        for m in messages
-    ):
+    if not history or history[-1].get("id") != state.get("turn_id"):
         messages.append(HumanMessage(content=user_message))
 
     return messages
+
+
+def _has_tool_evidence(name: str, text: str) -> bool:
+    """Recognise data in the two evidence tools' existing JSON contracts."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(data, dict) or data.get("error"):
+        return False
+    if name == "query_evidence":
+        evidence = data.get("evidence")
+        summary = data.get("behavior_summary")
+        duration = summary.get("duration_min") if isinstance(summary, dict) else None
+        observed_activity = (
+            isinstance(duration, (int, float)) and not isinstance(duration, bool)
+            and math.isfinite(duration) and duration > 0
+        )
+        # The real builder emits named info items even for an empty window.
+        # Info values are omitted on the wire, so use observed duration for those.
+        # Explicit measurements still count when zero; names alone never do.
+        return isinstance(evidence, list) and any(
+            isinstance(item, dict) and bool(item.get("metric"))
+            and (
+                observed_activity
+                or (
+                    type(item.get("value")) in (int, float)
+                    and math.isfinite(item["value"])
+                )
+                or (isinstance(item.get("value"), str) and bool(item["value"].strip()))
+            )
+            for item in evidence
+        )
+    if name == "get_latest_analysis":
+        types = data.get("procrastination_types", data.get("types"))
+        return isinstance(types, list) and any(isinstance(t, str) and t for t in types)
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -522,6 +595,7 @@ async def tool_execution_node(state: ChatGraphState) -> dict[str, Any]:
         tool_map[tool.name] = tool
 
     tool_msgs: list[dict[str, str]] = list(state.get("tool_messages", []))
+    evidence_cited = state.get("evidence_cited", False)
 
     for tc in tool_calls:
         t_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
@@ -529,14 +603,20 @@ async def tool_execution_node(state: ChatGraphState) -> dict[str, Any]:
         t_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
 
         tool_fn = tool_map.get(t_name)
+        succeeded = False
         if tool_fn is None:
             result_text = f"Tool '{t_name}' not found"
         else:
             try:
                 result = await tool_fn.ainvoke(t_args)
                 result_text = str(result) if result is not None else ""
+                # A tool that ran but returned nothing is not evidence either.
+                succeeded = _has_tool_evidence(t_name, result_text)
             except Exception as exc:
-                result_text = f"Tool error: {exc}"
+                result_text = f"Tool error: {_safe_error_metadata(exc)}"
+
+        if succeeded and t_name in _EVIDENCE_TOOLS:
+            evidence_cited = True
 
         tool_msg = ToolMessage(content=result_text, tool_call_id=t_id, name=t_name)
         model_messages.append(tool_msg)
@@ -550,6 +630,7 @@ async def tool_execution_node(state: ChatGraphState) -> dict[str, Any]:
     return {
         "model_messages_raw": model_messages,
         "tool_messages": tool_msgs,
+        "evidence_cited": evidence_cited,
     }
 
 
@@ -564,6 +645,8 @@ async def answer_extraction_node(state: ChatGraphState) -> dict[str, Any]:
     Searches backward through the accumulated messages for the last
     assistant/AI message with non-empty content.
     """
+    if state.get("degraded", False):
+        return {}
     model_messages = state.get("model_messages_raw", [])
     answer = _extract_answer_from_messages(model_messages)
 
@@ -644,7 +727,7 @@ async def correction_loop_node(state: ChatGraphState) -> dict[str, Any]:
     the model again.  If the retry still contains forbidden words, the
     answer is replaced with the safe fallback reply and ``degraded`` is set.
     """
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from langchain_core.messages import SystemMessage
 
     runtime: ChatRunContext = state.get("runtime", ChatRunContext())
     model = runtime.model
@@ -658,28 +741,7 @@ async def correction_loop_node(state: ChatGraphState) -> dict[str, Any]:
     )
 
     # Build retry messages: original messages + correction instruction
-    history = state.get("messages", [])
-    user_message = state["user_message"]
-    summary = state.get("history_summary")
-
-    retry_messages: list[Any] = [SystemMessage(content=CHAT_SYSTEM_PROMPT)]
-    if summary:
-        retry_messages.append(SystemMessage(content=summary))
-
-    for msg in history:
-        role = msg.get("role", "")
-        content = str(msg.get("content", ""))
-        if role == "user":
-            retry_messages.append(HumanMessage(content=content))
-        elif role == "assistant":
-            retry_messages.append(AIMessage(content=content))
-
-    # Ensure current user message is last user message
-    if not any(
-        isinstance(m, HumanMessage) and m.content == user_message
-        for m in retry_messages
-    ):
-        retry_messages.append(HumanMessage(content=user_message))
+    retry_messages = list(state.get("model_messages_raw", [])) or _build_messages_from_state(state)
 
     # Append correction instruction
     retry_messages.append(SystemMessage(content=correction_text))
@@ -707,10 +769,13 @@ async def correction_loop_node(state: ChatGraphState) -> dict[str, Any]:
         return {
             "answer": retry_answer,
             "retry_count": retry_count,
+            "model_messages_raw": [*retry_messages, result],
         }
 
     except Exception as exc:
-        logger.warning("ChatGraph: Correction retry failed: {}", exc)
+        logger.opt(exception=False).warning(
+            "ChatGraph: Correction retry failed: {}", _safe_error_metadata(exc),
+        )
         return {
             "answer": _SAFE_REPLY,
             "degraded": True,
@@ -734,9 +799,25 @@ async def assistant_message_persist_node(state: ChatGraphState) -> dict[str, Any
     answer = state.get("answer", _SAFE_REPLY)
     user_id = state.get("user_id", 0)
 
-    await runtime.chat_repo.append(
+    row = await runtime.chat_repo.append(
         session_id, "assistant", answer, user_id=user_id,
     )
+    if (
+        isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]
+        and row.get("user_id") == user_id and row.get("session_id") == session_id
+        and row.get("role") == "assistant" and not state.get("degraded", False)
+    ):
+        raw = state.get("model_messages_raw", [])
+        # Cache only this completed turn. Never retain an orphan tool exchange.
+        start = next(
+            (i + 1 for i in range(len(raw) - 1, -1, -1)
+             if getattr(raw[i], "type", None) == "human"),
+            len(raw),
+        )
+        if start < len(raw):
+            runtime.protocol_turns[(user_id, session_id, row["id"])] = raw[start:]
+            while len(runtime.protocol_turns) > _MAX_PROTOCOL_TURNS:
+                runtime.protocol_turns.popitem(last=False)
 
     return {}
 
@@ -792,7 +873,10 @@ class ChatGraph:
         self._tool_adapters = tool_adapters or []
         self._max_history_rounds = max_history_rounds
         self._recursion_limit = recursion_limit
-        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_locks: dict[tuple[int, str], asyncio.Lock] = {}
+        # Same-process continuation only. On restart, DB answers reconstruct
+        # text history without any orphan tool calls or private reasoning.
+        self._protocol_turns: OrderedDict[tuple[int, str, str], list[Any]] = OrderedDict()
         self._compiled: CompiledStateGraph[Any, Any, Any, Any] | None = None
 
     # ── Public API ──────────────────────────────────────────────────────
@@ -822,10 +906,19 @@ class ChatGraph:
         turn_id = f"turn:{session_id}:{uuid.uuid4()}"
 
         # ── Serialise per-session access ──────────────────────────────────
-        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
-        async with lock:
-            return await self._ask_serialized(
-                user_id, session_id, message, turn_id,
+        lock = self._session_locks.setdefault((user_id, session_id), asyncio.Lock())
+        try:
+            # One deadline covers queueing, tools, all model calls and persistence.
+            async with asyncio.timeout(_CHAT_TURN_TIMEOUT_S):
+                async with lock:
+                    return await self._ask_serialized(
+                        user_id, session_id, message, turn_id,
+                    )
+        except TimeoutError:
+            from mindflow.services.chat_service import ChatAnswer
+
+            return ChatAnswer(
+                answer=_LLM_DOWN_REPLY, session_id=session_id, degraded=True,
             )
 
     async def _ask_serialized(
@@ -849,6 +942,7 @@ class ChatGraph:
             max_history_rounds=self._max_history_rounds,
             recursion_limit=self._recursion_limit,
             session_locks=self._session_locks,
+            protocol_turns=self._protocol_turns,
         )
 
         # ── Set ToolContext on adapters ────────────────────────────────────
@@ -912,7 +1006,9 @@ class ChatGraph:
             )
 
         except Exception as exc:
-            logger.warning("ChatGraph invocation failed: {}", exc)
+            logger.opt(exception=False).warning(
+                "ChatGraph invocation failed: {}", _safe_error_metadata(exc),
+            )
             return ChatAnswer(
                 answer=_LLM_DOWN_REPLY,
                 session_id=session_id,

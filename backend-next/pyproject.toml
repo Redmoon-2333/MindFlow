@@ -81,6 +81,8 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
 "src/mindflow/train/v2.py" = ["N803", "N806"]
 "tests/test_explain.py" = ["N802", "N803", "N806"]
 "tests/test_e2e_flows.py" = ["N803", "N806"]
+# X/y matrix naming convention in the ML provenance tests
+"tests/test_label_provenance_and_publication.py" = ["N806"]
 # E501: Chinese text in system prompts, eval output formatting, and
 # test fixtures naturally exceeds 100 chars
 "src/mindflow/agents/experts.py" = ["E501"]

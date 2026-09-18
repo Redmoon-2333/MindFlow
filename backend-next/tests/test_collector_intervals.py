@@ -169,9 +169,27 @@ def test_migration_0021_chains_from_0020_and_cycles_cleanly(tmp_path: Path) -> N
             row[1]
             for row in conn.execute("PRAGMA index_list(collector_intervals)")
         }
-    # The chain head is now 0023 (tasks + blocked_sites added after 0022);
-    # 0021 remains an intermediate link on the chain.
-    assert version == "0023_create_tasks_and_blocked_sites"
+    # Assert the chain reaches a known revision rather than hard-coding the
+    # head: the head moves whenever a migration is added, and what this test
+    # actually verifies is that 0021 applies cleanly and 0021 is in the chain.
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    script = ScriptDirectory.from_config(cfg)
+    revision = script.get_revision("0021_create_collector_intervals")
+    assert revision is not None, "0021 must exist in the migration chain"
+    head = script.get_current_head()
+    assert head is not None
+    # 0021 must be reachable from the head by following down_revision links.
+    seen: set[str] = set()
+    cursor: str | None = head
+    while cursor is not None and cursor not in seen:
+        seen.add(cursor)
+        rev = script.get_revision(cursor)
+        cursor = rev.down_revision if rev is not None else None
+    assert "0021_create_collector_intervals" in seen
+    assert version == head
     assert cols == {
         "id", "user_id", "started_at", "ended_at", "reason",
         "manual_stop", "failure", "sleep", "last_error",
@@ -194,5 +212,6 @@ def test_migration_0021_chains_from_0020_and_cycles_cleanly(tmp_path: Path) -> N
         cols = {
             row[1] for row in conn.execute("PRAGMA table_info(collector_intervals)")
         }
-    assert version == "0023_create_tasks_and_blocked_sites"
+    # Re-upgrading from 0020 must reach the same head as the first run.
+    assert version == head
     assert "last_error" in cols

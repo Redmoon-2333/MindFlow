@@ -8,6 +8,7 @@ works correctly for both happy and error paths.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -51,7 +52,7 @@ class _HealthyEngine:
 
 
 class _BrokenEngine:
-    async def connect(self): raise RuntimeError("db down")
+    def connect(self): raise RuntimeError("db down")
 
 
 # All routers and state keys that routes depend on
@@ -90,6 +91,14 @@ def _make_app(**overrides: Any) -> FastAPI:
     ):
         if attr not in overrides:
             setattr(app.state, attr, MagicMock())
+    if "session_factory" not in overrides:
+        session = AsyncMock()
+        result = MagicMock()
+        result.scalar_one.return_value = 0
+        result.fetchall.return_value = []
+        session.execute.return_value = result
+        session.scalar.return_value = None
+        app.state.session_factory.return_value.__aenter__.return_value = session
     # Autonomy route awaits get_status(); make the stub awaitable with a sane default.
     if "autonomy_service" not in overrides:
         app.state.autonomy_service = AsyncMock()
@@ -746,25 +755,28 @@ class TestAutoInterventionE2E:
 # ── 18. Health integration ──────────────────────────────────────────────────
 
 
+_LIVE_BASE_URL = os.environ.get("MINDFLOW_E2E_BASE_URL", "http://127.0.0.1:8765").rstrip("/")
+
+
 class TestHealthIntegrationE2E:
     def test_health_live_against_running_server(self) -> None:
         """If the backend is running, live endpoint should return alive."""
         import httpx
         try:
             r = httpx.get(
-                "http://127.0.0.1:8765/api/v1/health/live", timeout=3.0, trust_env=False
+                f"{_LIVE_BASE_URL}/api/v1/health/live", timeout=3.0, trust_env=False
             )
             assert r.status_code == 200
             assert r.json()["status"] == "alive"
         except (httpx.ConnectError, httpx.ConnectTimeout):
-            pytest.skip("Backend not running on 8765")
+            pytest.skip(f"Backend not running at {_LIVE_BASE_URL}")
 
     def test_health_observability_against_running_server(self) -> None:
         """If the backend is running, health should have observability fields."""
         import httpx
         try:
             r = httpx.get(
-                "http://127.0.0.1:8765/api/v1/health", timeout=3.0, trust_env=False
+                f"{_LIVE_BASE_URL}/api/v1/health", timeout=3.0, trust_env=False
             )
             data = r.json()
             assert "observability" in data
@@ -772,34 +784,38 @@ class TestHealthIntegrationE2E:
             assert "scheduler_heartbeat_at" in obs
             assert "last_activity_at" in obs
         except (httpx.ConnectError, httpx.ConnectTimeout):
-            pytest.skip("Backend not running on 8765")
+            pytest.skip(f"Backend not running at {_LIVE_BASE_URL}")
 
     def test_root_serves_frontend(self) -> None:
         """Backend should serve the frontend at /"""
         import httpx
         try:
-            r = httpx.get("http://127.0.0.1:8765/", timeout=3.0, trust_env=False)
+            r = httpx.get(f"{_LIVE_BASE_URL}/", timeout=3.0, trust_env=False)
             assert r.status_code == 200
             assert len(r.text) > 0
         except (httpx.ConnectError, httpx.ConnectTimeout):
-            pytest.skip("Backend not running on 8765")
+            pytest.skip(f"Backend not running at {_LIVE_BASE_URL}")
 
     def test_collector_status_against_running_server(self) -> None:
         import httpx
 
         from mindflow.config import get_settings
         try:
-            token = get_settings().token_path.read_text(encoding="utf-8").strip()
+            token_path = (
+                Path(os.environ["MINDFLOW_E2E_TOKEN_FILE"])
+                if "MINDFLOW_E2E_TOKEN_FILE" in os.environ else get_settings().token_path
+            )
+            token = token_path.read_text(encoding="utf-8").strip()
         except (OSError, ValueError):
             token = ""
         try:
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             r = httpx.get(
-                "http://127.0.0.1:8765/api/v1/collector",
+                f"{_LIVE_BASE_URL}/api/v1/collector",
                 timeout=3.0,
                 headers=headers,
                 trust_env=False,
             )
             assert r.status_code == 200
         except (httpx.ConnectError, httpx.ConnectTimeout):
-            pytest.skip("Backend not running on 8765")
+            pytest.skip(f"Backend not running at {_LIVE_BASE_URL}")

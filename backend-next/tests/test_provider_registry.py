@@ -58,7 +58,9 @@ class TestRetryPolicy:
 
     def test_default_policy(self) -> None:
         policy = RetryPolicy()
-        assert policy.timeout_s == 30
+        # The default matches the ECNU single-call budget (180s); a shorter
+        # default would abort thinking-mode generations the gateway allows.
+        assert policy.timeout_s == 180
         assert policy.max_retries == 1
         assert policy.backoff_cap_s == 60.0
 
@@ -299,8 +301,12 @@ class TestReasonerRestriction:
     """
 
     @pytest.mark.asyncio
-    async def test_registry_chat_model_is_chat_tier(self) -> None:
-        """The registry's chat model is deepseek-chat (json_object OK)."""
+    async def test_registry_chat_model_uses_configured_model(self) -> None:
+        """The registry builds its chat model from the configured model id.
+
+        It used to hard-code ``deepseek-chat``, which would have sent the wrong
+        model name to any other OpenAI-compatible provider.
+        """
         s = _settings(api_key="sk-test")
         registry = ProviderRegistry(s)
 
@@ -315,7 +321,7 @@ class TestReasonerRestriction:
         with patch.object(ChatDeepSeek, "__init__", recording_init):
             registry.get_chat_model()
 
-        assert init_kwargs.get("model") == "deepseek-chat"
+        assert init_kwargs.get("model") == s.model
 
     @pytest.mark.asyncio
     async def test_reasoner_through_gateway_has_no_json_object(self) -> None:

@@ -135,27 +135,70 @@ class InterventionLogRepository:
         intervention_id: str,
         user_response: ResponseType,
         latency_s: float = 0.0,
+        *,
+        source: Literal["auto", "human"] = "human",
     ) -> dict[str, Any] | None:
-        """Update the user's response to a previously triggered intervention.
+        """Record the user's response to a previously triggered intervention.
+
+        Semantics (each rule exists because the old unconditional UPDATE got it
+        wrong):
+
+        * **First human response wins.** A manual click is the user's actual
+          answer; a later duplicate submission (double-click, retry, stale tab)
+          must not rewrite it.
+        * **An auto timeout never overwrites a human response.** The desktop
+          popup's timeout default is a fallback guess, not an answer.
+        * **A human response may replace an auto default.** If the popup timed
+          out first and the user then clicks, the real answer wins.
 
         Args:
             intervention_id: The intervention's UUIDv7 string.
             user_response: One of "accepted", "ignored", "dismissed".
             latency_s: Seconds between trigger and response.
+            source: ``"human"`` for a user action, ``"auto"`` for a timeout
+                default written by the reminder client.
 
         Returns:
-            The updated row dict, or None if the intervention wasn't found.
+            The current row dict (updated or already-set), or None if the
+            intervention wasn't found.
         """
+        where: list[Any] = [intervention_logs.c.id == intervention_id]
+        if source == "human":
+            # Nothing recorded yet, or only an auto default to be superseded.
+            where.append(
+                sa.or_(
+                    intervention_logs.c.user_response.is_(None),
+                    intervention_logs.c.response_source == "auto",
+                )
+            )
+        else:
+            # Auto may only fill an empty slot.
+            where.append(intervention_logs.c.user_response.is_(None))
+
         stmt = (
             sa.update(intervention_logs)
-            .where(intervention_logs.c.id == intervention_id)
-            .values(user_response=user_response, response_latency_s=latency_s)
+            .where(*where)
+            .values(
+                user_response=user_response,
+                response_latency_s=latency_s,
+                response_source=source,
+            )
             .returning(*intervention_logs.c)
         )
 
         async with self._session_factory() as session, session.begin():
             result = await session.execute(stmt)
             row = result.fetchone()
+            if row is None:
+                # Nothing was written — either the row is missing or an
+                # earlier answer already stands. Read back so the caller
+                # always sees the authoritative state.
+                current = await session.execute(
+                    intervention_logs.select().where(
+                        intervention_logs.c.id == intervention_id
+                    )
+                )
+                row = current.fetchone()
 
         return _row_to_dict(row) if row is not None else None
 
@@ -621,6 +664,7 @@ def _row_to_dict(row: sa.Row[Any]) -> dict[str, Any]:
         "message": getattr(row, "message", None),
         "user_response": row.user_response,
         "response_latency_s": row.response_latency_s,
+        "response_source": getattr(row, "response_source", None),
         "feedback_rating": row.feedback_rating,
         "feedback_comment": row.feedback_comment,
         "created_at": row.created_at,

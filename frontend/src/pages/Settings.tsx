@@ -53,6 +53,39 @@ function isPreferences(value: unknown): value is Preferences {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** One unclassified application, as returned by GET /app-classifications/unknown-apps. */
+interface UnknownApp {
+  process_name: string;
+  count: number;
+  last_seen: string | null;
+}
+
+/** Coerce the unknown-apps payload into UnknownApp objects.
+ *
+ *  Tolerates a bare string (older/other backends) so the UI keeps working, but
+ *  the object shape is what the current API returns. */
+function normaliseUnknownApps(value: unknown): UnknownApp[] {
+  if (!Array.isArray(value)) return [];
+  const out: UnknownApp[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string") {
+      out.push({ process_name: entry, count: 0, last_seen: null });
+      continue;
+    }
+    if (typeof entry === "object" && entry !== null && "process_name" in entry) {
+      const record = entry as Record<string, unknown>;
+      const name = record.process_name;
+      if (typeof name !== "string" || !name) continue;
+      out.push({
+        process_name: name,
+        count: typeof record.count === "number" ? record.count : 0,
+        last_seen: typeof record.last_seen === "string" ? record.last_seen : null,
+      });
+    }
+  }
+  return out;
+}
+
 export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +106,7 @@ export default function Settings() {
     category: "other",
     priority: 0,
   });
-  const [unknownApps, setUnknownApps] = useState<string[]>([]);
+  const [unknownApps, setUnknownApps] = useState<UnknownApp[]>([]);
   const [fetchingUnknown, setFetchingUnknown] = useState(false);
   const [addingRule, setAddingRule] = useState(false);
 
@@ -166,13 +199,26 @@ export default function Settings() {
   const handleFetchUnknown = async () => {
     setFetchingUnknown(true);
     try {
+      // The backend returns objects ({process_name, count, last_seen}), not
+      // bare strings. Rendering them directly as strings showed "[object
+      // Object]" and put that into the new-rule form's process_name.
       const apps = await getUnknownApps();
-      setUnknownApps(Array.isArray(apps) ? apps : []);
+      setUnknownApps(normaliseUnknownApps(apps));
     } catch (e: unknown) {
       setError(getErrorMessage(e, "获取失败"));
     } finally {
       setFetchingUnknown(false);
     }
+  };
+
+  const fillUnknownApp = (app: UnknownApp) => {
+    // Strip a Windows executable suffix only for display in the rule form;
+    // the stored value stays exactly as it appeared in the events.
+    setNewRule((prev) => ({
+      ...prev,
+      process_name: app.process_name,
+      category: prev.category ?? "other",
+    }));
   };
 
   const handleAddRule = async () => {
@@ -534,15 +580,18 @@ export default function Settings() {
           <div className="mb16" style={{ background: "var(--color-bg-inset)", padding: 12, borderRadius: 8 }}>
             <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 8 }}>未分类应用 · 点击直接填入下方三档分类表单</div>
             <div className="flex gap8" style={{ flexWrap: "wrap" }}>
-              {unknownApps.map((app, idx) => (
+              {unknownApps.map((app) => (
                 <button
-                  key={idx}
+                  key={app.process_name}
                   type="button"
                   className="badge badge-warning"
-                  onClick={() => setNewRule((prev) => ({ ...prev, process_name: app, category: prev.category ?? "other" }))}
-                  title={`为 ${app} 新建分类规则`}
+                  onClick={() => fillUnknownApp(app)}
+                  title={`为 ${app.process_name} 新建分类规则（出现 ${app.count} 次）`}
                 >
-                  {app}
+                  {app.process_name}
+                  {app.count > 0 && (
+                    <span style={{ opacity: 0.7, marginLeft: 4 }}>×{app.count}</span>
+                  )}
                 </button>
               ))}
             </div>

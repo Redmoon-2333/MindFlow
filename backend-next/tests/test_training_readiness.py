@@ -216,8 +216,10 @@ class TestEmptyDatabase:
         assert gates["minimum_class_feedback"]["status"] == "failed"
         assert gates["balanced_accuracy"]["status"] == "not_evaluated"
         assert gates["minority_f1"]["status"] == "not_evaluated"
-        assert gates["calibration_better_than_rule"]["status"] == "not_implemented"
-        assert gates["stable_date_folds"]["status"] == "not_implemented"
+        assert gates["calibration_better_than_rule"]["status"] == "not_evaluated"
+        assert gates["stable_date_folds"]["status"] == "not_evaluated"
+        assert body["v2_windows"]["schema_version"] == 3
+        assert gates["minimum_days"]["threshold"] == ">= 7"
 
         assert len(body["blockers"]) >= 2
         assert body["current_training_job"] is None
@@ -431,14 +433,97 @@ class TestTemporalOverlap:
         assert body["evaluable"] is True
         assert body["evaluable_explicit_count"] >= 10
 
-        # Gates for minimums should pass
+        # Three days allow an offline evaluation, not model activation.
         gates = {g["key"]: g for g in body["gates"]}
-        assert gates["minimum_days"]["status"] == "passed"
+        assert gates["minimum_days"]["status"] == "failed"
+        assert gates["minimum_days"]["threshold"] == ">= 7"
         assert gates["minimum_explicit_feedback"]["status"] == "passed"
         assert gates["minimum_class_feedback"]["status"] == "passed"
 
 
 # ── Tests: partial / insufficient ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize("bridge_dates", [False, True])
+@pytest.mark.parametrize("extra_weak_days", [False, True])
+async def test_evaluable_requires_independent_explicit_date_groups(
+    engine, session_factory, tables, bridge_dates: bool, extra_weak_days: bool,
+) -> None:
+    from mindflow.train.v2 import evaluate_v2_candidates, prepare_v2_training_data
+
+    base = datetime(2026, 9, 1, 9, tzinfo=UTC)
+    windows, sessions, feedback = [], [], []
+
+    def add_session(
+        sid: str, start: datetime, end: datetime, focus: bool,
+        window_starts: list[datetime],
+    ) -> None:
+        sessions.append({
+            "id": sid, "user_id": 1, "date": start.date().isoformat(),
+            "start_time": start.isoformat(), "end_time": end.isoformat(),
+        })
+        feedback.append({
+            "session_id": sid, "user_id": 1,
+            "label": "focus" if focus else "distracted", "score": 5 if focus else 1,
+            "start_time": start.isoformat(), "end_time": end.isoformat(),
+        })
+        windows.extend(
+            _v2_window(1, window_start, window_start + timedelta(minutes=5))
+            for window_start in window_starts
+        )
+
+    for day in range(3):
+        for slot in range(4):
+            start = base + timedelta(days=day, minutes=slot * 10)
+            add_session(
+                f"day-{day}-session-{slot}", start, start + timedelta(minutes=5),
+                bool(slot % 2), [start],
+            )
+    if bridge_dates:
+        for day in range(2):
+            start = base.replace(hour=23, minute=55) + timedelta(days=day)
+            add_session(
+                f"overnight-{day}", start, start + timedelta(minutes=20),
+                True, [start, start + timedelta(minutes=10)],
+            )
+    if extra_weak_days:
+        for day in (3, 4):
+            start = base + timedelta(days=day)
+            windows.append(_v2_window(1, start, start + timedelta(minutes=5)))
+
+    prepared = prepare_v2_training_data(windows, feedback)
+    explicit_groups = {
+        group for group, explicit in zip(prepared.group_ids, prepared.explicit_mask, strict=True)
+        if explicit
+    }
+    expected_groups = 1 if bridge_dates else 3
+    assert len(explicit_groups) == expected_groups
+    assert len(set(prepared.group_ids)) == expected_groups + (2 if extra_weak_days else 0)
+    if bridge_dates:
+        evaluation = evaluate_v2_candidates(prepared)
+        assert evaluation["status"] == "insufficient_data"
+        assert evaluation["date_group_count"] == 1
+
+    await _seed_windows(TelemetryRepository(session_factory=session_factory), windows)
+    await _seed_focus_sessions(engine, sessions)
+    await _seed_feedback(engine, feedback)
+    with TestClient(_make_app(engine, session_factory)) as client:
+        response = client.get("/api/v1/analytics/training-readiness")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["trainable"] is True
+    assert body["evaluable_explicit_count"] >= 10
+    assert body["evaluable_date_count"] == 3
+    assert body["evaluable"] is (not bridge_dates)
+    assert body["v2_windows"]["schema_version"] == 3
+    assert len(body["gates"]) == 7
+    blockers = {blocker["code"]: blocker for blocker in body["blockers"]}
+    if bridge_dates:
+        blocker = blockers["insufficient_independent_date_groups"]
+        assert "独立日期组" in blocker["message"]
+        assert "1" in blocker["message"] and "3" in blocker["message"]
+    else:
+        assert "insufficient_independent_date_groups" not in blockers
 
 
 class TestPartialMatches:
@@ -580,7 +665,7 @@ class TestTrainingReportGateOverride:
     """Real post-training values replace hard-coded not_implemented gates."""
 
     @staticmethod
-    def _service_with_report(report: dict[str, Any]) -> Any:
+    def _service_with_report(report: dict[str, Any] | None) -> Any:
         from mindflow.services.training_readiness_service import (
             TrainingReadinessService,
         )
@@ -635,17 +720,21 @@ class TestTrainingReportGateOverride:
         assert overrides["stable_date_folds"][0] == "failed"
         assert "0.224" in overrides["stable_date_folds"][1]
 
-    def test_report_passing_gates_reported_as_passed(self) -> None:
-        report = {
+    @staticmethod
+    def _passing_report() -> dict[str, Any]:
+        return {
             "quality_gate": {
                 "checks": {
                     "balanced_accuracy": True,
                     "minority_f1": True,
                     "calibration_better_than_rule": True,
+                    "calibration_available": True,
                     "stable_date_folds": True,
                 },
             },
             "evaluation": {
+                "status": "evaluated",
+                "calibration": {"method": "sigmoid", "status": "fitted"},
                 "candidate": {
                     "balanced_accuracy": 0.72,
                     "minority_f1": 0.65,
@@ -660,7 +749,8 @@ class TestTrainingReportGateOverride:
                 },
             },
         }
-        overrides = self._service_with_report(report)._report_gate_override()
+    def test_report_passing_gates_reported_as_passed(self) -> None:
+        overrides = self._service_with_report(self._passing_report())._report_gate_override()
 
         assert overrides["balanced_accuracy"][0] == "passed"
         assert overrides["minority_f1"][0] == "passed"
@@ -668,3 +758,141 @@ class TestTrainingReportGateOverride:
         assert overrides["stable_date_folds"][0] == "passed"
         for key in overrides:
             assert overrides[key][3] == ""  # no failure message when passed
+
+    @pytest.mark.parametrize(
+        ("available", "calibration"),
+        [
+            (False, {"method": "sigmoid", "status": "fitted"}),
+            (None, {"method": "sigmoid", "status": "fitted"}),
+            (True, None),
+            (True, {"method": "sigmoid", "status": "unavailable"}),
+            (True, {"status": "not_requested"}),
+            (True, {"method": "sigmoid", "status": "not_requested"}),
+        ],
+    )
+    def test_calibration_fails_closed_despite_passing_brier(
+        self, available: bool | None, calibration: dict[str, Any] | None,
+    ) -> None:
+        report = self._passing_report()
+        if available is None:
+            del report["quality_gate"]["checks"]["calibration_available"]
+        else:
+            report["quality_gate"]["checks"]["calibration_available"] = available
+        if calibration is None:
+            del report["evaluation"]["calibration"]
+        else:
+            report["evaluation"]["calibration"] = calibration
+        overrides = self._service_with_report(report)._report_gate_override()
+        gate = overrides["calibration_better_than_rule"]
+        assert gate[0] == "failed"
+        assert "0.180" in gate[1]
+        assert "校准" in gate[3]
+
+    @pytest.mark.parametrize("report", [
+        {},
+        {"evaluation": {"calibration": {
+            "method": "sigmoid", "status": "unavailable", "reason": "no grouped split",
+        }}},
+    ])
+    def test_report_without_metrics_still_reports_missing_calibration(
+        self, report: dict[str, Any],
+    ) -> None:
+        overrides = self._service_with_report(report)._report_gate_override()
+        gate = overrides["calibration_better_than_rule"]
+        assert gate[0] == "failed"
+        assert gate[1] == "-"
+        assert "校准" in gate[3]
+
+    @pytest.mark.parametrize("calibration", [
+        {"method": "sigmoid", "status": "fitted"},
+        {"method": "isotonic", "status": "fitted"},
+        {"method": None, "status": "not_requested"},
+        {"method": "sigmoid", "status": "not_requested"},
+        {"status": "not_requested"},
+        {"method": "sigmoid", "status": "unavailable"},
+        {},
+    ])
+    def test_calibration_semantics_match_training(self, calibration: dict[str, Any]) -> None:
+        from mindflow.train.v2 import evaluate_v2_quality_gate
+
+        report = self._passing_report()
+        report["evaluation"]["calibration"] = calibration
+        report["quality_gate"] = evaluate_v2_quality_gate(
+            report["evaluation"], explicit_feedback_count=28, explicit_focus_count=14,
+            explicit_distract_count=14, distinct_feedback_days=7,
+        )
+        expected = report["quality_gate"]["checks"]["calibration_available"]
+        overrides = self._service_with_report(report)._report_gate_override()
+        gate = overrides["calibration_better_than_rule"]
+        assert (gate[0] == "passed") is expected
+        if calibration.get("status") == "not_requested" and expected:
+            assert "未请求校准" in gate[1]
+
+    def test_deployment_calibration_failure_overrides_evaluation_success(self) -> None:
+        report = self._passing_report()
+        report["classifier"] = {"calibration": {
+            "method": "sigmoid", "status": "unavailable", "reason": "deployment split failed",
+        }}
+        overrides = self._service_with_report(report)._report_gate_override()
+        gate = overrides["calibration_better_than_rule"]
+        assert gate[0] == "failed"
+        assert "deployment split failed" in gate[3]
+
+    def test_not_requested_does_not_bypass_brier_comparison(self) -> None:
+        report = self._passing_report()
+        report["evaluation"]["calibration"] = {"method": None, "status": "not_requested"}
+        report["evaluation"]["candidate"]["brier_score"] = 0.8
+        report["quality_gate"]["checks"]["calibration_better_than_rule"] = False
+        overrides = self._service_with_report(report)._report_gate_override()
+        gate = overrides["calibration_better_than_rule"]
+        assert gate[0] == "failed"
+        assert "未请求校准" in gate[1]
+        assert gate[3] == "候选模型校准不优于规则引擎"
+
+    @pytest.mark.parametrize("available", [True, False, None])
+    async def test_http_preserves_seven_gates_and_blocks_unavailable_calibration(
+        self, engine, session_factory, tables, monkeypatch, available: bool | None,
+    ) -> None:
+        from mindflow.api.routes import analytics
+
+        report = self._passing_report()
+        if available is None:
+            del report["quality_gate"]["checks"]["calibration_available"]
+        else:
+            report["quality_gate"]["checks"]["calibration_available"] = available
+        monkeypatch.setattr(analytics, "_load_training_report", lambda request: report)
+        base = datetime(2026, 9, 1, 9, tzinfo=UTC)
+        windows, sessions, feedback = [], [], []
+        for index in range(28):
+            start = base + timedelta(days=index // 4, minutes=10 * (index % 4))
+            end = start + timedelta(minutes=5)
+            sid = f"calibration-{index}"
+            windows.append(_v2_window(1, start, end))
+            sessions.append({
+                "id": sid, "user_id": 1, "date": start.date().isoformat(),
+                "start_time": start.isoformat(), "end_time": end.isoformat(),
+            })
+            feedback.append({
+                "session_id": sid, "user_id": 1,
+                "label": "focus" if index % 2 else "distracted",
+                "score": 5 if index % 2 else 1,
+            })
+        await _seed_windows(TelemetryRepository(session_factory=session_factory), windows)
+        await _seed_focus_sessions(engine, sessions)
+        await _seed_feedback(engine, feedback)
+
+        with TestClient(_make_app(engine, session_factory)) as client:
+            response = client.get("/api/v1/analytics/training-readiness")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["trainable"] is True
+        assert body["v2_windows"]["schema_version"] == 3
+        gates = {gate["key"]: gate for gate in body["gates"]}
+        assert len(gates) == 7
+        assert gates["minimum_days"]["threshold"] == ">= 7"
+        assert gates["minimum_days"]["actual"] == "7"
+        assert sum(gate["passed"] for gate in gates.values()) == (7 if available else 6)
+        if not available:
+            gate = gates["calibration_better_than_rule"]
+            assert gate["status"] == "failed"
+            assert {"code": gate["blocker_code"], "message": gate["message"]} in body["blockers"]

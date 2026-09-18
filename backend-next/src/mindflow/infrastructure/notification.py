@@ -27,13 +27,24 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
 from loguru import logger
 
+from mindflow.infrastructure.llm.safety import safe_error_metadata
+
 Urgency = Literal["low", "normal", "critical"]
+
+
+@dataclass(frozen=True)
+class NotificationDelivery:
+    """Native delivery and response actions are independent capabilities."""
+
+    delivered: bool
+    interactive: bool = False
 
 # How long the interactive intervention popup stays open (seconds),
 # mapped from urgency so critical interventions demand more attention.
@@ -89,6 +100,17 @@ class LogOnlyNotifier:
         logger.info("NOTIFICATION [{}] {}: {}", urgency, title, body)
         return True
 
+    async def send_with_result(
+        self,
+        title: str,
+        body: str,
+        urgency: Urgency = "normal",
+        intervention_id: str | None = None,
+        auth_token: str | None = None,
+    ) -> NotificationDelivery:
+        await self.send(title, body, urgency, intervention_id, auth_token)
+        return NotificationDelivery(delivered=False)
+
 
 class Win10ToastNotifier:
     """Windows notification via win10toast (works for unpackaged apps).
@@ -132,7 +154,7 @@ class Win10ToastNotifier:
             await asyncio.to_thread(_show)
             return True
         except Exception as exc:
-            logger.warning("Win10ToastNotifier failed: {}", exc)
+            logger.warning("Win10ToastNotifier failed: {}", safe_error_metadata(exc))
             return False
 
 
@@ -219,7 +241,7 @@ class _TkinterInteractivePopup:
                     return False
                 await asyncio.sleep(self._POLL_INTERVAL_S)
         except Exception as exc:
-            logger.warning("Intervention popup failed: {}", exc)
+            logger.warning("Intervention popup failed: {}", safe_error_metadata(exc))
             return False
         finally:
             if not ready and process is not None and process.poll() is None:
@@ -249,7 +271,7 @@ class WindowsNotifier:
                 self._backends.append(w)
                 logger.debug("WindowsNotifier: win10toast backend added")
         except Exception as exc:
-            logger.debug("WindowsNotifier: win10toast init failed: {}", exc)
+            logger.debug("WindowsNotifier: win10toast init failed: {}", safe_error_metadata(exc))
 
         # 2. winrt (richer API, requires packaged app or valid AUMID)
         try:
@@ -264,7 +286,7 @@ class WindowsNotifier:
         except ImportError:
             logger.debug("WindowsNotifier: winrt not available")
         except Exception as exc:
-            logger.debug("WindowsNotifier: winrt init failed: {}", exc)
+            logger.debug("WindowsNotifier: winrt init failed: {}", safe_error_metadata(exc))
 
         # 3. plyer (cross-platform, last resort)
         try:
@@ -288,7 +310,21 @@ class WindowsNotifier:
         intervention_id: str | None = None,
         auth_token: str | None = None,
     ) -> bool:
-        """Send notification. For interventions, try the desktop popup first."""
+        """Preserve the legacy response-action success flag for interventions."""
+        result = await self.send_with_result(
+            title, body, urgency, intervention_id, auth_token
+        )
+        return result.interactive if intervention_id and auth_token else result.delivered
+
+    async def send_with_result(
+        self,
+        title: str,
+        body: str,
+        urgency: Urgency = "normal",
+        intervention_id: str | None = None,
+        auth_token: str | None = None,
+    ) -> NotificationDelivery:
+        """Report actual delivery separately from availability of action buttons."""
         # Interactive popup (with buttons) — only for interventions
         interactive_requested = bool(intervention_id and auth_token)
         if interactive_requested:
@@ -296,9 +332,9 @@ class WindowsNotifier:
                 if await self._interactive.send(
                     title, body, urgency, intervention_id, auth_token
                 ):
-                    return True
+                    return NotificationDelivery(delivered=True, interactive=True)
             except Exception as exc:
-                logger.debug("Interactive toast failed, falling back: {}", exc)
+                logger.debug("Interactive toast failed, falling back: {}", safe_error_metadata(exc))
 
         # Plain notification backends
         for backend in self._backends:
@@ -309,17 +345,37 @@ class WindowsNotifier:
                             "Interactive popup unavailable; sent plain notification "
                             "without response actions"
                         )
-                        return False
-                    return True
+                    return NotificationDelivery(delivered=True)
             except Exception as exc:
                 logger.debug(
                     "WindowsNotifier backend {} failed: {}",
                     type(backend).__name__,
-                    exc,
+                    safe_error_metadata(exc),
                 )
         # All backends failed — log as last resort
         logger.info("NOTIFICATION [{}] {}: {}", urgency, title, body)
-        return False
+        return NotificationDelivery(delivered=False)
+
+
+async def send_notification(
+    notifier: NotificationService,
+    *,
+    title: str,
+    body: str,
+    urgency: Urgency = "normal",
+    intervention_id: str | None = None,
+    auth_token: str | None = None,
+) -> NotificationDelivery:
+    """Use delivery evidence without changing the legacy ``send`` contract."""
+    if isinstance(notifier, (WindowsNotifier, LogOnlyNotifier)):
+        return await notifier.send_with_result(
+            title, body, urgency, intervention_id, auth_token
+        )
+    delivered = await notifier.send(
+        title=title, body=body, urgency=urgency,
+        intervention_id=intervention_id, auth_token=auth_token,
+    )
+    return NotificationDelivery(delivered=bool(delivered))
 
 
 class _WinRTNotifier:
@@ -383,7 +439,7 @@ class _WinRTNotifier:
             await asyncio.to_thread(_create_and_show)
             return True
         except Exception as exc:
-            logger.debug("WinRT notifier failed: {}", exc)
+            logger.debug("WinRT notifier failed: {}", safe_error_metadata(exc))
             return False
 
 
@@ -404,7 +460,7 @@ class _PlyerNotifier:
             plyer_notification.notify(title=title, message=body, timeout=8)
             return True
         except Exception as exc:
-            logger.debug("Plyer notifier failed: {}", exc)
+            logger.debug("Plyer notifier failed: {}", safe_error_metadata(exc))
             return False
 
 
@@ -425,7 +481,10 @@ def create_notifier(
         try:
             return WindowsNotifier(api_base_url=api_base_url)
         except Exception as exc:
-            logger.warning("WindowsNotifier init failed: {}, falling back to LogOnly", exc)
+            logger.warning(
+                "WindowsNotifier init failed: {}, falling back to LogOnly",
+                safe_error_metadata(exc),
+            )
 
     if platform == "darwin":
         logger.info("macOS notifications not yet implemented (Wave 7+), using LogOnly")

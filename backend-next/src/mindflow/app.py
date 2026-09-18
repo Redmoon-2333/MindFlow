@@ -94,6 +94,7 @@ from mindflow.infrastructure.repositories.report import (
 from mindflow.infrastructure.repositories.scheduled_jobs import ScheduledJobRunsRepository
 from mindflow.infrastructure.repositories.tasks import SQLAlchemyTaskRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.infrastructure.repositories.training_jobs import TrainingJobRepository
 from mindflow.infrastructure.repositories.workflow_runs import (
     BudgetReservationRepository,
     WorkflowRunsRepository,
@@ -477,11 +478,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.warning("Failed to load feature schema v2 model: {}", exc)
 
         # ── 7-ext. Training job service (manual V2 model training) ──────────
+        # Persisted so the lifecycle survives a restart and an in-flight run is
+        # recorded as `interrupted` instead of disappearing.
+        training_job_repository = TrainingJobRepository(session_factory=session_factory)
         training_job_service = TrainingJobService(
             telemetry_repo=telemetry_repository,
             focus_repo=focus_repository,
             user_id=1,
+            jobs_repo=training_job_repository,
         )
+        app.state.training_job_service = training_job_service
+        # Restore job visibility before scheduler admission. Failure must not
+        # silently start a runtime that cannot account for persisted jobs.
+        recovered = await training_job_service.recover_after_restart()
+        if recovered:
+            logger.warning(
+                "Recovered {} interrupted training job(s) from a previous run", recovered,
+            )
 
         # ── 7a. Wave 5 Services ────────────────────────────────────────────
         analysis_service = AnalysisService(
@@ -574,6 +587,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 else None
             ),
             ollama_model=settings.llm.ollama_model,
+            classification_repo=classification_rules_repository,
         )
 
         # ── 7d. G003: Panel service ──────────────────────────────────────────
@@ -790,7 +804,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield  # ── Application runs here ──
     finally:
         logger.info("Shutting down MindFlow...")
-        # Cancel any active training job before tearing down services.
+        # Join training/publication and flush lifecycle writes before DB teardown.
         _ts = getattr(app.state, "training_job_service", None)
         if _ts is not None:
             try:
@@ -836,11 +850,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 # ── App factory ────────────────────────────────────────────────────────────
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, configure_logging: bool = True,
+) -> FastAPI:
     """Create and configure a MindFlow FastAPI application instance.
 
     Args:
         settings: Application settings. If None, loads from defaults.
+        configure_logging: Configure process logging; disable for schema-only construction.
 
     Returns:
         A fully configured FastAPI application ready to serve.
@@ -851,7 +868,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings = get_settings()
 
     # Configure logging
-    setup_logging(settings)
+    if configure_logging:
+        setup_logging(settings)
 
     app = FastAPI(
         title="MindFlow API",

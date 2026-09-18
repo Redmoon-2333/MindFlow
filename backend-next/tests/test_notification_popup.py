@@ -71,8 +71,32 @@ def test_post_response_sends_authorized_json() -> None:
     assert captured["url"].endswith("/intervention/abc/response")
     assert captured["headers"]["Authorization"] == "Bearer secret-token"
     assert captured["headers"]["Content-type"] == "application/json"
-    assert captured["body"] == {"response": "dismissed", "latency_s": 2.75}
+    assert captured["body"] == {
+        "response": "dismissed",
+        "latency_s": 2.75,
+        "source": "human",
+    }
     assert captured["timeout"] == 5.0
+
+
+def test_post_response_can_mark_an_automatic_default() -> None:
+    """A timeout default is reported as auto so it cannot beat a real answer."""
+    captured: dict[str, Any] = {}
+
+    def opener(request: Any, timeout: float) -> _FakeResponse:
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return _FakeResponse()
+
+    post_response(
+        api_url="http://127.0.0.1:8765/api/v1/intervention/abc/response",
+        auth_token="secret-token",
+        response="ignored",
+        latency_s=30.0,
+        opener=opener,
+        source="auto",
+    )
+
+    assert captured["body"]["source"] == "auto"
 
 
 @pytest.mark.asyncio

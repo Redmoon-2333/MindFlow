@@ -458,7 +458,7 @@ async def get_training_job(
     if job_service is None:
         raise _not_found("训练任务服务（未初始化）")
 
-    job = job_service.get_job(job_id)
+    job = await job_service.get_job_detail(job_id)
     if job is None:
         raise _not_found(f"训练任务（{job_id}）")
 

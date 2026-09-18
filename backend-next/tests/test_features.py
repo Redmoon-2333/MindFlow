@@ -8,10 +8,11 @@ Tests cover:
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from mindflow.domain.events import ActivityEvent, make_event
@@ -42,6 +43,11 @@ def _ts(offset_minutes: int = 0) -> datetime:
 # Hypothesis datetimes strategy requires naive bounds + separate timezones kwarg.
 _MIN_DATE = datetime(2020, 1, 1)
 _MAX_DATE = datetime(2030, 1, 1)
+# Windows filesystem scans for Hypothesis constants can exceed the draw-time
+# health check; retain all examples, deadlines and property assertions.
+_PROPERTY_SETTINGS = settings(
+    suppress_health_check=[HealthCheck.too_slow] if sys.platform == "win32" else [],
+)
 
 
 @st.composite
@@ -199,12 +205,14 @@ class TestFocusScore:
 
     # ── Hypothesis property test ──
 
+    @_PROPERTY_SETTINGS
     @given(events=event_lists())
     def test_score_in_range(self, events: list[ActivityEvent]):
         """focus_score is always in [0, 100], regardless of input."""
         score = focus_score(events)
         assert 0.0 <= score <= 100.0
 
+    @_PROPERTY_SETTINGS
     @given(events=event_lists())
     def test_score_in_range_custom_weights(self, events: list[ActivityEvent]):
         """focus_score stays in [0, 100] even with extreme custom weights."""

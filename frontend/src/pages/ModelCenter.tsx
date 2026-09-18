@@ -53,6 +53,7 @@ function jobStatusLabel(status: string): string {
     succeeded: "已完成",
     failed: "已失败",
     cancelled: "已取消",
+    interrupted: "已中断",
   };
   return map[status] ?? status;
 }
@@ -314,7 +315,7 @@ export default function ModelCenter() {
   // ── Derived state ──
 
   const canStartTraining = rd?.trainable === true && !activeJobId;
-  const activeJobStatus = activeJob?.status ?? rd?.current_training_job?.status;
+  const activeJobStatus: string | undefined = activeJob?.status ?? rd?.current_training_job?.status;
   const cancelAllowed = activeJobStatus === "pending" || activeJobStatus === "preparing_data";
   const currentJobId = activeJob?.job_id ?? rd?.current_training_job?.job_id ?? null;
   const polling = activeJobId !== null;
@@ -328,7 +329,7 @@ export default function ModelCenter() {
     <div>
       <div className="mc-header">
         <h1>模型中心</h1>
-        <p>V2 特征模型训练就绪评估与任务管理</p>
+        <p>行为特征模型训练就绪评估与任务管理</p>
       </div>
 
       {/* Tabs */}
@@ -374,7 +375,7 @@ export default function ModelCenter() {
                   </div>
                 </div>
                 <div className="stat-card">
-                  <div className="label">V2 特征窗口</div>
+                  <div className="label">行为特征窗口</div>
                   <div className="value">{rd.v2_windows.total}</div>
                   <div className="sub" style={{ color: "var(--color-text-tertiary)" }}>
                     {rd.v2_windows.date_range_days} 天 · v{rd.v2_windows.schema_version}
@@ -583,6 +584,11 @@ export default function ModelCenter() {
               )}
 
               {/* Error display */}
+              {activeJobStatus === "interrupted" && (
+                <div className="error-box mt8">
+                  任务因服务中断而结束，可重新启动训练。
+                </div>
+              )}
               {activeJob?.error && (
                 <div className="error-box mt8">
                   训练错误: {activeJob.error}

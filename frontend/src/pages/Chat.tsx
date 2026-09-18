@@ -55,18 +55,21 @@ export default function Chat() {
   const messagesSeqRef = useRef(0);
   const loadMessages = useCallback(async (sessionId: string) => {
     const seq = ++messagesSeqRef.current;
+    const targetGen = conversationGenRef.current;
     setMessagesLoading(true);
     setError(null);
     try {
       const data = await getChatMessages(sessionId);
-      if (seq !== messagesSeqRef.current) return; // stale response
+      if (seq !== messagesSeqRef.current || targetGen !== conversationGenRef.current) return;
       setMessages(Array.isArray(data) ? data : []);
     } catch (e: unknown) {
-      if (seq !== messagesSeqRef.current) return;
+      if (seq !== messagesSeqRef.current || targetGen !== conversationGenRef.current) return;
       setError(getErrorMessage(e, "Request failed"));
       setMessages([]);
     } finally {
-      if (seq === messagesSeqRef.current) setMessagesLoading(false);
+      if (seq === messagesSeqRef.current && targetGen === conversationGenRef.current) {
+        setMessagesLoading(false);
+      }
     }
   }, []);
 
@@ -75,20 +78,31 @@ export default function Chat() {
   }, [loadSessions]);
 
   const handleSelectSession = (sessionId: string) => {
+    conversationGenRef.current += 1;
     setActiveSessionId(sessionId);
     loadMessages(sessionId);
   };
 
   const handleNewChat = () => {
+    conversationGenRef.current += 1;
     setActiveSessionId(null);
     setMessages([]);
+    setMessagesLoading(false);
+    setError(null);
     setInput("");
   };
 
   // Tracks the session a reply belongs to. If the user switches sessions (or
   // starts a new chat) while the AI reply is in flight, the reply must NOT be
   // appended to the wrong thread (audit report — chat session cross-talk).
+  //
+  // A generation counter is needed in addition to the session id: starting a
+  // new chat sets the session to `null`, and a reply that was also sent with
+  // `null` would compare equal and land in the fresh conversation. Bumping the
+  // generation on every conversation change makes "same id" insufficient on
+  // its own.
   const activeSessionIdRef = useRef<string | null>(null);
+  const conversationGenRef = useRef(0);
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
 
   const handleSend = async () => {
@@ -96,6 +110,7 @@ export default function Chat() {
     if (!trimmed || loading) return;
 
     const targetSessionId = activeSessionIdRef.current;
+    const targetGen = conversationGenRef.current;
     const userMsg: ChatMessage = { role: "user", content: trimmed };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
@@ -109,6 +124,8 @@ export default function Chat() {
     try {
       const reply = await sendChat(trimmed, targetSessionId ?? undefined);
       // Guard: ignore the reply if the conversation changed while awaiting.
+      // Both checks are required — see the generation comment above.
+      if (targetGen !== conversationGenRef.current) return;
       if (targetSessionId !== activeSessionIdRef.current) return;
       if (!targetSessionId && reply?.session_id) {
         setActiveSessionId(reply.session_id);

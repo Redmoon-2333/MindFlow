@@ -996,7 +996,7 @@ export interface paths {
         };
         /**
          * Get Session Messages
-         * @description Get all messages for a specific chat session.
+         * @description Get the current user's messages for a specific chat session.
          */
         get: operations["get_session_messages_api_v1_chat__session_id__messages_get"];
         put?: never;
@@ -1563,7 +1563,7 @@ export interface components {
              * @default pending
              * @enum {string}
              */
-            status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled";
+            status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled" | "interrupted";
         };
         /**
          * DailyReportResponse
@@ -1715,7 +1715,9 @@ export interface components {
         /** InterventionHistoryResponse */
         InterventionHistoryResponse: {
             /** Items */
-            items: Record<string, never>[];
+            items: {
+                [key: string]: unknown;
+            }[];
             /** Count */
             count: number;
             /**
@@ -1756,6 +1758,12 @@ export interface components {
              * @default 0
              */
             latency_s: number;
+            /**
+             * Source
+             * @default human
+             * @enum {string}
+             */
+            source: "auto" | "human";
         };
         /** InterventionTriggerRequest */
         InterventionTriggerRequest: {
@@ -2103,7 +2111,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled";
+            status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled" | "interrupted";
             /**
              * Source
              * @default db
@@ -2128,9 +2136,13 @@ export interface components {
             /** Feature Schema Version */
             feature_schema_version?: number | null;
             /** Quality Gate */
-            quality_gate?: Record<string, never> | null;
+            quality_gate?: {
+                [key: string]: unknown;
+            } | null;
             /** Evaluation */
-            evaluation?: Record<string, never> | null;
+            evaluation?: {
+                [key: string]: unknown;
+            } | null;
             /** Error */
             error?: string | null;
         };
@@ -2145,7 +2157,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled";
+            status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled" | "interrupted";
             /** Started At */
             started_at?: string | null;
             /** Completed At */
@@ -2270,11 +2282,15 @@ export interface components {
                 [key: string]: number;
             };
             /** Trend */
-            trend?: Record<string, never>;
+            trend?: {
+                [key: string]: unknown;
+            };
             /** Week Number */
             week_number: number;
             /** Intervention Effectiveness */
-            intervention_effectiveness?: Record<string, never> | null;
+            intervention_effectiveness?: {
+                [key: string]: unknown;
+            } | null;
             /** Total Focus Minutes */
             total_focus_minutes: number;
             /** Total Sessions */
@@ -2284,7 +2300,9 @@ export interface components {
             /** Avg Focus Score */
             avg_focus_score: number;
             /** Daily Summary */
-            daily_summary?: Record<string, never>[];
+            daily_summary?: {
+                [key: string]: unknown;
+            }[];
             /**
              * Data State
              * @enum {string}
@@ -2315,7 +2333,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -2355,7 +2375,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -2570,7 +2592,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -2599,7 +2623,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -2655,7 +2681,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -2669,7 +2697,9 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": Record<string, never>;
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {
@@ -2679,7 +2709,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -2702,7 +2734,9 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": Record<string, never>;
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {
@@ -2712,7 +2746,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -2741,7 +2777,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>[];
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
                 };
             };
         };
@@ -2765,7 +2803,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>[];
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
                 };
             };
             /** @description Validation Error */
@@ -2798,7 +2838,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -2856,7 +2898,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>[];
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
                 };
             };
         };
@@ -2879,7 +2923,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -2911,7 +2957,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -2946,7 +2994,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -3042,7 +3092,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -3094,7 +3146,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -3123,7 +3177,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -3143,7 +3199,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -3269,7 +3327,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -3722,7 +3782,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>[];
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
                 };
             };
         };
@@ -3744,7 +3806,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>[];
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
                 };
             };
             /** @description Validation Error */
@@ -3891,7 +3955,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -3911,7 +3977,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -3955,7 +4023,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -4015,7 +4085,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -4076,7 +4148,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -4107,7 +4181,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

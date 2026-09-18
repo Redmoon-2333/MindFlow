@@ -10,6 +10,7 @@ next time the app calls ``joblib.load``.
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import warnings
@@ -48,6 +49,16 @@ class ModelSignatureError(Exception):
     """
 
 
+class ModelPublicationError(Exception):
+    """Raised when a candidate version cannot be safely activated.
+
+    Activation is refused rather than attempted when the freshly written
+    artifacts fail their trial load, so the previously active version stays
+    active and the failure is reported instead of silently deploying a
+    broken model.
+    """
+
+
 
 class ModelManager:
     """Central model management with versioned persistence.
@@ -78,6 +89,7 @@ class ModelManager:
         self.clustering = BehaviorClustering()
         self.hmm = BehaviorHMM()
         self._calibration = calibration
+        self._loaded_version_tag: str | None = None
 
         self._use_ensemble: bool = False
         self.classifier: FocusClassifier | EnsembleClassifier = FocusClassifier()
@@ -116,6 +128,10 @@ class ModelManager:
         sample_weight: npt.NDArray[Any] | None = None,
         min_confidence: float = 0.0,
         use_explainer: bool = False,
+        groups: npt.NDArray[Any] | None = None,
+        *,
+        label_sources: npt.NDArray[Any] | None = None,
+        session_ids: npt.NDArray[Any] | None = None,
     ) -> TrainingSummary:
         """Train all models and return summary.
 
@@ -125,6 +141,12 @@ class ModelManager:
             labels: Binary labels (1=focus, 0=distraction).
             sample_weight: Per-sample confidence weights.
             min_confidence: Filter samples below this confidence.
+            groups: Optional per-sample group id (capture date). Passed to the
+                classifier so the probability calibrator's holdout is split by
+                group instead of by row.
+            label_sources: Optional provenance aligned with features, filtered
+                alongside confidence weights for the ensemble's local budgets.
+            session_ids: Optional feedback session ids aligned with features.
 
         Returns:
             ``TrainingSummary`` with clustering, classifier, hmm subsections.
@@ -165,12 +187,26 @@ class ModelManager:
         low_conf_count = int((~high_conf_mask).sum())
 
         if len(np.unique(y_high)) >= 2 and len(X_high) >= 10:
-            self.classifier.fit(
-                X_high,
-                y_high,
-                feature_names,
-                sample_weight=sw_high if sample_weight is not None else None,
-            )
+            groups_high = None
+            if groups is not None:
+                groups_high = np.asarray(groups)[high_conf_mask]
+            fit_kwargs: dict[str, Any] = {
+                "feature_names": feature_names,
+                "sample_weight": sw_high if sample_weight is not None else None,
+            }
+            # Only the ensemble understands `groups` (it uses them to keep the
+            # calibration holdout date-disjoint). FocusClassifier has no
+            # calibrator, so leaving it unpassed keeps the call contract clean.
+            if groups_high is not None and isinstance(
+                self.classifier, EnsembleClassifier
+            ):
+                fit_kwargs["groups"] = groups_high
+            if isinstance(self.classifier, EnsembleClassifier):
+                if label_sources is not None:
+                    fit_kwargs["label_sources"] = np.asarray(label_sources)[high_conf_mask]
+                if session_ids is not None:
+                    fit_kwargs["session_ids"] = np.asarray(session_ids)[high_conf_mask]
+            self.classifier.fit(X_high, y_high, **fit_kwargs)
             summary_classifier = {
                 "feature_importance": self.classifier.get_feature_importance(),
                 "high_confidence_samples": int(len(X_high)),
@@ -236,11 +272,33 @@ class ModelManager:
         activate: bool = True,
         manifest: dict[str, Any] | None = None,
     ) -> dict[str, str]:
-        """Save all models with versioned filenames and a manifest.
+        """Save all models with versioned filenames and a per-version manifest.
+
+        Each run writes its own ``manifest-<tag>.json`` plus (by the pipeline)
+        ``training_report-<tag>.json``. A shared ``manifest.json`` /
+        ``training_report.json`` would be overwritten by every run, so the
+        version it described could no longer be identified after the fact.
 
         Returns:
             Dict mapping model names to their saved filenames.
         """
+        previous: dict[str, str] = {}
+        if activate and self.latest_path.exists():
+            try:
+                pointer = json.loads(self.latest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ModelPublicationError("cannot read previous active pointer") from exc
+            if (
+                not isinstance(pointer, dict)
+                or not all(
+                    isinstance(pointer.get(name), str) and pointer[name]
+                    for name in ("clustering", "classifier", "hmm")
+                )
+                or not all(isinstance(value, str) for value in pointer.values())
+            ):
+                raise ModelPublicationError("invalid previous active pointer")
+            previous = pointer
+
         tag = self._new_version_tag
 
         names: dict[str, str] = {
@@ -280,31 +338,76 @@ class ModelManager:
             "files": names,
         }
         manifest_data.update(manifest or {})
-        (self.models_dir / "manifest.json").write_text(
-            json.dumps(manifest_data, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        # Per-version manifest: the shared file is kept as a convenience
+        # pointer to the newest write, but the versioned copy is the record.
+        manifest_text = json.dumps(manifest_data, indent=2, ensure_ascii=False)
+        self._atomic_write_text(self.models_dir / f"manifest-{tag}.json", manifest_text)
+        self._atomic_write_text(self.models_dir / "manifest.json", manifest_text)
 
         if activate:
+            # Verify the artifacts load *before* pointing `latest` at them, so
+            # a corrupt or unloadable candidate can never become active.
+            if not self._verify_loadable(names):
+                raise ModelPublicationError(
+                    f"refusing to activate version {tag}: artifacts failed to load"
+                )
             self._write_latest(names)
-            # Keep the model directory bounded: drop artifacts older than the
-            # newest N versions while never touching the active version.
-            self._prune_old_versions(
-                keep=json.loads(
-                    self.latest_path.read_text(encoding="utf-8")
-                ) if self.latest_path.exists() else None
-            )
+            self._loaded_version_tag = tag
+            # Runtime publication follows pipeline disk activation. Keep the
+            # previous active files and HMACs available for publication rollback.
+            self._prune_old_versions(keep={
+                **names,
+                **{f"previous_{key}": value for key, value in previous.items()},
+            })
 
         return names
 
+    @staticmethod
+    def _atomic_write_text(path: Path, text: str) -> None:
+        """Write *text* to *path* atomically (temp file + replace).
+
+        ``latest.json`` and the manifests are read by other processes during
+        startup; a partially written file would make a valid model version look
+        missing or corrupt. ``os.replace`` is atomic on both POSIX and Windows.
+        """
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+
+    def _verify_loadable(self, names: dict[str, str]) -> bool:
+        """Trial-load the given artifacts into a throwaway manager.
+
+        Runs the same signature check and ``joblib.load`` path that
+        ``load_latest`` uses, but into a separate instance so a failure leaves
+        the currently active models untouched.
+        """
+        probe = type(self).__new__(type(self))
+        probe.models_dir = self.models_dir
+        probe.latest_path = self.latest_path
+        probe.clustering = BehaviorClustering()
+        probe.hmm = BehaviorHMM()
+        probe._calibration = self._calibration
+        probe._loaded_version_tag = None
+        probe._use_ensemble = self._use_ensemble
+        probe.classifier = (
+            EnsembleClassifier() if self._use_ensemble else FocusClassifier()
+        )
+        return probe._load_versions(names)
+
     def _write_latest(self, names: dict[str, str]) -> None:
-        """Write latest.json pointer file."""
+        """Write the ``latest.json`` pointer atomically.
+
+        The pointer is the single source of truth for which version is active,
+        so it is replaced in one step rather than truncated and rewritten.
+        """
         existing: dict[str, str] = {}
         if self.latest_path.exists():
             with suppress(json.JSONDecodeError, OSError):
                 existing = json.loads(self.latest_path.read_text(encoding="utf-8"))
         existing.update(names)
-        self.latest_path.write_text(
-            json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+        self._atomic_write_text(
+            self.latest_path,
+            json.dumps(existing, indent=2, ensure_ascii=False),
         )
 
     # ── Version retention (audit report — model versions never cleaned) ──
@@ -324,7 +427,10 @@ class ModelManager:
             keep: Filenames to never delete (defaults to the current
                 ``latest.json`` pointers — the active version).
         """
+        if keep is None and self.latest_path.exists():
+            keep = json.loads(self.latest_path.read_text(encoding="utf-8"))
         protected = set((keep or {}).values())
+        protected.update(f"{name}.hmac" for name in tuple(protected))
         # Group artifacts by version tag parsed from filenames:
         #   classifier-20260806_095623_1e5fcd.pkl(.hmac)
         versions: dict[str, list[Path]] = {}
@@ -510,6 +616,9 @@ class ModelManager:
                 np.array(tm) if tm is not None else None
             )
             self.hmm._is_fitted = bool(hmm_data.get("is_fitted", False))
+            self._loaded_version_tag = (
+                name_map["clustering"].removeprefix("clustering-").removesuffix(".pkl")
+            )
             return True
 
         except InconsistentVersionWarning as exc:
@@ -526,7 +635,9 @@ class ModelManager:
 
     @property
     def current_version_tag(self) -> str | None:
-        """Return the current version tag from latest.json, or None."""
+        """Identify the loaded model, not a candidate published by another manager."""
+        if self._loaded_version_tag is not None:
+            return self._loaded_version_tag
         if not self.latest_path.exists():
             return None
         try:

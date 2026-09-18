@@ -84,6 +84,8 @@ class ChatRepository:
         self,
         session_id: str,
         limit: int = 20,
+        *,
+        user_id: int = 1,
     ) -> list[dict[str, Any]]:
         """Return the most recent messages for a session, oldest-first.
 
@@ -93,13 +95,17 @@ class ChatRepository:
         Args:
             session_id: The conversation session identifier.
             limit: Maximum number of messages to return (default 20).
+            user_id: Owner of the messages (default 1 for single-user mode).
 
         Returns:
             List of message dicts sorted by created_at ascending.
         """
         stmt = (
             sa.select(chat_messages)
-            .where(chat_messages.c.session_id == session_id)
+            .where(
+                chat_messages.c.session_id == session_id,
+                chat_messages.c.user_id == user_id,
+            )
             .order_by(chat_messages.c.created_at.desc(), chat_messages.c.id.desc())
             .limit(limit)
         )

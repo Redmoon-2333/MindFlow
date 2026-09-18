@@ -1,4 +1,4 @@
-"""Manually-triggered V2 training jobs with in-memory lifecycle management.
+"""V2 training jobs with ordered persistence and guarded runtime publication.
 
 One active job per process. The synchronous ``run_training`` pipeline is
 dispatched to a worker thread via ``asyncio.to_thread``.
@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from loguru import logger
 
@@ -28,6 +28,7 @@ from mindflow.api.schemas import JobStatus, TrainingJobResponse, TrainingJobSumm
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.focus import SQLAlchemyFocusSessionRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.infrastructure.repositories.training_jobs import TrainingJobRepository
 from mindflow.train.models.manager import ModelManager
 from mindflow.train.pipeline import TrainingReport, run_training
 
@@ -107,6 +108,15 @@ class _JobState:
         )
 
 
+@dataclass
+class _PublicationSnapshot:
+    latest_path: Path
+    latest_text: str | None
+    manager: Any
+    mode: str
+    consumers: list[tuple[Any, Any]]
+
+
 # ── Service ─────────────────────────────────────────────────────────────────
 
 
@@ -127,12 +137,35 @@ class TrainingJobService:
         telemetry_repo: TelemetryRepository,
         focus_repo: SQLAlchemyFocusSessionRepository,
         user_id: int = 1,
+        jobs_repo: TrainingJobRepository | None = None,
     ) -> None:
         self._telemetry_repo = telemetry_repo
         self._focus_repo = focus_repo
         self._user_id = user_id
         self._lock = asyncio.Lock()
         self._current: _JobState | None = None
+        # Optional persistence: when wired, job lifecycle survives restarts and
+        # in-flight runs are recorded as ``interrupted`` rather than vanishing.
+        self._jobs_repo = jobs_repo
+        self._persist_tail: asyncio.Task[None] | None = None
+        self._persist_errors: list[Exception] = []
+        self._closing = False
+
+    async def recover_after_restart(self) -> int:
+        """Mark any non-terminal persisted job ``interrupted``.
+
+        Called once during startup. Returns how many rows were changed so the
+        caller can log it. No-op when persistence is not wired.
+        """
+        if self._jobs_repo is None:
+            return 0
+        count = await self._jobs_repo.mark_interrupted(self._user_id)
+        row = await self._jobs_repo.latest_for_user(self._user_id)
+        if row is not None:
+            response = TrainingJobResponse.model_validate(row)
+            self._current = _JobState(**response.model_dump())
+            self._current._done.set()
+        return count
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -144,10 +177,21 @@ class TrainingJobService:
         return self._current.to_summary()
 
     def get_job(self, job_id: str) -> TrainingJobResponse | None:
-        """Return full job detail by id, or None if not found."""
-        if self._current is None or self._current.job_id != job_id:
-            return None
-        return self._current.to_response()
+        """Return the current in-memory job (legacy synchronous contract)."""
+        if self._current is not None and self._current.job_id == job_id:
+            return self._current.to_response()
+        return None
+
+    async def get_job_detail(self, job_id: str) -> TrainingJobResponse | None:
+        """Resolve current or historical detail within this service's user scope."""
+        current = self.get_job(job_id)
+        if current is not None:
+            return current
+        if self._jobs_repo is not None:
+            row = await self._jobs_repo.get(job_id, user_id=self._user_id)
+            if row is not None:
+                return TrainingJobResponse.model_validate(row)
+        return None
 
     async def start_job(
         self, *, app_state: _AppStateLike | None = None,
@@ -170,20 +214,26 @@ class TrainingJobService:
             ConcurrencyError: Another job is already active (409).
         """
         async with self._lock:
-            if self._current is not None and _is_terminal(self._current.status):
-                self._current = None
-
-            if self._current is not None:
+            if self._closing:
+                raise ConcurrencyError("Training job service is shutting down")
+            if self._current is not None and not _is_terminal(self._current.status):
                 raise ConcurrencyError(
                     f"Training job {self._current.job_id} is already active "
                     f"(status={self._current.status})"
                 )
 
+            await self.flush()
             job = _JobState(
                 job_id=f"train-{uuid.uuid4().hex[:12]}",
                 status="pending",
                 started_at=datetime.now(UTC).isoformat(),
             )
+            if self._jobs_repo is not None:
+                await self._jobs_repo.create(
+                    job_id=job.job_id,
+                    user_id=self._user_id,
+                    started_at=job.started_at,
+                )
             self._current = job
 
             # Resolve artifact paths from settings when available.
@@ -276,7 +326,8 @@ class TrainingJobService:
         """
         async with self._lock:
             if self._current is None or self._current.job_id != job_id:
-                return None
+                historical = await self.get_job_detail(job_id)
+                return historical if historical and _is_terminal(historical.status) else None
             job = self._current
             if _is_terminal(job.status):
                 return job.to_response()
@@ -298,28 +349,48 @@ class TrainingJobService:
         if job is None:
             return None
         await asyncio.to_thread(job._done.wait)
+        await self.flush()
         return job.to_response()
 
     async def shutdown(self) -> None:
-        """Cancel any active pre-training job and wait for its task."""
+        """Stop admission, join the owned worker, then flush before DB teardown."""
         async with self._lock:
+            self._closing = True
             if self._current is not None and not _is_terminal(self._current.status):
                 self._current._cancelled.set()
+        await _join_owned_task(asyncio.create_task(self._shutdown()))
 
+    async def _shutdown(self) -> None:
         task: asyncio.Task[None] | None = None
         if self._current is not None:
             task = self._current._task
-        if task is not None and not task.done():
-            task.cancel()
+        if task is not None:
+            # Cancelling to_thread only cancels the awaiter, not disk writes.
+            # Once training starts, join it through publication before teardown.
+            if self._current is not None and self._current.status in (
+                "pending", "preparing_data",
+            ):
+                task.cancel()
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=30.0)
+                await _join_owned_task(task)
             except asyncio.CancelledError:
-                pass
-            except TimeoutError:
-                logger.warning(
-                    "Training job {} did not shut down within 30s",
-                    self._current.job_id if self._current else "?",
-                )
+                if self._current is not None and not self._current._done.is_set():
+                    self._set_terminal(self._current, "cancelled")
+        try:
+            await self.flush()
+        finally:
+            if task is not None and task.done() and self._current is not None:
+                self._current._done.set()
+
+    async def flush(self) -> None:
+        """Wait for ordered lifecycle writes; never silently acknowledge a failed flush."""
+        while self._persist_tail is not None:
+            tail = self._persist_tail
+            await _join_owned_task(tail)
+            if tail is self._persist_tail:
+                break
+        if self._persist_errors:
+            raise RuntimeError("Training job persistence failed") from self._persist_errors[0]
 
     # ── Internal ────────────────────────────────────────────────────────────
 
@@ -333,6 +404,7 @@ class TrainingJobService:
     ) -> None:
         """Background coroutine that manages the training lifecycle."""
         report: TrainingReport | None = None
+        snapshot: _PublicationSnapshot | None = None
         try:
             # ── Phase: preparing_data ──────────────────────────────────
             if job._cancelled.is_set():
@@ -369,6 +441,7 @@ class TrainingJobService:
             if job._cancelled.is_set():
                 self._set_terminal(job, "cancelled")
                 return
+            snapshot = self._snapshot_publication(app_state, Path(models_dir))
             self._set_status(job, "training")
 
             # Once we enter asyncio.to_thread, cancellation is no longer
@@ -380,7 +453,7 @@ class TrainingJobService:
                     False,
                 )
             )
-            report = await asyncio.to_thread(
+            worker = asyncio.create_task(asyncio.to_thread(
                 run_training,
                 source="db",
                 data_dir=data_dir,
@@ -388,7 +461,9 @@ class TrainingJobService:
                 feature_windows=windows,
                 feedback_sessions=feedback_with_times,
                 use_window_labels=use_window_labels,
-            )
+            ))
+            # Repeated cancellation cannot detach the thread from its owner.
+            report = await _join_owned_task(worker)
 
             # ── After training thread returns ──────────────────────────
             job.activated = report.activated
@@ -401,7 +476,10 @@ class TrainingJobService:
             # ── Publication ────────────────────────────────────────────
             if report.model_mode == "ready" and app_state is not None:
                 try:
-                    await self._refresh_ready_manager(app_state, report)
+                    await _join_owned_task(asyncio.create_task(
+                        self._refresh_ready_manager(app_state, report),
+                    ))
+                    job.activated = True
                 except Exception as exc:
                     raise PublicationError(
                         f"Ready-model publication failed: {exc}"
@@ -412,31 +490,128 @@ class TrainingJobService:
             self._set_terminal(job, "succeeded")
 
         except asyncio.CancelledError:
+            job.error = job.error or "cancelled during training"
             self._set_terminal(job, "cancelled")
         except PublicationError as exc:
             logger.error("Training job {} publication failed: {}", job.job_id, exc)
             job.error = _safe_str(exc)
+            # If publication failed after the training thread already activated
+            # a disk version, memory and disk can disagree. Roll the pointer
+            # back so the running process and the model directory agree again.
+            job.activated = False
+            self._rollback_activation(app_state, snapshot, job)
             self._set_terminal(job, "failed")
         except Exception as exc:
             logger.opt(exception=True).error(
                 "Training job {} failed: {}", job.job_id, exc,
             )
             job.error = _safe_str(exc)
+            job.activated = False
+            self._rollback_activation(app_state, snapshot, job)
             self._set_terminal(job, "failed")
         finally:
-            job._done.set()
+            try:
+                await self.flush()
+            except RuntimeError:
+                detail = "PersistenceError: lifecycle state could not be durably confirmed"
+                job.error = f"{job.error}; {detail}" if job.error else detail
+                logger.exception("Training job {} could not flush lifecycle state", job.job_id)
+            finally:
+                job._done.set()
+
+    @staticmethod
+    def _snapshot_publication(
+        app_state: _AppStateLike | None, models_dir: Path,
+    ) -> _PublicationSnapshot:
+        latest = models_dir / "v2" / "latest.json"
+        consumers = []
+        for name in ("prediction_service", "telemetry_service"):
+            consumer = getattr(app_state, name, None)
+            if consumer is not None:
+                consumers.append((consumer, getattr(consumer, "_model_manager", None)))
+        return _PublicationSnapshot(
+            latest_path=latest,
+            latest_text=latest.read_text(encoding="utf-8") if latest.exists() else None,
+            manager=getattr(app_state, "v2_model_manager", None),
+            mode=getattr(app_state, "v2_training_mode", "rule_engine_only"),
+            consumers=consumers,
+        )
+
+    def _rollback_activation(
+        self,
+        app_state: _AppStateLike | None,
+        snapshot: _PublicationSnapshot | None,
+        job: _JobState,
+    ) -> None:
+        """Restore the pre-training pointer and every pre-publication reference."""
+        if snapshot is None:
+            return
+        if app_state is not None:
+            app_state.v2_model_manager = snapshot.manager
+            app_state.v2_training_mode = snapshot.mode
+        # Both consumers own this field; do not re-enter an attach hook that
+        # may itself have raised after assigning the candidate.
+        for consumer, manager in snapshot.consumers:
+            consumer._model_manager = manager
+        try:
+            if snapshot.latest_text is None:
+                snapshot.latest_path.unlink(missing_ok=True)
+            else:
+                ModelManager._atomic_write_text(snapshot.latest_path, snapshot.latest_text)
+        except OSError as exc:
+            job.error = f"{job.error}; disk rollback failed: {_safe_str(exc)}"
+            logger.error("Model pointer rollback failed: {}", exc)
 
     # ── Status helpers ──────────────────────────────────────────────────────
 
     def _set_status(self, job: _JobState, status: JobStatus) -> None:
+        if _is_terminal(job.status):
+            return
         job.status = status
         logger.info("Training job {} → {}", job.job_id, status)
+        # Serialize snapshots; completion/shutdown explicitly verify the flush.
+        self._schedule_persist(job, status=status)
 
     def _set_terminal(self, job: _JobState, status: JobStatus) -> None:
+        if _is_terminal(job.status):
+            return
         now = datetime.now(UTC).isoformat()
         if job.completed_at is None:
             job.completed_at = now
-        self._set_status(job, status)
+        job.status = status
+        logger.info("Training job {} → {}", job.job_id, status)
+        self._schedule_persist(job, status=status, terminal=True)
+
+    def _schedule_persist(
+        self,
+        job: _JobState,
+        *,
+        status: str | None = None,
+        terminal: bool = False,
+    ) -> None:
+        """Queue an immutable snapshot behind the previous lifecycle write."""
+        if self._jobs_repo is None:
+            return
+        repo = self._jobs_repo
+        previous = self._persist_tail
+        values = job.to_response().model_dump()
+        values.pop("job_id")
+        values.pop("source")
+        values.pop("started_at")
+        values["status"] = status
+        values["completed_at"] = job.completed_at if terminal else None
+        values["activated"] = job.activated if terminal else None
+
+        async def persist() -> None:
+            if previous is not None:
+                await previous
+            try:
+                await repo.update(job.job_id, user_id=self._user_id, **values)
+            except Exception as exc:
+                self._persist_errors.append(exc)
+                logger.warning("Training job persistence write failed: {}", exc)
+
+        self._persist_tail = asyncio.create_task(persist())
 
     # ── Model-manager refresh ───────────────────────────────────────────────
 
@@ -459,6 +634,8 @@ class TrainingJobService:
         )
         if not new_manager.load_latest():
             raise PublicationError("load_latest() failed for ready models")
+        if not report.activated or new_manager.current_version_tag != report.version_tag:
+            raise PublicationError("active disk version does not match the ready training report")
 
         prediction_service = getattr(app_state, "prediction_service", None)
         telemetry_service = getattr(app_state, "telemetry_service", None)
@@ -493,8 +670,22 @@ class TrainingJobService:
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
+_T = TypeVar("_T")
+
+
+async def _join_owned_task(task: asyncio.Task[_T]) -> _T:
+    """Defer caller cancellation until owned side effects have really finished."""
+    while not task.done():
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Shield every retry: a second cancel must not reach the child.
+            continue
+    return task.result()
+
+
 def _is_terminal(status: JobStatus) -> bool:
-    return status in ("succeeded", "failed", "cancelled")
+    return status in ("succeeded", "failed", "cancelled", "interrupted")
 
 
 def _safe_str(exc: BaseException) -> str:

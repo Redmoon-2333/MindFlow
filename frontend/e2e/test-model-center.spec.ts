@@ -24,7 +24,7 @@ const REAL_GATES: Array<{
 }> = [
   {
     key: "minimum_days", label: "最少反馈天数",
-    passed: true, status: "passed", actual: "28", threshold: ">= 1",
+    passed: true, status: "passed", actual: "28", threshold: ">= 7",
     message: "反馈天数满足最低要求", blocker_code: "",
   },
   {
@@ -50,17 +50,17 @@ const REAL_GATES: Array<{
   },
   {
     key: "calibration_better_than_rule", label: "校准优于规则引擎",
-    passed: false, status: "not_implemented", actual: "-",
+    passed: false, status: "not_evaluated", actual: "-",
     threshold: "训练报告提供证据",
-    message: "校准比较需训练报告提供真实证据，当前硬编码为通过，不可作为绿色通行",
-    blocker_code: "not_implemented",
+    message: "尚未运行训练评估，校准比较需要训练报告提供证据",
+    blocker_code: "metric_not_evaluated",
   },
   {
     key: "stable_date_folds", label: "日期折叠稳定性",
-    passed: false, status: "not_implemented", actual: "-",
+    passed: false, status: "not_evaluated", actual: "-",
     threshold: "训练报告提供证据",
-    message: "日期折叠稳定性需训练报告提供真实证据，当前硬编码为通过，不可作为绿色通行",
-    blocker_code: "not_implemented",
+    message: "尚未运行训练评估，日期折叠稳定性需要训练报告提供证据",
+    blocker_code: "metric_not_evaluated",
   },
 ];
 
@@ -72,7 +72,7 @@ function readinessResponse(overrides?: Record<string, unknown>) {
       newest_timestamp: "2026-07-29T23:59:59",
     },
     v2_windows: {
-      total: 320, schema_version: 2, date_range_days: 28, eligible_count: 15,
+      total: 320, schema_version: 3, date_range_days: 28, eligible_count: 15,
       matched_focus_count: 10, matched_distract_count: 5,
       newest_window_start: "2026-07-29T12:00:00",
     },
@@ -214,9 +214,9 @@ test.describe("Model Center", () => {
     await expect(gates.nth(3).locator(".badge-info")).toContainText("未评估");
     await expect(gates.nth(4).locator(".badge-info")).toContainText("未评估");
 
-    // Calibration + stable folds = not_implemented (warning/yellow)
-    await expect(gates.nth(5).locator(".badge-warning")).toContainText("未实现");
-    await expect(gates.nth(6).locator(".badge-warning")).toContainText("未实现");
+    // Calibration and stable folds also require an evaluated training report.
+    await expect(gates.nth(5).locator(".badge-info")).toContainText("未评估");
+    await expect(gates.nth(6).locator(".badge-info")).toContainText("未评估");
   });
 
   test("blocker state shows blockers and disables training", async ({ page }) => {

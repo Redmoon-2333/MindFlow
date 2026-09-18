@@ -34,7 +34,11 @@ from mindflow.agents.langchain_tools import (
 )
 from mindflow.agents.llm_gateway import DeepSeekGateway
 from mindflow.config import get_settings
-from mindflow.graph.chat_graph import ChatGraph
+from mindflow.graph.chat_graph import (
+    _CHAT_TURN_TIMEOUT_S,
+    ChatGraph,
+    _safe_error_metadata,
+)
 from mindflow.graph.tools import (
     InterventionHistoryTool,
     LatestAnalysisTool,
@@ -158,7 +162,7 @@ class ChatService:
         self._panel_service = panel_service
         self._intervention_repo = intervention_repo
         self._evidence_builder = evidence_builder
-        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_locks: dict[tuple[int, str], asyncio.Lock] = {}
 
         # ── Backward compat: keep _llm_gateway for existing test fixtures ───
         self._llm_gateway = llm_gateway
@@ -297,25 +301,31 @@ class ChatService:
                 degraded=True,
             )
 
-        async with self._get_session_lock(session_id):
-            # ── v2 ChatGraph is the only chat path ──────────────────────
-            if self._chat_graph is None:
-                return ChatAnswer(
-                    answer=_LLM_DOWN_REPLY,
-                    session_id=session_id,
-                    degraded=True,
-                )
-            return await self._ask_via_graph(user_id, session_id, message)
+        try:
+            # The outer deadline stays active after queueing; graph time is not additive.
+            async with asyncio.timeout(_CHAT_TURN_TIMEOUT_S):
+                async with self._get_session_lock(user_id, session_id):
+                    if self._chat_graph is None:
+                        return ChatAnswer(
+                            answer=_LLM_DOWN_REPLY,
+                            session_id=session_id,
+                            degraded=True,
+                        )
+                    return await self._ask_via_graph(user_id, session_id, message)
+        except TimeoutError:
+            return ChatAnswer(
+                answer=_LLM_DOWN_REPLY, session_id=session_id, degraded=True,
+            )
 
-    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+    def _get_session_lock(self, user_id: int, session_id: str) -> asyncio.Lock:
         """Return the lock that serializes one conversation session."""
-        locks: dict[str, asyncio.Lock]
+        locks: dict[tuple[int, str], asyncio.Lock]
         try:
             locks = self._session_locks
         except AttributeError:
             locks = {}
             self._session_locks = locks
-        return locks.setdefault(session_id, asyncio.Lock())
+        return locks.setdefault((user_id, session_id), asyncio.Lock())
 
     async def _ask_via_graph(
         self,
@@ -341,7 +351,9 @@ class ChatService:
                 )
             return result
         except Exception as exc:
-            logger.warning("ChatGraph invocation failed in _ask_via_graph: {}", exc)
+            logger.opt(exception=False).warning(
+                "ChatGraph invocation failed in _ask_via_graph: {}", _safe_error_metadata(exc),
+            )
             return ChatAnswer(
                 answer=_LLM_DOWN_REPLY,
                 session_id=session_id,
@@ -364,12 +376,14 @@ class ChatService:
         self,
         session_id: str,
         limit: int = 20,
+        *,
+        user_id: int,
     ) -> list[dict[str, Any]]:
         """Return the messages for a session, oldest-first.
 
         Public entry point so routes don't reach into the private
         ``_chat_repo`` (encapsulation — E5). Delegates to the repository.
         """
-        return await self._chat_repo.recent(session_id, limit=limit)
+        return await self._chat_repo.recent(session_id, limit=limit, user_id=user_id)
 
 

@@ -279,16 +279,22 @@ def test_chinese_popup_action_posts_mapped_response_with_actual_latency(
     assert json.loads(request.data.decode("utf-8")) == {
         "response": expected_response,
         "latency_s": 2.75,
+        # A button press is a genuine user action.
+        "source": "human",
     }
     assert captured["timeout"] == 5.0
     assert root.destroyed is True
 
 
-@pytest.mark.parametrize("handler_name", ["_on_close", "_on_timeout"])
+@pytest.mark.parametrize(
+    ("handler_name", "expected_source"),
+    [("_on_close", "human"), ("_on_timeout", "auto")],
+)
 def test_popup_close_and_timeout_post_ignored(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     handler_name: str,
+    expected_source: str,
 ) -> None:
     popup_module = importlib.import_module(
         "mindflow.infrastructure.intervention_popup"
@@ -309,4 +315,11 @@ def test_popup_close_and_timeout_post_ignored(
     getattr(popup, handler_name)()
 
     request_body = json.loads(captured["request"].data.decode("utf-8"))
-    assert request_body == {"response": "ignored", "latency_s": 3.5}
+    # The close button is a user action ("human"); a timeout with no user
+    # interaction must be flagged "auto" so the server will not let it
+    # overwrite an answer the user actually gave.
+    assert request_body == {
+        "response": "ignored",
+        "latency_s": 3.5,
+        "source": expected_source,
+    }

@@ -32,6 +32,7 @@ import random
 
 import httpx
 from loguru import logger
+from pydantic import ValidationError
 
 from mindflow.config import LLMSettings
 
@@ -40,6 +41,9 @@ from mindflow.config import LLMSettings
 # so ``from mindflow.infrastructure.llm.client import LLMAPIError`` keeps working.
 from mindflow.errors import LLMAPIError as LLMAPIError
 from mindflow.errors import LLMNotConfiguredError as LLMNotConfiguredError
+from mindflow.infrastructure.llm.concurrency import LLMConcurrencyGate
+from mindflow.infrastructure.llm.http_client import ProviderHTTPClient
+from mindflow.infrastructure.llm.safety import safe_error_metadata
 from mindflow.infrastructure.llm.schemas import LLMAttributionResult
 
 # ── System prompt ──────────────────────────────────────────────────────────────
@@ -117,7 +121,9 @@ class DeepSeekClient:
             If ``settings.api_key`` is None, raises ``LLMNotConfiguredError``.
     """
 
-    def __init__(self, settings: LLMSettings) -> None:
+    def __init__(
+        self, settings: LLMSettings, concurrency: LLMConcurrencyGate | None = None,
+    ) -> None:
         if not settings.api_key:
             raise LLMNotConfiguredError(
                 "DeepSeek API key is not configured — set MINDFLOW_LLM__API_KEY "
@@ -128,7 +134,10 @@ class DeepSeekClient:
         self._model = settings.model or "deepseek-chat"
         self._timeout_s: int = settings.timeout_s
         self._max_retries: int = settings.max_retries
-        self._client = httpx.AsyncClient(
+        self._client = ProviderHTTPClient(
+            settings,
+            concurrency if concurrency is not None
+            else LLMConcurrencyGate(settings.max_concurrent_requests),
             base_url=self._base_url,
             timeout=httpx.Timeout(self._timeout_s),
             headers={
@@ -198,8 +207,9 @@ class DeepSeekClient:
                     await asyncio.sleep(_compute_backoff(attempt))
                 continue
             except httpx.HTTPError as exc:
-                logger.warning("DeepSeek API HTTP error (attempt {}): {}", attempt + 1, exc)
-                last_exc = exc
+                metadata = safe_error_metadata(exc)
+                logger.warning("DeepSeek API HTTP error (attempt {}): {}", attempt + 1, metadata)
+                last_exc = LLMAPIError(metadata)
                 if attempt < self._max_retries:
                     await asyncio.sleep(_compute_backoff(attempt))
                 continue
@@ -223,7 +233,7 @@ class DeepSeekClient:
                 continue
 
             if response.status_code != 200:
-                msg = f"DeepSeek API error {response.status_code}: {response.text[:200]}"
+                msg = f"DeepSeek API error status={response.status_code}"
                 logger.error(msg)
                 raise LLMAPIError(msg)
 
@@ -231,13 +241,19 @@ class DeepSeekClient:
             try:
                 body = response.json()
             except json.JSONDecodeError as exc:
-                logger.warning("DeepSeek returned non-JSON response: {}", exc)
-                last_exc = exc
+                metadata = safe_error_metadata(exc)
+                logger.warning("DeepSeek returned non-JSON response: {}", metadata)
+                last_exc = LLMAPIError(metadata)
                 if attempt < self._max_retries:
                     await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
-            content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+            try:
+                content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+            except (AttributeError, IndexError, TypeError) as exc:
+                raise LLMAPIError(
+                    f"DeepSeek malformed response ({safe_error_metadata(exc)})"
+                ) from None
             if not content:
                 logger.warning("DeepSeek returned empty content")
                 last_exc = LLMAPIError("Empty content in response")
@@ -248,12 +264,22 @@ class DeepSeekClient:
             # Parse and validate via Pydantic strict mode
             try:
                 return LLMAttributionResult.model_validate_json(content)
-            except Exception as exc:
-                logger.warning("DeepSeek response validation failed: {}", exc)
-                last_exc = exc
-                # Don't retry validation failures — the model's output won't
-                # change on a retry with the same input.
-                raise  # noqa: TRY201 — intentional re-raise to route to L2/L3
+            except ValidationError as exc:
+                logger.warning(
+                    "DeepSeek response validation failed: {}", safe_error_metadata(exc)
+                )
+                # Preserve the degradation contract without retaining provider inputs.
+                validation_error = ValidationError.from_exception_data(
+                    "LLMAttributionResult",
+                    [{
+                        "type": "value_error",
+                        "loc": (),
+                        "input": None,
+                        "ctx": {"error": ValueError("Invalid attribution response")},
+                    }],
+                    hide_input=True,
+                )
+            raise validation_error
 
         # All retries exhausted
         raise LLMAPIError(

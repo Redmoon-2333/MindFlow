@@ -126,7 +126,7 @@ async def respond_to_intervention(
 ) -> InterventionCommandResponse:
     """Record a user's response to an intervention."""
     result = await intervention_svc.record_response(
-        intervention_id, body.response, body.latency_s
+        intervention_id, body.response, body.latency_s, source=body.source
     )
     if result is None:
         raise _not_found(f"干预记录 {intervention_id}")
@@ -134,11 +134,11 @@ async def respond_to_intervention(
     logger.debug(
         "Intervention {} response: {} (latency={}s)",
         intervention_id,
-        body.response,
+        result["user_response"],
         body.latency_s,
     )
     return InterventionCommandResponse(
-        intervention_id=intervention_id, user_response=body.response
+        intervention_id=intervention_id, user_response=result["user_response"]
     )
 
 

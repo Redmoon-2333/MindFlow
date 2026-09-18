@@ -222,8 +222,8 @@ class TestSystemPrompt:
         model.bind_tools = MagicMock(return_value=model)
         repo = _make_mock_chat_repo()
         repo.recent = AsyncMock(return_value=[
-            {"role": "user", "content": "之前的问题"},
-            {"role": "assistant", "content": "之前的回答"},
+            {"user_id": 1, "session_id": "s1", "role": "user", "content": "之前的问题"},
+            {"user_id": 1, "session_id": "s1", "role": "assistant", "content": "之前的回答"},
         ])
         graph = _make_chat_graph(model=model, chat_repo=repo)
 
@@ -298,7 +298,9 @@ class TestEachTool:
         final_msg = AIMessage(content="根据分析，你的专注度正常。")
 
         model = _make_ainvoke_model([tool_call_msg, final_msg])
-        query_tool = _make_tool("query_evidence", '{"focus_score": 80}')
+        query_tool = _make_tool(
+            "query_evidence", '{"evidence":[{"metric":"focus_score","value":80}]}'
+        )
         tools = [query_tool]
         graph = _make_chat_graph(model=model, tools=tools)
 
@@ -329,8 +331,8 @@ class TestEachTool:
         final = AIMessage(content="根据证据和分析，建议你休息一下。")
 
         model = _make_ainvoke_model([call_a, call_b, final])
-        tool_a = _make_tool("query_evidence", "evidence data")
-        tool_b = _make_tool("get_latest_analysis", "analysis data")
+        tool_a = _make_tool("query_evidence", '{"evidence":[{"metric":"focus_score"}]}')
+        tool_b = _make_tool("get_latest_analysis", '{"procrastination_types":["impulsivity"]}')
         # Multi-tool loops need extra recursion depth (explicit graph has more nodes)
         graph = _make_chat_graph(model=model, tools=[tool_a, tool_b])
         graph._recursion_limit = 25  # override for multi-tool test
@@ -362,8 +364,8 @@ class TestEachTool:
         final = AIMessage(content="根据证据和分析，建议你休息一下。")
 
         model = _make_ainvoke_model([combined_call, final])
-        tool_a = _make_tool("query_evidence", "evidence data")
-        tool_b = _make_tool("get_latest_analysis", "analysis data")
+        tool_a = _make_tool("query_evidence", '{"evidence":[{"metric":"focus_score"}]}')
+        tool_b = _make_tool("get_latest_analysis", '{"procrastination_types":["impulsivity"]}')
         graph = _make_chat_graph(model=model, tools=[tool_a, tool_b])
 
         result = await graph.ask(user_id=1, session_id="s1", message="分析")
@@ -553,7 +555,7 @@ class TestHistoryCompression:
         model = _FakeBindableChatModel(responses=["你好！"])
         repo = _make_mock_chat_repo()
         repo.recent = AsyncMock(return_value=[
-            {"role": "user", "content": f"msg{i}"}
+            {"user_id": 1, "session_id": "s1", "role": "user", "content": f"msg{i}"}
             for i in range(5)
         ])
         graph = _make_chat_graph(model=model, chat_repo=repo, max_history_rounds=10)
@@ -569,8 +571,12 @@ class TestHistoryCompression:
         # 22 messages = 11 rounds → triggers compression (max=10 → 20 msg limit)
         msgs: list[dict[str, Any]] = []
         for i in range(11):
-            msgs.append({"role": "user", "content": f"用户消息{i}"})
-            msgs.append({"role": "assistant", "content": f"助手回复{i}"})
+            msgs.append({
+                "user_id": 1, "session_id": "s1", "role": "user", "content": f"用户消息{i}",
+            })
+            msgs.append({
+                "user_id": 1, "session_id": "s1", "role": "assistant", "content": f"助手回复{i}",
+            })
         repo.recent = AsyncMock(return_value=msgs)
         graph = _make_chat_graph(model=model, chat_repo=repo, max_history_rounds=10)
 
