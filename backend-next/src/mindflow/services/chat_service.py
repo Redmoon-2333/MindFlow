@@ -33,6 +33,7 @@ from mindflow.agents.langchain_tools import (
     make_run_panel,
 )
 from mindflow.agents.llm_gateway import DeepSeekGateway
+from mindflow.agents.policies import CHAT_POLICY
 from mindflow.config import get_settings
 from mindflow.graph.chat_graph import (
     _CHAT_TURN_TIMEOUT_S,
@@ -205,16 +206,22 @@ class ChatService:
         # stay reachable — ChatDeepSeek is only initialised when a key exists).
         api_key: str = getattr(llm_gateway, "_api_key", "")
         base_url: str = getattr(llm_gateway, "_base_url", "")
+        # The gateway holds the *resolved* L1 model (DeepSeek Flash under the
+        # production pin); never a hard-coded legacy model id. Fall back to the
+        # same resolution when the gateway was built without one.
+        gateway_model: str = getattr(llm_gateway, "_model_id", "") or (
+            get_settings().llm.l1_target().model
+        )
 
         llm: BaseChatModel | None = model
         owned_model: ChatDeepSeek | None = None
         if llm is None and api_key:
             owned_model = ChatDeepSeek(
-                model="deepseek-chat",
+                model=gateway_model,
                 api_key=SecretStr(api_key),
                 base_url=base_url,
                 temperature=0.7,
-                max_tokens=2048,
+                max_tokens=CHAT_POLICY.max_output_tokens or 2048,
             )
             llm = owned_model
 

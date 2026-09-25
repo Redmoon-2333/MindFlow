@@ -68,6 +68,38 @@ class TranscriptEntry:
 
 
 @dataclass(frozen=True)
+class Claim:
+    """One assertion from one expert (phase 2.3 Claim Ledger).
+
+    Attributes:
+        type: Canonical procrastination type (``ProcrastinationType`` value).
+        confidence: Expert confidence in [0, 1].
+        evidence_ids: Catalog ids supporting the claim (at least one).
+        support: Chinese explanation tied to the evidence.
+        alternative: The main competing explanation the expert considered.
+    """
+
+    type: str
+    confidence: float
+    evidence_ids: tuple[str, ...]
+    support: str
+    alternative: str
+
+
+@dataclass(frozen=True)
+class ClaimLedger:
+    """Every claim produced by one expert, plus abstention metadata.
+
+    Validation and conflict analysis live in ``agents/claims.py``; this is the
+    pure data contract so it can travel through frozen ``ExpertOpinion`` values.
+    """
+
+    claims: tuple[Claim, ...] = ()
+    insufficient_data: bool = False
+    evidence_gaps: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ExpertOpinion:
     """Structured output from a single expert (analyst or attribution expert).
 
@@ -84,6 +116,9 @@ class ExpertOpinion:
             debugging and transcript logging.
         skipped: True if this expert was skipped due to a parsing failure
             or forbidden-word rejection.
+        claims: Validated claim ledger (phase 2.3).  Empty for experts that
+            still answer with the legacy free-text contract; consumers use
+            ``agents.claims.claim_ledger_for()`` to obtain a ledger either way.
     """
 
     role: str
@@ -94,6 +129,7 @@ class ExpertOpinion:
     argument: str
     raw_json: str | None = None
     skipped: bool = False
+    claims: tuple[Claim, ...] = ()
 
 
 @dataclass(frozen=True)

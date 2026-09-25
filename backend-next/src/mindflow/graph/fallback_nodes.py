@@ -58,10 +58,12 @@ Design constraints:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Literal, TypedDict, cast
 
+import httpx
 from loguru import logger
 
 from mindflow.domain.events import ActivityEvent
@@ -75,12 +77,25 @@ from mindflow.infrastructure.llm.client import (
     LLMAPIError,
     LLMNotConfiguredError,
 )
+from mindflow.infrastructure.llm.concurrency import LLMConcurrencyGate
+from mindflow.infrastructure.llm.http_client import (
+    HTTPAttemptCollector,
+    HTTPAttemptMetrics,
+    SharedHTTPClientPool,
+    compute_backoff,
+    parse_retry_after,
+    shared_fallback_pool,
+    status_class,
+    transport_error_category,
+)
+from mindflow.infrastructure.llm.safety import safe_error_metadata
 from mindflow.infrastructure.llm.schemas import LLMAttributionResult
 from mindflow.infrastructure.llm.summary import (
     build_behavior_summary,
     serialize_summary,
 )
 from mindflow.infrastructure.security.crisis_detector import CrisisDetector, CrisisLevel
+from mindflow.services.llm_observability import LLMRequestRecord, record_llm_request
 
 # ── Route type ────────────────────────────────────────────────────────────────
 
@@ -111,12 +126,23 @@ class FallbackRunContext:
 
     Not serialized by the checkpointer — carries live references to
     repositories, clients, and engines needed by individual nodes.
+
+    Args:
+        ollama_client: HTTP client for the L2 Ollama call. Left ``None`` in
+            production: the node then uses the shared client owned by
+            ``ProviderRegistry`` (one construction, one shutdown, pooled
+            connections). Tests and tools inject their own client here instead
+            of letting the node construct one.
+        ollama_max_retries: Retry budget for an *injected* client. When the
+            shared registry pool is used, its own policy wins.
     """
 
     analysis_repo: Any = None  # SQLAlchemyProcrastinationAnalysisRepository
     deepseek_client: DeepSeekClient | None = None
     ollama_base_url: str | None = None
     ollama_model: str = "qwen3:8b"
+    ollama_client: httpx.AsyncClient | None = None
+    ollama_max_retries: int = 1
     rule_engine: RuleEngine = field(default_factory=RuleEngine)
     crisis_detector: CrisisDetector = field(default_factory=CrisisDetector)
 
@@ -420,9 +446,24 @@ async def single_expert_node(state: FallbackState) -> dict[str, Any]:
             "degradation_path": list(state.get("degradation_path", [])) + ["deepseek"],
         }
 
+    model_label = _model_label(client)
+
+    collector = HTTPAttemptCollector()
     try:
-        result = await client.analyze(summary_json)
+        with collector:
+            result = await client.analyze(summary_json)
         logger.info("L1 (DeepSeek) succeeded")
+        _record_fallback_attempt(
+            provider="deepseek",
+            node="single_expert",
+            role="single_expert",
+            model=model_label,
+            attempts=collector.attempts,
+            ok=True,
+            final_source="deepseek",
+            # Provider-reported usage captured by the client during this call.
+            usage=getattr(client, "last_usage", None),
+        )
         return {
             "current_result": llm_result_to_assessment(result),
             "source": "deepseek",
@@ -432,19 +473,47 @@ async def single_expert_node(state: FallbackState) -> dict[str, Any]:
         }
     except LLMNotConfiguredError:
         logger.warning("DeepSeek not configured — no API key")
+        _record_fallback_attempt(
+            provider="deepseek",
+            node="single_expert",
+            role="single_expert",
+            model=model_label,
+            attempts=[],
+            ok=False,
+            fallback_reason="deepseek_not_configured",
+        )
         return {
             "error": "deepseek_not_configured",
             "degradation_path": list(state.get("degradation_path", [])) + ["deepseek"],
         }
     except (LLMAPIError, TimeoutError) as exc:
-        logger.warning("L1 (DeepSeek) transport failure: {}", exc)
+        logger.warning("L1 (DeepSeek) transport failure: {}", safe_error_metadata(exc))
+        _record_fallback_attempt(
+            provider="deepseek",
+            node="single_expert",
+            role="single_expert",
+            model=model_label,
+            attempts=collector.attempts,
+            ok=False,
+            fallback_reason="deepseek_transport",
+        )
         return {
             "error": f"deepseek_transport: {exc}",
             "degradation_path": list(state.get("degradation_path", [])) + ["deepseek"],
         }
     except Exception as exc:
         # Schema validation, forbidden words, JSON parse — deterministic failures
-        logger.warning("L1 (DeepSeek) deterministic failure: {}", exc)
+        logger.warning("L1 (DeepSeek) deterministic failure: {}", safe_error_metadata(exc))
+        _record_fallback_attempt(
+            provider="deepseek",
+            node="single_expert",
+            role="single_expert",
+            model=model_label,
+            attempts=collector.attempts,
+            ok=False,
+            fallback_reason="deepseek_schema",
+            parse_failure=True,
+        )
         return {
             "error": f"deepseek_schema: {exc}",
             "degradation_path": list(state.get("degradation_path", [])) + ["deepseek"],
@@ -461,7 +530,10 @@ async def ollama_node(state: FallbackState) -> dict[str, Any]:
     knows this tier was attempted regardless of outcome.
 
     Uses the same OpenAI-compatible endpoint as the existing
-    ``LLMService._ollama_call``.
+    ``LLMService._ollama_call``, but through the shared, registry-owned HTTP
+    client (optimisation plan 4.3): one connection pool, one timeout, one
+    concurrency gate, one shutdown — instead of a fresh ``httpx.AsyncClient``
+    per call.
     """
     runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())
     summary_json: str = state.get("summary_json", "")
@@ -477,9 +549,28 @@ async def ollama_node(state: FallbackState) -> dict[str, Any]:
             "degradation_path": list(state.get("degradation_path", [])) + ["ollama"],
         }
 
+    client, max_retries, backoff_cap_s, _owner = _ollama_transport(runtime)
+    collector = HTTPAttemptCollector()
     try:
-        result = await _ollama_api_call(ollama_url, runtime.ollama_model, summary_json)
+        with collector:
+            result = await _ollama_api_call(
+                ollama_url,
+                runtime.ollama_model,
+                summary_json,
+                client=client,
+                max_retries=max_retries,
+                backoff_cap_s=backoff_cap_s,
+            )
         logger.info("L2 (Ollama) succeeded")
+        _record_fallback_attempt(
+            provider="ollama",
+            node="ollama",
+            role="ollama",
+            model=runtime.ollama_model,
+            attempts=collector.attempts,
+            ok=True,
+            final_source="ollama",
+        )
         return {
             "current_result": llm_result_to_assessment(result),
             "source": "ollama",
@@ -488,9 +579,20 @@ async def ollama_node(state: FallbackState) -> dict[str, Any]:
             "error": None,
         }
     except Exception as exc:
-        logger.warning("L2 (Ollama) failed: {}", exc)
+        # The error string stays sanitized: a provider body must never reach
+        # the run store, the logs, or the observability records.
+        logger.warning("L2 (Ollama) failed: {}", safe_error_metadata(exc))
+        _record_fallback_attempt(
+            provider="ollama",
+            node="ollama",
+            role="ollama",
+            model=runtime.ollama_model,
+            attempts=collector.attempts,
+            ok=False,
+            fallback_reason="ollama_failure",
+        )
         return {
-            "error": f"ollama_failure: {exc}",
+            "error": f"ollama_failure: {safe_error_metadata(exc)}",
             "degradation_path": list(state.get("degradation_path", [])) + ["ollama"],
         }
 
@@ -509,6 +611,19 @@ async def rule_engine_node(state: FallbackState) -> dict[str, Any]:
     """
     runtime: FallbackRunContext = state.get("runtime", FallbackRunContext())
     crisis_detected = state.get("crisis_detected", False)
+
+    # Terminal tier: this is where the workflow's final source becomes true, so
+    # the observability record is emitted here (an event record — no measured
+    # request of its own).
+    record_llm_request(LLMRequestRecord(
+        graph="fallback",
+        node="rule_engine",
+        role="rule_engine",
+        provider="rule_engine",
+        ok=True,
+        fallback_reason="crisis_short_circuit" if crisis_detected else "",
+        final_source="rule_engine",
+    ))
 
     # Crisis path: produce hotline response (no behavior summary needed)
     if crisis_detected:
@@ -670,22 +785,80 @@ _OLLAMA_SYSTEM_PROMPT: str = (
     "最多包含 3 个拖延类型。response_text 不超过 500 字。"
 )
 
+#: Backoff ceiling for the L2 tier (state-wide default, matching RetryPolicy).
+_OLLAMA_BACKOFF_CAP_S: float = 60.0
+
+#: Statuses worth another attempt on the local fallback tier.
+_OLLAMA_RETRIABLE_STATUSES: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+#: Last-resort pool, used only when no ``ProviderRegistry`` exists in the
+#: process (unit tests, ad-hoc scripts). Built once and reused, never per call.
+_local_fallback_pool: SharedHTTPClientPool | None = None
+
+
+def _ollama_transport(runtime: FallbackRunContext) -> tuple[httpx.AsyncClient, int, float, str]:
+    """Resolve the HTTP client and retry budget for the L2 call.
+
+    Precedence:
+
+    1. ``runtime.ollama_client`` — an explicitly injected client (tests, tools).
+       The runtime's own retry budget applies.
+    2. the shared pool installed by ``ProviderRegistry`` — unified timeout,
+       concurrency gate, retry policy and shutdown.
+    3. a lazily created process-local pool, so even a registry-less process
+       constructs exactly one client instead of one per call.
+
+    Returns:
+        ``(client, max_retries, backoff_cap_s, owner_label)``.
+    """
+    if runtime.ollama_client is not None:
+        return (
+            runtime.ollama_client,
+            runtime.ollama_max_retries,
+            _OLLAMA_BACKOFF_CAP_S,
+            "injected",
+        )
+
+    pool = shared_fallback_pool()
+    if pool is None:
+        global _local_fallback_pool
+        if _local_fallback_pool is None:
+            # Unbounded gate: without a registry there is no shared budget to
+            # respect, and the pre-4.3 behaviour did not serialise L2 at all.
+            _local_fallback_pool = SharedHTTPClientPool(
+                gate=LLMConcurrencyGate(None),
+                timeout_s=_OLLAMA_BACKOFF_CAP_S,
+                max_retries=0,
+                name="ollama-local",
+            )
+        pool = _local_fallback_pool
+    return pool.client, pool.max_retries, pool.backoff_cap_s, pool.name
+
 
 async def _ollama_api_call(
     base_url: str,
     model: str,
     summary_json: str,
+    *,
+    client: httpx.AsyncClient,
+    max_retries: int = 0,
+    backoff_cap_s: float = _OLLAMA_BACKOFF_CAP_S,
 ) -> LLMAttributionResult:
     """Call Ollama's OpenAI-compatible chat completions endpoint.
 
-    Returns a validated ``LLMAttributionResult`` on success.
+    The caller supplies the client (shared pool or injected), so this helper
+    never opens a connection pool of its own. Transient failures — timeouts,
+    connection errors, 429/5xx — are retried within *max_retries* using the same
+    backoff arithmetic as the L1 client; 4xx responses are not retried.
+
+    Returns:
+        A validated ``LLMAttributionResult`` on success.
 
     Raises:
-        httpx.HTTPError: On transport failure.
+        httpx.HTTPError: On transport failure after the retry budget.
+        LLMAPIError: On a non-200 response or empty content.
         ValueError/ValidationError: On schema/forbidden-word failure.
     """
-    import httpx  # noqa: PLC0415 — lazy import for optional dependency
-
     url = base_url.rstrip("/") + "/v1/chat/completions"
     payload = {
         "model": model,
@@ -696,17 +869,108 @@ async def _ollama_api_call(
         "stream": False,
     }
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        response = await client.post(url, json=payload)
+    last_error: Exception | None = None
+    for attempt in range(max(0, int(max_retries)) + 1):
+        response: httpx.Response | None = None
+        try:
+            response = await client.post(url, json=payload)
+        except httpx.HTTPError as exc:
+            last_error = exc
+            logger.warning(
+                "Ollama transport error (attempt {}): {}",
+                attempt + 1, transport_error_category(exc),
+            )
+        else:
+            if response.status_code == 200:
+                body = response.json()
+                content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if not content:
+                    raise LLMAPIError("Ollama returned empty content")
+                return LLMAttributionResult.model_validate_json(content)
 
-    if response.status_code != 200:
-        raise LLMAPIError(
-            f"Ollama returned status {response.status_code}: {response.text[:200]}"
-        )
+            # Provider bodies are never echoed back: only the status class.
+            if response.status_code not in _OLLAMA_RETRIABLE_STATUSES:
+                raise LLMAPIError(
+                    f"Ollama returned status class {status_class(response.status_code)}"
+                )
+            last_error = LLMAPIError(
+                f"Ollama returned status class {status_class(response.status_code)}"
+            )
+            logger.warning(
+                "Ollama retriable status (attempt {}): {}",
+                attempt + 1, status_class(response.status_code),
+            )
 
-    body = response.json()
-    content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
-    if not content:
-        raise LLMAPIError("Ollama returned empty content")
+        if attempt < max_retries:
+            retry_after = parse_retry_after(response) if response is not None else None
+            await asyncio.sleep(min(compute_backoff(attempt, retry_after), backoff_cap_s))
 
-    return LLMAttributionResult.model_validate_json(content)
+    if isinstance(last_error, httpx.HTTPError):
+        raise last_error
+    if last_error is not None:
+        raise last_error
+    raise LLMAPIError("Ollama call failed")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Observability helpers for the degradation chain (phase 2.5)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _model_label(candidate: object) -> str:
+    """Best-effort model id for a client that may be a mock (never raises)."""
+    value = getattr(candidate, "model", "")
+    return value if isinstance(value, str) else ""
+
+
+def _record_fallback_attempt(
+    *,
+    provider: str,
+    node: str,
+    role: str,
+    model: str,
+    attempts: list[HTTPAttemptMetrics],
+    ok: bool,
+    final_source: str = "",
+    fallback_reason: str = "",
+    parse_failure: bool = False,
+    usage: tuple[int, int, int] | None = None,
+) -> None:
+    """Record one degradation-tier attempt as aggregated metadata only.
+
+    ``usage`` is the provider-reported ``(input, output, reasoning)`` token
+    triple when the tier's client captured one — never an estimate. Omitting it
+    keeps the record's counters at zero, which the report renders as "usage not
+    reported".
+    """
+    queue_ms = sum(a.queue_latency_ms for a in attempts)
+    http_ms = sum(a.http_latency_ms for a in attempts)
+    last_status = attempts[-1].status_class if attempts else ""
+    error_category = attempts[-1].error_category if attempts else ""
+    # Defensive shape check: a client (or test double) exposing a non-triplet
+    # ``last_usage`` must degrade to "usage not reported", never break the call.
+    triplet = usage if (
+        isinstance(usage, tuple) and len(usage) == 3
+        and all(isinstance(value, int) for value in usage)
+    ) else (0, 0, 0)
+    input_tokens, output_tokens, reasoning_tokens = triplet
+    record_llm_request(LLMRequestRecord(
+        graph="fallback",
+        node=node,
+        role=role,
+        provider=provider,
+        model=model,
+        queue_latency_ms=queue_ms,
+        http_latency_ms=http_ms,
+        total_latency_ms=queue_ms + http_ms,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+        retry_count=max(0, len(attempts) - 1),
+        http_status_class=last_status,
+        error_category="" if ok else error_category,
+        fallback_reason=fallback_reason,
+        parse_failure=parse_failure,
+        ok=ok,
+        final_source=final_source,
+    ))

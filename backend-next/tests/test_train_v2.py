@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.train.v2 import (
     V2_FEATURE_NAMES,
     evaluate_v2_candidates,
@@ -19,7 +20,7 @@ def _feature_window(start: datetime, **overrides: float) -> dict[str, object]:
     return {
         "window_start_utc": start.isoformat(),
         "window_end_utc": (start + timedelta(minutes=5)).isoformat(),
-        "feature_schema_version": 3,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": features,
     }
 
@@ -289,6 +290,16 @@ def test_v2_quality_gate_requires_explicit_feedback_and_stable_metrics() -> None
                 "range": 0.08,
                 "min_test_size": 8,
             },
+            # Phase 3.5/3.6: forward-chaining stability and the shadow-drift
+            # report fail closed when absent, so a fixture that intends to pass
+            # the gate must carry them.
+            "future_fold_stability": {
+                "passed": True,
+                "min_balanced_accuracy": 0.70,
+                "range": 0.06,
+                "min_test_size": 8,
+            },
+            "shadow_drift": {"status": "evaluated", "anomalous": False},
         }
 
     passed = evaluate_v2_quality_gate(

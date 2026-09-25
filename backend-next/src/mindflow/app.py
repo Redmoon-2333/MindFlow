@@ -557,13 +557,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # httpx connection pool with its own lifecycle (audit report — second
         # httpx pool outside ProviderRegistry). None when no API key is set.
         intervention_llm_client: httpx.AsyncClient | None = None
-        intervention_llm_model = "deepseek-chat"
+        # The resolved L1 model id (DeepSeek Flash under the production pin).
+        # Never the raw legacy setting: the registry owns the resolution so a
+        # lingering ECNU model id cannot reach the wire here.
+        intervention_llm_model = (
+            provider_registry.l1_target.model
+            if provider_registry is not None
+            else settings.llm.deepseek_model
+        )
         if provider_registry is not None:
             deepseek = provider_registry.get_structured_attribution()
             if deepseek is not None:
                 intervention_llm_client = deepseek.client
-                intervention_llm_model = settings.llm.model or "deepseek-chat"
-                logger.info("Intervention LLM client reusing ProviderRegistry pool")
+                logger.info(
+                    "Intervention LLM client reusing ProviderRegistry pool (model={})",
+                    intervention_llm_model,
+                )
             else:
                 logger.info("No LLM API key - intervention messages will use templates")
         else:
@@ -620,7 +629,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # ── G002: Explicit PanelGraph wired into AnalysisGraph ──
                 # Shares the gateway/provider lifecycle; the compiled graph
                 # is built lazily on first access and reused across calls.
-                panel_graph = PanelGraph(gateway=gateway)
+                # The fan-out gateway lets the parallel attribution/rebuttal
+                # batches overlap (panel_fanout_concurrency > 1) while every
+                # other L1 path keeps the global cap; it returns the main
+                # gateway when the burst is 1.
+                panel_graph = PanelGraph(
+                    gateway=gateway,
+                    fanout_gateway=provider_registry.get_fanout_gateway(),
+                )
 
                 analysis_graph = AnalysisGraph(
                     analysis_repo=analysis_repository,

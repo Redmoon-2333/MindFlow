@@ -112,9 +112,14 @@ def mock_crisis_detector() -> MagicMock:
 
 @pytest.fixture
 def mock_panel_graph() -> MagicMock:
-    """Mock compiled panel graph."""
+    """Mock compiled panel graph.
+
+    A successful panel must report ``critic_approved=True``: AnalysisGraph
+    only accepts ``source="panel"`` when the critic explicitly approved the
+    moderator verdict (Phase 1.1 terminal semantics).
+    """
     pg = MagicMock()
-    # Successful panel: returns moderator_verdict
+    # Successful panel: returns moderator_verdict approved by the critic
     pg.ainvoke = AsyncMock(return_value={
         "moderator_verdict": {
             "types": ["impulsivity"],
@@ -125,6 +130,10 @@ def mock_panel_graph() -> MagicMock:
         "transcript": (),
         "escalated": False,
         "call_count": 6,
+        "critic_approved": True,
+        "panel_rejected": False,
+        "panel_terminal": "approved",
+        "rejection_reason": "",
     })
     return pg
 
@@ -1117,26 +1126,31 @@ class _DeterministicPanelGateway:
                 "top_concerns": ["冲动分心模式"],
                 "evidence_citations": [],
             }, ensure_ascii=False),
+            # The three attribution experts agree on impulsivity (different
+            # confidence), so no conflict escalation is triggered and the
+            # documented 6-call fast path is exercised. Disagreeing experts
+            # would add a rebuttal round and consume further responses.
             # 1: CBT 归因专家
             json.dumps({
                 "attribution_types": ["impulsivity"],
                 "confidence": {"impulsivity": 0.80},
                 "argument": "从认知行为理论角度分析，用户表现出impulsivity拖延模式。",
-                "evidence_citations": [],
+                # Phase 1.3: an opinion must cite at least one real catalog id.
+                "evidence_citations": ["summary.context_switches_per_hour"],
             }, ensure_ascii=False),
             # 2: TMT 归因专家
             json.dumps({
-                "attribution_types": ["task_aversion"],
-                "confidence": {"task_aversion": 0.70},
-                "argument": "从时间动机理论角度分析，用户表现出task_aversion拖延模式。",
-                "evidence_citations": [],
+                "attribution_types": ["impulsivity"],
+                "confidence": {"impulsivity": 0.72},
+                "argument": "从时间动机理论角度分析，用户同样表现为impulsivity拖延模式。",
+                "evidence_citations": ["summary.start_delay_min"],
             }, ensure_ascii=False),
             # 3: EMOTION 归因专家
             json.dumps({
-                "attribution_types": ["emotional_regulation"],
-                "confidence": {"emotional_regulation": 0.65},
-                "argument": "从情绪调节理论角度分析，用户表现出emotional_regulation拖延模式。",
-                "evidence_citations": [],
+                "attribution_types": ["impulsivity"],
+                "confidence": {"impulsivity": 0.65},
+                "argument": "从情绪调节理论角度分析，用户表现为impulsivity拖延模式。",
+                "evidence_citations": ["summary.social_media_ratio"],
             }, ensure_ascii=False),
             # 4: moderator
             json.dumps({
@@ -1210,6 +1224,10 @@ class TestPanelGraphAinvoke:
                 "duration_min", "actual_focus_min",
                 "context_switches_per_hour", "longest_focus_block_sec",
                 "social_media_ratio", "start_delay_min",
+                # Production passes canonical catalog ids; the mock experts cite
+                # these dotted ids, so both forms are accepted here.
+                "summary.context_switches_per_hour", "summary.start_delay_min",
+                "summary.social_media_ratio",
             ]),
             "attribution_opinions": (),
             "transcript": (),
@@ -1297,8 +1315,6 @@ class TestPanelGraphAinvoke:
 
         from mindflow.graph.panel_graph import PanelGraph, PanelGraphState
 
-        pg = PanelGraph(mock_panel_gateway)
-
         def _make_state() -> PanelGraphState:
             return {
                 "bundle_json": json.dumps({
@@ -1315,6 +1331,8 @@ class TestPanelGraphAinvoke:
                     "duration_min", "actual_focus_min",
                     "context_switches_per_hour", "longest_focus_block_sec",
                     "social_media_ratio", "start_delay_min",
+                    "summary.context_switches_per_hour", "summary.start_delay_min",
+                    "summary.social_media_ratio",
                 ]),
                 "attribution_opinions": (),
                 "transcript": (),
@@ -1331,10 +1349,17 @@ class TestPanelGraphAinvoke:
                 "_expert_index": 0,
             }
 
+        # Each concurrent invocation gets its own positional-response gateway:
+        # the mock routes by call order, so one shared counter would interleave
+        # the two runs' responses. Per-invocation runtime isolation — the
+        # property under test — is unaffected by which gateway serves which run.
+        pg_a = PanelGraph(_DeterministicPanelGateway())
+        pg_b = PanelGraph(_DeterministicPanelGateway())
+
         # Run two invocations concurrently
         results = await asyncio.gather(
-            pg.ainvoke(_make_state()),
-            pg.ainvoke(_make_state()),
+            pg_a.ainvoke(_make_state()),
+            pg_b.ainvoke(_make_state()),
         )
 
         r1, r2 = results

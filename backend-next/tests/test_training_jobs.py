@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes.analytics import router as analytics_router
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
     activity_events,
@@ -70,7 +71,7 @@ def _v2_window(user_id: int, start: datetime, end: datetime) -> dict[str, Any]:
         "user_id": user_id,
         "window_start_utc": start,
         "window_end_utc": end,
-        "feature_schema_version": 3,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features_json": _V2_FEATURES_JSON,
         "label": None,
     }
@@ -412,8 +413,16 @@ class TestEndpointSchema:
             "job_id", "status", "source", "model_mode",
             "started_at", "completed_at", "activated", "version_tag",
             "feature_schema_version", "quality_gate", "evaluation", "error",
+            # Phase 1.2 activation policy: manual HTTP jobs may activate.
+            "allow_activation",
+            # Publication guard evidence (plan item 1): which candidate the
+            # evaluation selected, which classifier was trained, and why
+            # activation was blocked when it was.
+            "publication", "evaluation_candidate", "deployed_classifier",
+            "activation_blocked_reason",
         }
         assert set(body.keys()) == required
+        assert body["allow_activation"] is True
 
 # ── Tests: cancellation ────────────────────────────────────────────────────
 
@@ -692,7 +701,7 @@ class TestTerminalSuccess:
             assert final.completed_at is not None
             assert final.source == "db"
             if final.status == "succeeded":
-                assert final.feature_schema_version == 3
+                assert final.feature_schema_version == FEATURE_SCHEMA_VERSION
                 assert final.quality_gate is not None
                 assert final.evaluation is not None
 

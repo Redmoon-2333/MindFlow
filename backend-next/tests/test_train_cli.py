@@ -1,10 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.train.__main__ import load_database_events, load_database_v2_data
 
 
@@ -83,7 +84,7 @@ def test_load_database_v2_data_joins_feedback_sessions(tmp_path: Path) -> None:
             1,
             start.isoformat(),
             (start + timedelta(minutes=5)).isoformat(),
-            3,
+            FEATURE_SCHEMA_VERSION,
             json.dumps({"idle_ratio": 0.1}),
             None,
             start.isoformat(),

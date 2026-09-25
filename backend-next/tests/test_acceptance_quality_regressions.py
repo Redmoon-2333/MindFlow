@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from mindflow.domain.events import ActivityEvent, WindowSnapshot, make_event
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.activity import SQLAlchemyActivityRepository
 from mindflow.infrastructure.repositories.collector_intervals import (
     CollectorIntervalsRepository,
@@ -180,13 +181,13 @@ async def test_real_rollup_carries_bucket_coverage_across_boundary(
         activity_repository=SQLAlchemyActivityRepository(session_factory),
     )
     assert await service.rollup_feature_windows(START, END + timedelta(minutes=5)) == 2
-    rows = await repository.list_feature_windows(1, feature_schema_version=3)
+    rows = await repository.list_feature_windows(1, feature_schema_version=FEATURE_SCHEMA_VERSION)
     rows.sort(key=lambda row: row["window_start_utc"])
     assert [
         json.loads(row["quality_json"])["observed_seconds"]["input"] for row in rows
     ] == [10, 20]
     assert await service.rollup_feature_windows(END, END + timedelta(minutes=5)) == 1
-    rows = await repository.list_feature_windows(1, feature_schema_version=3)
+    rows = await repository.list_feature_windows(1, feature_schema_version=FEATURE_SCHEMA_VERSION)
     rows.sort(key=lambda row: row["window_start_utc"])
     assert json.loads(rows[-1]["quality_json"])["observed_seconds"]["input"] == 20
 
@@ -208,7 +209,7 @@ async def test_non_aligned_reroll_preserves_complete_window(
     )
     assert await service.rollup_feature_windows(START, END) == 1
     assert await service.rollup_feature_windows(START + timedelta(minutes=2), END) == 1
-    rows = await repository.list_feature_windows(1, feature_schema_version=3)
+    rows = await repository.list_feature_windows(1, feature_schema_version=FEATURE_SCHEMA_VERSION)
     assert len(rows) == 1
     assert json.loads(rows[0]["quality_json"])["observed_seconds"]["activity"] == 300
 

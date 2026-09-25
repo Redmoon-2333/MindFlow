@@ -28,7 +28,11 @@ from sklearn.exceptions import InconsistentVersionWarning
 from mindflow.train.models.classifier import FocusClassifier
 from mindflow.train.models.clustering import BehaviorClustering
 from mindflow.train.models.ensemble import _XGB_CLASS_MARKER, EnsembleClassifier
-from mindflow.train.models.hmm import BehaviorHMM
+from mindflow.train.models.hmm import (
+    HMM_IN_PRODUCTION_CHAIN,
+    HMM_READMISSION_CRITERIA,
+    BehaviorHMM,
+)
 from mindflow.train.models.types import TrainingSummary
 from mindflow.train.serialization import (
     _load_or_create_signing_key,
@@ -92,6 +96,11 @@ class ModelManager:
         self._loaded_version_tag: str | None = None
 
         self._use_ensemble: bool = False
+        #: Whether the caller asked for the ensemble. Together with
+        #: ``use_ensemble`` this distinguishes "requested the ensemble but
+        #: XGBoost was missing" (a silent capability fallback, which the
+        #: publication guard must block) from "an RF-only manager by design".
+        self._ensemble_requested: bool = bool(use_ensemble)
         self.classifier: FocusClassifier | EnsembleClassifier = FocusClassifier()
 
         if use_ensemble:
@@ -107,6 +116,16 @@ class ModelManager:
                 )
                 self.classifier = FocusClassifier()
                 self._use_ensemble = False
+
+    @property
+    def use_ensemble(self) -> bool:
+        """True when this manager trains the RF+XGB soft-voting ensemble."""
+        return self._use_ensemble
+
+    @property
+    def was_ensemble_requested(self) -> bool:
+        """True when the caller asked for the ensemble (even if it fell back)."""
+        return self._ensemble_requested
 
     @property
     def _today_tag(self) -> str:
@@ -132,6 +151,7 @@ class ModelManager:
         *,
         label_sources: npt.NDArray[Any] | None = None,
         session_ids: npt.NDArray[Any] | None = None,
+        train_hmm: bool = False,
     ) -> TrainingSummary:
         """Train all models and return summary.
 
@@ -147,6 +167,13 @@ class ModelManager:
             label_sources: Optional provenance aligned with features, filtered
                 alongside confidence weights for the ensemble's local budgets.
             session_ids: Optional feedback session ids aligned with features.
+            train_hmm: Whether to fit the research HMM as part of this call.
+                **Default ``False``: the HMM is not part of the default
+                production publication chain** (phase 3.5).  It is still
+                written to disk with every version and can be fitted on demand
+                by passing ``True``; see
+                :data:`mindflow.train.models.hmm.HMM_READMISSION_CRITERIA` for
+                what it must prove before it may come back.
 
         Returns:
             ``TrainingSummary`` with clustering, classifier, hmm subsections.
@@ -222,21 +249,43 @@ class ModelManager:
                 "filtered_low_confidence": low_conf_count,
             }
 
-        # ── HMM ──
-        sequences = self._build_state_sequences()
-        if sequences:
-            self.hmm.fit(sequences)
-            tm = self.hmm.get_transition_matrix()
-            steady = self.hmm.get_steady_state()
+        # ── HMM (research artifact only) ──
+        # Phase 3.5: not fitted by default. The artifact is still serialized by
+        # save_all() with every version so it remains loadable and so the
+        # on-disk layout (clustering/classifier/hmm) is unchanged; passing
+        # train_hmm=True fits it for research use.
+        if not train_hmm:
             summary_hmm = {
-                "transition_matrix": [
-                    [round(float(v), 4) for v in row] for row in tm
-                ],
-                "steady_state": [round(float(v), 4) for v in steady],
-                "state_names": list(self.hmm.state_names),
+                "status": "research_artifact_only",
+                "trained": False,
+                "reason": (
+                    "the HMM is not part of the default production publication "
+                    "chain; pass train_hmm=True to fit it on demand"
+                ),
+                "readmission_criteria": list(HMM_READMISSION_CRITERIA),
             }
         else:
-            summary_hmm = {"error": "No valid state sequences for HMM training"}
+            sequences = self._build_state_sequences()
+            if sequences:
+                self.hmm.fit(sequences)
+                tm = self.hmm.get_transition_matrix()
+                steady = self.hmm.get_steady_state()
+                summary_hmm = {
+                    "status": "research_artifact_trained",
+                    "trained": True,
+                    "transition_matrix": [
+                        [round(float(v), 4) for v in row] for row in tm
+                    ],
+                    "steady_state": [round(float(v), 4) for v in steady],
+                    "state_names": list(self.hmm.state_names),
+                    "in_production_chain": HMM_IN_PRODUCTION_CHAIN,
+                }
+            else:
+                summary_hmm = {
+                    "status": "research_artifact_only",
+                    "trained": False,
+                    "error": "No valid state sequences for HMM training",
+                }
 
         # ── Explanation ──
         explanation: dict[str, Any] = {}
@@ -453,14 +502,33 @@ class ModelManager:
                     logger.debug("Pruned old model artifact {}", path.name)
 
     def readiness_status(self) -> dict[str, Any]:
+        """Whether the models on the inference path are usable.
+
+        ``reasons`` still lists **every** artifact that is not fitted, the
+        research HMM included, so an operator can see the whole picture and the
+        response shape stays what it has always been.  ``ready``, however, is
+        decided by the models inference actually needs — the classifier and the
+        clustering — because the HMM is a research artifact outside the
+        publication chain (phase 3.5).  Before that change an unfitted HMM
+        forced ``ready=False``, which would have made every published
+        classifier report itself unusable: ``ready=True`` with
+        ``reasons=["hmm_not_fitted"]`` means "usable, and here is the one
+        artifact that is deliberately not fitted".
+        """
         reasons: list[str] = []
         if not bool(getattr(self.classifier, "_is_fitted", False)):
             reasons.append("classifier_not_fitted")
         if self.clustering.model is None:
             reasons.append("clustering_not_fitted")
-        if not bool(getattr(self.hmm, "_is_fitted", False)):
+        # Research artifact: reported in `reasons`, never blocking `ready`.
+        hmm_missing = not bool(getattr(self.hmm, "_is_fitted", False))
+        if hmm_missing:
             reasons.append("hmm_not_fitted")
-        return {"ready": not reasons, "reasons": reasons}
+        blocking = [
+            reason for reason in reasons
+            if reason != "hmm_not_fitted" or HMM_IN_PRODUCTION_CHAIN
+        ]
+        return {"ready": not blocking, "reasons": reasons}
 
     def unload(self) -> None:
         """Invalidate every loaded model while preserving object identity.

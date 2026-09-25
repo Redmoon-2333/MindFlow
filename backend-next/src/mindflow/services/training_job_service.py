@@ -3,13 +3,19 @@
 One active job per process. The synchronous ``run_training`` pipeline is
 dispatched to a worker thread via ``asyncio.to_thread``.
 
+Activation policy: ``start_job(allow_activation=...)`` decides whether the run
+may move the active-model pointer. The default (``True``) is the
+user-confirmed/manual path; automatic scheduler-driven runs pass ``False`` and
+therefore only ever produce a shadow candidate.
+
 Cancellation contract:
 - ``pending`` / ``preparing_data`` → terminal ``cancelled`` synchronously.
 - Once ``training`` starts (``asyncio.to_thread`` entered), cancellation
-  is rejected with 409.  The training thread may already write artifacts
-  including ``save_all(activate=True)``, so the service cannot guarantee
-  that activation was prevented even if it signalled cancellation earlier.
-  The safe contract: let the job run to terminal succeeded/failed.
+  is rejected with 409.  A job started with ``allow_activation=True`` may
+  already write artifacts including ``save_all(activate=True)``, so the service
+  cannot guarantee that activation was prevented even if it signalled
+  cancellation earlier.  The safe contract: let the job run to terminal
+  succeeded/failed.
 """
 
 from __future__ import annotations
@@ -79,6 +85,17 @@ class _JobState:
     quality_gate: dict[str, Any] | None = None
     evaluation: dict[str, Any] | None = None
     error: str | None = None
+    # Publication guard evidence (in-memory only, like ``allow_activation``):
+    # which candidate the evaluation selected, which classifier was actually
+    # trained, and why activation was blocked when it was.
+    publication: dict[str, Any] | None = None
+    evaluation_candidate: str | None = None
+    deployed_classifier: str | None = None
+    activation_blocked_reason: str | None = None
+    # In-memory only: whether this job may move the active-model pointer.
+    # Deliberately not persisted (no DB column/migration) — a job recovered
+    # from a historical row reports the backward-compatible default ``True``.
+    allow_activation: bool = True
     _cancelled: threading.Event = field(default_factory=threading.Event)
     _task: asyncio.Task[None] | None = None
     _done: threading.Event = field(default_factory=threading.Event)
@@ -97,6 +114,11 @@ class _JobState:
             quality_gate=self.quality_gate,
             evaluation=self.evaluation,
             error=self.error,
+            allow_activation=self.allow_activation,
+            publication=self.publication,
+            evaluation_candidate=self.evaluation_candidate,
+            deployed_classifier=self.deployed_classifier,
+            activation_blocked_reason=self.activation_blocked_reason,
         )
 
     def to_summary(self) -> TrainingJobSummary:
@@ -194,7 +216,10 @@ class TrainingJobService:
         return None
 
     async def start_job(
-        self, *, app_state: _AppStateLike | None = None,
+        self,
+        *,
+        app_state: _AppStateLike | None = None,
+        allow_activation: bool = True,
     ) -> TrainingJobResponse:
         """Create and dispatch a training job.
 
@@ -206,6 +231,10 @@ class TrainingJobService:
             app_state: Optional ``app.state`` for post-training
                        model-manager refresh and artifact paths.
                        If None, refresh is skipped and default paths used.
+            allow_activation: Whether the job may move the active-model
+                       pointer. Defaults to True for the user-confirmed
+                       path; ``auto_train_if_due`` passes False so automatic
+                       runs can only produce a shadow candidate.
 
         Returns:
             A 202-style response with job id and ``pending`` status.
@@ -227,6 +256,7 @@ class TrainingJobService:
                 job_id=f"train-{uuid.uuid4().hex[:12]}",
                 status="pending",
                 started_at=datetime.now(UTC).isoformat(),
+                allow_activation=allow_activation,
             )
             if self._jobs_repo is not None:
                 await self._jobs_repo.create(
@@ -278,7 +308,12 @@ class TrainingJobService:
             ago (or never ran).
 
         The job always runs in shadow mode (never auto-activates), keeping
-        the manual activation path authoritative.
+        the manual activation path authoritative.  That is enforced, not just
+        documented: the job is started with ``allow_activation=False`` so the
+        pipeline writes the candidate as a shadow version and leaves the
+        active-model pointer (``latest.json``) untouched.  Only a
+        user-confirmed manual run (``start_job(allow_activation=True)``) or an
+        independent publication task may move the active pointer.
 
         Returns:
             True when a training job was started, False otherwise.
@@ -313,7 +348,7 @@ class TrainingJobService:
         if count < self._AUTO_MIN_NEW_FEEDBACK:
             return False
 
-        await self.start_job(app_state=app_state)
+        await self.start_job(app_state=app_state, allow_activation=False)
         return True
 
     async def cancel_job(self, job_id: str) -> TrainingJobResponse | None:
@@ -445,7 +480,8 @@ class TrainingJobService:
             self._set_status(job, "training")
 
             # Once we enter asyncio.to_thread, cancellation is no longer
-            # accepted — the thread may call save_all(activate=True).
+            # accepted — the thread may call save_all(activate=True) when the
+            # job was allowed to activate.
             use_window_labels = bool(
                 getattr(
                     getattr(app_state, "settings", None),
@@ -461,6 +497,7 @@ class TrainingJobService:
                 feature_windows=windows,
                 feedback_sessions=feedback_with_times,
                 use_window_labels=use_window_labels,
+                allow_activation=job.allow_activation,
             ))
             # Repeated cancellation cannot detach the thread from its owner.
             report = await _join_owned_task(worker)
@@ -472,6 +509,12 @@ class TrainingJobService:
             job.version_tag = report.version_tag
             job.quality_gate = report.quality_gate
             job.evaluation = report.evaluation
+            # Publication-guard evidence travels with the job so a shadow outcome
+            # is explainable without reading the on-disk report.
+            job.publication = report.publication or None
+            job.evaluation_candidate = report.evaluation_candidate
+            job.deployed_classifier = report.deployed_classifier
+            job.activation_blocked_reason = report.activation_blocked_reason
 
             # ── Publication ────────────────────────────────────────────
             if report.model_mode == "ready" and app_state is not None:
@@ -598,6 +641,18 @@ class TrainingJobService:
         values.pop("job_id")
         values.pop("source")
         values.pop("started_at")
+        # In-memory-only policy flag: the ``training_jobs`` row schema is frozen
+        # (no column, no migration), so it must never reach ``repo.update``.
+        values.pop("allow_activation")
+        # Same for the publication-guard evidence (plan item 1): report/manifest
+        # carry it, the ``training_jobs`` row does not.
+        for in_memory_only in (
+            "publication",
+            "evaluation_candidate",
+            "deployed_classifier",
+            "activation_blocked_reason",
+        ):
+            values.pop(in_memory_only, None)
         values["status"] = status
         values["completed_at"] = job.completed_at if terminal else None
         values["activated"] = job.activated if terminal else None

@@ -9,6 +9,7 @@ import pytest
 from test_prediction_service import _make_feature_window, _make_mock_model_manager
 
 import mindflow.services.telemetry_service as telemetry_service_module
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.services.prediction_service import FocusPredictionService
 from mindflow.services.telemetry_service import TelemetryService, _PairingRecord
 from mindflow.train.v2 import V2_FEATURE_NAMES
@@ -59,7 +60,7 @@ async def test_predict_latest_focus_returns_probability_uncertainty_and_top_fact
     assert prediction["mode"] == "ready"
     assert prediction["focus_probability"] == 0.8
     assert prediction["uncertainty"] == 0.4
-    assert prediction["feature_schema_version"] == 3
+    assert prediction["feature_schema_version"] == FEATURE_SCHEMA_VERSION
     assert len(prediction["top_factors"]) == 3
 
 

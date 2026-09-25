@@ -28,12 +28,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
+from typing import Any
 
 import httpx
 from loguru import logger
 from pydantic import ValidationError
 
+from mindflow.agents.policies import ATTRIBUTION_POLICY, THINKING_TOKEN_FLOOR
 from mindflow.config import LLMSettings
 
 # Canonical LLM exceptions now live in ``mindflow.errors`` (unified taxonomy);
@@ -42,7 +43,12 @@ from mindflow.config import LLMSettings
 from mindflow.errors import LLMAPIError as LLMAPIError
 from mindflow.errors import LLMNotConfiguredError as LLMNotConfiguredError
 from mindflow.infrastructure.llm.concurrency import LLMConcurrencyGate
+
+# Retry/backoff arithmetic has one implementation (http_client) shared with the
+# fallback tier; the private aliases below keep this module's historical names.
 from mindflow.infrastructure.llm.http_client import ProviderHTTPClient
+from mindflow.infrastructure.llm.http_client import compute_backoff as _compute_backoff
+from mindflow.infrastructure.llm.http_client import parse_retry_after as _parse_retry_after
 from mindflow.infrastructure.llm.safety import safe_error_metadata
 from mindflow.infrastructure.llm.schemas import LLMAttributionResult
 
@@ -72,45 +78,9 @@ _SYSTEM_PROMPT: str = (
     "请确保输出是合法的 JSON 对象，不包含 markdown 代码块标记。"
 )
 
-_BACKOFF_CAP_S: float = 60.0
-
-
-def _compute_backoff(attempt: int, retry_after: int | None = None) -> float:
-    """Compute the backoff delay for a retry attempt.
-
-    If *retry_after* is a positive integer, use it (capped at ``_BACKOFF_CAP_S``).
-    Otherwise, use exponential backoff with jitter:
-    ``min(2 ** attempt + random.uniform(0, 1), cap)``.
-
-    Args:
-        attempt: Zero-based retry attempt number (0 = first retry).
-        retry_after: Optional ``Retry-After`` header value in seconds (integer only).
-
-    Returns:
-        Delay in seconds (always ≥ 0).
-    """
-    if retry_after is not None and retry_after > 0:
-        capped_ra: float = min(float(retry_after), _BACKOFF_CAP_S)
-        return capped_ra
-
-    jitter: float = random.uniform(0.0, 1.0)
-    delay: float = float(2**attempt) + jitter
-    capped_exp: float = min(delay, _BACKOFF_CAP_S)
-    return capped_exp
-
-
-def _parse_retry_after(response: httpx.Response) -> int | None:
-    """Parse the ``Retry-After`` header as an integer number of seconds.
-
-    Returns ``None`` when the header is absent, non-integer, or unparseable.
-    """
-    header = response.headers.get("Retry-After")
-    if header is None:
-        return None
-    try:
-        return int(header)
-    except (ValueError, TypeError):
-        return None
+# ``_compute_backoff`` / ``_parse_retry_after`` are imported above from
+# ``http_client`` (the single implementation shared with the fallback tier),
+# keeping this module's historical private names working for existing callers.
 
 
 class DeepSeekClient:
@@ -126,14 +96,19 @@ class DeepSeekClient:
     ) -> None:
         if not settings.api_key:
             raise LLMNotConfiguredError(
-                "DeepSeek API key is not configured — set MINDFLOW_LLM__API_KEY "
-                "or add llm.api_key to the .env file"
+                "DeepSeek API key is not configured — set DEEPSEEK_API_KEY "
+                "(or MINDFLOW_LLM__DEEPSEEK_API_KEY) to enable L1"
             )
 
         self._base_url = (settings.base_url or "https://api.deepseek.com").rstrip("/")
         self._model = settings.model or "deepseek-chat"
         self._timeout_s: int = settings.timeout_s
         self._max_retries: int = settings.max_retries
+        #: Provider-reported token usage of the last successful call:
+        #: ``(input_tokens, output_tokens, reasoning_tokens)``, or ``None`` when
+        #: the provider omitted it or the last call failed. Observability reads
+        #: this after :meth:`analyze` — never estimated from text length.
+        self.last_usage: tuple[int, int, int] | None = None
         self._client = ProviderHTTPClient(
             settings,
             concurrency if concurrency is not None
@@ -155,6 +130,11 @@ class DeepSeekClient:
         second httpx pool outside ProviderRegistry).
         """
         return self._client
+
+    @property
+    def model(self) -> str:
+        """Model id this client sends (used for observability records)."""
+        return self._model
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -178,7 +158,13 @@ class DeepSeekClient:
             LLMAPIError: Non-retriable API error (4xx).
             ValidationError: Response JSON failed semantic validation.
         """
-        payload = {
+        self.last_usage = None
+        # Every L1 entry point carries the same reasoning contract as the
+        # gateway (plan item 2): JSON constraint for this structured path, the
+        # attribution policy's effort and a cap that leaves room for the
+        # thinking trace (thinking tokens are billed against ``max_tokens``).
+        policy = ATTRIBUTION_POLICY
+        payload: dict[str, Any] = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -189,6 +175,15 @@ class DeepSeekClient:
             ],
             "response_format": {"type": "json_object"},
         }
+        if policy.reasoning_effort is not None:
+            payload["reasoning_effort"] = policy.reasoning_effort
+            payload["thinking"] = {"type": "enabled"}
+        if policy.max_output_tokens is not None:
+            payload["max_tokens"] = (
+                max(policy.max_output_tokens, THINKING_TOKEN_FLOOR)
+                if policy.reasoning_effort is not None
+                else policy.max_output_tokens
+            )
 
         last_exc: Exception | None = None
 
@@ -248,6 +243,8 @@ class DeepSeekClient:
                     await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
+            self.last_usage = _extract_usage(body)
+
             try:
                 content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
             except (AttributeError, IndexError, TypeError) as exc:
@@ -289,3 +286,23 @@ class DeepSeekClient:
     async def close(self) -> None:
         """Close the underlying HTTP client connection pool."""
         await self._client.aclose()
+
+
+def _extract_usage(body: Any) -> tuple[int, int, int] | None:
+    """Pull ``(input, output, reasoning)`` from an OpenAI-compatible usage block.
+
+    Returns ``None`` when the provider omitted usage entirely — the observability
+    layer then reports "not reported" instead of estimating from text length.
+    """
+    if not isinstance(body, dict):
+        return None
+    usage = body.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("completion_tokens_details")
+    reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else 0
+    input_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or 0)
+    if not (input_tokens or output_tokens):
+        return None
+    return (input_tokens, output_tokens, int(reasoning or 0))

@@ -430,7 +430,13 @@ class TestToPromptJson:
             assert "human_readable" in ev
 
     def test_info_severity_excludes_raw_values(self) -> None:
-        """Info-level items omit value and baseline in the JSON (token efficiency)."""
+        """Info-level items omit value and baseline in the JSON (token efficiency).
+
+        Two contracts are covered: the legacy payload (``compressed=False``,
+        retained for A/B comparison) still lists the row without raw values, and
+        the production compressed payload collapses it into ``stable_summary``
+        instead of paying for a per-row entry.
+        """
         item = EvidenceItem(
             metric="baseline_building",
             value=0.0,
@@ -441,10 +447,17 @@ class TestToPromptJson:
             human_readable="基线尚在建立中",
         )
         bundle = self._bundle(items=(item,))
-        parsed = json.loads(to_prompt_json(bundle))
-        ev = parsed["evidence"][0]
+
+        legacy = json.loads(to_prompt_json(bundle, compressed=False))
+        ev = legacy["evidence"][0]
         assert "value" not in ev
         assert "baseline" not in ev
+
+        compressed = json.loads(to_prompt_json(bundle))
+        assert compressed["evidence"] == []
+        entry = compressed["stable_summary"]["metrics"]["baseline_building"]
+        assert entry["count"] == 1
+        assert entry["mean"] == 0.0
 
     def test_window_structure(self) -> None:
         """Window start/end are ISO strings."""

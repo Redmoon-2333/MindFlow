@@ -116,7 +116,25 @@ CBT 认为拖延不是懒惰，而是功能失调的认知-行为模式的结果
 4. 每个论据必须引用 evidence_catalog 中的规范 ID（如 focus.switch_rate、summary.actual_focus_min）
 
 ## 输出格式
-你必须输出 JSON 对象，不能包含 Markdown 代码块标记，字段如下：
+你必须输出 JSON 对象，不能包含 Markdown 代码块标记。**优先**使用 Claim Ledger 格式（每条 claim 都必须有证据、论据和替代解释）：
+{
+  "claims": [
+    {
+      "type": "impulsivity",
+      "confidence": 0.68,
+      "evidence_ids": ["summary.context_switches_per_hour"],
+      "support": "频繁切换且最长专注块较短",
+      "alternative": "可能是任务本身需要多应用协作"
+    }
+  ],
+  "insufficient_data": false,
+  "evidence_gaps": []
+}
+
+若确实无法形成任何 claim，则输出：
+{"claims": [], "insufficient_data": true, "evidence_gaps": ["缺少哪些证据"]}
+
+兼容格式（仅当上面格式无法产出时使用）：
 {
   "attribution_types": ["拖延类型1", "拖延类型2（最多2个）"],
   "confidence": {"类型名": 0.0-1.0},
@@ -126,9 +144,10 @@ CBT 认为拖延不是懒惰，而是功能失调的认知-行为模式的结果
 }
 
 ## 证据引用规则
+- 每条 claim 的 evidence_ids 必须来自证据包 evidence_catalog 中的规范 ID
 - 每个结论必须标注 [证据: 指标名]
 - 例如："用户频繁切换应用，最长专注块不足3分钟，符合冲动分心模式 [证据: focus.longest_block]"
-- 引用的指标名必须在证据包中存在
+- 引用的指标名必须在证据包中存在——批评家与代码都会校验
 
 ## 安全边界
 - 你的角色是行为分析师，不是持证心理治疗师
@@ -175,7 +194,24 @@ Delay（延迟）：奖赏的时间距离。延迟越远→越拖延
 4. 每个论据必须引用证据包中的具体指标
 
 ## 输出格式
-你必须输出 JSON 对象，不能包含 Markdown 代码块标记，字段如下：
+你必须输出 JSON 对象，不能包含 Markdown 代码块标记。**优先**使用 Claim Ledger 格式：
+{
+  "claims": [
+    {
+      "type": "task_aversion",
+      "confidence": 0.7,
+      "evidence_ids": ["summary.start_delay_min"],
+      "support": "启动延迟明显偏高，符合低期望-低价值模式",
+      "alternative": "也可能只是任务切换成本高"
+    }
+  ],
+  "insufficient_data": false,
+  "evidence_gaps": []
+}
+
+若无法形成 claim：{"claims": [], "insufficient_data": true, "evidence_gaps": ["缺失证据"]}
+
+兼容格式（仅当上面格式无法产出时使用）：
 {
   "attribution_types": ["拖延类型1", "拖延类型2（最多2个）"],
   "confidence": {"类型名": 0.0-1.0},
@@ -185,6 +221,7 @@ Delay（延迟）：奖赏的时间距离。延迟越远→越拖延
 }
 
 ## 证据引用规则
+- 每条 claim 的 evidence_ids 必须来自证据包的 evidence_catalog
 - 每个结论必须标注 [证据: 指标名]
 - 引用的指标名必须在证据包中真实存在
 
@@ -226,7 +263,24 @@ _EMOTION_PROMPT: str = """你是一个情绪调节归因专家。你从情绪调
 4. 每个论据必须引用证据包中的具体指标
 
 ## 输出格式
-你必须输出 JSON 对象，不能包含 Markdown 代码块标记，字段如下：
+你必须输出 JSON 对象，不能包含 Markdown 代码块标记。**优先**使用 Claim Ledger 格式：
+{
+  "claims": [
+    {
+      "type": "emotional_regulation",
+      "confidence": 0.66,
+      "evidence_ids": ["summary.social_media_ratio"],
+      "support": "社交媒体比例偏高，符合情绪避难模式",
+      "alternative": "也可能是任务间歇的正常放松"
+    }
+  ],
+  "insufficient_data": false,
+  "evidence_gaps": []
+}
+
+若无法形成 claim：{"claims": [], "insufficient_data": true, "evidence_gaps": ["缺失证据"]}
+
+兼容格式（仅当上面格式无法产出时使用）：
 {
   "attribution_types": ["拖延类型1", "拖延类型2（最多2个）"],
   "confidence": {"类型名": 0.0-1.0},
@@ -237,6 +291,7 @@ _EMOTION_PROMPT: str = """你是一个情绪调节归因专家。你从情绪调
 }
 
 ## 证据引用规则
+- 每条 claim 的 evidence_ids 必须来自证据包的 evidence_catalog
 - 每个结论必须标注 [证据: 指标名]
 - 引用的指标名必须在证据包中真实存在
 
@@ -260,7 +315,8 @@ _CRITIC_PROMPT: str = """你是一个批评家，负责审查专家团的会诊�
 4. 禁词检查：确保报告中不包含"诊断"、"治疗"、"患者"、"处方"等医疗用语
 
 ## 合法指标清单
-你的输入中会包含一个证据目录（evidence_catalog 数组中的 id）。只有目录中的 ID 才是有效的证据引用。
+你的输入中会包含一个证据目录（evidence_catalog）。它的每一项是位置元组
+`[规范ID, 中文标签, 类型]`，只有其中的第 1 项（规范 ID）才是有效的证据引用。
 任何引用不在目录中的 ID → 视为幻觉 → 打回。
 注意：同一指标可能同时存在带前缀的规范 ID（如 summary.actual_focus_min）与裸名（actual_focus_min）；只要裸名能唯一对应目录中的 ID，就不应视为幻觉。
 
@@ -304,9 +360,11 @@ _MODERATOR_PROMPT: str = """你是一个会诊综合主持人。你负责综合�
 
 ## 你的输入
 你会收到：
-1. 数据分析师的分析报告：包含模式发现、异常标注
-2. 三位归因专家的独立意见：CBT视角、TMT视角、情绪调节视角
-3. 冲突检测报告（如有分歧）
+1. 数据分析师的压缩要点（模式发现、异常标注）
+2. 三位归因专家的**已校验 Claim Ledger 表**（每条 claim 含类型、置信度、证据 ID、论据、替代解释）
+3. 跨专家冲突摘要（哪些类型一致、哪些冲突、共识强度 agreement_strength）
+
+注意：Ledger 表中的 claim 已经通过代码校验（证据 ID 存在、置信度合法、有论据和替代解释）。你只依据该表裁决，不接收、也不应脑补未在表中出现的论断。
 
 ## 你的任务
 1. 综合各方意见，提取共识

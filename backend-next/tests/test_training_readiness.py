@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes.analytics import router as analytics_router
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
     activity_events,
@@ -66,7 +67,7 @@ def _v2_window(
         "user_id": user_id,
         "window_start_utc": start,
         "window_end_utc": end,
-        "feature_schema_version": 3,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features_json": _V2_FEATURES_JSON,
         "label": None,
     }
@@ -218,7 +219,7 @@ class TestEmptyDatabase:
         assert gates["minority_f1"]["status"] == "not_evaluated"
         assert gates["calibration_better_than_rule"]["status"] == "not_evaluated"
         assert gates["stable_date_folds"]["status"] == "not_evaluated"
-        assert body["v2_windows"]["schema_version"] == 3
+        assert body["v2_windows"]["schema_version"] == FEATURE_SCHEMA_VERSION
         assert gates["minimum_days"]["threshold"] == ">= 7"
 
         assert len(body["blockers"]) >= 2
@@ -515,7 +516,7 @@ async def test_evaluable_requires_independent_explicit_date_groups(
     assert body["evaluable_explicit_count"] >= 10
     assert body["evaluable_date_count"] == 3
     assert body["evaluable"] is (not bridge_dates)
-    assert body["v2_windows"]["schema_version"] == 3
+    assert body["v2_windows"]["schema_version"] == FEATURE_SCHEMA_VERSION
     assert len(body["gates"]) == 7
     blockers = {blocker["code"]: blocker for blocker in body["blockers"]}
     if bridge_dates:
@@ -886,7 +887,7 @@ class TestTrainingReportGateOverride:
         assert response.status_code == 200
         body = response.json()
         assert body["trainable"] is True
-        assert body["v2_windows"]["schema_version"] == 3
+        assert body["v2_windows"]["schema_version"] == FEATURE_SCHEMA_VERSION
         gates = {gate["key"]: gate for gate in body["gates"]}
         assert len(gates) == 7
         assert gates["minimum_days"]["threshold"] == ">= 7"

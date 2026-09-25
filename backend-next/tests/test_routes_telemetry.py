@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from test_prediction_service import _make_feature_window, _make_mock_model_manager
 
 from mindflow.api.routes.telemetry import router
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository, user_preferences
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.infrastructure.schema import metadata
@@ -193,7 +194,7 @@ class TestFocusPredictionResponseContract:
                 "reason": "未加载 ML 模型",
                 "uncertainty": 1.0,
                 "top_factors": [],
-                "feature_schema_version": 3,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
                 "window_count": 0,
                 "window_start_utc": None,
                 "coverage_ratio": 0.0,

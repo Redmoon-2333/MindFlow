@@ -10,8 +10,11 @@ Covers:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from mindflow.agents.types import PanelUnavailableError
 from mindflow.eval.adapters import (
     MockPanelGateway,
     panel_analyzer,
@@ -141,6 +144,38 @@ async def test_mock_panel_all_scenarios() -> None:
     print("\n  Mock Panel on 30 scenarios:")
     print(f"  Top-1 accuracy: {report.top1_accuracy:.1%} ({report.hits}/{report.total})")
     print(f"  Mean Jaccard:   {report.mean_jaccard:.3f}")
+
+
+@pytest.mark.asyncio
+async def test_panel_analyzer_rejects_non_approved_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A moderator verdict is not a panel success without final approval."""
+    rejected = {
+        "moderator_verdict": {
+            "types": ["impulsivity"],
+            "confidence": {"impulsivity": 0.85},
+            "recommended_technique": "stimulus_control",
+            "rationale": "需要进一步核验",
+        },
+        "critic_approved": False,
+        "panel_rejected": True,
+        "panel_terminal": "rejected",
+        "call_count": 4,
+    }
+
+    class _RejectedGraph:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def ainvoke(self, _: object) -> dict[str, object]:
+            return rejected
+
+    monkeypatch.setattr("mindflow.eval.adapters.PanelGraph", _RejectedGraph)
+    analyzer = panel_analyzer(SimpleNamespace())
+
+    with pytest.raises(PanelUnavailableError, match="not critic-approved"):
+        await analyzer(ALL_SCENARIOS[0].bundle)
 
 
 @pytest.mark.asyncio

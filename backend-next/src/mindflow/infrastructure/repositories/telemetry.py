@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -30,6 +30,16 @@ from mindflow.infrastructure.schema import (
 )
 
 _FEATURE_UPSERT_BATCH_SIZE = 250
+
+# Explicit fNN feature columns in ``V2_FEATURE_NAMES`` order (plan I/4.1). The
+# repository maps feature names to these columns positionally, so every writer
+# must address exactly this tuple: the insert, the conflict-update and the
+# JSON parser all derive from it. When a conflict-update refreshed only part of
+# them, ``features_json`` and the columns diverged and readers that prefer the
+# columns (``_row_features``) served stale values for the same window.
+_FEATURE_WINDOW_COLUMNS: Final[tuple[str, ...]] = tuple(
+    f"f{index:02d}" for index in range(1, len(V2_FEATURE_NAMES) + 1)
+)
 
 
 class TelemetryRepository:
@@ -385,7 +395,10 @@ class TelemetryRepository:
         """Bulk UPSERT feature windows and return the rows that were inserted.
 
         The ``(user_id, window_start_utc, feature_schema_version)`` unique
-        constraint keeps the upsert idempotent. The return value is the
+        constraint keeps the upsert idempotent. A same-key conflict refreshes
+        ``features_json`` and the explicit ``f01..fNN`` columns *together*, both
+        derived from the submitted feature dict, so the two representations of
+        one window can never disagree. The return value is the
         *truthful* set of rows that did not exist before this call: a caller
         (the telemetry rollup) uses it to fold only genuinely new windows into
         the personal baseline, which prevents Welford double counting when the
@@ -409,11 +422,13 @@ class TelemetryRepository:
 
     @staticmethod
     def _feature_columns_from_json(features_json: str | None) -> dict[str, Any]:
-        """Parse a features_json payload into explicit f01..f24 columns.
+        """Parse a features_json payload into explicit f01..fNN columns.
 
         Returns a dict of column-name -> float suitable for ``**`` expansion
         into an insert/update row. Empty when the payload is missing or not
         a dict (the JSON column remains the source of truth in that case).
+        The column count follows ``V2_FEATURE_NAMES`` so a schema bump always
+        maps to real columns (migration 0027 adds f25..f28).
         """
         if not features_json:
             return {}
@@ -424,10 +439,10 @@ class TelemetryRepository:
         if not isinstance(payload, dict):
             return {}
         cols: dict[str, Any] = {}
-        for i, name in enumerate(V2_FEATURE_NAMES, start=1):
+        for name, column in zip(V2_FEATURE_NAMES, _FEATURE_WINDOW_COLUMNS, strict=True):
             value = payload.get(name)
             # NOTE: no trailing comma — a 1-tuple would break float binding.
-            cols[f"f{i:02d}"] = (
+            cols[column] = (
                 float(value)
                 if isinstance(value, (int, float)) and not isinstance(value, bool)
                 else None
@@ -438,7 +453,7 @@ class TelemetryRepository:
     def _row_features(row_mapping: dict[str, Any]) -> dict[str, Any]:
         """Return the feature dict for a window row.
 
-        Prefers the explicit f01..f24 columns (architecture plan I/4.1) so
+        Prefers the explicit f01..fNN columns (architecture plan I/4.1) so
         consumers skip JSON parsing; falls back to parsing features_json.
         The returned dict has the canonical V2 feature names as keys.
         """
@@ -518,6 +533,15 @@ class TelemetryRepository:
                 set_={
                     "window_end_utc": statement.excluded.window_end_utc,
                     "features_json": statement.excluded.features_json,
+                    # The explicit fNN columns travel with features_json: both
+                    # are refreshed from the same feature dict on every write,
+                    # so a re-roll can never leave the JSON blob and the column
+                    # vector describing different windows (a reader that
+                    # prefers the columns would otherwise serve stale values).
+                    **{
+                        column: statement.excluded[column]
+                        for column in _FEATURE_WINDOW_COLUMNS
+                    },
                     # Never let a routine re-roll erase a user label. The
                     # rollup always submits label=None ("no new label"), and
                     # the scheduler re-processes overlapping ranges, so
@@ -613,6 +637,104 @@ class TelemetryRepository:
                 .order_by(behavior_feature_windows.c.window_start_utc.asc())
             )
             return [dict(row._mapping) for row in result.fetchall()]
+
+    async def last_feature_window_before(
+        self,
+        user_id: int,
+        timestamp: datetime,
+        feature_schema_version: int = FEATURE_SCHEMA_VERSION,
+    ) -> dict[str, Any] | None:
+        """Return the newest feature window starting strictly before *timestamp*.
+
+        One bounded lookup used by the rollup to seed the ``task_context_
+        transition`` feature: the first window of a rollup range needs the
+        dominant task context of the window that preceded it, which normally
+        belongs to an earlier rollup run.
+        """
+        stmt = (
+            sa.select(behavior_feature_windows)
+            .where(
+                behavior_feature_windows.c.user_id == user_id,
+                behavior_feature_windows.c.feature_schema_version
+                == feature_schema_version,
+                behavior_feature_windows.c.window_start_utc
+                < timestamp.astimezone(UTC).isoformat(),
+            )
+            .order_by(behavior_feature_windows.c.window_start_utc.desc())
+            .limit(1)
+        )
+        async with self._session_factory() as session:
+            row = (await session.execute(stmt)).fetchone()
+            return dict(row._mapping) if row is not None else None
+
+    async def feature_window_schema_summary(
+        self, user_id: int
+    ) -> list[dict[str, Any]]:
+        """Per-schema-version window counts and start-time span for *user_id*.
+
+        One aggregate query (no per-row loads) so a rebuild can decide whether
+        legacy-schema windows exist and how far back they reach before touching
+        any data.
+        """
+        stmt = (
+            sa.select(
+                behavior_feature_windows.c.feature_schema_version.label("version"),
+                sa.func.count().label("count"),
+                sa.func.min(behavior_feature_windows.c.window_start_utc).label("oldest"),
+                sa.func.max(behavior_feature_windows.c.window_start_utc).label("newest"),
+            )
+            .where(behavior_feature_windows.c.user_id == user_id)
+            .group_by(behavior_feature_windows.c.feature_schema_version)
+        )
+        async with self._session_factory() as session:
+            rows = (await session.execute(stmt)).fetchall()
+        # NOTE: access columns through ``_mapping`` — ``row.count`` resolves to
+        # ``tuple.count`` (the builtin method), not the SQL label, and would
+        # raise TypeError when coerced with int().
+        return [
+            {
+                "version": int(row._mapping["version"]),
+                "count": int(row._mapping["count"]),
+                "oldest": row._mapping["oldest"],
+                "newest": row._mapping["newest"],
+            }
+            for row in rows
+        ]
+
+    async def delete_feature_windows_below_version(
+        self,
+        user_id: int,
+        version: int,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> int:
+        """Delete windows whose schema version is older than *version*.
+
+        Bounded to the optional half-open ``[start, end)`` window-start range so
+        a rebuild can retire only the rows it actually regenerated — a
+        schema-upgrade purge must never delete history the caller did not
+        rewrite.
+        """
+        conditions = [
+            behavior_feature_windows.c.user_id == user_id,
+            behavior_feature_windows.c.feature_schema_version < version,
+        ]
+        if start is not None:
+            conditions.append(
+                behavior_feature_windows.c.window_start_utc
+                >= start.astimezone(UTC).isoformat()
+            )
+        if end is not None:
+            conditions.append(
+                behavior_feature_windows.c.window_start_utc
+                < end.astimezone(UTC).isoformat()
+            )
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(
+                sa.delete(behavior_feature_windows).where(sa.and_(*conditions))
+            )
+            return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def cleanup_old_telemetry(
         self,

@@ -49,6 +49,11 @@ V2_FEATURES_DEFAULT: dict[str, float] = {
     "weekday_sin": 0.5,
     "weekday_cos": 0.5,
     "task_type_code": 0.0,
+    # v4 task-context columns (feature schema 4)
+    "task_type_entropy": 0.0,
+    "task_type_dominant_ratio": 0.0,
+    "task_context_transition": 0.0,
+    "task_unknown_ratio": 1.0,
 }
 
 
@@ -132,12 +137,11 @@ class TestBaselineModelInit:
 class TestV2FeatureVocabulary:
     """The baseline consumes exactly the single authoritative V2 vocabulary."""
 
-    def test_feature_vocabulary_is_the_24_v2_names(self) -> None:
+    def test_feature_vocabulary_is_the_current_v2_names(self) -> None:
         assert list(V2_FEATURE_NAMES) == BaselineModel.FEATURE_COLS
-        assert len(BaselineModel.FEATURE_COLS) == 24
+        assert len(BaselineModel.FEATURE_COLS) == len(V2_FEATURE_NAMES)
 
-    def test_feature_schema_version_is_two(self) -> None:
-        assert BaselineModel.FEATURE_SCHEMA_VERSION == 3
+    def test_feature_schema_version_is_current(self) -> None:
         assert BaselineModel.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
 
 
@@ -271,7 +275,7 @@ class TestV2Persistence:
 
         restored = BaselineModel.from_dict(model.to_dict())
 
-        assert restored.FEATURE_SCHEMA_VERSION == 3
+        assert restored.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
         assert restored.timezone == "Asia/Shanghai"
         assert restored.total_samples() == model.total_samples()
         assert restored.get_stats(9, 0) == model.get_stats(9, 0)
@@ -291,7 +295,7 @@ class TestV2Persistence:
 
             loaded = BaselineModel.load(path)
             assert loaded.user_id == 1
-            assert loaded.FEATURE_SCHEMA_VERSION == 3
+            assert loaded.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
             assert loaded.timezone == "Asia/Shanghai"
             assert loaded.total_days == model.total_days
             assert loaded.has_sufficient_data(1)
@@ -309,7 +313,7 @@ class TestV2Persistence:
         data = model.to_dict()
         parsed = json.loads(json.dumps(data))
         assert parsed["user_id"] == 1
-        assert parsed["feature_schema_version"] == 3
+        assert parsed["feature_schema_version"] == FEATURE_SCHEMA_VERSION
         assert parsed["timezone"] == "Asia/Shanghai"
         assert "stats" in parsed
 
@@ -405,10 +409,12 @@ class TestBaselineSerializationContract:
     def test_has_sufficient_data_flips_at_thirty_samples(self) -> None:
         """Readiness flips at the existing 30-sample threshold (inclusive)."""
         model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
-        # 1 full row (24 features) + 1 partial row (6 features) == exactly 30.
+        # One full row (every current feature) + one partial row sized so the
+        # two together are exactly the 30-sample readiness threshold.
         start = _shanghai_utc(9, 0)
+        partial_size = max(1, 30 - len(V2_FEATURE_NAMES))
         partial_features = {
-            name: V2_FEATURES_DEFAULT[name] for name in V2_FEATURE_NAMES[:6]
+            name: V2_FEATURES_DEFAULT[name] for name in V2_FEATURE_NAMES[:partial_size]
         }
         model.update([
             _make_feature_row(start),

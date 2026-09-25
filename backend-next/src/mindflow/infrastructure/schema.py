@@ -17,6 +17,7 @@ Tables owned by this module:
   - user_preferences                (migration 0001)
   - baseline_models                 (migration 0001; also used by train/)
   - app_classification_rules        (migration 0006)
+  - task_context_rules              (migration 0027)
   - interaction_buckets             (migration 0001)
   - browser_segments                (migration 0001)
   - focus_session_feedback          (migration 0001)
@@ -35,6 +36,8 @@ NOTE: ``activity_events`` moved here in the schema consolidation (plan D);
 from __future__ import annotations
 
 import sqlalchemy as sa
+
+from mindflow.domain.feature_schema import V2_FEATURE_NAMES
 
 # ── Shared metadata — all tables bind to this one MetaData ──────────────
 
@@ -213,6 +216,26 @@ app_classification_rules = sa.Table(
     sa.Column("updated_at", sa.Text(), nullable=False),
 )
 
+# ── task_context_rules (from repositories/task_context.py) ────────────
+# Matches migration 0027.  The mapping layer between the activity categories
+# (app_classification_rules) and the observed task context carried by v4
+# feature windows.  ``match_type`` is 'category' (match_value is one of the
+# activity categories) or 'domain' (match_value is a bare host — never a URL
+# path; see domain/task_context.normalize_domain_rule).
+
+task_context_rules = sa.Table(
+    "task_context_rules",
+    metadata,
+    sa.Column("id", sa.Text(), primary_key=True),
+    sa.Column("user_id", sa.Integer(), nullable=False),
+    sa.Column("match_type", sa.Text(), nullable=False),
+    sa.Column("match_value", sa.Text(), nullable=False),
+    sa.Column("task_context", sa.Text(), nullable=False),
+    sa.Column("priority", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("created_at", sa.Text(), nullable=False),
+    sa.Column("updated_at", sa.Text(), nullable=False),
+)
+
 # ── Telemetry tables (from repositories/telemetry.py) ─────────────────
 # Matches migration 0001.
 
@@ -290,10 +313,16 @@ behavior_feature_windows = sa.Table(
     sa.Column("features_json", sa.Text(), nullable=False),
     sa.Column("label", sa.Text(), nullable=True),
     sa.Column("created_at", sa.Text(), nullable=False),
-    # f01..f24 REAL feature columns (migration 0022, plan I): allow SQL
-    # reads of the vector without JSON parsing; features_json stays for
-    # backward compatibility and rollback.
-    *(sa.Column(f"f{i:02d}", sa.Float(), nullable=True) for i in range(1, 25)),
+    # f01..fNN REAL feature columns (migration 0022 for f01..f24, migration
+    # 0027 for f25..f28, plan I): allow SQL reads of the vector without JSON
+    # parsing; features_json stays for backward compatibility and rollback.
+    # The count is derived from the canonical vocabulary so a schema bump
+    # cannot silently leave the columns behind (the repository maps names to
+    # fNN positionally and would otherwise write to a missing column).
+    *(
+        sa.Column(f"f{i:02d}", sa.Float(), nullable=True)
+        for i in range(1, len(V2_FEATURE_NAMES) + 1)
+    ),
     # Per-window observability record (migration 0026): which collectors were
     # enabled/available, coverage and gaps. NULL on historical rows means "not
     # recorded", which is different from "fully observed".

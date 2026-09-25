@@ -36,11 +36,18 @@ def _no_ssl_cert_file_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _settings(**kwargs: object) -> LLMSettings:
-    """Build LLMSettings with test defaults."""
+    """Build LLMSettings with test defaults.
+
+    ``ecnu_compat_enabled`` means "honour the triple configured here": the
+    production L1 is pinned to DeepSeek direct, so without the opt-in the
+    registry would replace this base URL, model and key with the pin and these
+    tests would no longer exercise the configured provider.
+    """
     defaults: dict[str, object] = {
         "api_key": "test-key",
         "base_url": "https://test.api.example.com",
         "model": "test-model",
+        "ecnu_compat_enabled": True,
         "timeout_s": 30,
         "max_retries": 1,
     }

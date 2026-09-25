@@ -94,6 +94,14 @@ class AnalysisRunContext:
     # ── Panel subgraph ──
     panel_graph: PanelGraph | None = None
 
+    # ── Fast path (optimisation plan 2.2) ──
+    #: Optional async probe ``(user_id, rule_top_type) -> bool`` answering
+    #: "does the user's recent explicit feedback contradict the rule engine's
+    #: conclusion?".  ``None`` means the signal is unavailable, which keeps the
+    #: conservative path (run the full panel).  Injected by the composition
+    #: root; the graph must not reach for repositories itself.
+    feedback_disagreement_probe: Any = None
+
     # ── Fallback tier dependencies (shared with FallbackRunContext) ──
     deepseek_client: Any = None  # DeepSeekClient | None
     ollama_base_url: str | None = None
@@ -175,6 +183,17 @@ class AnalysisGraphState(TypedDict, total=False):
     panel_succeeded: bool
     panel_unavailable_reason: str
     fallback_to_rule_engine: bool
+    # Explicit terminal semantics mirrored from PanelGraph (Phase 1.1).
+    # ``critic_approved`` is the only field that authorises source="panel";
+    # ``panel_degradation_marker`` survives the fallback chain so the final
+    # degradation_path records *why* the panel was abandoned.
+    critic_approved: bool
+    panel_rejected: bool
+    panel_degradation_marker: str
+    #: Which fast-path route was taken, when the fast path is enabled
+    #: (optimisation plan 2.2): "" / "rule_engine" / "single_expert" /
+    #: "insufficient_data". Empty when the full panel ran.
+    panel_fast_path_route: str
 
     # ── Fallback state (mirrors FallbackState subset needed here) ──
     summary_json: str
@@ -553,6 +572,118 @@ async def crisis_gate_node(state: AnalysisGraphState) -> dict[str, Any]:
     return {"crisis_detected": False, "events_domain": events_domain}
 
 
+async def _fast_path_panel_decision(
+    state: AnalysisGraphState,
+    bundle_json: str,
+) -> dict[str, Any] | None:
+    """Decide whether the panel can be skipped (optimisation plan 2.2).
+
+    Returns the state update for a fast-path route, or ``None`` to run the full
+    panel.  The flag defaults to OFF, and even when it is ON this function only
+    *chooses a route*: the actual answer is still produced by the deterministic
+    rule engine or the single-expert tier, which apply the same safety and
+    schema validation as the panel.
+
+    The three-way outcome mirrors the plan:
+      * complete, high-quality, confident, conflict-free evidence → skip the
+        panel and answer from the rule engine (or one expert);
+      * incomplete evidence coverage → ``insufficient_data`` without any LLM
+        call;
+      * anything ambiguous (rule conflict, low confidence/quality, feedback that
+        contradicts the rules) → the full panel.
+    """
+    from mindflow.config import get_settings  # noqa: PLC0415
+
+    if not get_settings().panel_fast_path_enabled:
+        return None
+
+    runtime: AnalysisRunContext = _runtime_of(state)
+    if runtime.rule_engine is None:
+        # Without the deterministic tier there is nothing to decide on.
+        return None
+
+    from mindflow.graph.fallback_nodes import (  # noqa: PLC0415
+        build_behavior_bundle,
+        rule_engine_assessment_to_dict,
+    )
+    from mindflow.graph.panel_fastpath import (  # noqa: PLC0415
+        decide_panel_route,
+        signals_from_payload,
+    )
+
+    events_domain: list[Any] = state.get("events_domain", []) or []
+    if not events_domain:
+        # An empty window has nothing for a panel to reason about: answer
+        # deterministically and spend no LLM call (plan 2.2, insufficient data).
+        logger.info("Panel fast path: route=insufficient_data (窗口内没有活动数据)")
+        return {
+            "panel_succeeded": False,
+            "critic_approved": False,
+            "panel_rejected": False,
+            "panel_unavailable_reason": "窗口内没有活动数据，直接返回 insufficient_data",
+            "panel_degradation_marker": "panel_insufficient_evidence",
+            "panel_fast_path_route": "insufficient_data",
+            "fallback_to_rule_engine": True,
+        }
+
+    summary, _summary_json = build_behavior_bundle(events_domain)
+
+    assessment: dict[str, Any] | None = None
+    if summary is not None:
+        try:
+            assessment = rule_engine_assessment_to_dict(runtime.rule_engine.assess(summary))
+        except Exception as exc:  # noqa: BLE001 — a signal failure means "run the panel"
+            logger.opt(exception=False).warning(
+                "Fast-path rule assessment failed: {}", _safe_error_metadata(exc),
+            )
+            return None
+
+    history_disagreement = False
+    probe = getattr(runtime, "feedback_disagreement_probe", None)
+    if probe is not None and assessment is not None:
+        types = assessment.get("procrastination_types") or ()
+        top_type = str(types[0]) if types else ""
+        try:
+            history_disagreement = bool(await probe(state["user_id"], top_type))
+        except Exception as exc:  # noqa: BLE001 — treat as "unknown", run the panel
+            logger.opt(exception=False).warning(
+                "Fast-path feedback probe failed: {}", _safe_error_metadata(exc),
+            )
+            history_disagreement = True
+
+    signals = signals_from_payload(
+        bundle_json, assessment, history_disagreement=history_disagreement,
+    )
+    decision = decide_panel_route(signals)
+    logger.info(
+        "Panel fast path: route={} ({})",
+        decision.route,
+        decision.reason,
+    )
+
+    if decision.runs_full_panel:
+        return None
+
+    marker = {
+        "rule_engine": "panel_fast_path_rule_engine",
+        "single_expert": "panel_fast_path_single_expert",
+        "insufficient_data": "panel_insufficient_evidence",
+    }[decision.route]
+
+    update: dict[str, Any] = {
+        "panel_succeeded": False,
+        "critic_approved": False,
+        "panel_rejected": False,
+        "panel_unavailable_reason": decision.reason,
+        "panel_degradation_marker": marker,
+        "panel_fast_path_route": decision.route,
+    }
+    if decision.route == "insufficient_data":
+        # Nothing to reason about: answer deterministically, spend no LLM call.
+        update["fallback_to_rule_engine"] = True
+    return update
+
+
 async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
     """Run the expert panel subgraph (PanelGraph from Todo 9).
 
@@ -570,6 +701,7 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
         return {
             "panel_succeeded": False,
             "panel_unavailable_reason": "No evidence bundle available",
+            "panel_degradation_marker": "panel_unavailable",
         }
 
     panel_graph = runtime.panel_graph
@@ -577,7 +709,16 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
         return {
             "panel_succeeded": False,
             "panel_unavailable_reason": "PanelGraph not configured",
+            "panel_degradation_marker": "panel_unavailable",
         }
+
+    # ── Fast path (optimisation plan 2.2, default OFF) ─────────────────
+    # Decided before any LLM call. The chosen route always executes through the
+    # existing fallback chain, so the crisis gate, forbidden-word guard, schema
+    # checks and evidence/citation validation all still run.
+    fast_path = await _fast_path_panel_decision(state, bundle_json)
+    if fast_path is not None:
+        return fast_path
 
     # Build input state for the panel subgraph
     panel_state: PanelGraphState = {
@@ -613,12 +754,14 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
             "panel_unavailable_reason": "PanelGraph timed out",
             "fallback_to_rule_engine": True,
             "degradation_path": ["panel_timeout"],
+            "panel_degradation_marker": "panel_timeout",
         }
     except PanelUnavailableError as exc:
         logger.opt(exception=False).warning("PanelGraph unavailable: {}", _safe_error_metadata(exc))
         return {
             "panel_succeeded": False,
             "panel_unavailable_reason": _safe_error_metadata(exc),
+            "panel_degradation_marker": "panel_unavailable",
         }
     except Exception as exc:
         logger.opt(exception=False).warning(
@@ -627,11 +770,17 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
         return {
             "panel_succeeded": False,
             "panel_unavailable_reason": f"PanelGraph error: {_safe_error_metadata(exc)}",
+            "panel_degradation_marker": "panel_error",
         }
 
     verdict_dict = result.get("moderator_verdict") if isinstance(result, dict) else None
     escalated = result.get("escalated", False) if isinstance(result, dict) else False
     call_count = result.get("call_count", 0) if isinstance(result, dict) else 0
+    critic_approved = (
+        bool(result.get("critic_approved", False)) if isinstance(result, dict) else False
+    )
+    panel_terminal = str(result.get("panel_terminal", "")) if isinstance(result, dict) else ""
+    rejection_reason = str(result.get("rejection_reason", "")) if isinstance(result, dict) else ""
 
     # Persist per-node trace payloads so every panel run is replayable.
     trace = result.get("trace", []) if isinstance(result, dict) else []
@@ -649,20 +798,67 @@ async def panel_graph_node(state: AnalysisGraphState) -> dict[str, Any]:
                 "Failed to persist panel trace: {}", _safe_error_metadata(exc),
             )
 
+    # ── Terminal gating (Phase 1.1) ────────────────────────────────────
+    # A panel run is a success ONLY when the moderator produced a verdict,
+    # that verdict passes deterministic schema validation, and the critic
+    # explicitly approved it.  Anything else degrades through
+    # single_expert → ollama → rule_engine like every other panel failure —
+    # a critic-rejected verdict must never be returned as source="panel".
     if verdict_dict is None or not isinstance(verdict_dict, dict):
+        logger.warning(
+            "PanelGraph ended without a moderator verdict (terminal={}); using fallback chain",
+            panel_terminal or "unknown",
+        )
         return {
             "panel_succeeded": False,
+            "critic_approved": False,
+            "panel_rejected": True,
             "panel_unavailable_reason": "Moderator did not produce a verdict",
+            "panel_degradation_marker": "panel_unavailable",
+        }
+
+    from mindflow.agents.orchestrator import validate_verdict_schema  # noqa: PLC0415
+
+    schema_issues = validate_verdict_schema(dict(verdict_dict))
+    if schema_issues:
+        logger.warning(
+            "Panel verdict failed deterministic schema validation: {}", schema_issues,
+        )
+        return {
+            "panel_succeeded": False,
+            "critic_approved": False,
+            "panel_rejected": True,
+            "panel_unavailable_reason": (
+                "主持人裁决 schema 校验失败：" + "; ".join(schema_issues)
+            ),
+            "panel_degradation_marker": "panel_schema_invalid",
+        }
+
+    if not critic_approved:
+        logger.warning(
+            "Panel terminally rejected by critic (terminal={}, calls={}); using fallback chain",
+            panel_terminal or "rejected",
+            call_count,
+        )
+        return {
+            "panel_succeeded": False,
+            "critic_approved": False,
+            "panel_rejected": True,
+            "panel_unavailable_reason": rejection_reason or "批评家未通过主持人裁决",
+            "panel_degradation_marker": "panel_rejected",
         }
 
     logger.info(
-        "PanelGraph succeeded ({} calls, escalated={})",
+        "PanelGraph succeeded ({} calls, escalated={}, terminal={})",
         call_count,
         escalated,
+        panel_terminal or "approved",
     )
 
     return {
         "panel_succeeded": True,
+        "critic_approved": True,
+        "panel_rejected": False,
         "assessment": verdict_dict,
         "source": "panel",
         "degraded": False,
@@ -1440,6 +1636,15 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
     crisis_detected = state.get("crisis_detected", False)
     fallback_to_rule_engine = state.get("fallback_to_rule_engine", False)
     crisis_response_text = state.get("crisis_response_text", "")
+    panel_marker = state.get("panel_degradation_marker", "")
+
+    def _path(path: list[str]) -> list[str]:
+        """Prefix the panel terminal marker so provenance survives degradation."""
+        if not panel_marker:
+            return list(path)
+        if path and path[0] == panel_marker:
+            return list(path)
+        return [panel_marker, *path]
 
     # Build FallbackRunContext from AnalysisRunContext
     fallback_runtime = FallbackRunContext(
@@ -1478,7 +1683,7 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
             "assessment": re_update.get("assessment", {}),
             "source": re_update.get("source", "rule_engine"),
             "degraded": re_update.get("degraded", True),
-            "degradation_path": re_update.get("degradation_path", ["rule_engine"]),
+            "degradation_path": _path(re_update.get("degradation_path", ["rule_engine"])),
             "error": None,
         }
 
@@ -1489,7 +1694,7 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
             "assessment": re_update.get("assessment", {}),
             "source": re_update.get("source", "rule_engine"),
             "degraded": re_update.get("degraded", False),
-            "degradation_path": re_update.get("degradation_path", ["crisis→rule_engine"]),
+            "degradation_path": _path(re_update.get("degradation_path", ["crisis→rule_engine"])),
             "error": None,
         }
 
@@ -1500,7 +1705,7 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
             "assessment": ds_update["current_result"],
             "source": ds_update.get("source", "deepseek"),
             "degraded": ds_update.get("degraded", False),
-            "degradation_path": ds_update.get("degradation_path", ["deepseek"]),
+            "degradation_path": _path(ds_update.get("degradation_path", ["deepseek"])),
             "error": None,
         }
 
@@ -1512,7 +1717,7 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
             "assessment": os_update["current_result"],
             "source": os_update.get("source", "ollama"),
             "degraded": os_update.get("degraded", True),
-            "degradation_path": os_update.get("degradation_path", ["deepseek", "ollama"]),
+            "degradation_path": _path(os_update.get("degradation_path", ["deepseek", "ollama"])),
             "error": None,
         }
 
@@ -1523,7 +1728,7 @@ async def _fallback_chain_node(state: AnalysisGraphState) -> dict[str, Any]:
         "assessment": re_update.get("assessment", {}),
         "source": re_update.get("source", "rule_engine"),
         "degraded": re_update.get("degraded", True),
-        "degradation_path": re_update.get("degradation_path", []),
+        "degradation_path": _path(re_update.get("degradation_path", [])),
         "error": None,
     }
 

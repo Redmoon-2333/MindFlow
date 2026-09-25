@@ -2,16 +2,16 @@
 
 MindFlow 当前活动后端：FastAPI + LangGraph + SQLite + 本地 ML/LLM 推理。它运行在本机 `127.0.0.1:8765`，由桌面端或前端开发服务器访问。
 
-## 当前状态（2026-08-27）
+## 当前状态（2026-09-25）
 
-- **Feature schema**：V3，24 维窗口特征。
+- **Feature schema**：V4，28 维窗口特征；旧版本模型不会加载 V4 特征。
 - **输入统计**：30 秒聚合桶记录键盘敲击、鼠标点击、滚动、鼠标移动距离、输入活跃时长和交互突发次数；5 分钟 rollup 产生 `keypress_rate_per_min`、`mouse_click_rate_per_min`、`click_key_ratio` 等特征。
 - **用户标注**：支持 `focus` / `distracted` / `mixed` 会话反馈与用户确认的窗口标签。
 - **用户软件分类**：`app_classification_rules` + `/api/v1/app-classifications`，支持进程名、窗口标题模式和优先级。
 - **LLM**：DeepSeek / Ollama / RuleEngine 三层降级；AnalysisGraph、PanelGraph、ChatGraph 为生产图路径。
 - **ML**：训练默认使用窗口标签增广与 Platt sigmoid 校准；质量门通过后才发布 `ready` 模型。
-- **最新已验证模型**：`20260827_173356_a48c0c`，`training_report.json` 为 `ready/activated=true`，7 项质量门全部通过。
-- **最近验证**：后端 `2250 passed`、Ruff 通过、mypy strict 163 个源文件 0 错误；前端 `oxlint` 0 error、Vite 构建成功。
+- **模型发布**：候选通过质量门后还要通过发布一致性检查；自动训练只生成 shadow candidate，不移动 active 指针。
+- **最近后端验证**：`pytest` 3120 passed、4 skipped、22 warnings；Ruff 通过；mypy strict 185 个源文件无错误。warning 详情见 pytest 汇总。
 
 > 模型文件写在平台用户数据目录。新模型写入磁盘后，已经运行的后端进程需要重启才能加载；`model-status` 显示的是当前进程内存中的状态，不等同于磁盘上是否存在最新制品。
 
@@ -34,7 +34,7 @@ backend-next/
 │   │   ├── checkpointer.py          # 内存/SQLite checkpoint adapter
 │   │   └── notification.py           # 桌面通知
 │   ├── services/                    # 业务编排与训练任务
-│   └── train/                       # V3 训练、评估、模型版本
+│   └── train/                       # V2 训练、评估、模型版本
 ├── tests/                           # pytest
 ├── pyproject.toml
 └── README.md
@@ -67,10 +67,10 @@ activity_events
     ↓ 5 秒活动窗口采集
 interaction_buckets（默认 30 秒输入聚合）
     ↓ telemetry rollup
-behavior_feature_windows（schema_version=3，24 维）
+behavior_feature_windows（schema_version=4，28 维：24 维基础特征 + 任务上下文 4 维）
     ↓ 与 focus_session_feedback 按时间重叠匹配
 V2TrainingData
-    ↓ 日期 GroupKFold、规则基线、校准与稳定性检查
+    ↓ forward-chaining、规则基线、校准与稳定性检查
 ModelManager → shadow / ready
 ```
 
@@ -127,7 +127,7 @@ GET    /api/v1/app-classifications/unknown-apps
 # 真实数据；窗口 label 作为附加训练信号，显式反馈仍优先
 uv run python -m mindflow.train --source db --use-window-labels
 
-# 合成 V3 数据
+# 合成训练数据
 uv run python -m mindflow.train --source synthetic_v2
 
 # 版本管理
@@ -242,7 +242,7 @@ npm run lint
 npm run build
 ```
 
-当前质量基线为后端 `2250 passed`、Ruff 通过、mypy strict 163 文件 0 错误；前端 lint 0 error（现有 E2E 文件的 unused-variable 警告仍存在）且生产构建成功。
+后端质量门结果：`pytest` 3120 passed、4 skipped、22 warnings；Ruff 通过；mypy strict 185 个源文件无错误。
 
 ## 配置速查
 
@@ -255,6 +255,9 @@ npm run build
 | `MINDFLOW_RUN_COLLECTORS` | `True` | 是否运行活动采集器 |
 | `MINDFLOW_CHECKPOINTING_ENABLED` | `False` | 是否使用 SQLite checkpoint |
 | `MINDFLOW_TRAINING_USE_WINDOW_LABELS` | `True` | 是否把用户窗口标签纳入训练 |
+| `MINDFLOW_PANEL_FAST_PATH_ENABLED` | `False` | 面板快速路径（默认关闭；离线回放一致率未达 95%，不得开启） |
+| `MINDFLOW_LLM__DEEPSEEK_API_KEY` | 未设置 | 生产 L1（DeepSeek 直连 `deepseek-flash`）凭证；缺失则 L1 不可用并降级 L2/L3，不会借用遗留 ECNU 密钥 |
+| `MINDFLOW_LLM__ECNU_COMPAT_ENABLED` | `False` | 为兼容测试/诊断保留的遗留 ECNU 三元组开关；生产必须保持关闭 |
 | `MINDFLOW_LLM__TIMEOUT_S` | `30` | 单次 LLM 请求超时 |
 | `MINDFLOW_LLM__MAX_RETRIES` | `1` | LLM 重试预算 |
 | `MINDFLOW_LLM__OLLAMA_ENABLED` | `False` | 是否启用本地 Ollama |
@@ -269,9 +272,10 @@ sqlite3 mindflow.db ".backup mindflow_pre_migration.db"
 ## 开发约束
 
 - 只用 uv 管理 Python 依赖。
-- 保持 `FEATURE_SCHEMA_VERSION=3` 和 `count_confirmed_switches()` 的唯一切换计数实现。
-- 质量门统计唯一反馈会话，不用重叠窗口冒充反馈量。
-- 主持人输出必须通过 `validate_verdict_schema()` 后才交给 critic。
+- 保持 `FEATURE_SCHEMA_VERSION=4`（28 列）和 `count_confirmed_switches()` 的唯一切换计数实现；旧版本模型不得加载新特征。
+- 质量门统计唯一反馈会话，不用重叠窗口冒充反馈量；主评估是 forward-chaining（leave-future-days-out），窗口标签只训练、不进评估。
+- 主持人输出必须通过 `validate_verdict_schema()` 后才交给 critic；critic 未批准的面板结论不得标成 `source="panel"`。
+- 自动训练（`auto_train_if_due`）只能产出 shadow candidate，永不移动 active 指针。
 - 真实行为数据、token、模型制品和含个人行为明细的报告不提交 Git。
 - 未明确要求时不自动 commit/push；新增功能先写测试并保持三条质量门绿色。
 

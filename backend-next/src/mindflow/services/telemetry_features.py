@@ -1,8 +1,17 @@
-﻿"""Privacy-preserving feature schema v2."""
+"""Privacy-preserving feature schema (v4).
+
+Builds the feature window that telemetry rolls up every five minutes.  Only
+derived, aggregate values are produced — no window titles, URLs, file paths, or
+process-name lists ever enter a window; the task-context columns carry a
+*category* share, never the app or domain it was derived from (see
+``domain/task_context.py`` for the resolution chain and its domain-only privacy
+boundary).
+"""
 
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,6 +23,12 @@ from mindflow.domain.events import ActivityEvent
 # ``mindflow.services.telemetry_features`` importers keep working unchanged.
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION  # noqa: F401
 from mindflow.domain.features import count_confirmed_switches
+from mindflow.domain.task_context import (
+    TASK_CONTEXT_UNKNOWN,
+    TASK_TYPE_CODES,
+    normalize_task_context,
+    summarize_task_context,
+)
 
 
 def build_v2_feature_window(
@@ -22,7 +37,31 @@ def build_v2_feature_window(
     browser_segments: list[dict[str, Any]],
     window_start: datetime,
     window_end: datetime,
+    *,
+    process_task_contexts: Mapping[str, str] | None = None,
+    domain_task_contexts: Mapping[str, str] | None = None,
+    previous_task_context: str | None = None,
 ) -> dict[str, int | float]:
+    """Build one feature window.
+
+    Args:
+        events: Activity events overlapping the window.
+        interaction_buckets: Input-interaction buckets overlapping the window.
+        browser_segments: Browser heartbeats overlapping the window.
+        window_start: Inclusive window start (UTC).
+        window_end: Exclusive window end (UTC).
+        process_task_contexts: ``process_name -> task context`` resolved by the
+            caller through the user's classification rules (see
+            ``domain/task_context.py``).  A process that is absent, or whose
+            value is not a known context, contributes *unknown* seconds — the
+            builder never guesses and never carries an app-name list itself.
+        domain_task_contexts: ``browser domain -> task context`` for browser
+            heartbeats, resolved the same way.  Domains only: no URL path is
+            available here by design.
+        previous_task_context: Dominant task context of the previous window
+            (``None`` when there is none).  Used only for
+            ``task_context_transition``.
+    """
     window_seconds = max(1.0, (window_end - window_start).total_seconds())
     window_minutes = window_seconds / 60.0
     event_durations = [
@@ -97,6 +136,25 @@ def build_v2_feature_window(
     ) / 24.0
     weekday_angle = 2.0 * math.pi * window_start.weekday() / 7.0
 
+    # ── Task context (schema v4) ────────────────────────────────────────
+    # Two observation streams feed one distribution: foreground activity time
+    # is attributed through the process's context, browser heartbeat time
+    # through its domain's context. Shares are computed over the combined
+    # total, so the columns stay comparable between windows regardless of
+    # which stream was available.
+    task_durations: dict[str, float] = {}
+    process_contexts = process_task_contexts or {}
+    for event, duration in active_events:
+        context = normalize_task_context(
+            process_contexts.get(event.data.process_name)
+        )
+        task_durations[context] = task_durations.get(context, 0.0) + duration
+    domain_contexts = domain_task_contexts or {}
+    for segment, duration in browser_rows:
+        context = normalize_task_context(domain_contexts.get(str(segment.get("domain", ""))))
+        task_durations[context] = task_durations.get(context, 0.0) + duration
+    task_summary = summarize_task_context(task_durations)
+
     return {
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "app_switch_count": int(app_switch_count),
@@ -125,8 +183,51 @@ def build_v2_feature_window(
         "hour_cos": round((math.cos(hour_angle) + 1.0) / 2.0, 6),
         "weekday_sin": round((math.sin(weekday_angle) + 1.0) / 2.0, 6),
         "weekday_cos": round((math.cos(weekday_angle) + 1.0) / 2.0, 6),
-        "task_type_code": 0.0,
+        "task_type_code": float(TASK_TYPE_CODES[task_summary.dominant]),
+        "task_type_entropy": round(task_summary.entropy, 6),
+        "task_type_dominant_ratio": _clamp_unit(task_summary.dominant_ratio),
+        "task_context_transition": _task_context_transition(
+            previous_task_context, task_summary.dominant
+        ),
+        "task_unknown_ratio": _clamp_unit(task_summary.unknown_ratio),
     }
+
+
+def task_context_from_feature_window(features: Mapping[str, Any]) -> str:
+    """Read the dominant task context back out of a built window.
+
+    Used by the rollup to carry the previous window's context into the next
+    one's ``task_context_transition`` value.  An absent or unrecognised code
+    (a legacy v3 payload, for instance) reads as ``unknown`` rather than as a
+    real category.
+    """
+    try:
+        code = float(features.get("task_type_code", 0.0))
+    except (TypeError, ValueError):
+        return TASK_CONTEXT_UNKNOWN
+    if code not in TASK_TYPE_CODES.values():
+        return TASK_CONTEXT_UNKNOWN
+    return next(name for name, value in TASK_TYPE_CODES.items() if value == code)
+
+
+def _task_context_transition(previous: str | None, current: str) -> float:
+    """1.0 when the dominant task context changed between two windows.
+
+    Both sides must be *known*: moving from "we could not tell" to a real
+    category is not an observed switch, it is a gap in measurement, and
+    ``task_unknown_ratio`` already reports that.  A missing previous window
+    (range start / first window ever) is likewise not a transition.
+    """
+    previous_context = (
+        TASK_CONTEXT_UNKNOWN if previous is None else normalize_task_context(previous)
+    )
+    if previous_context == TASK_CONTEXT_UNKNOWN or current == TASK_CONTEXT_UNKNOWN:
+        return 0.0
+    return 1.0 if previous_context != current else 0.0
+
+
+def _clamp_unit(value: float) -> float:
+    return round(min(max(float(value), 0.0), 1.0), 6)
 
 
 def _event_overlap_seconds(

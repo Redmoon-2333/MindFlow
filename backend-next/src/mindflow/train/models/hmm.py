@@ -1,4 +1,20 @@
-"""Behavior-state HMM (hmmlearn with Markov-chain fallback)."""
+"""Behavior-state HMM (hmmlearn with Markov-chain fallback).
+
+**Disposition (phase 3.5): research artifact only — not part of the default
+production publication chain.**  The HMM currently describes transitions
+between *clustering* states of the same five-minute windows the classifier
+already consumes; it predicts nothing the product does not already know, and
+it was the only artifact that could make a published model look "not ready".
+It therefore stays trainable and loadable on demand
+(``ModelManager.train_all(train_hmm=True)``) and is written to disk with every
+version, but it is not fitted by default and never influences the publication
+decision.
+
+Re-admission criteria (all must hold before it may join the publication
+chain): the HMM must predict the user's 15–30-minute-ahead state, and it must
+report its own metrics for that task — accuracy and Brier against the explicit
+feedback of the *future* window — rather than reusing the classifier's.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +23,26 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+#: Whether the HMM takes part in the default production publication chain.
+HMM_IN_PRODUCTION_CHAIN = False
+
+#: What the HMM would have to prove to be re-admitted (phase 3.5).
+HMM_READMISSION_CRITERIA: tuple[str, ...] = (
+    "predicts the user's state 15-30 minutes ahead",
+    "reports its own forward-prediction accuracy and Brier score",
+    "beats the persistence baseline (current state) on held-out future days",
+    "is evaluated on explicit feedback only, like every other model",
+)
+
 
 class BehaviorHMM:
     """Hidden Markov Model for behavior state transitions.
 
     Falls back to a simple Markov chain (transition matrix) if hmmlearn is
     unavailable at import time. This matches the old backend's strategy.
+
+    Research artifact only — see the module docstring for the disposition and
+    the re-admission criteria.
     """
 
     STATE_NAMES = ["deep_focus", "shallow_work", "browsing", "procrastination", "idle"]

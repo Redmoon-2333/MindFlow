@@ -1126,9 +1126,13 @@ def build_scheduler(
             )
             await _run_recovery_step(
                 "telemetry_rollup_recent:startup",
-                lambda: telemetry_service.rollup_feature_windows(
-                    now_utc - timedelta(hours=_RECENT_ROLLUP_WINDOW_HOURS),
+                # Incremental rollup (plan 4.2): the service keeps its own
+                # watermark and re-covers only the missing buckets (plus one
+                # bucket of overlap). After a restart the watermark is empty, so
+                # this behaves exactly like the previous full trailing window.
+                lambda: telemetry_service.rollup_recent(
                     now_utc,
+                    window_hours=_RECENT_ROLLUP_WINDOW_HOURS,
                     user_id=1,
                 ),
                 retries=_STARTUP_RECOVERY_RETRIES,
@@ -1257,9 +1261,9 @@ def build_scheduler(
         # boundary's catch-and-log keeps later invocations alive.
         async def _rollup_recent_telemetry() -> None:
             now = datetime.now(UTC)
-            await telemetry_service.rollup_feature_windows(
-                now - timedelta(hours=_RECENT_ROLLUP_WINDOW_HOURS),
+            await telemetry_service.rollup_recent(
                 now,
+                window_hours=_RECENT_ROLLUP_WINDOW_HOURS,
                 user_id=1,
             )
 

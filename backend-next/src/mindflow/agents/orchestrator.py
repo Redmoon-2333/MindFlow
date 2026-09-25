@@ -21,9 +21,22 @@ from typing import Any, TypeVar
 from loguru import logger
 from pydantic import BaseModel
 
+from mindflow.agents.claims import (
+    ClaimLedger,
+    claim_ledger_for,
+    ledger_from_claims_payload,
+    render_claims_argument,
+    render_conflict_summary,
+    render_ledger_table,
+    summarize_conflicts,
+    validate_ledger,
+)
 from mindflow.agents.conflict import ConflictReport
 from mindflow.agents.experts import ExpertDef
 from mindflow.agents.schemas import (
+    TYPE_ALIASES,
+    VALID_TECHNIQUES,
+    VALID_TYPES,
     AnalystOutput,
     AttributionOutput,
     CriticOutput,
@@ -36,7 +49,10 @@ from mindflow.agents.types import (
     TranscriptEntry,
     _contains_forbidden_words,
 )
-from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
+
+# Canonical procrastination types / CBT techniques are validated through
+# ``agents.schemas`` (VALID_TYPES / VALID_TECHNIQUES) so the schema layer stays
+# the single source of truth for enum vocabularies.
 
 # ── Parsing helpers ────────────────────────────────────────────────────────────
 
@@ -145,8 +161,6 @@ def validate_verdict_schema(verdict: dict[str, Any]) -> list[str]:
     """Deterministically validate a moderator verdict before the critic call."""
     issues: list[str] = []
     verdict = normalize_verdict_types(verdict)
-    valid_types = {t.value for t in ProcrastinationType}
-    valid_techniques = {t.value for t in CBTTechnique}
 
     types_raw = verdict.get("types")
     if not isinstance(types_raw, list):
@@ -155,7 +169,7 @@ def validate_verdict_schema(verdict: dict[str, Any]) -> list[str]:
         if len(types_raw) > 3:
             issues.append("types 最多 3 个")
         for t in types_raw:
-            if str(t) not in valid_types:
+            if str(t) not in VALID_TYPES:
                 issues.append(f"未知拖延类型: {t}")
 
     confidence = verdict.get("confidence")
@@ -163,7 +177,7 @@ def validate_verdict_schema(verdict: dict[str, Any]) -> list[str]:
         issues.append("confidence 必须为对象")
     else:
         for key, value in confidence.items():
-            if str(key) not in valid_types:
+            if str(key) not in VALID_TYPES:
                 issues.append(f"置信度键不是合法类型: {key}")
             try:
                 number = float(value)
@@ -173,18 +187,14 @@ def validate_verdict_schema(verdict: dict[str, Any]) -> list[str]:
                 issues.append(f"置信度不是数字: {key}={value}")
 
     technique = verdict.get("recommended_technique")
-    if technique is not None and str(technique) not in valid_techniques:
+    if technique is not None and str(technique) not in VALID_TECHNIQUES:
         issues.append(f"未知 CBT 技术: {technique}")
     return issues
 
 
-TYPE_ALIASES: dict[str, str] = {
-    "决策性拖延": "decisional",
-    "任务价值感知不足型拖延": "task_aversion",
-    "冲动型拖延": "impulsivity",
-    "完美主义拖延": "perfectionism",
-    "情绪调节型拖延": "emotional_regulation",
-}
+# ``TYPE_ALIASES`` now lives in ``agents/schemas.py`` (the schema layer owns the
+# canonical vocabularies); it stays imported/re-exported here because the project
+# rule is "new types must be added to TYPE_ALIASES and to experts.py's enum list".
 
 
 def normalize_verdict_types(verdict: dict[str, Any]) -> dict[str, Any]:
@@ -209,7 +219,12 @@ def _parse_expert_opinion(
 ) -> ExpertOpinion:
     """Parse an expert's raw LLM response into ``ExpertOpinion``.
 
-    Uses ``AttributionOutput.model_validate_json`` for type-safe parsing.
+    Uses ``AttributionOutput.model_validate_json`` for type-safe parsing, which
+    also runs the Phase 1.3 semantic gate (non-empty argument, at least one
+    legal procrastination type, confidence per type, and at least one evidence
+    citation).  A response that fails the gate is not an opinion and degrades
+    to a skipped expert.
+
     If JSON parsing fails, returns a skipped opinion (graceful degradation).
     Forbidden-word and hallucinated-citation checks are still enforced at
     the code level (semantic validation that Pydantic cannot express).
@@ -221,11 +236,53 @@ def _parse_expert_opinion(
     if parsed is None:
         return _make_skipped_opinion(expert, raw)
 
+    # ── Claim Ledger contract (phase 2.3) ──────────────────────────────
+    if parsed.claims:
+        ledger = ledger_from_claims_payload([c.model_dump() for c in parsed.claims])
+        if valid_metrics is not None:
+            ledger_issues = validate_ledger(ledger, valid_metrics)
+            if ledger_issues:
+                logger.warning(
+                    "Invalid claim ledger for {}: {}", expert.role, ledger_issues,
+                )
+                return _make_skipped_opinion(expert, raw)
+        argument = render_claims_argument(ledger)
+        if _contains_forbidden_words(argument):
+            logger.warning("Forbidden word in {} claim ledger — skipping", expert.role)
+            return _make_skipped_opinion(expert, raw)
+        types: list[str] = []
+        confidence: dict[str, float] = {}
+        citations: list[str] = []
+        for claim in ledger.claims:
+            if claim.type not in types:
+                types.append(claim.type)
+            confidence[claim.type] = max(
+                confidence.get(claim.type, 0.0), float(claim.confidence),
+            )
+            for eid in claim.evidence_ids:
+                if eid not in citations:
+                    citations.append(eid)
+        return ExpertOpinion(
+            role=expert.role,
+            perspective=expert.perspective,
+            attribution_types=tuple(types),
+            confidence=confidence,
+            evidence_citations=tuple(citations),
+            argument=argument,
+            raw_json=raw,
+            claims=ledger.claims,
+        )
+
+    if parsed.insufficient_data:
+        # Explicit expert abstention: contributes no claim, so the panel
+        # treats it exactly like a skipped expert (fail-safe, not fail-open).
+        logger.info(
+            "{} abstained (insufficient_data): {}", expert.role, parsed.evidence_gaps,
+        )
+        return _make_skipped_opinion(expert, raw)
+
     attribution_types = tuple(parsed.attribution_types)
-    confidence = {
-        k: float(v) for k, v in parsed.confidence.items()
-        if isinstance(v, (int, float))
-    }
+    confidence = {k: float(v) for k, v in parsed.confidence.items()}
     evidence_citations = tuple(parsed.evidence_citations)
     argument = parsed.argument
 
@@ -268,7 +325,9 @@ def _parse_analyst_opinion(
 
     The analyst outputs ``patterns`` / ``anomalies`` / ``top_concerns``
     rather than ``attribution_types`` / ``confidence``. We map those
-    into the generic ``ExpertOpinion`` shape.
+    into the generic ``ExpertOpinion`` shape.  A report with no pattern and
+    no anomaly is rejected by the schema itself (Phase 1.3: an empty report
+    is not a valid opinion).
     """
     parsed = _parse_with_pydantic(raw, AnalystOutput, expert.role)
     if parsed is None:
@@ -276,7 +335,7 @@ def _parse_analyst_opinion(
 
     evidence_citations = tuple(parsed.evidence_citations)
 
-    # Build argument text from patterns + anomalies
+    # Build argument text from patterns + anomalies + declared top concerns
     parts: list[str] = []
     for p in parsed.patterns:
         if isinstance(p, dict):
@@ -284,6 +343,9 @@ def _parse_analyst_opinion(
     for a in parsed.anomalies:
         if isinstance(a, dict):
             parts.append(f"异常-{a.get('metric', '')}: {a.get('detail', '')}")
+    concerns = [str(c).strip() for c in parsed.top_concerns if str(c).strip()]
+    if concerns:
+        parts.append("重点关注：" + "；".join(concerns))
     argument = "\n".join(parts) if parts else ""
 
     # Check forbidden words
@@ -333,6 +395,9 @@ def _parse_critic(raw: str) -> CriticResult:
     JSON ``true``/``false`` — fixing the previous bug where
     ``bool("false") == True`` silently approved rejected verdicts.
 
+    A rejection without concrete issues is not actionable, so a placeholder
+    issue is added rather than letting the moderator redo blind.
+
     Returns a safe default (not approved, with an explanation) on failure.
     """
     text = _strip_markdown_fences(raw)
@@ -343,10 +408,12 @@ def _parse_critic(raw: str) -> CriticResult:
         logger.warning("Critic JSON parse failed")
         return CriticResult(approved=False, issues=("批评家输出解析失败",))
 
-    return CriticResult(
-        approved=parsed.approved,
-        issues=tuple(parsed.issues) if parsed.issues else (),
-    )
+    issues = tuple(parsed.issues) if parsed.issues else ()
+    if not parsed.approved and not issues:
+        detail = parsed.critique_detail.strip()
+        issues = (detail or "批评家驳回但未给出具体问题",)
+
+    return CriticResult(approved=parsed.approved, issues=issues)
 
 
 # ── Prompt builders ────────────────────────────────────────────────────────────
@@ -492,6 +559,109 @@ def _build_moderator_redo_prompt(
 ) -> str:
     """Build a moderator re-verdict prompt after critic rejection."""
     base = _build_moderator_user_prompt(bundle_json, analyst, attribution_opinions, conflict)
+    issues_text = "\n".join(f"- {issue}" for issue in critic_issues)
+    return (
+        f"{base}\n\n"
+        f"## 批评家打回意见\n"
+        f"以下问题需要修正，请重新裁决：\n{issues_text}\n\n"
+        f"请输出修正后的裁决 JSON。"
+    )
+
+
+def _collect_ledgers(
+    analyst: ExpertOpinion | None,
+    attribution_opinions: Sequence[ExpertOpinion],
+) -> dict[str, ClaimLedger]:
+    """Collect the validated ledgers of every participating attribution expert."""
+    ledgers: dict[str, ClaimLedger] = {}
+    for opinion in attribution_opinions:
+        if opinion.skipped:
+            continue
+        ledgers[opinion.role] = claim_ledger_for(opinion)
+    return ledgers
+
+
+def _build_moderator_claims_prompt(
+    bundle_json: str,
+    analyst: ExpertOpinion | None,
+    attribution_opinions: Sequence[ExpertOpinion],
+    conflict: ConflictReport,
+    disagreement_summary: Any | None = None,
+    agreement_strength: float = 1.0,
+) -> str:
+    """Build the moderator prompt from *validated claims only* (phase 2.3).
+
+    The moderator no longer receives several pages of expert prose: it receives
+    the analyst digest, the validated claim table, the multi-expert conflict
+    summary, and the instruction to abstain when the table cannot support a
+    conclusion.
+    """
+    ledgers = _collect_ledgers(analyst, attribution_opinions)
+    summary = summarize_conflicts(ledgers, agreement_strength)
+
+    parts: list[str] = [
+        "## 用户行为数据",
+        bundle_json,
+        "",
+    ]
+
+    if analyst is not None and not analyst.skipped and analyst.argument.strip():
+        parts.extend([
+            "## 数据分析师要点（已压缩）",
+            analyst.argument.strip()[:800],
+            "",
+        ])
+
+    parts.extend([
+        "## 已校验的 Claim Ledger（唯一可信的专家意见来源）",
+        render_ledger_table(ledgers) if ledgers else "（无有效 claim）",
+        "",
+        "## 跨专家冲突摘要",
+        render_conflict_summary(summary),
+        "",
+    ])
+
+    if disagreement_summary is not None:
+        parts.extend([
+            "## 共识强度",
+            (
+                f"agreement_strength={disagreement_summary.agreement_strength:.3f}, "
+                f"stability={disagreement_summary.stability}"
+            ),
+            "",
+        ])
+
+    if conflict.has_conflict:
+        parts.extend(["## 冲突检测报告", conflict.details, ""])
+
+    parts.append(
+        "## 你的任务\n"
+        "只依据上表中的 claim 与证据裁决：\n"
+        "1. 综合一致 claim 形成结论，冲突时按证据强度裁决并把被否决方写入 dissent；\n"
+        "2. 若表中没有任何 claim 能支撑结论，输出 insufficient_data=true 并填写 evidence_gaps；\n"
+        "3. 不要引入表中不存在的新证据、新类型或未经校验的论断。"
+    )
+    return "\n".join(parts)
+
+
+def _build_moderator_claims_redo_prompt(
+    bundle_json: str,
+    analyst: ExpertOpinion | None,
+    attribution_opinions: Sequence[ExpertOpinion],
+    conflict: ConflictReport,
+    critic_issues: tuple[str, ...],
+    disagreement_summary: Any | None = None,
+    agreement_strength: float = 1.0,
+) -> str:
+    """Redo variant of :func:`_build_moderator_claims_prompt`."""
+    base = _build_moderator_claims_prompt(
+        bundle_json,
+        analyst,
+        attribution_opinions,
+        conflict,
+        disagreement_summary,
+        agreement_strength,
+    )
     issues_text = "\n".join(f"- {issue}" for issue in critic_issues)
     return (
         f"{base}\n\n"

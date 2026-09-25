@@ -25,24 +25,6 @@ import json
 from typing import Any, Literal, cast, get_type_hints
 
 import pytest
-from test_agents_orchestrator import (
-    _ANALYST_JSON,
-    _ATTRIBUTION_IMPULSIVITY,
-    _ATTRIBUTION_TASK_AVERSION,
-    _CRITIC_APPROVE,
-    _CRITIC_REJECT,
-    _MODERATOR_JSON,
-    _MODERATOR_REDO_JSON,
-    _REBUTTAL_IMPULSIVITY,
-    FP_ANALYST,
-    FP_CBT,
-    FP_CRITIC,
-    FP_EMOTION,
-    FP_MODERATOR,
-    FP_TMT,
-    MockGateway,
-    _make_bundle,
-)
 
 from mindflow.agents.types import (
     ExpertOpinion,
@@ -62,6 +44,24 @@ from mindflow.graph.reducers import (
 )
 from mindflow.graph.state import AnalysisState, ChatState, PanelState
 from mindflow.services.panel_service import analysis_dict_to_panel_verdict
+from tests.test_agents_orchestrator import (
+    _ANALYST_JSON,
+    _ATTRIBUTION_IMPULSIVITY,
+    _ATTRIBUTION_TASK_AVERSION,
+    _CRITIC_APPROVE,
+    _CRITIC_REJECT,
+    _MODERATOR_JSON,
+    _MODERATOR_REDO_JSON,
+    _REBUTTAL_IMPULSIVITY,
+    FP_ANALYST,
+    FP_CBT,
+    FP_CRITIC,
+    FP_EMOTION,
+    FP_MODERATOR,
+    FP_TMT,
+    MockGateway,
+    _make_bundle,
+)
 
 
 class RecordingGateway(MockGateway):
@@ -606,6 +606,9 @@ class TestGoldenTopology:
             "verdict_schema_validation",
             "human_review_interrupt",
             "critic",
+            # Phase 1.1: single terminal node that writes the explicit
+            # critic_approved / panel_rejected / panel_terminal semantics.
+            "panel_finalize",
         }
         assert node_names == expected_nodes, (
             f"Graph nodes changed.\n"

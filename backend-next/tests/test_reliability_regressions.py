@@ -10,6 +10,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.train.pipeline import run_training
 from mindflow.train.v2 import V2_FEATURE_NAMES
 
@@ -61,7 +62,7 @@ def _feature_window(start: datetime, *, is_focus: bool) -> dict[str, object]:
     return {
         "window_start_utc": start.isoformat(),
         "window_end_utc": (start + timedelta(minutes=5)).isoformat(),
-        "feature_schema_version": 3,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": features,
     }
 

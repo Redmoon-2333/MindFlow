@@ -43,6 +43,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from mindflow.api.routes.telemetry import router
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.activity import activity_events
 from mindflow.infrastructure.repositories.focus import focus_sessions
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository
@@ -197,7 +198,7 @@ async def _seed_user_1(session_factory: Any, tmp_path: Path) -> dict[str, int]:
                   score=5, task_type="coding", created_at=now)
     await _insert(session_factory, behavior_feature_windows,
                   id="fw-1", user_id=1, window_start_utc=now,
-                  window_end_utc=now, feature_schema_version=3,
+                  window_end_utc=now, feature_schema_version=FEATURE_SCHEMA_VERSION,
                   features_json="{}", label=None, created_at=now)
     await _insert(session_factory, activity_events,
                   id="evt-1", user_id=1, timestamp=now, duration_s=30.0,
@@ -354,7 +355,7 @@ async def test_scope_all_unloads_shared_manager_and_stops_runtime_inference(
                 "window_start_utc": window_start.isoformat(),
                 "window_end_utc": (window_start + timedelta(minutes=5)).isoformat(),
                 "features_json": json.dumps(features),
-                "feature_schema_version": 3,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
             }
         )
 
@@ -363,7 +364,9 @@ async def test_scope_all_unloads_shared_manager_and_stops_runtime_inference(
     repository.delete_scope.return_value = 0
     repository.revoke_browser_tokens.return_value = 0
     manager = ModelManager(models_dir=tmp_path / "models" / "v2", use_ensemble=False)
-    training_features = np.arange(480, dtype=np.float64).reshape(20, 24)
+    training_features = np.arange(
+        20 * len(V2_FEATURE_NAMES), dtype=np.float64,
+    ).reshape(20, len(V2_FEATURE_NAMES))
     manager.classifier.fit(
         training_features,
         np.array([0, 1] * 10, dtype=np.int32),

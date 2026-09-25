@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.domain.label_contract import (
     is_state_supervision,
     normalise_context_type,
@@ -49,7 +50,7 @@ def _window(start: datetime, **overrides: float) -> dict[str, object]:
     return {
         "window_start_utc": start.isoformat(),
         "window_end_utc": (start + timedelta(minutes=5)).isoformat(),
-        "feature_schema_version": 3,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": features,
     }
 
@@ -319,8 +320,8 @@ async def test_reroll_preserves_existing_label(telemetry_repo) -> None:
         "user_id": 1,
         "window_start_utc": start,
         "window_end_utc": start + timedelta(minutes=5),
-        "feature_schema_version": 3,
-        "features_json": json.dumps({"feature_schema_version": 3}),
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "features_json": json.dumps({"feature_schema_version": FEATURE_SCHEMA_VERSION}),
         "label": "focus",
         "quality_json": json.dumps({"quality_tier": "full"}),
     }
@@ -329,10 +330,14 @@ async def test_reroll_preserves_existing_label(telemetry_repo) -> None:
     # A routine re-roll submits no new label.
     reroll = dict(row)
     reroll["label"] = None
-    reroll["features_json"] = json.dumps({"feature_schema_version": 3, "changed": 1})
+    reroll["features_json"] = json.dumps(
+        {"feature_schema_version": FEATURE_SCHEMA_VERSION, "changed": 1},
+    )
     await telemetry_repo.upsert_feature_windows([reroll])
 
-    rows = await telemetry_repo.list_feature_windows(1, feature_schema_version=3)
+    rows = await telemetry_repo.list_feature_windows(
+        1, feature_schema_version=FEATURE_SCHEMA_VERSION,
+    )
     assert len(rows) == 1
     stored = rows[0]
     assert stored["label"] == "focus", "the user's label must survive a re-roll"
@@ -345,8 +350,8 @@ async def test_reroll_can_set_a_label_when_none_existed(telemetry_repo) -> None:
         "user_id": 1,
         "window_start_utc": start,
         "window_end_utc": start + timedelta(minutes=5),
-        "feature_schema_version": 3,
-        "features_json": json.dumps({"feature_schema_version": 3}),
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "features_json": json.dumps({"feature_schema_version": FEATURE_SCHEMA_VERSION}),
         "label": None,
     }
     await telemetry_repo.upsert_feature_windows([base])
@@ -354,7 +359,9 @@ async def test_reroll_can_set_a_label_when_none_existed(telemetry_repo) -> None:
     labelled = dict(base, label="distracted")
     await telemetry_repo.upsert_feature_windows([labelled])
 
-    rows = await telemetry_repo.list_feature_windows(1, feature_schema_version=3)
+    rows = await telemetry_repo.list_feature_windows(
+        1, feature_schema_version=FEATURE_SCHEMA_VERSION,
+    )
     assert rows[0]["label"] == "distracted"
 
 
@@ -364,12 +371,14 @@ async def test_quality_record_is_persisted(telemetry_repo) -> None:
         "user_id": 1,
         "window_start_utc": start,
         "window_end_utc": start + timedelta(minutes=5),
-        "feature_schema_version": 3,
-        "features_json": json.dumps({"feature_schema_version": 3}),
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "features_json": json.dumps({"feature_schema_version": FEATURE_SCHEMA_VERSION}),
         "label": None,
         "quality_json": json.dumps({"quality_tier": "partial", "coverage": {}}),
     }])
 
-    rows = await telemetry_repo.list_feature_windows(1, feature_schema_version=3)
+    rows = await telemetry_repo.list_feature_windows(
+        1, feature_schema_version=FEATURE_SCHEMA_VERSION,
+    )
     assert rows[0]["quality_json"] is not None
     assert json.loads(rows[0]["quality_json"])["quality_tier"] == "partial"

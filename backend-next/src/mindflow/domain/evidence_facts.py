@@ -4,6 +4,12 @@ Creates a stable, canonical ID namespace between ``EvidenceBundle`` and
 LLM expert prompts. Every citeable fact has exactly one ID, regardless of
 which JSON field or ``EvidenceItem`` it originates from.
 
+The catalog is the *citation namespace*: it stays complete no matter how the
+prompt payload is compressed, so ``evidence_catalog_ids()`` (fed to the critic
+and to ``validate_citations``) is unaffected by phase-2.4 compression.  The
+prompt serializer emits only ``id``/``label``/``type`` per entry and lets the
+values live once, in the evidence rows / behaviour summary.
+
 Usage::
 
     from mindflow.domain.evidence_facts import build_evidence_catalog
@@ -59,6 +65,10 @@ def build_evidence_catalog(bundle: EvidenceBundle) -> tuple[EvidenceFact, ...]:
 
     Each fact has a stable canonical ``id`` that is independent of the
     underlying JSON field name or ``EvidenceItem.metric`` value.
+
+    The catalog is deliberately **lossless**: compression of the prompt
+    payload happens in ``domain.evidence.to_prompt_json`` and never drops a
+    catalog id, so experts keep the same citation vocabulary.
 
     Returns:
         A tuple of ``EvidenceFact`` sorted by severity (severe first).

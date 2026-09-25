@@ -1,6 +1,13 @@
 """Training utilities for privacy-preserving feature windows.
 
 Generates labeled 24-dim v2 feature windows from activity data.
+
+Phase 3.1 (honest evaluation protocol) and 3.4/3.5 (labeling functions and
+candidate model set) live in the sibling modules ``evaluation``, ``labeling``
+and ``candidates``; this module keeps the data preparation and the
+``evaluate_v2_candidates`` / ``evaluate_v2_quality_gate`` entry points that the
+training pipeline and the readiness service call, and embeds their output in
+the training report.
 """
 
 from __future__ import annotations
@@ -12,24 +19,39 @@ from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    average_precision_score,
-    balanced_accuracy_score,
-    brier_score_loss,
-    confusion_matrix,
-    f1_score,
-    roc_auc_score,
-)
 from sklearn.model_selection import GroupKFold
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
 
 # Single authoritative vocabulary lives in the domain layer so BaselineModel
 # and training can never drift. Re-export keeps ``mindflow.train.v2`` importers
 # (telemetry_service, prediction_service) working unchanged.
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES  # noqa: F401
+from mindflow.train import labeling as labeling_functions
+from mindflow.train.candidates import (
+    CANDIDATE_NAMES,
+    LOGISTIC_REGRESSION,
+    RANDOM_FOREST,
+    RF_XGB_SOFT_VOTING,
+    RULE_ENGINE,
+    XGBOOST,
+    CandidateFit,
+    fit_candidate,
+    rule_probabilities,
+    select_candidate,
+)
 from mindflow.train.config import TRAIN_CONFIG
+from mindflow.train.evaluation import (
+    ABSTENTION_BAND_HALF_WIDTH,
+    BOOTSTRAP_RESAMPLES,
+    BOOTSTRAP_SEED,
+    EvaluationFold,
+    PredictionPool,
+    build_forward_chaining_folds,
+    classification_metrics,
+    fold_stability,
+    pooled_report,
+    reliability_table,
+    temporal_drift_report,
+)
 from mindflow.train.grouping import SESSION_WEIGHT_TOTAL, build_grouping_plan
 from mindflow.train.models.ensemble import CalibrationUnavailableError
 
@@ -38,6 +60,15 @@ TASK_TYPE_MAP = {
     "creative": 5, "other": 6, "gaming": 7, "entertainment": 8,
     "browsing": 9, "communication": 10,
 }
+
+#: Fit order inside one fold.  The soft-voting candidate goes first: it is the
+#: only one that can fail (out-of-sample calibration), and a fold it cannot
+#: calibrate is dropped whole — consistently for every candidate — so the
+#: comparison never mixes a calibrated pool with an uncalibrated one.
+_CANDIDATE_FIT_ORDER: tuple[str, ...] = (
+    RF_XGB_SOFT_VOTING, RULE_ENGINE, LOGISTIC_REGRESSION, RANDOM_FOREST, XGBOOST,
+)
+
 
 # Same class used by ModelManager in production so evaluation and deployment
 # share hyperparameters, scaling, and soft-voting behaviour.
@@ -93,6 +124,10 @@ class V2TrainingData:
     explicit_weight_total: float = 0.0
     auxiliary_weight_total: float = 0.0
     legacy_weight_total: float = 0.0
+    #: Auditable per-labeling-function report (phase 3.4).  Measured over the
+    #: kept training rows; exposed in the training report through
+    #: :func:`evaluate_v2_candidates`.
+    labeling_function_report: dict[str, Any] = field(default_factory=dict)
 
 
 # Confidence weight for user-calibrated window labels (option B).  These are
@@ -121,10 +156,19 @@ def prepare_v2_training_data(
     increases the supervision available to the classifier/evaluator.
     """
     parsed_feedback: list[tuple[str, datetime, datetime, str, int | None, str]] = []
+    feedback_context: dict[str, dict[str, Any]] = {}
     for row in feedback_sessions:
         feedback = _parse_feedback(row)
         if feedback is not None:
             parsed_feedback.append(feedback)
+            feedback_context[feedback[0]] = {
+                labeling_functions.POST_INTERVENTION_STATE_KEY: row.get(
+                    labeling_functions.POST_INTERVENTION_STATE_KEY
+                ),
+                labeling_functions.POST_INTERVENTION_HELPFULNESS_KEY: row.get(
+                    labeling_functions.POST_INTERVENTION_HELPFULNESS_KEY
+                ),
+            }
 
     # Keep the feedback session id so quality counts are unique sessions,
     # not the number of overlapping feature windows.
@@ -155,6 +199,13 @@ def prepare_v2_training_data(
     session_dates: dict[str, set[str]] = {}
     conflict_count = 0
     ambiguous_count = 0
+    # Phase 3.4 provenance: each row's raw labeling-function outputs plus the
+    # explicit label it carries (if any).  ``build_labeling_function_report``
+    # turns these into coverage/conflict/agreement per function.
+    lf_outputs_list: list[dict[str, int]] = []
+    lf_explicit_list: list[int | None] = []
+    lf_contexts_list: list[dict[str, Any]] = []
+    lf_features_list: list[dict[str, Any]] = []
 
     for row in feature_windows:
         parsed = _parse_window(row)
@@ -214,6 +265,7 @@ def prepare_v2_training_data(
         wid = str(row.get("id", ""))
         sample_date = start.strftime("%Y-%m-%d")
         matched_session = ""
+        explicit_label_for_row: int | None = None
         if matched_label is not None and seen_labels not in ({-1}, {-2}):
             y_list.append(matched_label)
             w_list.append(1.0)
@@ -221,6 +273,7 @@ def prepare_v2_training_data(
             window_label_list.append(False)
             source_list.append("explicit")
             matched_window_count += 1
+            explicit_label_for_row = matched_label
             # Grouping uses every compatible session, independently of the
             # single attribution chosen for session-balanced weights.
             for sid in matching_sessions:
@@ -271,7 +324,10 @@ def prepare_v2_training_data(
                 source_list.append("window_label_excluded")
                 mixed_count += 1
         else:
-            weak = _weak_label(features)
+            # Weak supervision is now resolved from the explicit labeling
+            # functions (phase 3.4) instead of one opaque helper; the
+            # composition is unchanged, so the labels are too.
+            weak = labeling_functions.weak_label(features)
             y_list.append(weak)
             w_list.append(0.3)
             explicit_list.append(False)
@@ -279,6 +335,18 @@ def prepare_v2_training_data(
             source_list.append("weak")
             if weak == -1:
                 mixed_count += 1
+
+        # Per-row labeling-function provenance (phase 3.4).  Recorded for every
+        # parsed window, including the ones about to be dropped, so the report
+        # can say what each function did on the data that actually arrived.
+        row_context = dict(feedback_context.get(matched_session or "", {}))
+        row_context["explicit_label"] = explicit_label_for_row
+        lf_outputs_list.append(
+            labeling_functions.compute_labeling_function_outputs(features, row_context)
+        )
+        lf_explicit_list.append(explicit_label_for_row)
+        lf_contexts_list.append(row_context)
+        lf_features_list.append(dict(features))
 
         sid_list.append(wid)
         sample_session_list.append(matched_session)
@@ -310,6 +378,15 @@ def prepare_v2_training_data(
         session_id_by_sample=kept_sessions,
     )
 
+    # Labeling-function provenance over exactly the rows that survive, so the
+    # agreement numbers describe the same frame the classifier trains on.
+    kept_features = [f for f, v in zip(lf_features_list, valid, strict=True) if v]
+    kept_lf_labels = [label for label, v in zip(lf_explicit_list, valid, strict=True) if v]
+    kept_lf_contexts = [c for c, v in zip(lf_contexts_list, valid, strict=True) if v]
+    labeling_report = labeling_functions.build_labeling_function_report(
+        kept_features, kept_lf_labels, contexts=kept_lf_contexts,
+    )
+
     return V2TrainingData(
         features=X[valid], labels=kept_labels,
         sample_weights=np.asarray(plan.weights, dtype=np.float64),
@@ -337,6 +414,7 @@ def prepare_v2_training_data(
         explicit_weight_total=plan.explicit_total_weight,
         auxiliary_weight_total=plan.auxiliary_total_weight,
         legacy_weight_total=round(float(w[valid].sum()), 6),
+        labeling_function_report=labeling_report,
     )
 
 
@@ -353,10 +431,101 @@ def training_sample_weights(data: V2TrainingData, mask: np.ndarray) -> np.ndarra
     return np.asarray(plan.weights, dtype=np.float64)
 
 
+def _unavailable_reason(name: str) -> str:
+    """Why a candidate has no held-out metrics in this environment."""
+    if name == RULE_ENGINE:
+        return (
+            "feature set lacks the behavioural columns the rule baseline "
+            "is defined on"
+        )
+    if name == XGBOOST:
+        return "xgboost is not installed in this environment"
+    return "candidate produced no held-out predictions"
+
+
+def _per_fold_accuracy(reports: list[dict[str, Any]]) -> dict[str, dict[int, float]]:
+    """Per-candidate balanced accuracy keyed by fold index, from fold reports."""
+    per_fold: dict[str, dict[int, float]] = {}
+    for report in reports:
+        candidates = report.get("candidates") or {}
+        for name, entry in candidates.items():
+            if isinstance(entry, dict) and "balanced_accuracy" in entry:
+                per_fold.setdefault(name, {})[int(report["fold"])] = float(
+                    entry["balanced_accuracy"]
+                )
+    return per_fold
+
+
+def _scheme_stability(reports: list[dict[str, Any]], scheme: str) -> dict[str, Any]:
+    """Fold-stability summary for one scheme, with skipped folds failing it."""
+    values = [
+        float(report["balanced_accuracy"])
+        for report in reports if "balanced_accuracy" in report
+    ]
+    sizes = [int(report.get("test_size", 0)) for report in reports]
+    stability = fold_stability(values, sizes, scheme=scheme)
+    skipped = [report for report in reports if "reason" in report]
+    if skipped:
+        stability["passed"] = False
+        stability["skipped_folds"] = len(skipped)
+        stability["skip_reasons"] = sorted({str(report["reason"]) for report in skipped})
+    return stability
+
+
+def _not_evaluated_extras(
+    labeling_report: dict[str, Any],
+    *,
+    reason: str,
+    calibration_failures: list[str] | None = None,
+) -> dict[str, Any]:
+    """Every phase-3.1 output key in its "not evaluated" form.
+
+    Present (rather than missing) so the quality gate fails closed for the
+    right, visible reason instead of tripping over an absent key.
+    """
+    return {
+        "candidate_name": None,
+        "primary_scheme": None,
+        "candidates": {},
+        "candidate_selection": {
+            "rule": "keep_simplest_unless_stably_beaten",
+            "status": "not_available",
+            "selected": None,
+            "publication_model": RF_XGB_SOFT_VOTING,
+            "publication_consistent": False,
+            "reason": reason,
+            "decisions": [],
+        },
+        "forward_chaining": {
+            "status": "not_evaluated",
+            "scheme": "forward_chaining",
+            "policy": "leave_future_days_out",
+            "fold_count": 0,
+            "folds": [],
+            "candidates": {},
+            "reason": reason,
+            "calibration_failures": list(calibration_failures or []),
+        },
+        "date_fold_stability": {
+            "scheme": "date_folds", "passed": False, "reason": reason,
+        },
+        "future_fold_stability": {
+            "scheme": "forward_chaining", "passed": False, "reason": reason,
+        },
+        "session_metrics": {"status": "not_available", "reason": reason},
+        "date_metrics": {"status": "not_available", "reason": reason},
+        "probability_metrics": {"status": "not_available", "reason": reason},
+        "bootstrap": {"status": "not_available", "reason": reason},
+        "abstention": {"status": "not_available", "reason": reason},
+        "shadow_drift": {"status": "not_available", "reason": reason},
+        "labeling_functions": labeling_report,
+    }
+
+
 def evaluate_v2_candidates(
     data: V2TrainingData, *, random_state: int = 42, calibration: str | None = None,
 ) -> dict[str, Any]:
-    """Grouped cross-validation on explicit feedback only.
+    """Honest out-of-fold evaluation of the candidate model set.
 
     The held-out folds contain **only** windows labelled by real user
     feedback. Auxiliary window labels and heuristic samples train the folds
@@ -365,14 +534,27 @@ def evaluate_v2_candidates(
     Auxiliary-label behaviour is reported separately by
     :func:`evaluate_auxiliary_signal`.
 
-    Grouping is by *date block*, not by raw calendar date: dates joined by a
-    session that runs across midnight are merged into one group, so no session
-    can contribute rows to both sides of a fold boundary. Sample weights are
+    Two fold schemes run, both leak-free:
+
+    * ``forward_chaining`` (primary since phase 3.1) — expanding window over
+      chronologically ordered date blocks: every fold trains only on blocks
+      strictly earlier than the blocks it is scored on, so no future date and
+      no future session can appear in training;
+    * ``date_folds`` — the legacy ``GroupKFold`` over date blocks (dates joined
+      by a cross-midnight session are one block).
+
+    Grouping is by *date block*, not by raw calendar date, so no session can
+    contribute rows to both sides of a fold boundary. Sample weights are
     session-balanced — each feedback session contributes a fixed total split
     across its windows — so a long session cannot outvote a short one.
 
-    Rule and logistic baselines are computed inside the same held-out folds;
-    in-sample comparisons are intentionally not reported as evidence.
+    Five candidates are compared in every run (rule engine, balanced logistic
+    regression, random forest, XGBoost, RF+XGBoost soft voting); the winner is
+    chosen by the stability rule in :mod:`mindflow.train.candidates` and the
+    decision trail is recorded under ``candidate_selection``. Metrics are
+    reported at window, session and date-block level, with PR-AUC/Brier/ECE, a
+    reliability table, session-bootstrap confidence intervals, an
+    abstention/coverage curve and a shadow-drift check.
 
     ``calibration`` mirrors ``run_training`` — production passes
     ``"sigmoid"`` so evaluation matches the deployed classifier exactly.
@@ -381,6 +563,7 @@ def evaluate_v2_candidates(
         "method": calibration,
         "status": "unavailable" if calibration is not None else "not_requested",
     }
+    labeling_report = dict(data.labeling_function_report or {})
     mask = data.explicit_mask
     if mask.sum() < 10:
         return {
@@ -392,6 +575,9 @@ def evaluate_v2_candidates(
             "folds": [],
             "fold_stability": {},
             "explicit_sample_count": int(mask.sum()),
+            **_not_evaluated_extras(
+                labeling_report, reason="fewer than 10 explicit feedback samples"
+            ),
         }
 
     X = data.features[mask]
@@ -430,17 +616,10 @@ def evaluate_v2_candidates(
             "fold_stability": {"reason": "need >=3 independent date groups"},
             "explicit_sample_count": int(mask.sum()),
             "date_group_count": len(set(group_ids)),
+            **_not_evaluated_extras(
+                labeling_report, reason="need >=3 independent date groups"
+            ),
         }
-
-    if calibration is not None:
-        from mindflow.train.models.ensemble import EnsembleClassifier
-
-        def _make_clf() -> Any:
-            return EnsembleClassifier(calibration=calibration)
-    else:
-
-        def _make_clf() -> Any:
-            return make_v2_classifier()
 
     _group_dates_map: dict[str, list[str]] = dict(data.date_groups)
     if not _group_dates_map and plan is not None:
@@ -471,139 +650,176 @@ def evaluate_v2_candidates(
         )
         sup_groups = np.asarray(sup_plan.group_ids, dtype=object)
 
-    all_y_true: list[int] = []
-    all_candidate_pred: list[int] = []
-    all_candidate_proba: list[float] = []
-    all_logistic_pred: list[int] = []
-    all_logistic_proba: list[float] = []
-    all_rule_pred: list[int] = []
-    all_rule_proba: list[float] = []
-    folds: list[dict[str, Any]] = []
-    rule_baseline_unavailable = False
-    calibration_failures: list[str] = []
+    def _evaluate_scheme(
+        scheme: str, fold_defs: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, list[Any]]], list[str]]:
+        """Fit every candidate on every fold of one scheme.
 
-    for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(X, y, groups)):
-        y_true = y[test_idx]
-        if len(np.unique(y_true)) < 2 or len(y_true) < 5:
-            folds.append({
-                "fold": fold_idx + 1,
-                "train_dates": sorted(set(groups[train_idx])),
-                "test_dates": sorted(set(groups[test_idx])),
-                "balanced_accuracy": 0.0,
-                "reason": "test fold too small for stable metrics",
-            })
-            continue
+        Returns the per-fold reports, the pooled per-candidate predictions
+        (mask-space positions plus labels/scores), and any calibration failure
+        messages.
+        """
+        reports: list[dict[str, Any]] = []
+        scheme_pools: dict[str, dict[str, list[Any]]] = {
+            name: {"positions": [], "y_true": [], "y_pred": [], "y_proba": []}
+            for name in CANDIDATE_NAMES
+        }
+        failures: list[str] = []
+        for fold_def in fold_defs:
+            test_idx = np.asarray(fold_def["test_idx"], dtype=np.int_)
+            y_true = y[test_idx]
+            fold_report: dict[str, Any] = {
+                "fold": int(fold_def["index"]),
+                "scheme": scheme,
+                "train_groups": list(fold_def["train_groups"]),
+                "test_groups": list(fold_def["test_groups"]),
+                "train_dates": list(fold_def["train_dates"]),
+                "test_dates": list(fold_def["test_dates"]),
+                "test_size": int(len(test_idx)),
+            }
+            if scheme == "forward_chaining":
+                fold_report["cutoff_date"] = fold_def["cutoff_date"]
+            if len(np.unique(y_true)) < 2 or len(y_true) < 5:
+                fold_report["balanced_accuracy"] = 0.0
+                fold_report["reason"] = "test fold too small for stable metrics"
+                reports.append(fold_report)
+                continue
 
-        held_out_groups = set(groups[test_idx])
-        fold_train = sup_mask & ~np.isin(sup_groups, list(held_out_groups))
-        Xtr = data.features[fold_train]
-        ytr = data.labels[fold_train]
-        # Session-balanced weights for the fold's training rows.
-        wtr = training_sample_weights(data, fold_train)
-        aux_in_train = int((data.window_label_mask[fold_train].sum())
-                           if data.window_label_mask is not None else 0)
+            # Train on EXACTLY the fold's declared training groups. Using
+            # "every support row that is not in the test groups" instead would
+            # leak future date blocks into a forward-chaining fold (and would
+            # make the fold's reported ``train_groups`` disagree with the rows
+            # the candidate was actually fitted on).
+            declared_train_groups = list(fold_def["train_groups"])
+            fold_train = sup_mask & np.isin(sup_groups, declared_train_groups)
+            Xtr = data.features[fold_train]
+            ytr = data.labels[fold_train]
+            # Session-balanced weights for the fold's training rows.
+            wtr = training_sample_weights(data, fold_train)
+            aux_in_train = int((data.window_label_mask[fold_train].sum())
+                               if data.window_label_mask is not None else 0)
 
-        if len(Xtr) < 10 or len(np.unique(ytr)) < 2:
-            folds.append({
-                "fold": fold_idx + 1,
-                "train_dates": sorted(set(groups[train_idx])),
-                "test_dates": sorted(set(groups[test_idx])),
-                "balanced_accuracy": 0.0,
-                "reason": "train fold has too few labelled samples",
-            })
-            continue
+            if len(Xtr) < 10 or len(np.unique(ytr)) < 2:
+                fold_report["balanced_accuracy"] = 0.0
+                fold_report["reason"] = "train fold has too few labelled samples"
+                reports.append(fold_report)
+                continue
 
-        clf = _make_clf()
-        try:
-            clf.fit(
-                Xtr,
-                ytr,
-                list(data.feature_names),
-                sample_weight=wtr,
-                groups=sup_groups[fold_train],
-                label_sources=np.asarray(data.label_sources)[fold_train],
-                session_ids=np.asarray(sup_sessions)[fold_train],
+            fold_fits: dict[str, CandidateFit] = {}
+            calibration_failed = False
+            for name in _CANDIDATE_FIT_ORDER:
+                try:
+                    fold_fits[name] = fit_candidate(
+                        name,
+                        Xtr,
+                        ytr,
+                        wtr,
+                        X[test_idx],
+                        feature_names=list(data.feature_names),
+                        random_state=random_state,
+                        groups=sup_groups[fold_train],
+                        label_sources=np.asarray(data.label_sources)[fold_train],
+                        session_ids=np.asarray(sup_sessions)[fold_train],
+                        calibration=calibration,
+                    )
+                except CalibrationUnavailableError as exc:
+                    # The fold is dropped whole: mixing a calibrated pool with
+                    # an uncalibrated one would make the comparison meaningless.
+                    failures.append(str(exc))
+                    fold_report["balanced_accuracy"] = 0.0
+                    fold_report["reason"] = "calibration_unavailable"
+                    fold_report["calibration"] = {
+                        "method": calibration, "status": "unavailable",
+                        "reason": str(exc),
+                    }
+                    reports.append(fold_report)
+                    calibration_failed = True
+                    break
+            if calibration_failed:
+                continue
+
+            fold_candidates: dict[str, Any] = {}
+            for name, fit in fold_fits.items():
+                if fit.predictions is None or fit.probabilities is None:
+                    fold_candidates[name] = {
+                        "status": fit.status, "reason": fit.reason,
+                    }
+                    continue
+                metrics = classification_metrics(
+                    y_true, fit.predictions, fit.probabilities
+                )
+                fold_candidates[name] = {
+                    key: metrics[key]
+                    for key in (
+                        "balanced_accuracy", "minority_f1", "brier_score",
+                        "pr_auc", "expected_calibration_error",
+                    )
+                }
+                scheme_pools[name]["positions"].extend(int(i) for i in test_idx)
+                scheme_pools[name]["y_true"].extend(int(v) for v in y_true)
+                scheme_pools[name]["y_pred"].extend(int(v) for v in fit.predictions)
+                scheme_pools[name]["y_proba"].extend(float(v) for v in fit.probabilities)
+
+            fold_report["balanced_accuracy"] = float(
+                fold_candidates.get(RF_XGB_SOFT_VOTING, {}).get("balanced_accuracy", 0.0)
             )
-            if calibration is not None and clf.calibrator is None:
-                raise CalibrationUnavailableError("Requested calibration was not fitted")
-        except CalibrationUnavailableError as exc:
-            calibration_failures.append(str(exc))
-            folds.append({
-                "fold": fold_idx + 1,
-                "train_groups": sorted(set(sup_groups[fold_train])),
-                "test_groups": sorted(held_out_groups),
-                "balanced_accuracy": 0.0,
-                "reason": "calibration_unavailable",
-                "calibration": {
-                    "method": calibration, "status": "unavailable", "reason": str(exc),
-                },
-            })
-            continue
-        yp = clf.predict(X[test_idx])
-        ypr = clf.predict_proba(X[test_idx])[:, 1]
-
-        lr = make_pipeline(
-            StandardScaler(),
-            LogisticRegression(
-                max_iter=1000, random_state=random_state, class_weight="balanced"
-            ),
-        )
-        lr.fit(
-            Xtr,
-            ytr,
-            logisticregression__sample_weight=wtr,
-        )
-        lp = lr.predict(X[test_idx])
-        lpr = lr.predict_proba(X[test_idx])[:, 1]
-
-        try:
-            rule_proba = _rule_probabilities(X[test_idx], data.feature_names)
-        except ValueError:
-            # This feature set has no behavioural columns to anchor the rule
-            # baseline on (an ablation arm). Report it as unavailable rather
-            # than fabricating a baseline from unrelated columns.
-            rule_proba = None
-        rp = (
-            (rule_proba >= 0.5).astype(int)
-            if rule_proba is not None
-            else np.zeros(len(y_true), dtype=int)
-        )
-
-        all_y_true.extend(y_true.tolist())
-        all_candidate_pred.extend(yp.tolist())
-        all_candidate_proba.extend(ypr.tolist())
-        all_logistic_pred.extend(lp.tolist())
-        all_logistic_proba.extend(lpr.tolist())
-        all_rule_pred.extend(rp.tolist())
-        if rule_proba is not None:
-            all_rule_proba.extend(rule_proba.tolist())
-        else:
-            rule_baseline_unavailable = True
-
-        folds.append({
-            "fold": fold_idx + 1,
-            "train_groups": sorted(set(sup_groups[fold_train])),
-            "test_groups": sorted(set(groups[test_idx])),
-            "train_dates": sorted({d for g in set(sup_groups[fold_train])
-                                   for d in _group_dates_map.get(g, [])}),
-            "test_dates": sorted({d for g in set(groups[test_idx])
-                                  for d in _group_dates_map.get(g, [])}),
-            "balanced_accuracy": round(balanced_accuracy_score(y_true, yp), 6),
-            "test_size": int(len(y_true)),
-            "train_size": int(len(Xtr)),
-            "auxiliary_train_samples": aux_in_train,
-            "calibration": {
+            fold_report["train_size"] = int(len(Xtr))
+            fold_report["auxiliary_train_samples"] = aux_in_train
+            fold_report["calibration"] = {
                 "method": calibration,
                 "status": "fitted" if calibration is not None else "not_requested",
-            },
+            }
+            fold_report["candidates"] = fold_candidates
+            reports.append(fold_report)
+        return reports, scheme_pools, failures
+
+    def _pool(scheme_pools: dict[str, dict[str, list[Any]]], name: str) -> PredictionPool | None:
+        rows = scheme_pools.get(name, {}).get("y_true") or []
+        if not rows:
+            return None
+        positions = np.asarray(scheme_pools[name]["positions"], dtype=np.int_)
+        return PredictionPool(
+            y_true=np.asarray(scheme_pools[name]["y_true"], dtype=np.int_),
+            y_pred=np.asarray(scheme_pools[name]["y_pred"], dtype=np.int_),
+            y_proba=np.asarray(scheme_pools[name]["y_proba"], dtype=np.float64),
+            session_ids=[sample_sessions[i] for i in positions],
+            group_ids=[group_ids[i] for i in positions],
+            dates=[dates[i] for i in positions],
+            positions=positions,
+        )
+
+    def _aggregate(scheme_pools: dict[str, dict[str, list[Any]]]) -> dict[str, float]:
+        scores: dict[str, float] = {}
+        for name in CANDIDATE_NAMES:
+            pool = _pool(scheme_pools, name)
+            if pool is None:
+                continue
+            metrics = classification_metrics(pool.y_true, pool.y_pred, pool.y_proba)
+            scores[name] = float(metrics["balanced_accuracy"])
+        return scores
+
+    # ── Scheme 1: legacy date-grouped folds ──────────────────────────────
+    gkf = GroupKFold(n_splits=min(TRAIN_CONFIG.group_folds, len(set(group_ids))))
+    date_fold_defs: list[dict[str, Any]] = []
+    for fold_index, (train_idx, test_idx) in enumerate(gkf.split(X, y, groups), start=1):
+        test_groups = sorted({str(g) for g in groups[test_idx]})
+        train_groups = sorted({str(g) for g in groups[train_idx]})
+        date_fold_defs.append({
+            "index": fold_index,
+            "test_idx": test_idx,
+            "test_groups": test_groups,
+            "train_groups": train_groups,
+            "train_dates": sorted({d for g in train_groups
+                                   for d in _group_dates_map.get(g, [])}),
+            "test_dates": sorted({d for g in test_groups
+                                  for d in _group_dates_map.get(g, [])}),
+            "cutoff_date": None,
         })
+    folds, date_pools, calibration_failures = _evaluate_scheme("date_folds", date_fold_defs)
 
-    if calibration_failures:
-        calibration_result["reason"] = "; ".join(dict.fromkeys(calibration_failures))
-    elif all_y_true and calibration is not None:
-        calibration_result["status"] = "fitted"
-
-    if not all_y_true:
+    if not any(date_pools[name]["y_true"] for name in CANDIDATE_NAMES):
+        if calibration_failures:
+            calibration_result["reason"] = "; ".join(dict.fromkeys(calibration_failures))
         return {
             "status": "calibration_unavailable" if calibration_failures else "insufficient_data",
             "calibration": calibration_result,
@@ -612,19 +828,119 @@ def evaluate_v2_candidates(
             "rule_baseline": {},
             "folds": folds,
             "fold_stability": {"reason": "no valid held-out folds"},
+            **_not_evaluated_extras(
+                labeling_report,
+                reason="no valid held-out folds",
+                calibration_failures=calibration_failures,
+            ),
         }
+    if calibration_failures:
+        calibration_result["reason"] = "; ".join(dict.fromkeys(calibration_failures))
+    elif calibration is not None:
+        calibration_result["status"] = "fitted"
 
-    y_true_arr = np.array(all_y_true)
-    candidate = _classification_metrics(
-        y_true_arr, np.array(all_candidate_pred), np.array(all_candidate_proba)
+    # ── Scheme 2 (primary): leave-future-days-out ────────────────────────
+    forward_folds: list[EvaluationFold] = build_forward_chaining_folds(
+        group_ids, group_dates=_group_dates_map,
     )
-    logistic = _classification_metrics(
-        y_true_arr, np.array(all_logistic_pred), np.array(all_logistic_proba)
+    forward_fold_defs: list[dict[str, Any]] = [
+        {
+            "index": fold.index,
+            "test_idx": np.asarray(
+                [i for i, g in enumerate(group_ids) if g in set(fold.test_groups)],
+                dtype=np.int_,
+            ),
+            "test_groups": list(fold.test_groups),
+            "train_groups": list(fold.train_groups),
+            "train_dates": list(fold.train_dates),
+            "test_dates": list(fold.test_dates),
+            "cutoff_date": fold.cutoff_date,
+        }
+        for fold in forward_folds
+    ]
+    forward_reports, forward_pools, forward_failures = _evaluate_scheme(
+        "forward_chaining", forward_fold_defs
     )
-    rule_baseline: dict[str, Any] = {}
-    if not rule_baseline_unavailable and all_rule_proba:
-        rule_baseline = _classification_metrics(
-            y_true_arr, np.array(all_rule_pred), np.array(all_rule_proba)
+
+    # ── Candidate selection on the primary scheme ────────────────────────
+    forward_available = any(
+        forward_pools[name]["y_true"] for name in CANDIDATE_NAMES
+    )
+    primary_scheme = "forward_chaining" if forward_available else "date_folds"
+    primary_pools = forward_pools if forward_available else date_pools
+    secondary_pools = date_pools if forward_available else forward_pools
+
+    primary_aggregate = _aggregate(primary_pools)
+    secondary_aggregate = _aggregate(secondary_pools) or None
+    primary_per_fold = _per_fold_accuracy(
+        forward_reports if forward_available else folds
+    )
+    selection = select_candidate(
+        primary_aggregate, primary_per_fold, secondary_aggregate=secondary_aggregate,
+    )
+    selected = selection.get("selected")
+    if not selected:
+        selected = next(
+            (name for name in CANDIDATE_NAMES if _pool(primary_pools, name) is not None),
+            LOGISTIC_REGRESSION,
+        )
+        selection["selected"] = selected
+        selection["reason"] = (
+            "no candidate produced comparable metrics; fell back to the first "
+            "available pool"
+        )
+
+    # Each fold's headline accuracy now describes the selected candidate — the
+    # model the gate is about — instead of the always-complex ensemble.
+    for report in [*folds, *forward_reports]:
+        entry = (report.get("candidates") or {}).get(selected) or {}
+        if "balanced_accuracy" in entry:
+            report["balanced_accuracy"] = float(entry["balanced_accuracy"])
+
+    selected_pool = _pool(primary_pools, selected)
+    if selected_pool is None:  # pragma: no cover - guarded by the checks above
+        raise RuntimeError("selected candidate has no held-out predictions")
+    primary_report = pooled_report(
+        selected_pool,
+        bootstrap_resamples=BOOTSTRAP_RESAMPLES,
+        bootstrap_seed=BOOTSTRAP_SEED,
+        abstention_half_width=ABSTENTION_BAND_HALF_WIDTH,
+    )
+
+    primary_fold_reports = forward_reports if forward_available else folds
+    primary_fold_values = [
+        float(report["balanced_accuracy"])
+        for report in primary_fold_reports
+        if "balanced_accuracy" in report
+    ]
+    candidate = dict(primary_report["metrics"])
+    if primary_fold_values:
+        candidate["fold_balanced_accuracy_range"] = round(
+            max(primary_fold_values) - min(primary_fold_values), 6
+        )
+        candidate["fold_min_balanced_accuracy"] = round(min(primary_fold_values), 6)
+
+    date_stability = _scheme_stability(folds, "date_folds")
+    future_stability = _scheme_stability(forward_reports, "forward_chaining")
+    # Legacy key keeps its meaning: stability of the date-grouped folds.
+    fold_stability_result = dict(date_stability)
+
+    candidate_metrics: dict[str, Any] = {}
+    for name in CANDIDATE_NAMES:
+        pool = _pool(primary_pools, name)
+        if pool is None:
+            candidate_metrics[name] = {
+                "status": "unavailable",
+                "reason": _unavailable_reason(name),
+            }
+            continue
+        metrics = classification_metrics(pool.y_true, pool.y_pred, pool.y_proba)
+        candidate_metrics[name] = {"status": "evaluated", **metrics}
+
+    rule_pool = _pool(primary_pools, RULE_ENGINE)
+    if rule_pool is not None:
+        rule_baseline: dict[str, Any] = classification_metrics(
+            rule_pool.y_true, rule_pool.y_pred, rule_pool.y_proba
         )
     else:
         rule_baseline = {
@@ -634,34 +950,73 @@ def evaluate_v2_candidates(
                 "is defined on"
             ),
         }
+    logistic_pool = _pool(primary_pools, LOGISTIC_REGRESSION)
+    logistic_baseline: dict[str, Any] = (
+        classification_metrics(
+            logistic_pool.y_true, logistic_pool.y_pred, logistic_pool.y_proba
+        )
+        if logistic_pool is not None
+        else {"status": "unavailable"}
+    )
 
-    fold_bas = [f["balanced_accuracy"] for f in folds if "balanced_accuracy" in f]
-    fold_bas = [float(v) for v in fold_bas]
-    min_test_size = min((int(f.get("test_size", 0)) for f in folds), default=0)
-    if fold_bas:
-        candidate["fold_balanced_accuracy_range"] = round(max(fold_bas) - min(fold_bas), 6)
-        candidate["fold_min_balanced_accuracy"] = round(min(fold_bas), 6)
-        fold_stability = {
-            "passed": bool(
-                min(fold_bas) >= 0.50
-                and (max(fold_bas) - min(fold_bas)) <= 0.35
-                and min_test_size >= 5
-            ),
-            "min_balanced_accuracy": round(min(fold_bas), 6),
-            "range": round(max(fold_bas) - min(fold_bas), 6),
-            "min_test_size": min_test_size,
-        }
-    else:
-        fold_stability = {"passed": False, "reason": "no stable folds"}
+    shadow_drift = temporal_drift_report(
+        X[selected_pool.positions],
+        selected_pool.y_proba,
+        list(data.feature_names),
+        list(selected_pool.dates),
+    )
+
+    forward_candidate_metrics: dict[str, Any] = {}
+    for name in CANDIDATE_NAMES:
+        pool = _pool(forward_pools, name)
+        forward_candidate_metrics[name] = (
+            {
+                "status": "evaluated",
+                **classification_metrics(pool.y_true, pool.y_pred, pool.y_proba),
+            }
+            if pool is not None
+            else {"status": "unavailable", "reason": _unavailable_reason(name)}
+        )
 
     return {
         "status": "calibration_unavailable" if calibration_failures else "evaluated",
         "calibration": calibration_result,
         "candidate": candidate,
-        "logistic_baseline": logistic,
+        "candidate_name": selected,
+        "candidates": candidate_metrics,
+        "candidate_selection": selection,
+        "primary_scheme": primary_scheme,
+        "logistic_baseline": logistic_baseline,
         "rule_baseline": rule_baseline,
         "folds": folds,
-        "fold_stability": fold_stability,
+        "fold_stability": fold_stability_result,
+        "date_fold_stability": date_stability,
+        "future_fold_stability": future_stability,
+        "forward_chaining": {
+            "status": "evaluated" if forward_available else "not_available",
+            "scheme": "forward_chaining",
+            "policy": "leave_future_days_out",
+            "fold_count": len(forward_reports),
+            "folds": forward_reports,
+            "candidates": forward_candidate_metrics,
+            "calibration_failures": list(dict.fromkeys(forward_failures)),
+        },
+        "session_metrics": primary_report["session_metrics"],
+        "date_metrics": primary_report["date_metrics"],
+        "probability_metrics": {
+            "status": "evaluated",
+            "pr_auc": candidate.get("pr_auc"),
+            "roc_auc": candidate.get("roc_auc"),
+            "brier_score": candidate.get("brier_score"),
+            "expected_calibration_error": candidate.get("expected_calibration_error"),
+            "reliability_table": candidate.get("reliability_table", []),
+            "bin_count": len(candidate.get("reliability_table", []) or []),
+            "sample_count": int(len(selected_pool)),
+        },
+        "bootstrap": primary_report["bootstrap"],
+        "abstention": primary_report["abstention"],
+        "shadow_drift": shadow_drift,
+        "labeling_functions": labeling_report,
         "explicit_sample_count": int(mask.sum()),
         "auxiliary_training_samples": int(
             (data.train_mask.sum() - mask.sum()) if data.train_mask is not None else 0
@@ -717,11 +1072,39 @@ def evaluate_auxiliary_signal(
 def evaluate_v2_quality_gate(
     evaluation: dict[str, Any], *, explicit_feedback_count: int,
     explicit_focus_count: int, explicit_distract_count: int, distinct_feedback_days: int,
+    drift: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Honest quality gate based on unique feedback sessions and held-out folds."""
+    """Honest quality gate: every condition must hold, or the model stays shadow.
+
+    Conditions (phase 3.6 — thresholds are never relaxed to let a candidate
+    through, and no evaluation definition is changed to make one pass):
+
+    ============================  ==========================================
+    ``minimum_days``              >= 7 distinct feedback days
+    ``minimum_explicit_feedback`` >= 20 unique feedback sessions
+    ``minimum_class_feedback``    >= 5 focus and >= 5 distracted sessions
+    ``balanced_accuracy``         >= 0.55 on the primary held-out scheme
+    ``minority_f1``               >= 0.40
+    ``calibration_better_than_rule``  Brier no worse than the rule baseline
+                                  by more than 0.01
+    ``calibration_available``     an out-of-sample calibrator was fitted (or
+                                  explicitly not requested)
+    ``stable_date_folds``         the date-grouped folds are stable
+    ``stable_future_folds``       the leave-future-days-out folds are stable
+    ``no_anomalous_drift``        the shadow drift check stayed below its PSI
+                                  threshold
+    ============================  ==========================================
+
+    ``stable_future_folds`` and ``no_anomalous_drift`` fail **closed**: when
+    the evaluation carries no forward-chaining section or no drift report, the
+    gate cannot confirm them and the candidate stays in shadow.  Passing an
+    explicit ``drift`` overrides the drift section of ``evaluation``.
+    """
     candidate = evaluation.get("candidate", {})
     rule_baseline = evaluation.get("rule_baseline", {})
     fold_stability = evaluation.get("fold_stability", {}) or {}
+    future_stability = evaluation.get("future_fold_stability") or {}
+    drift_report = drift if drift is not None else (evaluation.get("shadow_drift") or {})
     candidate_brier = float(candidate.get("brier_score", 1.0))
     rule_brier = float(rule_baseline.get("brier_score", 1.0))
     calibration = evaluation.get("calibration") or {}
@@ -741,6 +1124,10 @@ def evaluate_v2_quality_gate(
         "calibration_better_than_rule": candidate_brier <= rule_brier + 0.01,
         "calibration_available": calibration_available,
         "stable_date_folds": bool(fold_stability.get("passed", False)),
+        "stable_future_folds": bool(future_stability.get("passed", False)),
+        "no_anomalous_drift": bool(drift_report) and not bool(
+            drift_report.get("anomalous", True)
+        ),
     }
     is_passed = evaluation.get("status") == "evaluated" and all(checks.values())
     # Progressive deployment tier (architecture plan E/2.1): instead of a
@@ -759,6 +1146,63 @@ def evaluate_v2_quality_gate(
         "mode": "ready" if is_passed else "shadow",
         "deployment_tier": tier,
         "checks": checks,
+        "details": {
+            "minimum_days": {
+                "observed": distinct_feedback_days, "threshold": 7, "comparison": ">=",
+            },
+            "minimum_explicit_feedback": {
+                "observed": explicit_feedback_count, "threshold": 20, "comparison": ">=",
+            },
+            "minimum_class_feedback": {
+                "observed": {
+                    "focus": explicit_focus_count, "distracted": explicit_distract_count,
+                },
+                "threshold": 5,
+                "comparison": ">=",
+            },
+            "balanced_accuracy": {
+                "observed": float(candidate.get("balanced_accuracy", 0.0)),
+                "threshold": 0.55,
+                "comparison": ">=",
+            },
+            "minority_f1": {
+                "observed": float(candidate.get("minority_f1", 0.0)),
+                "threshold": 0.40,
+                "comparison": ">=",
+            },
+            "calibration_better_than_rule": {
+                "observed": {
+                    "candidate_brier": candidate_brier, "rule_brier": rule_brier,
+                },
+                "threshold": 0.01,
+                "comparison": "candidate_brier <= rule_brier + threshold",
+            },
+            "calibration_available": {
+                "observed": calibration.get("status"),
+                "method": calibration.get("method"),
+            },
+            "stable_date_folds": {
+                "observed": fold_stability.get("passed"),
+                "min_balanced_accuracy": fold_stability.get("min_balanced_accuracy"),
+                "range": fold_stability.get("range"),
+                "min_test_size": fold_stability.get("min_test_size"),
+            },
+            "stable_future_folds": {
+                "observed": future_stability.get("passed"),
+                "min_balanced_accuracy": future_stability.get("min_balanced_accuracy"),
+                "range": future_stability.get("range"),
+                "min_test_size": future_stability.get("min_test_size"),
+                "folds": future_stability.get("fold_count"),
+            },
+            "no_anomalous_drift": {
+                "observed": drift_report.get("statistic"),
+                "threshold": drift_report.get("threshold"),
+                "anomalous": drift_report.get("anomalous"),
+                "unit": drift_report.get("unit"),
+            },
+        },
+        "candidate_name": evaluation.get("candidate_name"),
+        "primary_scheme": evaluation.get("primary_scheme"),
         "explicit_feedback_count": explicit_feedback_count,
         "explicit_focus_count": explicit_focus_count,
         "explicit_distract_count": explicit_distract_count,
@@ -827,32 +1271,14 @@ def _finite_float(value: Any) -> float:
 
 
 def _weak_label(features: dict[str, Any]) -> int:
-    """Heuristic weak label for un-labelled windows (architecture plan E/2.1).
+    """Composed weak label for an un-labelled window.
 
-    Explicit user feedback still wins; this rule only fills windows with no
-    overlapping feedback session. The thresholds encode high-confidence
-    behavioural signals only (a single app held for a long time, or an
-    extreme switch storm) so the weak labels stay conservative:
-      - top_app_ratio > 0.9 and idle_ratio < 0.1  -> focus (deep work)
-      - app_switch_count > 8 and input_active_ratio < 0.2 -> distract
-    Everything else is treated as mixed (excluded from training).
+    Kept as the public entry point of the pre-3.4 helper, but the decision now
+    comes from the explicit labeling functions in
+    :mod:`mindflow.train.labeling` — same guard, same order, same thresholds,
+    so nothing about the weak labels changed; they are just attributable now.
     """
-    sw = _finite_float(features.get("app_switch_count", 0))
-    idle = _finite_float(features.get("idle_ratio", 0))
-    top = _finite_float(features.get("top_app_ratio", 0))
-    active = _finite_float(features.get("input_active_ratio", 0))
-    if idle > 0.8:
-        return -1
-    # Deep-focus: mostly one app, low idle, meaningful input.
-    if top > 0.9 and idle < 0.1 and active > 0.15:
-        return 1
-    # Distraction: heavy switching with little focused input.
-    if sw > 8 and active < 0.2:
-        return 0
-    # Keep a couple of gentler legacy signals for early cold-start days.
-    if (top > 0.7 and active > 0.3) or (sw < 5 and top > 0.5):
-        return 1
-    return -1
+    return labeling_functions.weak_label(features)
 
 
 def _rule_probabilities(
@@ -860,83 +1286,30 @@ def _rule_probabilities(
 ) -> np.ndarray:
     """Heuristic rule baseline used as the quality gate's comparison point.
 
-    Resolves the four features it uses **by name**. The previous positional
-    version (columns 0, 3, 14) silently read whatever happened to sit at those
-    offsets, so any change to the feature set produced a meaningless baseline
-    instead of an error — and an ablation that removed columns crashed.
+    Resolves the features it uses **by name** (see
+    :func:`mindflow.train.candidates.rule_probabilities`); a positional read
+    would silently produce a meaningless baseline when the feature set changes.
 
     Raises:
-        ValueError: when a required feature is absent. A baseline computed from
-            the wrong columns is worse than a loud failure; callers that drop
-            features on purpose (ablations) must handle this explicitly.
+        ValueError: when a required feature is absent.
     """
     names = list(feature_names) if feature_names is not None else list(V2_FEATURE_NAMES)
-    required = ("app_switch_count", "top_app_ratio", "idle_ratio")
-    missing = [name for name in required if name not in names]
-    if missing:
-        msg = f"rule baseline needs behavioural features {missing!r}; present: {names!r}"
-        raise ValueError(msg)
-
-    def column(feature: str) -> np.ndarray:
-        return X[:, names.index(feature)]
-
-    p = np.full(X.shape[0], 0.5)
-    switch_count = column("app_switch_count")
-    p[switch_count < 5] += 0.2
-    p[column("top_app_ratio") > 0.7] += 0.15
-    p[switch_count > 20] -= 0.3
-    p[column("idle_ratio") > 0.8] -= 0.1
-    return np.clip(p, 0.0, 1.0)
+    return np.asarray(rule_probabilities(np.asarray(X, dtype=np.float64), names))
 
 
 def _classification_metrics(
     y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray
 ) -> dict[str, Any]:
-    ba = balanced_accuracy_score(y_true, y_pred)
-    unique, counts = np.unique(y_true, return_counts=True)
-    minority = unique[np.argmin(counts)]
-    minority_f1 = f1_score(
-        (y_true == minority).astype(int),
-        (y_pred == minority).astype(int),
-        zero_division=0.0,
+    """Window-level metrics; delegates to the evaluation protocol module."""
+    return classification_metrics(
+        np.asarray(y_true, dtype=np.int_),
+        np.asarray(y_pred, dtype=np.int_),
+        np.asarray(y_proba, dtype=np.float64),
     )
-    try:
-        brier = brier_score_loss(y_true, y_proba)
-    except Exception:
-        brier = 1.0
-    result: dict[str, Any] = {
-        "balanced_accuracy": round(float(ba), 6),
-        "minority_f1": round(float(minority_f1), 6),
-        "brier_score": round(float(brier), 6),
-    }
-    if len(unique) == 2:
-        try:
-            result["roc_auc"] = round(float(roc_auc_score(y_true, y_proba)), 6)
-            result["average_precision"] = round(float(average_precision_score(y_true, y_proba)), 6)
-        except ValueError:
-            pass
-        result["confusion_matrix"] = confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist()
-    result["calibration"] = _calibration_bins(y_true, y_proba)
-    return result
 
 
-def _calibration_bins(y_true: np.ndarray, y_proba: np.ndarray) -> list[dict[str, float]]:
-    """Return binned predicted-vs-observed calibration for held-out data."""
-    if len(y_proba) == 0:
-        return []
-    edges = np.linspace(0.0, 1.0, TRAIN_CONFIG.calibration_bins + 1)
-    bins: list[dict[str, float]] = []
-    for i in range(TRAIN_CONFIG.calibration_bins):
-        lo, hi = float(edges[i]), float(edges[i + 1])
-        mask_bin = (y_proba >= lo) & (y_proba <= hi)
-        count = int(mask_bin.sum())
-        if count == 0:
-            continue
-        bins.append({
-            "bin_low": round(lo, 4),
-            "bin_high": round(hi, 4),
-            "count": count,
-            "mean_prediction": round(float(np.mean(y_proba[mask_bin])), 4),
-            "fraction_positive": round(float(np.mean(y_true[mask_bin])), 4),
-        })
-    return bins
+def _calibration_bins(y_true: np.ndarray, y_proba: np.ndarray) -> list[dict[str, Any]]:
+    """Binned predicted-vs-observed calibration table for held-out data."""
+    return reliability_table(
+        np.asarray(y_true, dtype=np.int_), np.asarray(y_proba, dtype=np.float64)
+    )

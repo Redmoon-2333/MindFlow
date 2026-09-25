@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
 )
@@ -130,7 +131,7 @@ async def test_training_job_lifecycle_round_trips(session_factory) -> None:
         completed_at="2026-09-19T09:05:00+00:00",
         activated=True,
         version_tag="20260919_090500_abc123",
-        feature_schema_version=3,
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
         quality_gate={"passed": True},
         evaluation={"status": "evaluated"},
     )

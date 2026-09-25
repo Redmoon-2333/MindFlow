@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.train.models.ensemble import EnsembleClassifier
 from mindflow.train.models.manager import ModelManager, ModelPublicationError
 from mindflow.train.v2 import (
@@ -41,7 +42,7 @@ def _feature_window(start: datetime, **overrides: float) -> dict[str, object]:
     return {
         "window_start_utc": start.isoformat(),
         "window_end_utc": (start + timedelta(minutes=5)).isoformat(),
-        "feature_schema_version": 3,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": features,
     }
 

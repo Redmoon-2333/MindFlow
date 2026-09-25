@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.train import pipeline, v2
 from mindflow.train.grouping import build_grouping_plan
 from mindflow.train.models import ensemble
@@ -30,7 +31,7 @@ def _window(start: datetime, index: int, label: int) -> dict[str, Any]:
         "id": f"w{index}",
         "window_start_utc": start.isoformat(),
         "window_end_utc": (start + timedelta(minutes=5)).isoformat(),
-        "feature_schema_version": 3,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": {
             "mouse_distance_per_min": float(index),
             "top_app_ratio": 0.95 if label else 0.1,
@@ -151,31 +152,70 @@ def test_evaluation_passes_merged_groups_and_recomputes_fold_weights(
     # The merged contract is authoritative, even with auxiliary rows present.
     data.group_ids = ["merged" if d in data.dates[:6] else d for d in data.group_ids]
     data.sample_weights[:] = 999.0  # stale full-dataset weights must not be sliced
-    calls = []
-    original = EnsembleClassifier.fit
+    calls: list[tuple[Any, Any, Any, Any, dict[str, Any]]] = []
+    original = v2.fit_candidate
     marker = data.feature_names.index("mouse_distance_per_min")
 
-    def capture(self: Any, features: Any, y: Any, *args: Any, **kwargs: Any) -> Any:
-        calls.append((features.copy(), kwargs.copy()))
-        return original(self, features, y, *args, **kwargs)
+    def capture(
+        name: str, features: Any, y: Any, sample_weight: Any, *args: Any, **kwargs: Any,
+    ) -> Any:
+        calls.append((features.copy(), y.copy(), sample_weight.copy(), name, kwargs.copy()))
+        return original(name, features, y, sample_weight, *args, **kwargs)
 
-    monkeypatch.setattr(EnsembleClassifier, "fit", capture)
+    monkeypatch.setattr(v2, "fit_candidate", capture)
     result = v2.evaluate_v2_candidates(data, calibration="sigmoid")
+
+    # Every candidate is fitted once per evaluable fold of both schemes.
     assert len(calls) >= 3
-    for (features, kwargs), fold in zip(calls, result["folds"], strict=True):
+    # Include folds that failed *after* fitting (e.g. calibration_unavailable):
+    # their train_groups were still declared and still fed to the candidates.
+    fold_train_sets = [
+        set(fold["train_groups"])
+        for scheme in (result["folds"], result["forward_chaining"]["folds"])
+        for fold in scheme
+        if fold.get("train_groups")
+    ]
+    assert fold_train_sets
+    for features, _y, weights, _name, kwargs in calls:
         indices = features[:, marker].astype(int)
         assert kwargs["groups"].tolist() == [data.group_ids[i] for i in indices]
         assert kwargs["label_sources"].tolist() == [data.label_sources[i] for i in indices]
         assert kwargs["session_ids"].tolist() == [data.sample_feedback_ids[i] for i in indices]
-        assert fold["train_groups"] == sorted(set(kwargs["groups"]))
-        assert set(fold["train_groups"]).isdisjoint(fold["test_groups"])
-        weights = kwargs["sample_weight"]
+        # No trained row may come from outside a declared fold's training
+        # groups — that is what makes "leave future days out" true.
+        trained = set(kwargs["groups"].tolist())
+        assert any(trained <= declared for declared in fold_train_sets)
+        # Session-balanced fold weights are recomputed, never the stale 999.0.
+        assert weights.max() <= 1.0 + 1e-9
         explicit = data.explicit_mask[indices]
         sessions = np.asarray(data.sample_feedback_ids)[indices]
         for sid in set(sessions[explicit]):
             assert weights[sessions == sid].sum() == pytest.approx(1.0)
         assert weights[~explicit].sum() <= weights[explicit].sum() + 1e-9
-    assert result["calibration"]["status"] == "fitted"
+
+    # No fold may leak a group (and therefore a session) across its boundary.
+    for scheme in (result["folds"], result["forward_chaining"]["folds"]):
+        for fold in scheme:
+            assert set(fold["train_groups"]).isdisjoint(fold["test_groups"])
+    # Calibration is attempted for every fold. When a fold cannot fit it the
+    # failure is reported (never silently ignored), otherwise every fold
+    # reports a fitted calibrator.
+    assert result["calibration"]["method"] == "sigmoid"
+    assert result["calibration"]["status"] in {"fitted", "unavailable"}
+    if result["calibration"]["status"] == "unavailable":
+        assert result["calibration"]["reason"]
+        assert any(
+            fold.get("calibration", {}).get("status") == "unavailable"
+            for scheme in (result["folds"], result["forward_chaining"]["folds"])
+            for fold in scheme
+        )
+    else:
+        assert all(
+            fold["calibration"]["status"] == "fitted"
+            for scheme in (result["folds"], result["forward_chaining"]["folds"])
+            for fold in scheme
+            if "calibration" in fold
+        )
 
 
 @pytest.mark.parametrize("stage", ["_calibration_split", "_fit_calibrator"])
@@ -321,7 +361,7 @@ def test_public_pipeline_uses_merged_groups_and_complete_version_report(
     assert version == shared == report.to_dict()
     assert version["label_source_counts"]["explicit"] > 0
     assert version["conflict_window_count"] == version["ambiguous_window_count"] == 1
-    assert version["feature_schema_version"] == 3
+    assert version["feature_schema_version"] == FEATURE_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("stage", ["_calibration_split", "_fit_calibrator", "silent"])

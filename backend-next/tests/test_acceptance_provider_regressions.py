@@ -65,11 +65,21 @@ def _error_body():
 
 
 def _settings(**overrides):
+    """ECNU-shaped settings for this suite: the legacy triple, explicitly opted in.
+
+    ``ecnu_compat_enabled`` keeps these regressions on the campus wire — the
+    production pin (DeepSeek direct) would otherwise replace the URL, model and
+    key below. ``reasoning_effort="max"`` is the gateway's own default tier,
+    which the application default (DeepSeek's ``"high"``) must not silently
+    change under the ECNU wire assertions.
+    """
     return LLMSettings(**{
         "api_key": "test-key",
         "base_url": "https://chat.ecnu.edu.cn/open/api/v1",
         "model": "ecnu-max",
         "provider": "ecnu",
+        "ecnu_compat_enabled": True,
+        "reasoning_effort": "max",
         "timeout_s": 180,
         "max_retries": 0,
         "max_output_tokens": 16384,
@@ -332,8 +342,13 @@ async def test_explicit_generic_wins_over_ecnu_heuristics(wire):
         await _intervene(_service(LogOnlyNotifier(), client.client))
         for request in requests:
             payload = json.loads(request.content)
-            assert "thinking" not in payload
-            assert "reasoning_effort" not in payload
+            # Every L1 entry point now carries the DeepSeek reasoning contract
+            # (plan item 2): chat keeps the chat tier's provider-default effort
+            # (no explicit fields), the gateway and the structured attribution
+            # client send effort + thinking; the ECNU spelling never appears.
+            if payload.get("reasoning_effort") is not None:
+                assert payload["thinking"] == {"type": "enabled"}
+            assert "max_completion_tokens" not in payload
     finally:
         await registry.shutdown()
 
@@ -419,7 +434,9 @@ async def test_gateway_logs_and_exception_chain_are_allowlisted(
 ):
     registry = ProviderRegistry(_settings())
     gateway = registry.get_gateway()
-    model = gateway._get_model("deepseek-chat")
+    # The tier label the gateway uses for the structured tier (it is not a model
+    # id: both tiers request the resolved model and differ only in JSON mode).
+    model = gateway._get_model("chat")
 
     async def fail(*args, **kwargs):
         if status == "adapter":

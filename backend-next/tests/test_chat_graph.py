@@ -7,7 +7,8 @@ Covers parity and new-graph behaviour:
   - Crisis: crisis keywords short-circuit
   - Unavailable model: degraded response
   - Forbidden-word retry: detected → one retry → safe fallback
-  - History compression: over limit → compressed summary
+  - History compression: over limit → folded turns drop out of the payload
+    (system + one summary + last 6 turns + current user message)
   - Concurrent same-session: requests serialised without corruption
   - Orphan-turn recovery: turn_id identifies orphan messages
   - Response parity: output fields match ChatService.ask() exactly
@@ -21,7 +22,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from langchain_core.language_models import FakeListChatModel
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool as lc_tool
 
 from mindflow.agents.langchain_tools import make_get_latest_analysis
@@ -565,10 +566,18 @@ class TestHistoryCompression:
         assert "你好" in result.answer
 
     async def test_compression_triggers_above_limit(self) -> None:
-        """Over the round limit → compression summary is generated."""
-        model = _FakeBindableChatModel(responses=["已收到你的消息。"])
+        """Over the verbatim window → one summary + only the recent turns."""
+        invocations: list[list[Any]] = []
+
+        async def capture(messages: list[Any]) -> AIMessage:
+            invocations.append(list(messages))
+            return AIMessage(content="已收到你的消息。")
+
+        model = AsyncMock()
+        model.ainvoke = AsyncMock(side_effect=capture)
+        model.bind_tools = MagicMock(return_value=model)
         repo = _make_mock_chat_repo()
-        # 22 messages = 11 rounds → triggers compression (max=10 → 20 msg limit)
+        # 22 messages = 11 turns → 5 turns fold into the summary, 6 stay verbatim
         msgs: list[dict[str, Any]] = []
         for i in range(11):
             msgs.append({
@@ -583,6 +592,30 @@ class TestHistoryCompression:
         result = await graph.ask(user_id=1, session_id="s1", message="最新消息")
 
         assert "已收到" in result.answer
+
+        payload = invocations[0]
+        summaries = [
+            message for message in payload
+            if isinstance(message, SystemMessage)
+            and message.content != CHAT_SYSTEM_PROMPT
+        ]
+        assert len(summaries) == 1
+        assert str(summaries[0].content).startswith("之前的对话摘要:")
+
+        # Exactly the last six complete turns are re-sent verbatim, plus the
+        # current user message; the five folded turns are gone.
+        human_contents = [
+            message.content for message in payload if isinstance(message, HumanMessage)
+        ]
+        assert human_contents == [f"用户消息{i}" for i in range(5, 11)] + ["最新消息"]
+        assert not any(
+            isinstance(message, AIMessage) and message.content in
+            {f"助手回复{i}" for i in range(5)}
+            for message in payload
+        )
+        assert not any(
+            message.content in {f"用户消息{i}" for i in range(5)} for message in payload
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

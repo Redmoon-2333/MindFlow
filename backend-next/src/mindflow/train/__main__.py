@@ -11,6 +11,9 @@ Usage:
     # Train with real data from database
     python -m mindflow.train --source db
 
+    # Train but keep the candidate shadow-only (never move the active pointer)
+    python -m mindflow.train --source db --no-activate
+
     # List available model versions
     python -m mindflow.train --list-versions
 
@@ -268,6 +271,15 @@ def main() -> None:
              "values (option B; quality-gate counts stay feedback-only).",
     )
     parser.add_argument(
+        "--no-activate",
+        action="store_false",
+        dest="allow_activation",
+        default=True,
+        help="Write the candidate as a shadow version without moving the active-model "
+             "pointer (latest.json); the manual CLI run activates by default because "
+             "the user explicitly asked for a real training run.",
+    )
+    parser.add_argument(
         "--list-versions",
         action="store_true",
         dest="list_versions",
@@ -359,6 +371,9 @@ def main() -> None:
             f"{len(feedback_sessions)} feedback sessions"
         )
 
+    # A manual CLI invocation is the "user explicitly asked" activation path, so
+    # ``allow_activation`` defaults to True; ``--no-activate`` makes the same run
+    # produce a shadow-only candidate that leaves the active pointer untouched.
     report = run_training(
         source=args.source,
         data_dir=data_dir,
@@ -371,6 +386,7 @@ def main() -> None:
         feature_windows=feature_windows,
         feedback_sessions=feedback_sessions,
         use_window_labels=args.use_window_labels,
+        allow_activation=args.allow_activation,
     )
 
     if report.total_records == 0:

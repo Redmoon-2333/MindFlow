@@ -661,7 +661,7 @@ async def test_startup_recovery_interrupted_after_backfill_reruns_stable_counts(
     import sqlalchemy as sa
 
     from mindflow.domain.events import make_event
-    from mindflow.domain.feature_schema import V2_FEATURE_NAMES
+    from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
     from mindflow.infrastructure.repositories.activity import (
         SQLAlchemyActivityRepository,
         activity_events,
@@ -709,7 +709,7 @@ async def test_startup_recovery_interrupted_after_backfill_reruns_stable_counts(
             "user_id": 1,
             "window_start_utc": startup_now - timedelta(hours=3),
             "window_end_utc": startup_now - timedelta(hours=3, minutes=-5),
-            "feature_schema_version": 3,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "features_json": json.dumps(_features(10.0)),
             "label": None,
         },
@@ -717,7 +717,7 @@ async def test_startup_recovery_interrupted_after_backfill_reruns_stable_counts(
             "user_id": 1,
             "window_start_utc": startup_now - timedelta(hours=4),
             "window_end_utc": startup_now - timedelta(hours=4, minutes=-5),
-            "feature_schema_version": 3,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "features_json": json.dumps(_features(12.0)),
             "label": None,
         },
@@ -779,7 +779,7 @@ async def test_startup_recovery_interrupted_after_backfill_reruns_stable_counts(
     assert await _baseline_count() == 1
     baseline = await baseline_repository.get_latest(1)
     assert baseline is not None
-    assert baseline.FEATURE_SCHEMA_VERSION == 3
+    assert baseline.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
     assert baseline.total_samples() == 2 * len(V2_FEATURE_NAMES)
     assert len(await telemetry_repository.list_feature_windows(1)) == 2
 
@@ -791,7 +791,7 @@ async def test_startup_recovery_interrupted_after_backfill_reruns_stable_counts(
     assert await _baseline_count() == 1
     baseline = await baseline_repository.get_latest(1)
     assert baseline is not None
-    assert baseline.FEATURE_SCHEMA_VERSION == 3
+    assert baseline.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
     assert baseline.total_samples() == 4 * len(V2_FEATURE_NAMES)
     assert len(await telemetry_repository.list_feature_windows(1)) == 4
     row_after_rerun = await _baseline_row_json()

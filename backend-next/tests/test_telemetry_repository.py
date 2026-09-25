@@ -9,7 +9,7 @@ import sqlalchemy as sa
 
 from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.events import make_event
-from mindflow.domain.feature_schema import V2_FEATURE_NAMES
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 from mindflow.domain.ids import new_id
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
@@ -325,14 +325,14 @@ async def test_cleanup_retains_only_recent_feature_windows(
         user_id=1,
         window_start_utc=now - timedelta(days=181),
         window_end_utc=now - timedelta(days=181, minutes=-5),
-        feature_schema_version=3,
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
         features_json="{}",
     )
     await telemetry_repo.save_feature_window(
         user_id=1,
         window_start_utc=now - timedelta(days=10),
         window_end_utc=now - timedelta(days=10, minutes=-5),
-        feature_schema_version=3,
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
         features_json="{}",
     )
 
@@ -433,7 +433,7 @@ async def test_delete_input_scope_removes_derived_feature_windows(
         user_id=1,
         window_start_utc=start,
         window_end_utc=start + timedelta(minutes=5),
-        feature_schema_version=3,
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
         features_json="{}",
     )
 
@@ -659,7 +659,7 @@ def _make_v2_window(
     user_id: int = 1,
     app_switch_count: float = 10.0,
     active_seconds_ratio: float = 0.5,
-    feature_schema_version: int = 3,
+    feature_schema_version: int = FEATURE_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     """One feature-window row carrying the flat v2 feature vocabulary."""
     features = {name: 0.0 for name in V2_FEATURE_NAMES}
@@ -689,7 +689,7 @@ async def _seed_raw_window(
                 user_id=1,
                 window_start_utc=window_start_utc,
                 window_end_utc="2026-07-25T00:05:00+00:00",
-                feature_schema_version=3,
+                feature_schema_version=FEATURE_SCHEMA_VERSION,
                 features_json=features_json,
                 label=None,
                 created_at="2026-07-24T00:00:00+00:00",
@@ -759,7 +759,7 @@ async def test_backfill_rebuilds_missing_baseline_from_v2_windows(
     assert result.samples == 2 * len(V2_FEATURE_NAMES)
     baseline = await baseline_repository.get_latest(1)
     assert baseline is not None
-    assert baseline.FEATURE_SCHEMA_VERSION == 3
+    assert baseline.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
     assert baseline.total_samples() == 2 * len(V2_FEATURE_NAMES)
     assert baseline.total_days == 1
     assert baseline.overall_mean("app_switch_count") == pytest.approx(12.0)
@@ -792,14 +792,14 @@ async def test_backfill_replaces_v1_baseline_only_after_full_v2_rebuild(
     assert result.reason == "schema_mismatch"
     baseline = await baseline_repository.get_latest(1)
     assert baseline is not None
-    assert baseline.FEATURE_SCHEMA_VERSION == 3
+    assert baseline.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
     assert baseline.total_samples() == len(V2_FEATURE_NAMES)
     # The V1 payload's stored 3-day count was discarded, not carried over.
     assert baseline.total_days == 1
     assert baseline.overall_mean("app_switch_count") == pytest.approx(10.0)
     stored = await _baseline_row_json(session_factory)
     assert stored is not None
-    assert json.loads(stored)["feature_schema_version"] == 3
+    assert json.loads(stored)["feature_schema_version"] == FEATURE_SCHEMA_VERSION
     assert await _count_baseline_rows(session_factory) == 1
 
 
@@ -994,7 +994,7 @@ async def test_backfill_interruption_before_upsert_leaves_prior_baseline_intact(
     assert result.rebuilt is True
     baseline = await baseline_repository.get_latest(1)
     assert baseline is not None
-    assert baseline.FEATURE_SCHEMA_VERSION == 3
+    assert baseline.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
     assert baseline.total_days == 1
     assert baseline.total_samples() == len(V2_FEATURE_NAMES)
     assert await _count_baseline_rows(session_factory) == 1

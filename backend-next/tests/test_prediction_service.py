@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.domain.prediction import (
     MIN_COVERAGE_RATIO,
     STALE_THRESHOLD_S,
@@ -82,7 +83,7 @@ def _make_feature_window(
         "window_start_utc": window_start.isoformat(),
         "window_end_utc": window_end.isoformat(),
         "features_json": str(features).replace("'", '"'),
-        "feature_schema_version": 3,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
     }
 
 
@@ -136,7 +137,7 @@ class TestFocusPredictionService:
         assert result.window_count == 23
         assert len(result.top_factors) == 3
         assert result.model_version == "20260726_v2"
-        assert result.feature_schema_version == 3
+        assert result.feature_schema_version == FEATURE_SCHEMA_VERSION
 
     async def test_predict_range_returns_ready(self):
         """Predict for a specific time range works."""
@@ -185,7 +186,7 @@ class TestFocusPredictionService:
                 "window_start_utc": (now - timedelta(minutes=5 * (24 - i))).isoformat(),
                 "window_end_utc": (now - timedelta(minutes=5 * (24 - i - 1))).isoformat(),
                 "features_json": str(bad_features).replace("'", '"'),
-                "feature_schema_version": 3,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
             }
             for i in range(24)
         ]
@@ -205,7 +206,7 @@ class TestFocusPredictionService:
                 "window_start_utc": (now - timedelta(minutes=5)).isoformat(),
                 "window_end_utc": now.isoformat(),
                 "features_json": "not valid json",
-                "feature_schema_version": 3,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
             },
         ]
         repo = MagicMock()
@@ -273,7 +274,7 @@ class TestFocusPredictionService:
         assert "model_version" in health
         assert "feature_schema_version" in health
         assert health["status"] == "ready"
-        assert health["feature_schema_version"] == 3
+        assert health["feature_schema_version"] == FEATURE_SCHEMA_VERSION
 
     async def test_predict_range_filters_correctly(self):
         """predict_range only returns windows within the requested range."""
@@ -354,7 +355,7 @@ class TestFocusPredictionRangeBoundedRetrieval:
         repo.list_feature_windows_in_range.assert_awaited_once()
         call = repo.list_feature_windows_in_range.await_args
         assert call.kwargs["user_id"] == 1
-        assert call.kwargs["feature_schema_version"] == 3
+        assert call.kwargs["feature_schema_version"] == FEATURE_SCHEMA_VERSION
         assert call.kwargs["end"] == now
         assert (now - call.kwargs["start"]).total_seconds() == pytest.approx(7200.0)
         repo.list_feature_windows.assert_not_awaited()
@@ -380,7 +381,7 @@ class TestFocusPredictionRangeBoundedRetrieval:
         assert call.kwargs["start"] == start
         assert call.kwargs["end"] == end
         assert call.kwargs["user_id"] == 1
-        assert call.kwargs["feature_schema_version"] == 3
+        assert call.kwargs["feature_schema_version"] == FEATURE_SCHEMA_VERSION
         repo.list_feature_windows.assert_not_awaited()
 
     async def test_predict_latest_bounds_matrix_to_max_windows(self):
@@ -453,7 +454,7 @@ class TestFocusPredictionStatusContract:
         prediction = FocusPrediction()
         assert prediction.status == "no_model"
         assert prediction.focus_probability is None
-        assert prediction.feature_schema_version == 3
+        assert prediction.feature_schema_version == FEATURE_SCHEMA_VERSION
         assert prediction.window_count == 0
         assert prediction.reason == ""
 
@@ -561,6 +562,6 @@ class TestFocusPredictionStatusContract:
         assert result.focus_probability is not None
         assert 0.0 <= result.focus_probability <= 1.0
         assert result.coverage_ratio <= 1.0
-        assert result.feature_schema_version == 3
+        assert result.feature_schema_version == FEATURE_SCHEMA_VERSION
         assert len(result.top_factors) == 3
         assert result.model_version == "20260726_v2"

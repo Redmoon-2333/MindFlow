@@ -17,8 +17,14 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.config import get_settings
+from mindflow.domain.app_classification import UserAppClassifier
 from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
+from mindflow.domain.task_context import (
+    TASK_CONTEXT_UNKNOWN,
+    TaskContextMapper,
+    summarize_task_context,
+)
 from mindflow.infrastructure.repositories.activity import SQLAlchemyActivityRepository
 from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.infrastructure.repositories.preferences import PreferencesRepository
@@ -26,7 +32,10 @@ from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.ports import CollectorIntervalRecord
 from mindflow.services.collector_interval_lifecycle import safe_error_text
 from mindflow.services.prediction_service import FocusPredictionService
-from mindflow.services.telemetry_features import build_v2_feature_window
+from mindflow.services.telemetry_features import (
+    build_v2_feature_window,
+    task_context_from_feature_window,
+)
 from mindflow.services.window_quality import build_window_quality
 from mindflow.time_utils import TimezoneLike, resolve_timezone, utc_today
 
@@ -55,6 +64,27 @@ _PAIRING_CODE_TTL_S = 300
 # stored V2 windows feed a rebuild (matches the feature-window retention cut).
 _BASELINE_BACKFILL_DAYS: Final = 180
 
+# Feature-window rebuild horizon: how far back a schema upgrade may regenerate
+# windows from raw activity events. The same 180-day cut as the feature-window
+# retention (``cleanup_retained_data``), so a rebuild never asks for events the
+# retention policy has already deleted.
+_FEATURE_REBUILD_MAX_DAYS: Final = 180
+
+# Rebuild chunk: one day of 5-minute windows per rollup call keeps memory flat
+# (each chunk reloads only its own events) while staying a bounded query.
+_FEATURE_REBUILD_CHUNK_DAYS: Final = 1
+
+# Feature-schema version whose *labels* a rebuild may inherit. Only labels are
+# read from it — never its features (a v4 rebuild is always regenerated from
+# retained raw events), and its rows are never deleted by a backfill.
+_FEATURE_REBUILD_LABEL_VERSION: Final = FEATURE_SCHEMA_VERSION - 1
+
+# Trailing window a "recent" rollup covers when no watermark is known yet.
+_RECENT_ROLLUP_WINDOW_HOURS: Final = 2
+# One bucket of overlap on incremental rollups, so events that land just after a
+# bucket boundary are still folded into it (optimisation plan 4.2).
+_ROLLUP_OVERLAP_MINUTES: Final = 5
+
 
 @dataclass(slots=True)
 class _PairingRecord:
@@ -81,6 +111,81 @@ class BaselineRebuildResult:
     windows_loaded: int
     samples: int
     cutoff_utc: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureWindowRebuildResult:
+    """Outcome of one feature-window rebuild (schema-upgrade seam).
+
+    A schema bump leaves the previous version's windows in place — they stay
+    readable by their own version and are never mixed into v4 training — so the
+    upgrade path is an explicit, bounded regeneration from raw activity events:
+
+        schema upgraded (v3 → v4) → ``rebuild_feature_windows()`` → v4 windows
+        → stale-version windows retired within the rebuilt range
+
+    Attributes:
+        rebuilt: True only when at least one window was (re)written.
+        reason: Why the call did what it did. ``current`` and ``no_windows``
+            are no-ops from :meth:`TelemetryService.rebuild_feature_windows_
+            if_needed`; ``empty_range`` means the requested range was empty;
+            ``missing_raw_data`` means the range retains no activity events,
+            interaction buckets or browser segments to rebuild from;
+            ``preview`` means the windows were built but not persisted;
+            ``rebuilt`` means windows were regenerated.
+        windows_rolled: Windows built by this call (written only when applied).
+        chunks: How many bounded rollup calls were made.
+        legacy_purged: Windows of an older schema version deleted from the
+            rebuilt range (0 when purging was disabled — the explicit backfill
+            always keeps them).
+        start_utc / end_utc: The half-open range covered by this call. Callers
+            clamp their request to ``feature_rebuild_cutoff(now)`` first (the
+            backfill CLI does), so these are the effective bounds that were
+            actually rebuilt.
+        applied: True when the caller asked for writes (``--apply``).
+        windows_written: Rows actually persisted; 0 in preview mode.
+        missing_raw_data: True when the range has no retained raw evidence, so
+            nothing could be rebuilt from it. Reported instead of silently
+            producing an empty range.
+        labels_inherited: Rebuilt rows that took the previous-version label.
+        labels_preserved: Rebuilt rows whose existing current-version label was
+            kept (an existing v4 label always wins over an inherited v3 one).
+    """
+
+    rebuilt: bool
+    reason: Literal[
+        "rebuilt",
+        "current",
+        "no_windows",
+        "empty_range",
+        "missing_raw_data",
+        "preview",
+    ]
+    windows_rolled: int
+    chunks: int
+    legacy_purged: int
+    start_utc: datetime | None
+    end_utc: datetime | None
+    applied: bool = False
+    windows_written: int = 0
+    missing_raw_data: bool = False
+    labels_inherited: int = 0
+    labels_preserved: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _PrefetchedRules:
+    """Immutable rule list exposed through ``ClassificationRulesProtocol``.
+
+    The rollup classifies every distinct (process, title) pair of a range; the
+    classifier contract fetches rules per call, so the rules are read once and
+    served from memory instead of issuing one query per pair.
+    """
+
+    rules: list[dict[str, Any]]
+
+    async def get_all(self, user_id: int) -> list[dict[str, Any]]:
+        return self.rules
 
 
 class TelemetryClearResult(int):
@@ -116,6 +221,56 @@ def _as_utc(value: Any) -> datetime:
     return timestamp.replace(tzinfo=UTC) if timestamp.tzinfo is None else timestamp.astimezone(UTC)
 
 
+def _decode_features(features_json: Any) -> dict[str, Any]:
+    """Decode a stored ``features_json`` payload; malformed input reads empty."""
+    if isinstance(features_json, dict):
+        return features_json
+    if not features_json:
+        return {}
+    try:
+        parsed = json.loads(str(features_json))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def feature_rebuild_cutoff(now_utc: datetime) -> datetime:
+    """Earliest instant a feature-window rebuild may read raw events from.
+
+    ``_FEATURE_REBUILD_MAX_DAYS`` is the same 180-day cut the feature-window
+    retention applies (``cleanup_retained_data``): raw events older than it are
+    already deleted, so a rebuild asking for them would silently produce a blank
+    range. Callers clamp their request to this instant and report the clamp
+    explicitly — clamping lives here (not inside the rollup) so no caller can
+    accidentally rebuild an unretained range by forgetting it.
+    """
+    return _as_utc(now_utc) - timedelta(days=_FEATURE_REBUILD_MAX_DAYS)
+
+
+def _window_key(value: Any) -> str | None:
+    """Normalise a stored ``window_start_utc`` to the UTC ISO form rows use.
+
+    Window starts are persisted as UTC ISO text, and the upsert keys rows on
+    that text, so label lookup must key on exactly the same normalised string
+    (a stored non-UTC offset or a ``Z`` suffix would otherwise miss).
+    """
+    try:
+        return _as_utc(value).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _label_by_window_start(rows: list[dict[str, Any]]) -> dict[str, str]:
+    """Index non-null labels by normalised window start; NULL labels are absent."""
+    labels: dict[str, str] = {}
+    for row in rows:
+        label = row.get("label")
+        key = _window_key(row.get("window_start_utc"))
+        if label and key:
+            labels[key] = str(label)
+    return labels
+
+
 class TelemetryService:
     def __init__(
         self,
@@ -128,6 +283,8 @@ class TelemetryService:
         baseline_repository: BaselineRepository | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         interval_repository: Any | None = None,
+        classification_rules_repository: Any | None = None,
+        task_context_rules_repository: Any | None = None,
     ) -> None:
         self._repository = repository
         self._preferences_repository = preferences_repository
@@ -149,6 +306,55 @@ class TelemetryService:
         # them; legacy/unit constructions leave the rollup window-only).
         self._baseline_repository = baseline_repository
         self._session_factory = session_factory
+        # Task-context resolution (feature schema v4). Both rule stores are
+        # optional: without them the rollup still classifies through the
+        # built-in AppClassifier heuristics, so an unwired/unit construction
+        # produces real task-context columns rather than nothing.
+        self._classification_rules_repository = classification_rules_repository
+        self._task_context_rules_repository = task_context_rules_repository
+        # Incremental-rollup watermark (optimisation plan 4.2). In-memory by
+        # design: it exists to avoid re-computing windows that are already on
+        # disk, and a restart simply re-rolls the full trailing window once —
+        # which is exactly today's behaviour and is idempotent.
+        self._last_successful_rollup: datetime | None = None
+
+    @property
+    def last_successful_rollup(self) -> datetime | None:
+        """End of the last successfully rolled-up range, or None before the first."""
+        return self._last_successful_rollup
+
+    async def rollup_recent(
+        self,
+        now: datetime,
+        *,
+        window_hours: float = _RECENT_ROLLUP_WINDOW_HOURS,
+        user_id: int = 1,
+    ) -> int:
+        """Roll up only what has not been rolled up yet (plan 4.2).
+
+        The trailing ``window_hours`` window is the *upper bound*; when a
+        previous rollup succeeded, the range starts just before the last
+        successful bucket (``_ROLLUP_OVERLAP_MINUTES`` of overlap) so
+        late-arriving events for the newest bucket are still folded in and the
+        per-window upsert stays idempotent.
+
+        The watermark only advances after a successful rollup: a failure leaves
+        it untouched, so the next attempt re-covers the whole missing range
+        instead of silently skipping it.
+        """
+        start = now - timedelta(hours=window_hours)
+        if self._last_successful_rollup is not None:
+            overlap = timedelta(minutes=_ROLLUP_OVERLAP_MINUTES)
+            incremental = self._last_successful_rollup - overlap
+            # Never start before the trailing window, and never after `now`.
+            start = max(start, min(incremental, now))
+
+        rolled = await self.rollup_feature_windows(start, now, user_id=user_id)
+        # Never move the watermark backwards: a caller asking for an earlier
+        # "now" (clock skew) must not reduce the coverage already achieved.
+        if self._last_successful_rollup is None or now > self._last_successful_rollup:
+            self._last_successful_rollup = now
+        return rolled
 
     def attach_input_watcher(self, watcher: Any) -> None:
         self._input_watcher = watcher
@@ -388,24 +594,145 @@ class TelemetryService:
         # Window payloads supply positive evidence in build_window_quality().
         return {"enabled": enabled, "available": available}
 
-    async def rollup_feature_windows(
+    async def _prefetched_rules(
+        self, repository: Any | None, user_id: int
+    ) -> list[dict[str, Any]]:
+        """Read one rule store once; a failure degrades to "no user rules"."""
+        if repository is None:
+            return []
+        try:
+            rules: list[dict[str, Any]] = await repository.get_all(user_id)
+        except Exception as exc:  # noqa: BLE001 — a rule read must not break a rollup
+            logger.debug("Rule lookup failed: {}", safe_error_text(exc))
+            return []
+        return list(rules)
+
+    async def _resolve_task_contexts(
         self,
+        user_id: int,
+        events: list[Any],
+        browser: list[dict[str, Any]],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Resolve ``process -> task context`` and ``domain -> task context``.
+
+        Reuses the existing machinery end to end: ``UserAppClassifier`` (user
+        rules from ``app_classification_rules``, productive-learning heuristic,
+        built-in ``AppClassifier``) produces an activity category, and
+        ``TaskContextMapper`` (user rules from ``task_context_rules`` plus
+        category defaults) produces the observed task context.  Neither the
+        builder nor this method carries an app-name or domain-name list of its
+        own.
+
+        Resolution is per *process* / per *domain*: a process observed with
+        several window titles keeps the context it spent the most seconds in
+        (durations are the full event durations, not window-clipped — they only
+        rank the process's own contexts, never enter a feature value).  Domains
+        are resolved domain-rule first, then through the classifier's built-in
+        domain hints, then through the browser process's category.
+        """
+        if not events and not browser:
+            return {}, {}
+        classifier = UserAppClassifier(
+            rules_repo=_PrefetchedRules(
+                await self._prefetched_rules(
+                    self._classification_rules_repository, user_id
+                )
+            )
+        )
+        mapper = TaskContextMapper(
+            await self._prefetched_rules(self._task_context_rules_repository, user_id)
+        )
+
+        process_weights: dict[str, dict[str, float]] = {}
+        category_cache: dict[tuple[str, str], str] = {}
+        for event in events:
+            process = str(event.data.process_name or "")
+            if not process:
+                continue
+            title = str(event.data.window_title or "")
+            key = (process, title)
+            context = category_cache.get(key)
+            if context is None:
+                category = await classifier.classify(process, title, user_id=user_id)
+                context = mapper.context_for_category(category)
+                category_cache[key] = context
+            per_context = process_weights.setdefault(process, {})
+            per_context[context] = per_context.get(context, 0.0) + max(
+                0.0, float(event.duration_s)
+            )
+        process_contexts = {
+            process: summarize_task_context(per_context).dominant
+            for process, per_context in process_weights.items()
+        }
+
+        domain_contexts: dict[str, str] = {}
+        domain_cache: dict[tuple[str, str], str] = {}
+        for segment in browser:
+            domain = str(segment.get("domain", ""))
+            if not domain:
+                continue
+            browser_name = str(segment.get("browser_name", ""))
+            key = (browser_name, domain)
+            context = domain_cache.get(key)
+            if context is None:
+                context = mapper.context_for_domain(domain)
+                if context is None:
+                    domain_category = await classifier.classify(
+                        domain, "", user_id=user_id
+                    )
+                    context = mapper.context_for_category(domain_category)
+                    if context == TASK_CONTEXT_UNKNOWN and browser_name:
+                        browser_category = await classifier.classify(
+                            f"{browser_name}.exe", "", user_id=user_id
+                        )
+                        context = mapper.context_for_category(browser_category)
+                domain_cache[key] = context
+            domain_contexts.setdefault(domain, context)
+
+        return process_contexts, domain_contexts
+
+    async def _previous_task_context(
+        self, user_id: int, start: datetime
+    ) -> str | None:
+        """Dominant task context of the window preceding a rollup range.
+
+        The first window of a range has no in-memory predecessor but usually
+        does have one on disk; reading it keeps ``task_context_transition``
+        meaningful at range boundaries (scheduler runs, backfills) instead of
+        resetting to "no transition" every time.
+        """
+        try:
+            row = await self._repository.last_feature_window_before(
+                user_id, start, FEATURE_SCHEMA_VERSION
+            )
+        except Exception as exc:  # noqa: BLE001 — transition is best-effort
+            logger.debug("Previous window lookup failed: {}", safe_error_text(exc))
+            return None
+        if row is None:
+            return None
+        return task_context_from_feature_window(_decode_features(row.get("features_json")))
+
+    async def _build_feature_window_rows(
+        self,
+        activity_repository: SQLAlchemyActivityRepository,
         start: datetime,
         end: datetime,
-        user_id: int = 1,
-    ) -> int:
-        if self._activity_repository is None:
-            return 0
-        if end <= start:
-            return 0
-        start = _as_utc(start)
-        start = start.replace(
-            minute=(start.minute // 5) * 5, second=0, microsecond=0,
-        )
-        end = _as_utc(end)
+        user_id: int,
+    ) -> list[dict[str, Any]]:
+        """Build — never persist — the v4 windows covering [start, end).
 
-        events = await self._activity_repository.query_range(user_id, start, end)
-        previous_event = await self._activity_repository.last_event_before(user_id, start)
+        ``start`` must already be aligned to a 5-minute bucket and ``end`` is
+        exclusive, exactly as :meth:`rollup_feature_windows` prepares them.
+        Only windows with raw evidence (retained activity events, interaction
+        buckets, or browser segments) produce a row, so an empty result tells a
+        caller that the range has no retained raw data to rebuild from.
+
+        Shared by the incremental rollup (which persists the rows) and the
+        explicit v4 backfill (which resolves label inheritance first), so the
+        two paths can never drift into different feature definitions.
+        """
+        events = await activity_repository.query_range(user_id, start, end)
+        previous_event = await activity_repository.last_event_before(user_id, start)
         if (
             previous_event is not None
             and previous_event.timestamp_utc
@@ -437,6 +764,16 @@ class TelemetryService:
             )
             for segment in browser
         )
+
+        # ── Task context (feature schema v4) ─────────────────────────────
+        # Resolve process/domain → task context once per rollup through the
+        # existing user-editable classification machinery, then hand the
+        # resolved mapping to the (pure, sync) feature builder. The mapping is
+        # data, never a hard-coded app list in the builder.
+        process_contexts, domain_contexts = await self._resolve_task_contexts(
+            user_id, events, browser
+        )
+        previous_task_context = await self._previous_task_context(user_id, start)
 
         rows: list[dict[str, Any]] = []
         event_index = 0
@@ -515,7 +852,12 @@ class TelemetryService:
                     window_browser,
                     window_start,
                     window_end,
+                    process_task_contexts=process_contexts,
+                    domain_task_contexts=domain_contexts,
+                    previous_task_context=previous_task_context,
                 )
+                # The next window compares against this one's dominant context.
+                previous_task_context = task_context_from_feature_window(features)
                 # Record what was actually observed. Without this record, a
                 # window built while the browser collector was off looks
                 # identical to one where the user simply did not browse (both
@@ -540,7 +882,28 @@ class TelemetryService:
                     "quality_json": json.dumps(quality.to_dict(), ensure_ascii=False),
                 })
             window_start = window_end
+        return rows
 
+    async def rollup_feature_windows(
+        self,
+        start: datetime,
+        end: datetime,
+        user_id: int = 1,
+    ) -> int:
+        activity_repository = self._activity_repository
+        if activity_repository is None:
+            return 0
+        if end <= start:
+            return 0
+        start = _as_utc(start)
+        start = start.replace(
+            minute=(start.minute // 5) * 5, second=0, microsecond=0,
+        )
+        end = _as_utc(end)
+
+        rows = await self._build_feature_window_rows(
+            activity_repository, start, end, user_id
+        )
         if not rows:
             return 0
 
@@ -598,6 +961,129 @@ class TelemetryService:
                 "Coverage-gap detection failed: {}", safe_error_text(exc)
             )
         return len(rows)
+
+    async def rebuild_feature_windows(
+        self,
+        start: datetime,
+        end: datetime,
+        user_id: int = 1,
+        *,
+        apply: bool = False,
+    ) -> FeatureWindowRebuildResult:
+        """Regenerate v4 windows for one bounded block from retained raw events.
+
+        The explicit backfill seam (plan item 3). Window content is rebuilt
+        through exactly the same code path as the incremental rollup — retained
+        ``activity_events`` plus the interaction buckets and browser segments —
+        so a rebuilt window is what the scheduler would have written had the
+        schema been current at the time. ``features_json`` is never synthesised
+        from the previous version's payload; only its *label* is inherited (a
+        non-null existing v4 label always wins), and the previous version's rows
+        are left in place as the evidence of what the model was trained on.
+
+        ``apply=False`` is a true dry run: windows are built, counted and
+        returned, and nothing is written. With ``apply=True`` the block is
+        persisted inside one transaction, so a block either lands completely or
+        not at all — re-running the same call after a failure is safe.
+
+        Raises:
+            RuntimeError: When the service has no activity repository wired (the
+                rebuild cannot invent raw events).
+        """
+        activity_repository = self._activity_repository
+        if activity_repository is None:
+            msg = "rebuild_feature_windows requires activity_repository wiring"
+            raise RuntimeError(msg)
+        start = _as_utc(start)
+        end = _as_utc(end)
+        if end <= start:
+            return FeatureWindowRebuildResult(
+                rebuilt=False,
+                reason="empty_range",
+                windows_rolled=0,
+                chunks=0,
+                legacy_purged=0,
+                start_utc=start,
+                end_utc=end,
+                applied=apply,
+            )
+
+        aligned_start = start.replace(
+            minute=(start.minute // 5) * 5, second=0, microsecond=0,
+        )
+        rows = await self._build_feature_window_rows(
+            activity_repository, aligned_start, end, user_id,
+        )
+        if not rows:
+            return FeatureWindowRebuildResult(
+                rebuilt=False,
+                reason="missing_raw_data",
+                windows_rolled=0,
+                chunks=0,
+                legacy_purged=0,
+                start_utc=start,
+                end_utc=end,
+                applied=apply,
+                missing_raw_data=True,
+            )
+
+        current_labels, legacy_labels = await self._rebuild_label_sources(
+            user_id, aligned_start, end,
+        )
+        inherited = 0
+        preserved = 0
+        for row in rows:
+            key = _window_key(row["window_start_utc"])
+            existing = current_labels.get(key) if key else None
+            if existing:
+                # The user's own calibration on the current schema outranks any
+                # inherited label: a rebuild never rewrites an existing v4 label.
+                row["label"] = existing
+                preserved += 1
+                continue
+            legacy = legacy_labels.get(key) if key else None
+            if legacy:
+                row["label"] = legacy
+                inherited += 1
+
+        written = 0
+        if apply:
+            await self._repository.upsert_feature_windows(rows)
+            written = len(rows)
+
+        return FeatureWindowRebuildResult(
+            rebuilt=written > 0,
+            reason="rebuilt" if apply else "preview",
+            windows_rolled=len(rows),
+            chunks=1,
+            # Older-schema rows are deliberately kept by a backfill (they are
+            # what the model was trained on); only label values cross versions.
+            legacy_purged=0,
+            start_utc=start,
+            end_utc=end,
+            applied=apply,
+            windows_written=written,
+            labels_inherited=inherited,
+            labels_preserved=preserved,
+        )
+
+    async def _rebuild_label_sources(
+        self, user_id: int, start: datetime, end: datetime,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Read the labels a rebuild may inherit, keyed by normalised start.
+
+        Two bounded range queries, never a per-window lookup: current-version
+        rows decide whether the target row already carries a label, and
+        previous-version rows supply the label to inherit. NULL labels are
+        absent from both maps — absence of a label is not evidence of one.
+        """
+        current_rows = await self._repository.list_feature_windows_in_range(
+            user_id, start, end, FEATURE_SCHEMA_VERSION,
+        )
+        legacy_rows = await self._repository.list_feature_windows_in_range(
+            user_id, start, end, _FEATURE_REBUILD_LABEL_VERSION,
+        )
+        return _label_by_window_start(current_rows), _label_by_window_start(legacy_rows)
 
     async def rebuild_baseline_if_needed(
         self,

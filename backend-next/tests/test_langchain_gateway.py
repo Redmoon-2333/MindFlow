@@ -7,8 +7,9 @@ alias intact for existing callers (chat_service, app, eval).
 Coverage:
   - Key-less construction is allowed (E2E finding); the error raises at call time.
   - Successful ChatDeepSeek response returns the raw content string.
-  - ``model="reasoner"`` does *not* send ``response_format: json_object``
-    (unsupported by deepseek-reasoner).
+  - ``model="reasoner"`` is a *tier label* (prose output): it does not send
+    ``response_format: json_object``, while the ``"chat"`` tier (structured
+    output) does. Both tiers request the resolved DeepSeek model.
   - P0-3: Exponential backoff + jitter on retryable errors, no delay on last
     attempt, no delay on success.
 """
@@ -25,10 +26,34 @@ from mindflow.agents.llm_gateway import (
     GatewayNotConfiguredError,
     LangChainGateway,
 )
+from mindflow.config import LLMSettings
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
+
+_ECHO_BASE_URL = "https://test.api.example.com"
+
+
+def _settings(**overrides: object) -> LLMSettings:
+    """Explicit, non-ECNU settings for this suite.
+
+    ``ecnu_compat_enabled`` here means "use the endpoint configured in this
+    file instead of resolving the production DeepSeek target": these tests
+    exercise the gateway's own tier routing, not the deployment endpoint, and
+    they must not depend on the ``MINDFLOW_LLM__*`` values of the machine
+    running them.
+    """
+    defaults: dict[str, object] = {
+        "api_key": "test-key",
+        "base_url": _ECHO_BASE_URL,
+        "provider": "generic",
+        "ecnu_compat_enabled": True,
+        "timeout_s": 30,
+        "max_retries": 1,
+    }
+    defaults.update(overrides)
+    return LLMSettings(**defaults)  # type: ignore[arg-type]
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +105,9 @@ class TestMockResponse:
     @pytest.mark.asyncio
     async def test_mock_chat_response(self) -> None:
         """Mock ``ChatDeepSeek.ainvoke`` returns content the gateway passes through."""
-        gateway = LangChainGateway(api_key="test-key", base_url="https://test.api.example.com")
+        gateway = LangChainGateway(
+            api_key="test-key", base_url=_ECHO_BASE_URL, llm_settings=_settings(),
+        )
 
         with patch.object(ChatDeepSeek, "ainvoke", new=AsyncMock()) as mock_ainvoke:
             mock_ainvoke.return_value = _make_aimessage('{"result": "ok"}')
@@ -102,7 +129,9 @@ class TestClose:
     @pytest.mark.asyncio
     async def test_close_awaits_root_async_client(self) -> None:
         """close() awaits root_async_client.close() on each built model."""
-        gateway = LangChainGateway(api_key="test-key", base_url="https://test.api.example.com")
+        gateway = LangChainGateway(
+            api_key="test-key", base_url=_ECHO_BASE_URL, llm_settings=_settings(),
+        )
 
         # Build the chat model so there's a real ChatDeepSeek to close.
         with patch.object(ChatDeepSeek, "ainvoke", new=AsyncMock()) as mock_ainvoke:
@@ -128,18 +157,27 @@ class TestClose:
     @pytest.mark.asyncio
     async def test_close_with_no_models_is_safe(self) -> None:
         """close() before any model was built is a no-op."""
-        gateway = LangChainGateway(api_key="test-key", base_url="https://test.api.example.com")
+        gateway = LangChainGateway(
+            api_key="test-key", base_url=_ECHO_BASE_URL, llm_settings=_settings(),
+        )
         assert gateway._chat_model is None
         await gateway.close()  # must not raise
 
 
 class TestReasonerNoJsonObject:
-    """deepseek-reasoner does not support ``response_format: json_object``."""
+    """The prose tier never requests ``response_format: json_object``.
+
+    Historically this was a model restriction (``deepseek-reasoner`` rejects
+    the parameter); the tier label survives the single-model change, and the
+    constraint is still a property of the *tier*, not of the model id.
+    """
 
     @pytest.mark.asyncio
     async def test_reasoner_no_json_object(self) -> None:
-        """ChatDeepSeek is created without ``model_kwargs`` for reasoner."""
-        gateway = LangChainGateway(api_key="test-key", base_url="https://test.api.example.com")
+        """ChatDeepSeek is created without ``model_kwargs`` for the prose tier."""
+        gateway = LangChainGateway(
+            api_key="test-key", base_url=_ECHO_BASE_URL, llm_settings=_settings(),
+        )
 
         init_kwargs: dict[str, object] = {}
         real_init = ChatDeepSeek.__init__
@@ -156,15 +194,19 @@ class TestReasonerNoJsonObject:
             mock_ainvoke.return_value = _make_aimessage("{}")
             await gateway.complete("system", "user", model="reasoner")
 
-        # The reasoner model should not have response_format in model_kwargs
+        # The prose tier must not carry response_format in model_kwargs.
         model_kwargs = init_kwargs.get("model_kwargs", {})
         assert isinstance(model_kwargs, dict)
         assert "response_format" not in model_kwargs
+        # Both tiers request the resolved model — the tier is an output policy.
+        assert init_kwargs.get("model") == gateway._model_id
 
     @pytest.mark.asyncio
     async def test_chat_has_json_object(self) -> None:
         """Sanity check: the ``chat`` tier *does* set ``response_format``."""
-        gateway = LangChainGateway(api_key="test-key", base_url="https://test.api.example.com")
+        gateway = LangChainGateway(
+            api_key="test-key", base_url=_ECHO_BASE_URL, llm_settings=_settings(),
+        )
 
         init_kwargs: dict[str, object] = {}
         real_init = ChatDeepSeek.__init__
@@ -184,6 +226,7 @@ class TestReasonerNoJsonObject:
         model_kwargs = init_kwargs.get("model_kwargs", {})
         assert isinstance(model_kwargs, dict)
         assert model_kwargs.get("response_format") == {"type": "json_object"}
+        assert init_kwargs.get("model") == gateway._model_id
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

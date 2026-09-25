@@ -183,7 +183,7 @@ def test_v2_training_stays_shadow_when_feedback_gate_fails(work_dir: Path) -> No
         feature_windows.append({
             "window_start_utc": session_start.isoformat(),
             "window_end_utc": (session_start + timedelta(minutes=5)).isoformat(),
-            "feature_schema_version": 3,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "features": {
                 "idle_ratio": 0.02 if is_focus else 0.6,
                 "longest_segment_ratio": 0.9 if is_focus else 0.1,
@@ -216,7 +216,7 @@ def test_v2_training_stays_shadow_when_feedback_gate_fails(work_dir: Path) -> No
         feedback_sessions=feedback_sessions,
     )
 
-    assert report.feature_schema_version == 3
+    assert report.feature_schema_version == FEATURE_SCHEMA_VERSION
     assert report.model_mode == "shadow"
     assert report.activated is False
     assert report.quality_gate["checks"]["minimum_explicit_feedback"] is False
@@ -224,19 +224,41 @@ def test_v2_training_stays_shadow_when_feedback_gate_fails(work_dir: Path) -> No
     assert not (work_dir / "models" / "v2" / "latest.json").exists()
 
 
-def test_v2_training_activates_only_after_all_gates_pass(work_dir: Path) -> None:
+def test_v2_training_activates_only_after_all_gates_pass(
+    work_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This test is about the *quality gate*: it asserts that nothing activates
+    # until every gate passes. The separate publication guard (which additionally
+    # requires the evaluated candidate and the saved artifact to agree — they do
+    # not on this toy fixture, where the conservative selection rule keeps
+    # logistic_regression) is stubbed as confirmed here and pinned end-to-end in
+    # tests/test_publication_guard.py.
+    from mindflow.train import pipeline as pipeline_module
+    from mindflow.train.publication import ENSEMBLE_CANDIDATE, PublicationDecision
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "evaluate_publication",
+        lambda *_a, **_k: PublicationDecision(
+            True, ENSEMBLE_CANDIDATE, ENSEMBLE_CANDIDATE, "test: consistent",
+        ),
+    )
     start = datetime(2026, 7, 1, 8, tzinfo=UTC)
     feature_windows = []
     feedback_sessions = []
     session_index = 0
     for day_index in range(8):
-        for class_index in range(4):
-            is_focus = class_index < 2
-            session_start = start + timedelta(days=day_index, hours=class_index * 2)
+        # 12 sessions/day (alternating classes): even the first forward-chaining
+        # chunk (training-only history) then holds enough labelled two-class rows
+        # for every fold to be evaluable under the stricter phase-3.1 gate.
+        for class_index in range(12):
+            is_focus = class_index % 2 == 0
+            session_start = start + timedelta(days=day_index, hours=class_index)
             feature_windows.append({
                 "window_start_utc": session_start.isoformat(),
                 "window_end_utc": (session_start + timedelta(minutes=5)).isoformat(),
-                "feature_schema_version": 3,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
                 "features": {
                     "idle_ratio": 0.01 if is_focus else 0.7,
                     "longest_segment_ratio": 0.98 if is_focus else 0.05,

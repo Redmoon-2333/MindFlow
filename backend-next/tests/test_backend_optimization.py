@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -12,6 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
 from mindflow.domain.events import make_event
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
     activity_events,
@@ -131,7 +132,7 @@ async def test_feature_windows_bulk_upsert_and_latest_limit_one(
             "user_id": 1,
             "window_start_utc": start,
             "window_end_utc": start + timedelta(minutes=5),
-            "feature_schema_version": 3,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "features_json": '{"value": 1}',
             "label": None,
         },
@@ -139,7 +140,7 @@ async def test_feature_windows_bulk_upsert_and_latest_limit_one(
             "user_id": 1,
             "window_start_utc": start + timedelta(minutes=5),
             "window_end_utc": start + timedelta(minutes=10),
-            "feature_schema_version": 3,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "features_json": '{"value": 2}',
             "label": None,
         },
@@ -149,13 +150,15 @@ async def test_feature_windows_bulk_upsert_and_latest_limit_one(
             "user_id": 1,
             "window_start_utc": start + timedelta(minutes=5),
             "window_end_utc": start + timedelta(minutes=10),
-            "feature_schema_version": 3,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "features_json": '{"value": 3}',
             "label": "focus",
         }
     ])
 
-    latest = await repository.latest_feature_window(1, feature_schema_version=3)
+    latest = await repository.latest_feature_window(
+        1, feature_schema_version=FEATURE_SCHEMA_VERSION,
+    )
     async with engine.connect() as connection:
         count = await connection.scalar(
             sa.select(sa.func.count()).select_from(behavior_feature_windows)
@@ -269,7 +272,7 @@ async def test_prediction_reads_only_latest_feature_window(tmp_path: Any) -> Non
     assert prediction["focus_probability"] == 0.75
     repository.latest_feature_window.assert_awaited_once_with(
         1,
-        feature_schema_version=3,
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
     )
     repository.list_feature_windows.assert_not_awaited()
 

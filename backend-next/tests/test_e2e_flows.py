@@ -36,7 +36,7 @@ from mindflow.api.routes import (
     reports_router,
     telemetry_router,
 )
-from mindflow.domain.feature_schema import V2_FEATURE_NAMES
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 from mindflow.domain.procrastination import RuleEngine
 from mindflow.eval.scenarios import ALL_SCENARIOS
 
@@ -318,7 +318,7 @@ class TestMLTrainingPipelineE2E:
         report = run_training(source="synthetic_v2", data_dir=tmp_path / "d",
                               models_dir=tmp_path / "m", days=3, seed=42)
         assert report.source == "synthetic_v2"
-        assert report.feature_schema_version == 3
+        assert report.feature_schema_version == FEATURE_SCHEMA_VERSION
 
     def test_v2_training_shadow_when_gates_fail(self, tmp_path: Path) -> None:
         from mindflow.train.pipeline import run_training
@@ -332,7 +332,8 @@ class TestMLTrainingPipelineE2E:
                 s = start + timedelta(days=d, hours=2 if cls else 4)
                 windows.append({"window_start_utc": s.isoformat(),
                     "window_end_utc": (s + timedelta(minutes=5)).isoformat(),
-                    "feature_schema_version": 3, "features": _build_feature_row(cls)})
+                    "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "features": _build_feature_row(cls)})
                 feedback.append({"session_id": f"s-{d}-{cls}",
                     "start_time": s.isoformat(),
                     "end_time": (s + timedelta(minutes=30)).isoformat(),
@@ -345,17 +346,35 @@ class TestMLTrainingPipelineE2E:
         assert report.model_mode == "shadow"
         assert not (tmp_path / "m" / "v2" / "latest.json").exists()
 
-    def test_v2_training_activates_when_gates_pass(self, tmp_path: Path) -> None:
+    def test_v2_training_activates_when_gates_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from mindflow.train import pipeline as pipeline_module
         from mindflow.train.pipeline import run_training
+        from mindflow.train.publication import ENSEMBLE_CANDIDATE, PublicationDecision
+
+        # The publication guard (evaluated candidate == saved artifact) is a
+        # separate precondition, pinned end-to-end in
+        # tests/test_publication_guard.py; this test covers the gate path.
+        monkeypatch.setattr(
+            pipeline_module,
+            "evaluate_publication",
+            lambda *_a, **_k: PublicationDecision(
+                True, ENSEMBLE_CANDIDATE, ENSEMBLE_CANDIDATE, "test: consistent",
+            ),
+        )
         start = datetime(2026, 7, 1, 8, tzinfo=UTC)
         windows, feedback, idx = [], [], 0
         for d in range(8):
-            for cls in range(4):
-                is_focus = cls < 2
-                s = start + timedelta(days=d, hours=cls * 2)
+            # 12 sessions/day (alternating classes) so every forward-chaining
+            # fold is evaluable; a tiny fixture now correctly stays in shadow.
+            for cls in range(12):
+                is_focus = cls % 2 == 0
+                s = start + timedelta(days=d, hours=cls)
                 windows.append({"window_start_utc": s.isoformat(),
                     "window_end_utc": (s + timedelta(minutes=5)).isoformat(),
-                    "feature_schema_version": 3, "features": _build_feature_row(is_focus)})
+                    "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "features": _build_feature_row(is_focus)})
                 feedback.append({"session_id": f"s-{idx}",
                     "start_time": s.isoformat(),
                     "end_time": (s + timedelta(minutes=30)).isoformat(),
@@ -376,12 +395,15 @@ class TestMLTrainingPipelineE2E:
         start = datetime(2026, 7, 1, 8, tzinfo=UTC)
         windows, feedback, idx = [], [], 0
         for d in range(8):
-            for cls in range(4):
-                is_focus = cls < 2
-                s = start + timedelta(days=d, hours=cls * 2)
+            # 12 sessions/day (alternating classes) so every forward-chaining
+            # fold is evaluable under the phase-3.1 gate.
+            for cls in range(12):
+                is_focus = cls % 2 == 0
+                s = start + timedelta(days=d, hours=cls)
                 windows.append({"window_start_utc": s.isoformat(),
                     "window_end_utc": (s + timedelta(minutes=5)).isoformat(),
-                    "feature_schema_version": 3, "features": _build_feature_row(is_focus)})
+                    "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "features": _build_feature_row(is_focus)})
                 feedback.append({"session_id": f"s-{idx}",
                     "start_time": s.isoformat(),
                     "end_time": (s + timedelta(minutes=30)).isoformat(),
@@ -391,7 +413,9 @@ class TestMLTrainingPipelineE2E:
         report = run_training(source="db", data_dir=tmp_path / "d",
                               models_dir=tmp_path / "m",
                               feature_windows=windows, feedback_sessions=feedback)
-        manifest = json.loads((tmp_path / "m" / "v2" / "manifest.json").read_text())
+        manifest = json.loads(
+            (tmp_path / "m" / "v2" / "manifest.json").read_text(encoding="utf-8")
+        )
         assert manifest["version"] == report.version_tag
         assert "evaluation" in manifest
         assert manifest["evaluation"]["candidate"]["balanced_accuracy"] > 0
@@ -406,7 +430,8 @@ class TestMLTrainingPipelineE2E:
                 s = start + timedelta(days=d, hours=cls * 2)
                 windows.append({"window_start_utc": s.isoformat(),
                     "window_end_utc": (s + timedelta(minutes=5)).isoformat(),
-                    "feature_schema_version": 3, "features": _build_feature_row(is_focus)})
+                    "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "features": _build_feature_row(is_focus)})
                 feedback.append({"session_id": f"s-{idx}",
                     "start_time": s.isoformat(),
                     "end_time": (s + timedelta(minutes=30)).isoformat(),
@@ -432,7 +457,8 @@ class TestMLTrainingPipelineE2E:
                                  "top_app_ratio": 0.9, "input_active_ratio": 0.7})
                 windows.append({"window_start_utc": s.isoformat(),
                     "window_end_utc": (s + timedelta(minutes=5)).isoformat(),
-                    "feature_schema_version": 3, "features": features})
+                    "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "features": features})
                 feedback.append({"session_id": f"s-{idx}",
                     "start_time": s.isoformat(),
                     "end_time": (s + timedelta(minutes=5)).isoformat(),

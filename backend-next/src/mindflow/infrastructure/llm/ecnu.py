@@ -77,16 +77,27 @@ def resolve_effort(model: str, requested: str) -> tuple[str, bool]:
 
 def ecnu_request_fields(
     *, model: str, thinking_enabled: bool, reasoning_effort: str,
-    max_tokens: int | None,
+    max_tokens: int | None, effort: str | None = None,
 ) -> dict[str, Any]:
-    """Build the same wire fields for SDK and raw HTTP completions."""
+    """Build the same wire fields for SDK and raw HTTP completions.
+
+    Args:
+        model: Model id the request targets (drives tier validation).
+        thinking_enabled: Send ``thinking={"type": "enabled"}``.
+        reasoning_effort: Requested thinking tier.
+        max_tokens: Output ceiling, or ``None`` to let the provider decide.
+        effort: Pre-resolved tier. When omitted, *reasoning_effort* is resolved
+            against *model*'s documented tiers here (the historical behaviour).
+    """
     fields: dict[str, Any] = {
         "thinking": {"type": "enabled" if thinking_enabled else "disabled"},
     }
     if max_tokens is not None:
         fields["max_completion_tokens"] = max_tokens
     if thinking_enabled:
-        fields["reasoning_effort"] = resolve_effort(model, reasoning_effort)[0]
+        fields["reasoning_effort"] = (
+            effort if effort is not None else resolve_effort(model, reasoning_effort)[0]
+        )
     return fields
 
 
@@ -167,6 +178,13 @@ class ECNUChatModel(ChatOpenAI):
         * Assistant messages that carry a recorded ``reasoning_content`` get it
           copied back onto the wire message. The platform requires this on
           every turn after a tool call; without it some models return 400.
+
+        Per-request overrides: ``langchain_openai`` merges call kwargs into the
+        payload, so a caller may pass ``reasoning_effort`` / ``max_completion_tokens``
+        / ``temperature`` per call (role-level ``CompletionPolicy``) without
+        rebuilding the model or its HTTP client. ``reasoning_effort`` is resolved
+        against the model's documented tiers on every request, and the instance
+        keeps the provider default when no override is supplied.
         """
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
 
@@ -182,16 +200,26 @@ class ECNUChatModel(ChatOpenAI):
         # `reasoning_effort` is a recognised parameter and stays top-level,
         # which is where the platform documents it.
         extra = dict(payload.get("extra_body") or {})
+        requested_effort = payload.pop("reasoning_effort", None)
+        if not isinstance(requested_effort, str) or not requested_effort:
+            requested_effort = self.reasoning_effort
+        effort, downgraded = resolve_effort(self.model_name, requested_effort)
         fields = ecnu_request_fields(
             model=self.model_name,
             thinking_enabled=self.thinking_enabled,
-            reasoning_effort=self.reasoning_effort,
+            reasoning_effort=requested_effort,
             max_tokens=payload.get("max_completion_tokens"),
+            effort=effort,
         )
         extra["thinking"] = fields.pop("thinking")
-        payload.pop("reasoning_effort", None)
         payload.update(fields)
         payload["extra_body"] = extra
+
+        # Best-effort audit trail of what actually went out. Under concurrency
+        # this is last-writer-wins; the authoritative per-request value is the
+        # one in the payload above.
+        self.last_effort_sent = effort if self.thinking_enabled else None
+        self.last_downgraded = downgraded
 
         self._restore_reasoning_content(input_, payload)
         return payload

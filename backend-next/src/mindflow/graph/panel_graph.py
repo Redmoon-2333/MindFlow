@@ -8,10 +8,17 @@ Graph topology (fast path, ~6 calls):
   analyst → parse_val → citation_val → forbidden_val
     → [Send fanout: attribution_call × 3 (parallel)]
     → conflict_detection
-    → _panel_routing(min_valid+conflict) → [moderator|rebuttal|END]
+    → _panel_routing(min_valid+conflict) → [moderator|rebuttal|panel_finalize]
     → rebuttal → parse_val → citation_val → forbidden_val → moderator
     → moderator → human_review_interrupt → critic
-    → critic_verdict → [approved→END | retry→moderator | exhausted→END]
+    → critic_verdict → [approved→panel_finalize | retry→moderator
+                        | exhausted→panel_finalize]
+    → panel_finalize → END
+
+``panel_finalize`` is the single terminal node: it writes the explicit
+``critic_approved`` / ``panel_rejected`` / ``panel_terminal`` /
+``rejection_reason`` fields so a deliberation that never earned critic
+approval can never be mistaken for a successful panel downstream.
 
 Design constraints:
   - Every node is a module-level async callable (testable in isolation).
@@ -57,6 +64,12 @@ from mindflow.agents.llm_gateway import (
     GatewayAPIError,
     GatewayNotConfiguredError,
     PanelLLMGateway,
+    gateway_accepts_policy,
+)
+from mindflow.agents.policies import (
+    ROLE_REBUTTAL,
+    CompletionPolicy,
+    policy_for_role,
 )
 from mindflow.agents.types import (
     CriticResult,
@@ -74,6 +87,14 @@ from mindflow.graph.reducers import append_opinion, append_transcript
 
 _MAX_CALLS: int = 12
 """Total LLM-call cap per panel run (legacy name kept for tests)."""
+
+_MAX_MODERATOR_REDOS: int = 2
+"""Critic rejections tolerated before the panel is terminally rejected.
+
+The moderator runs once plus at most one redo in practice, but the router
+compares against this budget explicitly so the rejection cap is a single
+named constant rather than a literal buried in the router.
+"""
 
 # Phase-aware budgets (architecture plan G/1.3): each expert role has its
 # own allowance so the moderator/critic debate cannot starve the analyst
@@ -114,11 +135,21 @@ async def _call_with_budget(
     gateway: PanelLLMGateway,
     expert: ExpertDef,
     user_message: str,
+    *,
+    policy: CompletionPolicy | None = None,
 ) -> str:
     """Atomic budget check then gateway call.
 
     Enforces both the global cap and the per-phase allowance keyed by the
-    expert role (architecture plan G/1.3)."""
+    expert role (architecture plan G/1.3).
+
+    The role-level :class:`CompletionPolicy` (optimisation plan 2.1) is resolved
+    from the expert unless the caller passes one explicitly — the rebuttal round
+    reuses the attribution experts under a tighter policy, so its call sites
+    name the role they are running as. Gateways that predate ``CompletionPolicy``
+    (test doubles, third-party implementations) are probed and simply receive no
+    policy.
+    """
     async with runtime.budget_lock:
         runtime.call_count += 1
         if runtime.call_count > _MAX_CALLS:
@@ -132,11 +163,27 @@ async def _call_with_budget(
             )
             raise PanelBudgetExceededError(call_count=runtime.call_count)
         runtime.phase_usage[expert.role] = phase_used + 1
-    return await gateway.complete(
-        system=expert.system_prompt,
-        user=user_message,
-        model=expert.model,
-    )
+
+    resolved_policy = policy if policy is not None else policy_for_role(expert.role)
+    if not gateway_accepts_policy(gateway):
+        return await gateway.complete(
+            system=expert.system_prompt,
+            user=user_message,
+            model=expert.model,
+        )
+    # Label the call for observability (graph/node/role) — the gateway records
+    # the transport facts, the graph owns the labels.
+    from mindflow.services.llm_observability import llm_call_context  # noqa: PLC0415
+
+    node = resolved_policy.node if resolved_policy is not None else expert.role
+    role = resolved_policy.role if resolved_policy is not None else expert.role
+    with llm_call_context(graph="panel", node=node, role=role):
+        return await gateway.complete(
+            system=expert.system_prompt,
+            user=user_message,
+            model=expert.model,
+            policy=resolved_policy,
+        )
 
 
 async def _safe_call_with_budget(
@@ -144,10 +191,14 @@ async def _safe_call_with_budget(
     gateway: PanelLLMGateway,
     expert: ExpertDef,
     user_message: str,
+    *,
+    policy: CompletionPolicy | None = None,
 ) -> str:
     """Like ``_call_with_budget`` but returns empty string on failure."""
     try:
-        return await _call_with_budget(runtime, gateway, expert, user_message)
+        return await _call_with_budget(
+            runtime, gateway, expert, user_message, policy=policy,
+        )
     except PanelBudgetExceededError:
         raise
     except Exception as exc:
@@ -164,6 +215,7 @@ async def _fanout_raw_with_batch_retry(
     task_factories: list[Callable[[], Awaitable[str]]],
     *,
     batch_label: str,
+    policy_role: str | None = None,
 ) -> list[str]:
     """Run a parallel expert batch, retrying the whole batch once when empty.
 
@@ -176,7 +228,13 @@ async def _fanout_raw_with_batch_retry(
 
     Args:
         task_factories: Zero-argument async factories (must be re-runnable).
+            Each factory binds the :class:`CompletionPolicy` of the role it
+            runs as (attribution vs rebuttal) — the policy travels with the
+            call, not with the batch.
         batch_label: Human label for logging (e.g. ``"attribution"``).
+        policy_role: Role key the batch runs under. When given, a batch retry is
+            recorded in LLM observability (metadata only) so the extra round of
+            calls is visible next to the per-call records.
 
     Returns:
         The (possibly retried) raw responses, in task order.
@@ -189,6 +247,18 @@ async def _fanout_raw_with_batch_retry(
             "{} all-empty responses (transient failure?); retrying batch once",
             batch_label,
         )
+        if policy_role is not None:
+            from mindflow.services.llm_observability import (  # noqa: PLC0415
+                record_llm_outcome,
+            )
+
+            record_llm_outcome(
+                graph="panel",
+                node=batch_label,
+                role=policy_role,
+                retry_count=1,
+                fallback_reason="all_empty_batch",
+            )
         await asyncio.sleep(_BATCH_RETRY_DELAY_S)
         results = list(await asyncio.gather(*(f() for f in task_factories)))
     return results
@@ -270,6 +340,16 @@ class PanelGraphState(TypedDict, total=False):
     disagreement_summary: DisagreementSummary | None
     rebuttal_delta: RebuttalDelta | None
 
+    # ── Explicit terminal semantics (written by panel_finalize) ───────
+    # ``critic_approved`` is the ONLY field that authorises a successful
+    # panel result.  ``panel_rejected`` marks a deliberation that ended
+    # without critic approval, and ``panel_terminal`` records which
+    # terminal path was taken: "approved" | "rejected" | "unavailable".
+    critic_approved: bool
+    panel_rejected: bool
+    panel_terminal: str
+    rejection_reason: str
+
     # ── Fan-out identification (set by Send, read by target node) ────
     _expert_index: int
 
@@ -342,6 +422,8 @@ def make_analyst_node(
 
 def make_attribution_node(
     gateway: PanelLLMGateway,
+    *,
+    fanout_gateway: PanelLLMGateway | None = None,
 ) -> StateNode[PanelGraphState, None]:
     """Create the multi-expert attribution node (round 1).
 
@@ -351,6 +433,9 @@ def make_attribution_node(
     Each expert result is returned as a single ``ExpertOpinion``,
     accumulated via the ``_reduce_attribution_opinions`` reducer.
     """
+    # The parallel batch may run on the dedicated fan-out gateway (its own
+    # concurrency gate); sequential callers are unaffected.
+    batch_gateway = fanout_gateway or gateway
 
     async def attribution_node(state: PanelGraphState) -> dict[str, Any]:
         from mindflow.agents.orchestrator import (  # noqa: PLC0415
@@ -364,7 +449,7 @@ def make_attribution_node(
 
         async def _call_raw(exp: ExpertDef) -> str:
             return await _safe_call_with_budget(
-                runtime, gateway, exp, state["bundle_json"],
+                runtime, batch_gateway, exp, state["bundle_json"],
             )
 
         def _mk_att_task(exp: ExpertDef) -> Callable[[], Awaitable[str]]:
@@ -582,12 +667,16 @@ async def conflict_detection_node(state: PanelGraphState) -> dict[str, Any]:
 
 def make_rebuttal_node(
     gateway: PanelLLMGateway,
+    *,
+    fanout_gateway: PanelLLMGateway | None = None,
 ) -> StateNode[PanelGraphState, None]:
     """Create the rebuttal round node (round 2a).
 
     All three attribution experts rebut each other in parallel
     (internal asyncio.gather for behaviour parity).
     """
+    # Parallel batch → the dedicated fan-out gateway when one is configured.
+    batch_gateway = fanout_gateway or gateway
 
     async def rebuttal_node(state: PanelGraphState) -> dict[str, Any]:
         from mindflow.agents.orchestrator import (  # noqa: PLC0415
@@ -614,12 +703,18 @@ def make_rebuttal_node(
             exp: ExpertDef, msg: str,
         ) -> Callable[[], Awaitable[str]]:
             async def _task() -> str:
-                return await _safe_call_with_budget(runtime, gateway, exp, msg)
+                # The rebuttal round runs the attribution experts under the
+                # tighter rebuttal policy: answer the conflicting fields only.
+                return await _safe_call_with_budget(
+                    runtime, batch_gateway, exp, msg,
+                    policy=policy_for_role(ROLE_REBUTTAL),
+                )
             return _task
 
         responses = await _fanout_raw_with_batch_retry(
             [_mk_rebuttal_task(exp, msg) for exp, msg in prompts],
             batch_label="rebuttal",
+            policy_role=ROLE_REBUTTAL,
         )
         new_opinions: list[ExpertOpinion] = []
         for raw, exp in zip(responses, ATTRIBUTION_EXPERTS, strict=True):
@@ -635,7 +730,10 @@ def make_rebuttal_node(
                     "你的上一条回复包含禁用词汇（诊断、治疗、患者、处方）。"
                     "请用中文重新输出，严格遵守禁用词规则并回到推理内容。"
                 )
-                raw2 = await _safe_call_with_budget(runtime, gateway, exp, retry_msg)
+                raw2 = await _safe_call_with_budget(
+                    runtime, gateway, exp, retry_msg,
+                    policy=policy_for_role(ROLE_REBUTTAL),
+                )
                 op2 = _parse_expert_opinion(
                     raw2, exp, valid_metrics=state["valid_metrics"],
                 )
@@ -692,8 +790,13 @@ def make_moderator_node(
     """
 
     async def moderator_node(state: PanelGraphState) -> dict[str, Any]:
+        from mindflow.agents.claims import (  # noqa: PLC0415
+            guard_verdict_confidence,
+        )
         from mindflow.agents.orchestrator import (  # noqa: PLC0415
             _PANEL_RUNTIME,
+            _build_moderator_claims_prompt,
+            _build_moderator_claims_redo_prompt,
             _build_moderator_redo_prompt,
             _build_moderator_user_prompt,
             _parse_verdict,
@@ -707,24 +810,54 @@ def make_moderator_node(
         assert analyst is not None
         assert conflict is not None
 
+        # The panel's own consensus, used to build the claims prompt and to
+        # guard the verdict below. No escalation summary means full agreement.
+        disagreement = state.get("disagreement_summary")
+        agreement_strength = (
+            float(getattr(disagreement, "agreement_strength", 1.0))
+            if disagreement is not None else 1.0
+        )
+
         if is_redo:
             round_num = 4
-            prompt = _build_moderator_redo_prompt(
+            # Phase 2.3: the moderator sees only validated claims, the
+            # multi-expert conflict summary and the analyst digest — never the
+            # experts' raw prose.
+            prompt = _build_moderator_claims_redo_prompt(
                 state["bundle_json"],
                 analyst,
                 state["attribution_opinions"],
                 conflict,
                 cast(CriticResult, state.get("critic_result")).issues,
+                disagreement,
+                agreement_strength,
             )
+            if not prompt:
+                prompt = _build_moderator_redo_prompt(
+                    state["bundle_json"],
+                    analyst,
+                    state["attribution_opinions"],
+                    conflict,
+                    cast(CriticResult, state.get("critic_result")).issues,
+                )
         else:
             round_num = 2 if not state.get("escalated", False) else 3
-            prompt = _build_moderator_user_prompt(
+            prompt = _build_moderator_claims_prompt(
                 state["bundle_json"],
                 analyst,
                 state["attribution_opinions"],
                 conflict,
-                state.get("disagreement_summary"),
+                disagreement,
+                agreement_strength,
             )
+            if not prompt:
+                prompt = _build_moderator_user_prompt(
+                    state["bundle_json"],
+                    analyst,
+                    state["attribution_opinions"],
+                    conflict,
+                    state.get("disagreement_summary"),
+                )
 
         logger.info(
             "Panel round {}: Moderator (redo_count={})",
@@ -738,6 +871,16 @@ def make_moderator_node(
                 reason="主持人输出解析失败",
                 call_count=runtime.call_count,
             )
+
+        # Code-level consensus guard: a low-consensus panel cannot claim high
+        # confidence no matter how persuasive the moderator's prose is.
+        guarded = guard_verdict_confidence(verdict, agreement_strength)
+        if guarded != verdict:
+            logger.info(
+                "Moderator verdict adjusted for agreement={:.2f}",
+                agreement_strength,
+            )
+        verdict = guarded
 
         runtime.transcript.append(
             TranscriptEntry(
@@ -863,12 +1006,67 @@ def conflict_router(state: PanelGraphState) -> str:
 
 
 def critic_verdict(state: PanelGraphState) -> str:
-    """Route: approved→END, rejected+redo<2→retry, exhausted→END."""
+    """Route: approved→finalize, rejected+redo<budget→retry, else finalize."""
     if cast(CriticResult, state.get("critic_result")).approved:
         return "approved"
-    if state.get("moderator_redo_count", 0) < 2:
+    if state.get("moderator_redo_count", 0) < _MAX_MODERATOR_REDOS:
         return "retry"
     return "exhausted"
+
+
+async def panel_finalize_node(state: PanelGraphState) -> dict[str, Any]:
+    """Write explicit terminal semantics for the deliberation (Phase 1.1).
+
+    The graph can end in exactly three ways:
+
+      * ``approved``      — the critic approved the moderator verdict.
+      * ``rejected``      — the critic kept rejecting until the redo budget
+        (``_MAX_MODERATOR_REDOS``) was exhausted.
+      * ``unavailable``   — the panel never produced a usable verdict
+        (too few valid expert opinions).
+
+    Only ``approved`` authorises a successful panel result.  Before this
+    node existed, downstream code had to infer success from "a
+    ``moderator_verdict`` exists", which let a twice-rejected verdict be
+    returned as ``source="panel"``.  The fields written here are the
+    contract ``AnalysisGraph.panel_graph_node`` enforces.
+    """
+    critic = state.get("critic_result")
+    verdict = state.get("moderator_verdict")
+    redo_count = int(state.get("moderator_redo_count", 0))
+    approved = bool(critic is not None and critic.approved)
+
+    if verdict is None:
+        terminal = "unavailable"
+        reason = "面板未产出主持人裁决（有效专家意见不足）"
+    elif approved:
+        terminal = "approved"
+        reason = ""
+    else:
+        terminal = "rejected"
+        issues = "；".join(critic.issues) if critic is not None else ""
+        reason = f"批评家驳回裁决（重做 {redo_count} 次后仍未通过）"
+        if issues:
+            reason = f"{reason}：{issues}"
+
+    logger.info(
+        "Panel terminal state: {} (redo_count={}, approved={})",
+        terminal,
+        redo_count,
+        approved,
+    )
+
+    return {
+        "critic_approved": approved,
+        "panel_rejected": not approved,
+        "panel_terminal": terminal,
+        "rejection_reason": reason,
+        "transcript": TranscriptEntry(
+            role="panel",
+            content=f"终态={terminal}" + (f"：{reason}" if reason else ""),
+            round=5,
+        ),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -963,10 +1161,21 @@ class PanelGraph:
 
     Args:
         gateway: The LLM gateway for calling experts.
+        fanout_gateway: Optional dedicated gateway for the *parallel* batches
+            (attribution, rebuttal). When the registry configured a fan-out
+            burst > 1, this gateway carries its own concurrency gate so the
+            parallel experts overlap instead of queueing behind the global
+            limit; sequential nodes (analyst, moderator, critic) always use the
+            main gateway. ``None`` routes everything through ``gateway``.
     """
 
-    def __init__(self, gateway: PanelLLMGateway) -> None:
+    def __init__(
+        self,
+        gateway: PanelLLMGateway,
+        fanout_gateway: PanelLLMGateway | None = None,
+    ) -> None:
         self._gateway = gateway
+        self._fanout_gateway = fanout_gateway
         self._compiled: CompiledStateGraph[Any, Any, Any, Any] | None = None
 
     def build(self) -> CompiledStateGraph[Any, Any, Any, Any]:
@@ -982,13 +1191,18 @@ class PanelGraph:
         graph.add_node("parse_validation", parse_validation_node)
         graph.add_node("citation_validation", citation_validation_node)
         graph.add_node("forbidden_word_validation", forbidden_word_validation_node)
-        graph.add_node("attribution", make_attribution_node(self._gateway))
+        graph.add_node("attribution", make_attribution_node(
+            self._gateway, fanout_gateway=self._fanout_gateway,
+        ))
         graph.add_node("conflict_detection", conflict_detection_node)
-        graph.add_node("rebuttal", make_rebuttal_node(self._gateway))
+        graph.add_node("rebuttal", make_rebuttal_node(
+            self._gateway, fanout_gateway=self._fanout_gateway,
+        ))
         graph.add_node("moderator", make_moderator_node(self._gateway))
         graph.add_node("verdict_schema_validation", verdict_schema_validation_node)
         graph.add_node("human_review_interrupt", human_review_interrupt_node)
         graph.add_node("critic", make_critic_node(self._gateway))
+        graph.add_node("panel_finalize", panel_finalize_node)
 
         # ── Wiring ─────────────────────────────────────────────────
         graph.set_entry_point("analyst")
@@ -1028,7 +1242,7 @@ class PanelGraph:
             "conflict_detection",
             _panel_routing,
             {
-                "unavailable": END,
+                "unavailable": "panel_finalize",
                 "rebuttal": "rebuttal",
                 "moderator": "moderator",
             },
@@ -1042,16 +1256,18 @@ class PanelGraph:
         graph.add_edge("verdict_schema_validation", "human_review_interrupt")
         graph.add_edge("human_review_interrupt", "critic")
 
-        # Critic routing (retry→moderator on rejection, exhaust at redo_count≥2)
+        # Critic routing: retry→moderator on rejection, otherwise the single
+        # terminal node decides the explicit panel outcome.
         graph.add_conditional_edges(
             "critic",
             critic_verdict,
             {
-                "approved": END,
+                "approved": "panel_finalize",
                 "retry": "moderator",
-                "exhausted": END,
+                "exhausted": "panel_finalize",
             },
         )
+        graph.add_edge("panel_finalize", END)
 
         # Checkpointer only needed when human_review_enabled is True.
         # When disabled (default), compile without one to avoid serializing
@@ -1124,6 +1340,18 @@ class PanelGraph:
         if isinstance(result, dict):
             result["call_count"] = runtime.call_count
             result["transcript"] = tuple(runtime.transcript)
+            # Defensive: the graph always ends at panel_finalize, but a
+            # caller-supplied/inlined graph may not, so derive the terminal
+            # semantics from the critic result when they are absent.
+            if "critic_approved" not in result:
+                _critic = result.get("critic_result")
+                _approved = bool(getattr(_critic, "approved", False))
+                result["critic_approved"] = _approved
+                result["panel_rejected"] = not _approved
+                result["panel_terminal"] = "approved" if _approved else "rejected"
+                result["rejection_reason"] = (
+                    "" if _approved else "批评家未通过主持人裁决"
+                )
             trace: list[dict[str, Any]] = []
             analyst = result.get("analyst_opinion")
             if analyst is not None:
@@ -1146,6 +1374,18 @@ class PanelGraph:
                         "issues": list(critic.issues),
                     }
                 )
+            trace.append(
+                {
+                    "node": "panel_finalize",
+                    "type": "terminal",
+                    "terminal": str(result.get("panel_terminal", "")),
+                    "critic_approved": bool(result.get("critic_approved", False)),
+                    "panel_rejected": bool(result.get("panel_rejected", True)),
+                    "moderator_redo_count": int(result.get("moderator_redo_count", 0)),
+                    "call_count": int(result.get("call_count", 0)),
+                    "rejection_reason": str(result.get("rejection_reason", "")),
+                }
+            )
             result["trace"] = trace
 
         return result

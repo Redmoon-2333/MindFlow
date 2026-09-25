@@ -227,6 +227,7 @@ class TestBuildScheduler:
             )
         )
         telemetry.rollup_feature_windows = AsyncMock()
+        telemetry.rollup_recent = AsyncMock(return_value=0)
         telemetry.cleanup_retained_data = AsyncMock()
         scheduler = build_scheduler(
             telemetry_service=telemetry,
@@ -244,11 +245,14 @@ class TestBuildScheduler:
             datetime(2026, 7, 24, 16, 0, tzinfo=UTC),
             datetime(2026, 7, 25, 16, 0, tzinfo=UTC),
         )
-        # Todo 12 current-day catch-up: bounded [now-2h, now] derived from the
-        # captured startup time, re-run on each recovery invocation.
+        # Todo 12 current-day catch-up: the scheduler hands the service the
+        # captured startup time and the two-hour policy; the service derives the
+        # actual range from its own watermark (plan 4.2), re-run on each recovery
+        # invocation.
         assert any(
-            call.args == (startup_time - timedelta(hours=2), startup_time)
-            for call in telemetry.rollup_feature_windows.await_args_list
+            call.args == (startup_time,)
+            and call.kwargs == {"window_hours": 2, "user_id": 1}
+            for call in telemetry.rollup_recent.await_args_list
         )
         telemetry.cleanup_retained_data.assert_awaited_once_with()
         runs.claim.assert_any_await(
@@ -975,9 +979,11 @@ class TestRecentTelemetryRollup:
         assert isinstance(jobs[0].trigger, _IntervalTrigger)
         assert jobs[0].trigger.interval == timedelta(minutes=15)
 
-    async def test_invocation_rolls_two_hour_window_with_fixed_clock(self) -> None:
+    async def test_invocation_rolls_the_incremental_recent_window_with_fixed_clock(
+        self,
+    ) -> None:
         telemetry = MagicMock()
-        telemetry.rollup_feature_windows = AsyncMock(return_value=0)
+        telemetry.rollup_recent = AsyncMock(return_value=0)
         scheduler = build_scheduler(telemetry_service=telemetry, timezone="UTC")
         fixed_now = datetime(2026, 7, 26, 12, 34, 56, tzinfo=UTC)
 
@@ -985,10 +991,11 @@ class TestRecentTelemetryRollup:
             mock_datetime.now.return_value = fixed_now
             await _job_coro(scheduler, "telemetry_rollup_recent")()
 
-        # One aware UTC now captured per invocation; both bounds derive from it.
-        telemetry.rollup_feature_windows.assert_awaited_once_with(
-            fixed_now - timedelta(hours=2),
+        # One aware UTC now captured per invocation; the service owns the
+        # watermark, so the scheduler only states the two-hour policy.
+        telemetry.rollup_recent.assert_awaited_once_with(
             fixed_now,
+            window_hours=2,
             user_id=1,
         )
 
@@ -1014,7 +1021,7 @@ class TestRecentTelemetryRollup:
 
     async def test_failure_is_logged_and_later_invocation_still_runs(self) -> None:
         telemetry = MagicMock()
-        telemetry.rollup_feature_windows = AsyncMock(
+        telemetry.rollup_recent = AsyncMock(
             side_effect=[RuntimeError("boom"), 3]
         )
         scheduler = build_scheduler(telemetry_service=telemetry, timezone="UTC")
@@ -1046,7 +1053,7 @@ class TestRecentTelemetryRollup:
 
         # First call raised and was swallowed by the interval boundary; the
         # second call still ran on the next tick — no sleep involved.
-        assert telemetry.rollup_feature_windows.await_count == 2
+        assert telemetry.rollup_recent.await_count == 2
         assert "telemetry_rollup_recent failed" in log_buffer.getvalue()
 
 
@@ -1074,6 +1081,7 @@ class TestStartupRecoveryTelemetryCatchUp:
             )
         )
         telemetry.rollup_feature_windows = AsyncMock(return_value=0)
+        telemetry.rollup_recent = AsyncMock(return_value=0)
         telemetry.cleanup_retained_data = AsyncMock(return_value=0)
         return telemetry
 
@@ -1101,13 +1109,25 @@ class TestStartupRecoveryTelemetryCatchUp:
                 cutoff_utc=now_utc,
             )
 
-        async def _rollup(start: datetime, end: datetime, user_id: int = 1) -> int:
-            calls.append(("rollup", (start, end, user_id), {}))
+        async def _rollup_recent(
+            now: datetime,
+            *,
+            window_hours: float = 2,
+            user_id: int = 1,
+        ) -> int:
+            calls.append(
+                ("rollup_recent", (now,), {"window_hours": window_hours, "user_id": user_id})
+            )
+            return 0
+
+        async def _rollup_day(start: datetime, end: datetime, user_id: int = 1) -> int:
+            calls.append(("rollup_day", (start, end, user_id), {}))
             return 0
 
         telemetry = self._telemetry()
         telemetry.rebuild_baseline_if_needed = AsyncMock(side_effect=_backfill)
-        telemetry.rollup_feature_windows = AsyncMock(side_effect=_rollup)
+        telemetry.rollup_recent = AsyncMock(side_effect=_rollup_recent)
+        telemetry.rollup_feature_windows = AsyncMock(side_effect=_rollup_day)
         telemetry.cleanup_retained_data = AsyncMock(
             side_effect=lambda: calls.append(("cleanup", (), {}))
         )
@@ -1117,22 +1137,23 @@ class TestStartupRecoveryTelemetryCatchUp:
         await scheduler.run_startup_recovery(now_utc=startup_time)
 
         # Exact order: conditional baseline backfill, then recent catch-up.
-        assert [name for name, _, _ in calls][:2] == ["backfill", "rollup"]
+        assert [name for name, _, _ in calls][:2] == ["backfill", "rollup_recent"]
         # Backfill receives the configured timezone and the exact captured now.
         assert calls[0] == (
             "backfill",
             (1,),
             {"timezone": "Asia/Shanghai", "now_utc": startup_time},
         )
-        # Bounded two-hour recent window ending at the same captured now.
+        # Incremental recent catch-up: the service owns the range (watermark),
+        # the scheduler states the two-hour policy ending at the captured now.
         assert calls[1] == (
-            "rollup",
-            (startup_time - timedelta(hours=2), startup_time, 1),
-            {},
+            "rollup_recent",
+            (startup_time,),
+            {"window_hours": 2, "user_id": 1},
         )
         # The complete-day yesterday rollup and cleanup still follow.
         assert calls[2] == (
-            "rollup",
+            "rollup_day",
             (
                 datetime(2026, 7, 24, 16, 0, tzinfo=UTC),
                 datetime(2026, 7, 25, 16, 0, tzinfo=UTC),

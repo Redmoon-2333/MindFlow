@@ -20,6 +20,7 @@ from typing import Any, Literal
 from loguru import logger
 
 from mindflow.agents.llm_gateway import PanelLLMGateway
+from mindflow.agents.policies import CompletionPolicy
 from mindflow.agents.types import PanelUnavailableError, PanelVerdict
 from mindflow.domain.evidence import EvidenceBundle, to_prompt_json
 from mindflow.domain.evidence_facts import build_evidence_catalog, evidence_catalog_ids
@@ -56,18 +57,24 @@ async def rule_engine_analyzer(bundle: EvidenceBundle) -> ProcrastinationAssessm
 AnalyzerFunc = Callable[[EvidenceBundle], Awaitable[ProcrastinationAssessment | PanelVerdict]]
 
 
-def panel_analyzer(gateway: PanelLLMGateway) -> AnalyzerFunc:
+def panel_analyzer(
+    gateway: PanelLLMGateway,
+    fanout_gateway: PanelLLMGateway | None = None,
+) -> AnalyzerFunc:
     """Create an analyzer that runs the expert panel via the given gateway.
 
     Args:
         gateway: A PanelLLMGateway implementation (real DeepSeekGateway or mock).
+        fanout_gateway: Optional dedicated gateway for the parallel
+            attribution/rebuttal batches (its own concurrency gate). ``None``
+            routes every call through ``gateway``.
 
     Returns:
         An async callable that takes an EvidenceBundle and returns a PanelVerdict.
     """
     # PanelGraph is safe to reuse across invocations (compiled once; per-call
     # state flows through graph channels, isolated by the runtime ContextVar).
-    panel_graph = PanelGraph(gateway=gateway)
+    panel_graph = PanelGraph(gateway=gateway, fanout_gateway=fanout_gateway)
 
     async def _analyze(bundle: EvidenceBundle) -> PanelVerdict:
         bundle_json = to_prompt_json(bundle)
@@ -98,6 +105,18 @@ def panel_analyzer(gateway: PanelLLMGateway) -> AnalyzerFunc:
         if verdict_dict is None or not isinstance(verdict_dict, dict):
             raise PanelUnavailableError(
                 reason="Moderator did not produce a verdict",
+                call_count=result.get("call_count", 0) if isinstance(result, dict) else 0,
+            )
+        if not (
+            isinstance(result, dict)
+            and result.get("critic_approved") is True
+            and result.get("panel_terminal") == "approved"
+        ):
+            raise PanelUnavailableError(
+                reason=(
+                    "Panel terminal was not critic-approved: "
+                    f"{result.get('panel_terminal', 'unknown') if isinstance(result, dict) else 'unknown'}"
+                ),
                 call_count=result.get("call_count", 0) if isinstance(result, dict) else 0,
             )
         return analysis_dict_to_panel_verdict(
@@ -398,11 +417,14 @@ class MockPanelGateway:
         system: str,
         user: str,
         model: Literal["chat", "reasoner"] = "chat",  # noqa: ARG002
+        policy: CompletionPolicy | None = None,  # noqa: ARG002
     ) -> str:
         """Return a plausible JSON response based on expert role and bundle data.
 
         Inspects the user prompt for bundle features and applies simplified
         classification rules to produce a response appropriate to the expert role.
+        The mock ignores the optional role-level ``policy`` (phase 2.1) — it
+        exists so the mock satisfies ``PanelLLMGateway`` under mypy strict.
         """
         role = self._classify_role(system)
 

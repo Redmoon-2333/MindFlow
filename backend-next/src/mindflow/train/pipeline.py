@@ -25,6 +25,7 @@ from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 from mindflow.train.models import ModelManager
 from mindflow.train.models.ensemble import CalibrationUnavailableError, EnsembleClassifier
 from mindflow.train.models.manager import ModelPublicationError
+from mindflow.train.publication import evaluate_publication
 from mindflow.train.v2 import (
     V2TrainingData,
     evaluate_auxiliary_signal,
@@ -81,6 +82,19 @@ class TrainingReport:
     conflict_window_count: int = 0
     ambiguous_window_count: int = 0
     activation_error: str | None = None
+    #: Publication guard (plan item 1) — the evaluated candidate, the artifact
+    #: actually trained, and why activation was blocked when it was.
+    publication: dict[str, Any] = field(default_factory=dict)
+    evaluation_candidate: str | None = None
+    deployed_classifier: str | None = None
+    activation_blocked_reason: str | None = None
+    # Whether this run was even permitted to move the active-model pointer.
+    # ``False`` means the quality gate may have passed but the caller asked for
+    # a shadow-only candidate; ``model_mode`` is then forced to ``"shadow"``.
+    activation_allowed: bool = True
+    # Set only when the gate passed and activation was refused by policy, so a
+    # suppressed run is distinguishable from one that simply failed the gate.
+    activation_suppressed_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -104,6 +118,7 @@ def run_training(
     feedback_sessions: list[dict[str, Any]] | None = None,
     use_window_labels: bool = False,
     calibration: str | None = "sigmoid",
+    allow_activation: bool = True,
 ) -> TrainingReport:
     """Run the full training pipeline.
 
@@ -125,6 +140,12 @@ def run_training(
         user_profiles: Explicit archetype IDs; takes precedence over ``num_users``.
         min_confidence: Reserved compatibility input for callers of the former V1 pipeline.
         min_baseline_samples: Reserved compatibility input for the former V1 pipeline.
+        allow_activation: Whether this run may move the active-model pointer.
+            ``False`` (automatic/background training) still writes every
+            artifact and the version manifest, but the candidate stays a
+            shadow version: ``latest.json`` is untouched and the report
+            records ``activated=False`` + ``model_mode="shadow"``. Only an
+            explicit caller (manual CLI/API) should pass ``True``.
 
     Returns:
         ``TrainingReport`` with all metrics and artifact paths.
@@ -156,6 +177,7 @@ def run_training(
                 source=source,
                 use_window_labels=use_window_labels,
                 calibration=calibration,
+                allow_activation=allow_activation,
             )
         raise ValueError(
             "No V2 feature windows found in database. "
@@ -192,6 +214,7 @@ def run_training(
             source=source,
             use_window_labels=False,  # synthetic data has no window-label source
             calibration=calibration,
+            allow_activation=allow_activation,
         )
 
     # V1 pipeline (raw-event-based feature extraction) has been removed.
@@ -239,12 +262,14 @@ def _run_v2_training(
     source: str,
     use_window_labels: bool = False,
     calibration: str | None = "sigmoid",
+    allow_activation: bool = True,
 ) -> TrainingReport:
     report = TrainingReport(
         source=source,
         total_records=len(feature_windows),
         windows_extracted=len(feature_windows),
         feature_schema_version=FEATURE_SCHEMA_VERSION,
+        activation_allowed=allow_activation,
     )
     window_labels = _extract_window_labels(feature_windows) if use_window_labels else None
     training_data = prepare_v2_training_data(
@@ -333,7 +358,34 @@ def _run_v2_training(
         if evaluation.get("candidate", {}).get("balanced_accuracy") is not None:
             report.classifier["balanced_accuracy"] = evaluation["candidate"]["balanced_accuracy"]
         report.hmm = summary.hmm
-        should_activate = bool(report.quality_gate["passed"])
+        gate_passed = bool(report.quality_gate["passed"])
+
+        # ── Publication guard (plan item 1) ─────────────────────────────
+        # A passing gate is necessary but NOT sufficient: the artifact we are
+        # about to save must be the candidate the evaluation actually selected.
+        # The pipeline trains one artifact (the RF+XGB ensemble, or RF-only when
+        # XGBoost is missing), while the selection rule may have picked a
+        # different candidate — activating then would publish a model that was
+        # never evaluated. Everything still gets saved as a shadow version, with
+        # the reason recorded, so the active pointer never moves on a mismatch.
+        publication = evaluate_publication(
+            evaluation,
+            manager.classifier,
+            xgb_fallback=manager.was_ensemble_requested and not manager.use_ensemble,
+        )
+        report.publication = publication.to_dict()
+        report.evaluation_candidate = publication.evaluation_candidate
+        report.deployed_classifier = publication.deployed_candidate
+        if not publication.allowed:
+            report.activation_blocked_reason = publication.reason
+
+        # A caller may also forbid activation outright (automatic training can
+        # only ever produce shadow candidates).
+        should_activate = gate_passed and allow_activation and publication.allowed
+        if gate_passed and not allow_activation:
+            report.activation_suppressed_reason = (
+                "activation not allowed by the caller (shadow-only run)"
+            )
         manifest_payload = {
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "feature_names": list(training_data.feature_names),
@@ -341,6 +393,10 @@ def _run_v2_training(
             "distinct_feedback_days": training_data.distinct_feedback_days,
             "quality_gate": report.quality_gate,
             "evaluation": evaluation,
+            "publication": publication.to_dict(),
+            "evaluation_candidate": publication.evaluation_candidate,
+            "deployed_classifier": publication.deployed_candidate,
+            "activation_blocked_reason": report.activation_blocked_reason,
             "calibration": report.classifier["calibration"],
             "auxiliary_signal": auxiliary,
             "label_source_counts": _label_source_counts(training_data),

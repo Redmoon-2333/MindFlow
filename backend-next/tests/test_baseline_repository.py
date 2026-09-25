@@ -26,7 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from mindflow.domain.baseline import BaselineModel
-from mindflow.domain.feature_schema import V2_FEATURE_NAMES
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 from mindflow.infrastructure.repositories.baseline import (
     BaselineRepository,
     baseline_models,
@@ -134,7 +134,7 @@ async def test_upsert_round_trip_preserves_v2_state(engine, session_factory) -> 
     reloaded = await repository.get_latest(user_id=7)
     assert reloaded is not None
     assert reloaded.user_id == 7
-    assert reloaded.FEATURE_SCHEMA_VERSION == 3
+    assert reloaded.FEATURE_SCHEMA_VERSION == FEATURE_SCHEMA_VERSION
     assert reloaded.timezone == "Asia/Shanghai"
     assert reloaded.total_days == 1
     assert reloaded.total_samples() == 2 * len(V2_FEATURE_NAMES)

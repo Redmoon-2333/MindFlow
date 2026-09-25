@@ -123,6 +123,28 @@ deprecated compatibility inputs for older `.env` files, but they do not change r
 | `training_use_window_labels` | bool | `True` | Also train on user-calibrated `behavior_feature_windows.label` (weight 0.8; feedback still wins; quality-gate counts stay feedback-only). Measured 2026-08-20: BA 0.46→0.64, Brier 0.40→0.23 — activated the model. |
 | `new_analysis_graph` | bool | `True` | Deprecated compatibility input; v2 AnalysisGraph is always active |
 | `new_chat_graph` | bool | `True` | Deprecated compatibility input; v2 ChatGraph is always active |
+| `panel_fast_path_enabled` | bool | `False` | Panel fast path (plan 2.2). Must stay `False`: the offline replay measured 60% top-1 agreement on the 5/30 scenarios it triggered (target ≥95%). |
+| `deepseek_api_key` | str | unset | Production L1 credential (`DEEPSEEK_API_KEY` / `MINDFLOW_LLM__DEEPSEEK_API_KEY`). Absent → L1 unavailable, degrade to L2/L3; the legacy ECNU key is never reused. |
+| `ecnu_compat_enabled` | bool | `False` | Honour the legacy ECNU triple instead of the DeepSeek pin. Compatibility tests/diagnostics only; **must stay `False` in production**. |
+
+## L1 = DeepSeek Direct (2026-09-25)
+
+- Production L1 is DeepSeek itself: `provider=generic`,
+  `base_url=https://api.deepseek.com`, `model=deepseek-flash`, resolved once by
+  `LLMSettings.l1_target()` and consumed by `ProviderRegistry` (structured client,
+  gateway, chat model). Legacy ECNU URL/model/provider/key values are overridden
+  and never mixed; a missing DeepSeek credential means L1 is unavailable — there
+  is no ECNU fallback.
+- `chat`/`reasoner` are **output policies** (JSON mode vs prose), not two model
+  ids: both tiers request the same model. Role-level `reasoning_effort`,
+  `thinking` and `max_tokens` travel per request via `CompletionPolicy`
+  (official spelling: `max_tokens`, `extra_body={"thinking": {...}}`).
+- Thinking mode requires the previous assistant turns' `reasoning_content` to be
+  echoed on any request carrying `tools` (DeepSeek answers 400 otherwise);
+  `infrastructure/llm/thinking.py` is the shared implementation used by both the
+  ECNU and the new DeepSeek adapters. `temperature` is omitted for thinking
+  requests. Non-retriable 4xx responses are never retried with identical
+  parameters.
 
 **2026-08-20 additions**: production training defaults to Platt(sigmoid) calibration (`run_training(calibration="sigmoid")` makes `evaluate_v2_candidates` and `ModelManager` share it; `make_v2_classifier()` public default stays raw — small/toy datasets pass `calibration=None`); `_PANEL_WORKFLOW_TIMEOUT_S=120` (was 8, which always timed out against real DeepSeek); critic prompt capped (`critique_detail ≤300字`) to avoid the 8192-token truncation that broke JSON parsing.
 
@@ -183,19 +205,47 @@ The following verification was run after the model-center implementation, not as
 
 ## 2026-07-31 ML/LangGraph 升级摘要
 
-- Feature schema 已升级到 v3；切换计数必须使用 `count_confirmed_switches()`（驻留 10 秒 + 瞬时进程忽略）。
-- ML 质量门使用唯一反馈会话数（>=20 条）、7 个反馈日、每类 >=5 条；日期 GroupKFold 内计算 rule baseline 与校准。
+- Feature schema 已升级到 **v4**（28 列：v3 的 24 列 + task-context 4 列）；切换计数必须使用 `count_confirmed_switches()`（驻留 10 秒 + 瞬时进程忽略）。
+- ML 质量门使用唯一反馈会话数（>=20 条）、7 个反馈日、每类 >=5 条；forward-chaining 内计算 rule baseline 与校准。
 - `POST /panel/today` 支持 `force`/`retry_if_degraded`，缓存命中保留降级元数据。
 - `PanelGraph` 是唯一活动面板图；旧 `PanelOrchestrator` 类已在 v2 cutover 中删除，解析/校验 helper 保留在 `agents/orchestrator.py`。
 - 实验统一使用 `scripts/run_experiments.py`，最终报告见 `data/experiments/20260731_final/`。
+
+## 2026-09-25 分阶段优化方案落地摘要
+
+分阶段优化方案（正确性 → 降本 → ML → 基础设施）在本轮落地，关键设计：
+
+- **面板终态**：`panel_finalize` 单终态节点写入 `critic_approved`/`panel_rejected`/`panel_terminal`/`rejection_reason`；只有「裁决存在 + schema 通过 + critic 批准」才是 `source="panel"`，驳回一律走 L1→L2→L3 降级链，`panel_degradation_marker` 前缀进 `degradation_path`。
+- **训练激活策略**：`run_training(allow_activation=...)`、`TrainingJobService.start_job(allow_activation=...)`；auto 训练固定 shadow-only，手动/独立发布任务才可移动 active 指针（`TrainingReport.activation_allowed/activation_suppressed_reason`，响应体 `allow_activation`，CLI `--no-activate`）。
+- **Prompt/schema 统一**：`extra="forbid"` + 代码级语义校验（空论据、无合法类型、无证据、置信度越界、insufficient_data 无 gaps 均无效）。
+- **Claim Ledger**：`agents/claims.py`（校验、冲突摘要、共识惩罚、verdict 置信度上限）；Moderator 只吃校验过的 claim 表 + 证据表 + 冲突摘要。
+- **证据压缩**：默认压缩 payload（稳定项折叠 `stable_summary`，catalog 为位置元组 `[id, 中文标签, 类型]`）。实测：稳定型真实窗口 −32.8%（达标 ≥30%），生产形态 9 项窗口 −20.1%，30 个评估场景合计 −12.0% 且全部变小；citation id 集合与 legacy 完全一致。`compressed=False` 仅供 A/B。
+- **LLM 调用策略/可观测性**：`agents/policies.py` 角色级 `CompletionPolicy`（analyst 1200 / attribution 1000 / rebuttal 800 / moderator 1600 / critic 500 / chat 2048，moderator=high reasoning）；`services/llm_observability.py` 记录延迟/token/重试/解析失败/降级原因等聚合元数据，不含 prompt、密钥或供应商正文。
+- **ML 协议**：主评估 forward-chaining（leave-future-days-out），窗口标签只训练不进评估；session/date 级指标、PR-AUC/Brier/ECE/reliability、按 session 重采样的 bootstrap CI、abstention coverage；候选固定五选一（rule/LogReg/RF/XGB/RF+XGB soft voting），复杂模型必须稳定胜出；HMM 退出默认发布链；质量门不因口径调整而放宽。
+- **基础设施**：SQLite 热查询经 `EXPLAIN QUERY PLAN` 验证走索引（`tests/test_sqlite_query_plans.py`）；`rollup_recent()` watermark 增量重算（失败不推进）；Ollama/HTTP client 由 ProviderRegistry 单例持有；并发门默认仍为 1，压测脚本 `scripts/experiment_concurrency.py`。
+- **主动反馈**：`services/feedback_sampling.py` 仅在不确定/规则-ML 冲突/Panel 分歧/任务上下文不一致/数据漂移时请求标注，并记录触发原因与信息增益代理指标。
+- **快速路径**：`MINDFLOW_PANEL_FAST_PATH_ENABLED` 默认 `False`；离线回放 `scripts/experiment_fast_path.py` 实测快速路径 5/30 场景、top-1 一致率 60%（<95% 门槛），**因此保持关闭**。
 
 ## Quality Gates (Green since 2026-08-16)
 
 The following commands are **required visibility gates** and are **green**:
 
 - **Ruff**: 0 findings (`uv run python -m ruff check src tests` → `All checks passed!`).
-- **Mypy (strict)**: 0 errors across 163 source files (`uv run python -m mypy --strict src/mindflow` → `Success`).
-- **Pytest**: 2201+ passing (`uv run python -m pytest tests/ -q`).
+- **Mypy (strict)**: 0 errors across 185 source files (`uv run python -m mypy --strict src/mindflow` → `Success`).
+- **Pytest**: 3120 passing, 4 skipped, 22 warnings (`uv run python -m pytest tests/ -q`).
+
+**Live DeepSeek smoke (2026-09-25, `scripts/smoke_live_llm.py --yes --max-requests 16`, isolated data dir)**: all four targets PASS — panel 9 requests / 9-9 schema-valid / 7-7 valid citations / 0% failure / p95 26.7s; chat 1 request / p95 2.1s; tools 2 requests (a real tool call plus a successful follow-up turn, proving the `reasoning_content` echo works); attribution 1 request / 1-1 schema / p95 7.5s. 13 requests total, 20,786 input tokens, 12,755 output tokens of which 7,075 were reasoning (55%) — every response HTTP 2xx, no degradation, no 4xx retry. Artifacts: `data/experiments/20260925_051755/{summary.json,report.md}` (no keys, prompts or bodies).
+
+## Gray-Release Round (2026-09-25 下午)
+
+Six pre-launch items closed; the full suite was **3116 passing, 4 skipped** at that acceptance checkpoint. The latest full run on 2026-09-25 is **3120 passing, 4 skipped, 22 warnings**; ruff and mypy strict are green.
+
+1. **Attribution usage fixed**: `DeepSeekClient.analyze()` captures the provider's `usage` into `last_usage`, `single_expert_node` records it, and the raw client now sends the same reasoning contract as the gateway (`reasoning_effort` / `thinking` / `max_tokens`). Live re-test: `usage_reported=true` (3 calls, reasoning = 85% of output).
+2. **Panel fan-out optimization (targeted)**: new `panel_fanout_concurrency` (default **3**) routes only the panel's parallel attribution/rebuttal batches through a dedicated registry gateway with its own burst gate; every other L1 path keeps the global limit 1. Real A/B on 2 scenarios × 9 calls: wall time 114.5s → 60.5s (**-47%**), serial queueing 82.5s → 0ms (**-100%**), identical verdict types and escalation shape, zero errors. Set `MINDFLOW_LLM__PANEL_FANOUT_CONCURRENCY=1` to revert.
+3. **Multi-scenario / repeat smoke**: `--scenario-count N --repeat M` (panel over the first N eval scenarios; per-target aggregation of schema, citations, failure rate, p95 and usage). Gray artifacts: `data/experiments/gray_multiscenario_c1`, `gray_fanout_c3_v2`, `gray_repeat_chat_tools` — all PASS.
+4. **v4 backfill accepted on a copy of the real DB**: 6265 v4 windows rebuilt / written, 2401 v3 labels inherited, 0 failed; v2 (1726/198) and v3 (8198/2981) row and label counts identical before/after; re-run idempotent (6265/2401 unchanged); 153 blocks beyond raw-event retention are reported, not synthesized. **Production apply still pending your explicit run** (backup first).
+5. **Production DB was migrated to 0027 during the rehearsal** (see the incident note in the final report): alembic 0024→0027 applied additively; integrity ok; row counts unchanged; pre-upgrade byte copy retained at `%TEMP%\mf_backfill_acceptance.db`.
+6. **Publication-guard acceptance — all three paths PASS** (`scripts/acceptance_publication_guard.py`, idempotent, exit 0): Run A mismatch → shadow + `REASON_MISMATCH` in report and manifest; Run B (engineered dataset where the evaluation itself selects the ensemble: 896 windows, drift PSI 0.21 < 0.25, ensemble promoted over RF by +0.0247 with 3/4 fold wins) → consistent → **activated, `model_mode="ready"`, `latest.json` moved**; Run C `allow_activation=False` → shadow-only regardless of the verdict. The activation path requires xgboost installed (absent → `REASON_XGB_FALLBACK` by design).
 
 Any change that regresses one of these gates must be fixed before the work is
 considered done.

@@ -22,22 +22,36 @@ Raises:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import random
 import time
-from typing import Literal, Protocol, runtime_checkable
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_deepseek import ChatDeepSeek
 from loguru import logger
-from pydantic import SecretStr
 
-from mindflow.config import LLMSettings, get_settings
+from mindflow.agents.policies import CompletionPolicy
+from mindflow.config import L1Target, LLMSettings, get_settings
 from mindflow.errors import LLMAPIError, LLMNotConfiguredError
 from mindflow.infrastructure.llm.concurrency import LLMConcurrencyGate
+from mindflow.infrastructure.llm.deepseek import build_deepseek_model
 from mindflow.infrastructure.llm.ecnu import build_ecnu_model, looks_like_ecnu
-from mindflow.infrastructure.llm.http_client import ProviderHTTPClient
+from mindflow.infrastructure.llm.http_client import (
+    HTTPAttemptMetrics,
+    ProviderHTTPClient,
+    collect_http_attempts,
+)
 from mindflow.infrastructure.llm.safety import safe_error_metadata
+from mindflow.services.llm_observability import (
+    LLMObservabilityAggregator,
+    LLMRequestRecord,
+    current_llm_labels,
+    default_aggregator,
+    summarise_attempts,
+)
 
 # ── Custom exceptions ──────────────────────────────────────────────────────────
 #
@@ -73,6 +87,7 @@ class PanelLLMGateway(Protocol):
         system: str,
         user: str,
         model: Literal["chat", "reasoner"] = "chat",
+        policy: CompletionPolicy | None = None,
     ) -> str:
         """Send a completion request and return the response content.
 
@@ -80,6 +95,10 @@ class PanelLLMGateway(Protocol):
             system: System prompt defining the expert's persona and output contract.
             user: User message containing the evidence data and context.
             model: Model tier — "chat" (deepseek-chat) or "reasoner" (deepseek-reasoner).
+            policy: Optional role-level :class:`CompletionPolicy`. It is applied as
+                per-request overrides on the shared model instance (no new model
+                and no new HTTP client per role); ``None`` preserves the
+                provider-configured defaults exactly.
 
         Returns:
             The raw response content as a string (expected to be valid JSON).
@@ -101,6 +120,13 @@ _DEFAULT_TIMEOUT_S: int = 30
 _MAX_RETRIES: int = 1
 _BACKOFF_CAP_S: float = 60.0
 _LLM_TEMPERATURE: float = 0.2
+
+#: Tier labels accepted by ``complete(model=...)``. Both request the same
+#: provider model (DeepSeek Flash in production); the tier only selects the
+#: output constraint. ``"chat"`` = structured JSON output mode, ``"reasoner"`` =
+#: prose (the caller parses it).
+_STRUCTURED_TIER: str = "chat"
+_PROSE_TIER: str = "reasoner"
 
 
 def _compute_backoff(attempt: int) -> float:
@@ -141,20 +167,113 @@ _NON_RETRIABLE_MARKERS: tuple[str, ...] = (
 )
 
 
+#: Exception type names for which an identical retry is futile. Truncation is
+#: included: the answer hit the token cap, so re-sending the same cap truncates
+#: again (observed against real DeepSeek on 2026-09-25 and fixed by raising the
+#: thinking-mode floor in ``agents/policies.py``).
+_NON_RETRIABLE_EXCEPTIONS: frozenset[str] = frozenset({
+    "LengthFinishReasonError",
+    "ContentFilterFinishReasonError",
+})
+
+
 def _is_non_retriable(exc: Exception | None) -> bool:
     """Return True when retrying *exc* would burn budget without any chance.
 
-    Auth failures (401/403) and parameter/validation errors are permanent for
-    a given request. Provider-side 429/5xx and network errors are retriable and
-    stay with the caller's retry budget.
+    Auth failures (401/403), parameter/validation errors and **length
+    truncation** are permanent for a given request. Provider-side 429/5xx and
+    network errors are retriable and stay with the caller's retry budget.
     """
     if exc is None:
         return False
     status = getattr(exc, "status_code", None)
     if isinstance(status, int) and status in _NON_RETRIABLE_STATUSES:
         return True
+    if type(exc).__name__ in _NON_RETRIABLE_EXCEPTIONS:
+        return True
     text = str(exc).lower()
     return any(marker in text for marker in _NON_RETRIABLE_MARKERS)
+
+
+def gateway_accepts_policy(gateway: object) -> bool:
+    """Probe whether ``gateway.complete`` accepts a ``policy`` argument.
+
+    Gateways written before ``CompletionPolicy`` existed — and the test doubles
+    used across the suite — keep the three-argument signature. Callers (the
+    panel helpers) must keep working with them, so the capability is probed
+    instead of assumed: a gateway that cannot take a policy simply gets none.
+    """
+    complete = getattr(gateway, "complete", None)
+    if complete is None or not callable(complete):
+        return False
+    try:
+        parameters = inspect.signature(complete).parameters
+    except (TypeError, ValueError):  # builtins / exotic callables
+        return False
+    if "policy" in parameters:
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
+# ── Token accounting ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _TokenUsage:
+    """Provider-reported token counts (all zero when the provider omits them)."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+
+
+def _token_count(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
+def _extract_usage(message: object) -> _TokenUsage:
+    """Read token usage off a LangChain message, tolerating provider shapes.
+
+    ``usage_metadata`` is the LangChain v1 field; older/proxied providers only
+    populate ``response_metadata["token_usage"]``. Reasoning tokens arrive under
+    ``output_token_details`` (OpenAI-compatible) or ``completion_tokens_details``.
+    """
+    usage: object = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        metadata = getattr(message, "response_metadata", None)
+        usage = None
+        if isinstance(metadata, dict):
+            usage = metadata.get("token_usage") or metadata.get("usage")
+    if not isinstance(usage, dict):
+        return _TokenUsage()
+
+    input_tokens = _token_count(usage.get("input_tokens")) or _token_count(
+        usage.get("prompt_tokens")
+    )
+    output_tokens = _token_count(usage.get("output_tokens")) or _token_count(
+        usage.get("completion_tokens")
+    )
+
+    reasoning_tokens = 0
+    details = usage.get("output_token_details")
+    if isinstance(details, dict):
+        reasoning_tokens = _token_count(details.get("reasoning"))
+    if not reasoning_tokens:
+        reasoning_tokens = _token_count(usage.get("reasoning_tokens"))
+    if not reasoning_tokens:
+        completion_details = usage.get("completion_tokens_details")
+        if isinstance(completion_details, dict):
+            reasoning_tokens = _token_count(completion_details.get("reasoning_tokens"))
+    return _TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
 
 
 class LangChainGateway:
@@ -166,6 +285,8 @@ class LangChainGateway:
     Args:
         api_key: DeepSeek API key. If None, reads from ``Settings``.
         base_url: API base URL. If None, reads from ``Settings``.
+        observability: Aggregator for LLM request metadata. Defaults to the
+            process-wide aggregator; inject one to isolate a test or harness.
     """
 
     def __init__(
@@ -176,12 +297,21 @@ class LangChainGateway:
         max_retries: int | None = None,
         llm_settings: LLMSettings | None = None,
         concurrency: LLMConcurrencyGate | None = None,
+        observability: LLMObservabilityAggregator | None = None,
+        target: L1Target | None = None,
     ) -> None:
         # ``llm_settings`` is the injected LLMSettings (from ProviderRegistry).
         # Falling back to the cached application settings keeps the standalone
         # constructor working for eval scripts and tests.
         settings = llm_settings if llm_settings is not None else get_settings().llm
         explicit_base_url = base_url is not None
+        # ``target`` is the caller's *resolved* L1 endpoint (plan item 2). The
+        # production assembly passes the DeepSeek pin so a legacy ECNU URL/model
+        # still sitting in the environment cannot select the campus protocol;
+        # direct constructions without a target keep the historical inference.
+        if target is not None:
+            api_key = target.api_key if api_key is None else api_key
+            base_url = target.base_url if base_url is None else base_url
         if api_key is None:
             api_key = settings.api_key
         if base_url is None:
@@ -200,13 +330,19 @@ class LangChainGateway:
         # stays reachable. The raise happens at call time in complete().
         self._api_key = api_key or ""
         self._base_url = (base_url or "https://api.deepseek.com").rstrip("/")
-        self._model_id = settings.model or "deepseek-chat"
+        self._model_id = target.model if target is not None else (
+            settings.model or settings.deepseek_model
+        )
+        self._target = target
         # An explicitly supplied base_url decides the provider on its own: the
         # caller is targeting that endpoint regardless of what the ambient
         # settings say. Checking the model name too would let a stale
         # MINDFLOW_LLM__MODEL=ecnu-max make a test/diagnostic gateway pointed at
         # some other host speak the ECNU protocol.
-        if settings.provider.strip().lower() == "generic":
+        if target is not None:
+            # The caller resolved the endpoint for us: trust it verbatim.
+            self._is_ecnu = target.is_ecnu
+        elif settings.provider.strip().lower() == "generic":
             self._is_ecnu = False
         elif llm_settings is not None and settings.provider.strip().lower() == "ecnu":
             self._is_ecnu = settings.is_ecnu
@@ -221,15 +357,30 @@ class LangChainGateway:
         self._chat_model: BaseChatModel | None = None
         self._reasoner_model: BaseChatModel | None = None
 
-    def _get_model(self, model_id: str) -> BaseChatModel:
-        """Return a cached chat model for *model_id*.
+        # Provider label used in observability records and to pick the
+        # request-body spelling for role policies ("ecnu" | "deepseek").
+        self._provider_label = "ecnu" if self._is_ecnu else "deepseek"
+        self._observability = (
+            observability if observability is not None else default_aggregator()
+        )
 
-        On the campus gateway there is no separate reasoner model — thinking is
-        a request flag — so both tiers resolve to one :class:`ECNUChatModel`.
-        Elsewhere the previous two-tier behaviour is preserved: the ``chat``
-        tier sends ``response_format: json_object``; the ``reasoner`` tier
-        does not, because ``deepseek-reasoner`` rejects that parameter.
+    def _get_model(self, model_id: str) -> BaseChatModel:
+        """Return a cached chat model for the requested *tier*.
+
+        ``model_id`` is now a **tier label**, not a provider model id: the
+        production pin sends one model (``deepseek-flash``) for every call.
+        ``"chat"`` is the structured tier (JSON output mode, used by the panel
+        experts and the critic); ``"reasoner"`` is the prose tier (no JSON
+        constraint, used where the orchestrator parses free text itself).
+
+        On the campus gateway thinking is a request flag rather than a model, so
+        both tiers resolve to one :class:`ECNUChatModel` per JSON mode. The
+        DeepSeek endpoint behaves the same way — the tier differs only in
+        whether ``response_format`` is requested.
         """
+        wants_json = model_id == _STRUCTURED_TIER
+        provider_model = self._model_id
+
         if self._is_ecnu:
             # The campus gateway serves ONE model; thinking is a request flag,
             # not a model choice. The two tiers therefore differ only in
@@ -241,7 +392,6 @@ class LangChainGateway:
             # HTTP 200, valid JSON). The "reasoner" tier omits it so a
             # reasoning-heavy generation can return prose; the orchestrator
             # parses that path itself.
-            wants_json = model_id == "deepseek-chat"
             if wants_json:
                 if self._chat_model is None:
                     self._chat_model = self._build_ecnu_model(json_mode=True)
@@ -250,37 +400,50 @@ class LangChainGateway:
                 self._reasoner_model = self._build_ecnu_model(json_mode=False)
             return self._reasoner_model
 
-        # Tier routing for the DeepSeek-compatible endpoint.
-        if model_id == "deepseek-chat":
+        # DeepSeek direct: one model id for both tiers; JSON mode distinguishes
+        # the structured tier. ``max_tokens`` is the documented output cap
+        # (``max_completion_tokens`` is not a DeepSeek parameter).
+        if wants_json:
             if self._chat_model is None:
-                self._chat_model = ChatDeepSeek(
-                    model=model_id,
-                    api_key=SecretStr(self._api_key) if self._api_key else None,
-                    base_url=self._base_url,
-                    timeout=self._timeout_s,
-                    max_retries=0,
-                    model_kwargs={"response_format": {"type": "json_object"}},
-                    temperature=_LLM_TEMPERATURE,
-                    http_async_client=ProviderHTTPClient(
-                        self._llm_settings, self._concurrency,
-                    ),
+                self._chat_model = self._build_deepseek_model(
+                    provider_model, json_mode=True,
                 )
             return self._chat_model
-
-        # model_id == "deepseek-reasoner" (no response_format)
         if self._reasoner_model is None:
-            self._reasoner_model = ChatDeepSeek(
-                model=model_id,
-                api_key=SecretStr(self._api_key) if self._api_key else None,
-                base_url=self._base_url,
-                timeout=self._timeout_s,
-                max_retries=0,
-                temperature=_LLM_TEMPERATURE,
-                http_async_client=ProviderHTTPClient(
-                    self._llm_settings, self._concurrency,
-                ),
+            self._reasoner_model = self._build_deepseek_model(
+                provider_model, json_mode=False,
             )
         return self._reasoner_model
+
+    def _deepseek_max_tokens(self) -> int:
+        """Output cap for a DeepSeek request: the resolved target, else settings."""
+        if self._target is not None:
+            return self._target.max_output_tokens
+        return self._llm_settings.max_output_tokens
+
+    def _build_deepseek_model(self, provider_model: str, *, json_mode: bool) -> BaseChatModel:
+        """Build one DeepSeek chat model, optionally in JSON-output mode.
+
+        Uses :class:`DeepSeekThinkingModel` rather than plain ``ChatDeepSeek``:
+        DeepSeek's thinking mode requires the previous turns'
+        ``reasoning_content`` to be echoed back on any request carrying tools
+        (otherwise HTTP 400), which LangChain's converter drops.
+        """
+        return build_deepseek_model(
+            model=provider_model,
+            api_key=self._api_key,
+            base_url=self._base_url,
+            timeout_s=float(self._timeout_s),
+            max_retries=0,
+            max_tokens=self._deepseek_max_tokens(),
+            temperature=_LLM_TEMPERATURE,
+            http_async_client=ProviderHTTPClient(
+                self._llm_settings, self._concurrency,
+            ),
+            model_kwargs=(
+                {"response_format": {"type": "json_object"}} if json_mode else None
+            ),
+        )
 
     def _build_ecnu_model(self, *, json_mode: bool) -> BaseChatModel:
         """Build one ECNU model instance, optionally in JSON-output mode."""
@@ -305,6 +468,7 @@ class LangChainGateway:
         system: str,
         user: str,
         model: Literal["chat", "reasoner"] = "chat",
+        policy: CompletionPolicy | None = None,
     ) -> str:
         """Send a completion request and return the response content as raw text.
 
@@ -315,8 +479,13 @@ class LangChainGateway:
         Args:
             system: System prompt.
             user: User message.
-            model: "chat" -> deepseek-chat (with json_object mode),
-                   "reasoner" -> deepseek-reasoner (no json_object mode).
+            model: Tier label — "chat" (structured: JSON output mode) or
+                "reasoner" (prose: no JSON constraint). Both tiers request the
+                same provider model (the resolved L1 model, DeepSeek Flash in
+                production); the tier only decides the output constraint.
+            policy: Role-level completion policy, applied as *per-request*
+                overrides on the cached model instance. ``None`` sends nothing
+                extra, preserving the provider-configured defaults.
 
         Returns:
             Raw response content string.
@@ -325,55 +494,137 @@ class LangChainGateway:
             GatewayNotConfiguredError: If not configured.
             GatewayAPIError: After exhausting retries.
         """
-        model_id = "deepseek-chat" if model == "chat" else "deepseek-reasoner"
+        tier = _STRUCTURED_TIER if model == "chat" else _PROSE_TIER
         if not self._api_key:
             raise GatewayNotConfiguredError(
-                "LLM API key is not configured — set MINDFLOW_LLM__API_KEY "
-                "or add llm.api_key to the .env file"
+                "LLM API key is not configured — set DEEPSEEK_API_KEY "
+                "(or MINDFLOW_LLM__DEEPSEEK_API_KEY) to enable L1"
             )
 
-        chat = self._get_model(model_id)
+        chat = self._get_model(tier)
+        provider_model = self._model_id
         messages = [SystemMessage(content=system), HumanMessage(content=user)]
+        # Per-request policy overrides ride on the call kwargs, which
+        # langchain-openai merges into the request payload. The model instance
+        # (and its HTTP client) is reused for every role.
+        overrides: dict[str, Any] = (
+            policy.request_overrides(provider=self._provider_label)
+            if policy is not None else {}
+        )
         started_at = time.perf_counter()
 
         # Retry only transient failures. A 401/403 or a bad-parameter 4xx cannot
         # succeed on a second identical attempt and would just burn budget.
         non_retriable = _is_non_retriable(exc=None)
+        last_attempts: list[HTTPAttemptMetrics] = []
+        retries_used = 0
+        failure_reason = "exhausted"
 
         for attempt in range(self._max_retries + 1):
+            attempt_metrics: list[HTTPAttemptMetrics] = []
+            retries_used = attempt
             try:
-                result = await chat.ainvoke(messages)
+                with collect_http_attempts() as attempt_metrics:
+                    result = await chat.ainvoke(messages, **overrides)
                 logger.debug(
-                    "LangChain gateway complete model={} latency_ms={:.1f}",
-                    model_id, (time.perf_counter() - started_at) * 1000.0,
+                    "LangChain gateway complete tier={} model={} latency_ms={:.1f}",
+                    tier, provider_model, (time.perf_counter() - started_at) * 1000.0,
                 )
             except Exception as exc:
+                last_attempts = attempt_metrics
                 non_retriable = _is_non_retriable(exc)
                 logger.warning(
                     "LangChain gateway error (attempt {}, retriable={}): {}",
                     attempt + 1, not non_retriable, safe_error_metadata(exc),
                 )
                 if non_retriable:
+                    failure_reason = "non_retriable_error"
                     break
                 if attempt < self._max_retries:
                     await asyncio.sleep(_compute_backoff(attempt))
-                continue
+                    continue
+                break
 
             raw_content = result.content
             content: str = raw_content if isinstance(raw_content, str) else ""
             if not content:
+                last_attempts = attempt_metrics
                 logger.warning("LangChain gateway returned empty content")
+                failure_reason = "empty_content"
                 if attempt < self._max_retries:
                     await asyncio.sleep(_compute_backoff(attempt))
                 continue
 
+            self._record_request(
+                model_id=provider_model,
+                policy=policy,
+                attempts=attempt_metrics,
+                retry_count=attempt,
+                total_latency_ms=(time.perf_counter() - started_at) * 1000.0,
+                ok=True,
+                usage=_extract_usage(result),
+            )
             return content
 
         # All retries exhausted (or a non-retriable error stopped the loop)
+        self._record_request(
+            model_id=provider_model,
+            policy=policy,
+            attempts=last_attempts,
+            retry_count=retries_used,
+            total_latency_ms=(time.perf_counter() - started_at) * 1000.0,
+            ok=False,
+            fallback_reason=failure_reason,
+        )
         raise GatewayAPIError(
-            f"LangChain gateway failed after {attempt + 1} attempt(s)"
+            f"LangChain gateway failed after {retries_used + 1} attempt(s)"
             + (" (non-retriable error)" if non_retriable else "")
         ) from None
+
+    # ── Observability (phase 2.5) ─────────────────────────────────────────
+
+    def _record_request(
+        self,
+        *,
+        model_id: str,
+        policy: CompletionPolicy | None,
+        attempts: Sequence[HTTPAttemptMetrics],
+        retry_count: int,
+        total_latency_ms: float,
+        ok: bool,
+        fallback_reason: str = "",
+        usage: _TokenUsage | None = None,
+    ) -> None:
+        """Emit one aggregated metadata record for a logical LLM request.
+
+        Aggregated only: latency, token counts, status class, retry count and
+        sanitized categories. Prompts, completions, headers and keys never reach
+        this path — :class:`LLMRequestRecord` has no field that could hold them.
+        """
+        graph, node, role = current_llm_labels()
+        if policy is not None:
+            role = role or policy.role
+            node = node or policy.node
+        queue_ms, http_ms, status, error_category = summarise_attempts(attempts)
+        token_usage = usage if usage is not None else _TokenUsage()
+        self._observability.record(LLMRequestRecord(
+            graph=graph,
+            node=node,
+            role=role,
+            provider=self._provider_label,
+            model=model_id,
+            queue_latency_ms=queue_ms,
+            http_latency_ms=http_ms,
+            total_latency_ms=total_latency_ms,
+            input_tokens=token_usage.input_tokens,
+            output_tokens=token_usage.output_tokens,
+            reasoning_tokens=token_usage.reasoning_tokens,
+            retry_count=retry_count,
+            http_status_class=status,
+            error_category=error_category,
+            fallback_reason=fallback_reason,
+            ok=ok,
+        ))
 
     async def close(self) -> None:
         """Release the httpx connection pools held by the ChatDeepSeek models.

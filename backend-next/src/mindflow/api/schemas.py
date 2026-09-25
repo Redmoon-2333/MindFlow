@@ -263,6 +263,20 @@ class TrainingJobResponse(BaseModel):
     quality_gate: dict[str, Any] | None = None
     evaluation: dict[str, Any] | None = None
     error: str | None = None
+    # Whether this job was allowed to move the active-model pointer. Automatic
+    # (scheduler-driven) training is shadow-only, so its jobs report ``False``;
+    # a suppressed job can never reach ``model_mode == "ready"``. Defaults to
+    # ``True`` for backward compatibility with older payloads and historical
+    # persisted rows (the flag is deliberately not stored in the DB).
+    allow_activation: bool = True
+    # Publication-guard evidence (plan item 1). ``publication`` carries the
+    # selected/deployed candidate and the block reason; the three scalar fields
+    # mirror it for clients that render flat values. All default to ``None``, so
+    # older payloads and recovered historical rows stay valid.
+    publication: dict[str, Any] | None = None
+    evaluation_candidate: str | None = None
+    deployed_classifier: str | None = None
+    activation_blocked_reason: str | None = None
 
 
 class CreateTrainingJobResponse(BaseModel):

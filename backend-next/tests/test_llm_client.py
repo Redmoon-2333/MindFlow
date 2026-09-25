@@ -35,7 +35,18 @@ def _no_ssl_cert_file_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _make_settings(api_key: str = "test-key") -> LLMSettings:
-    return LLMSettings(api_key=api_key, base_url="https://test.api.example.com", model="test-model")
+    """Explicit settings for this suite: the configured triple, opted into.
+
+    ``ecnu_compat_enabled`` pins "use the endpoint/model/key configured here"
+    rather than resolving the production DeepSeek target, so the client's own
+    URL, timeout and retry contract stays exactly what these tests assert.
+    """
+    return LLMSettings(
+        api_key=api_key,
+        base_url="https://test.api.example.com",
+        model="test-model",
+        ecnu_compat_enabled=True,
+    )
 
 
 def _mock_openai_response(content: str, model: str = "test-model") -> httpx.Response:

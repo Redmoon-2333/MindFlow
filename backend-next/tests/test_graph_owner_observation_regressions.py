@@ -229,7 +229,13 @@ async def test_real_builder_tool_and_chat_require_observations(
         payload = json.loads(await tool.ainvoke({}))
     finally:
         adapter.reset_context(token)
-    assert payload["evidence"], "Empty windows really do contain placeholder metrics"
+    # Empty windows still report placeholder metrics rather than nothing. Under
+    # the compressed payload (phase 2.4) stable placeholders are summarised in
+    # ``stable_summary`` instead of being enumerated row by row, so either
+    # representation counts as "the window was really observed".
+    assert payload["evidence"] or payload.get("stable_summary", {}).get("metrics"), (
+        "Empty windows really do contain placeholder metrics"
+    )
     assert (payload["behavior_summary"]["duration_min"] > 0) is has_activity
 
     model = MagicMock()

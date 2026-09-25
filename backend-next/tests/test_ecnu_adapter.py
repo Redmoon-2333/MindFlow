@@ -27,6 +27,26 @@ from mindflow.infrastructure.llm.ecnu import (
 ECNU_URL = "https://chat.ecnu.edu.cn/open/api/v1"
 
 
+def _settings(**overrides: object) -> LLMSettings:
+    """ECNU-shaped settings that opt into the legacy campus triple.
+
+    ``ecnu_compat_enabled`` is what makes :meth:`LLMSettings.l1_target` honour
+    this endpoint and model instead of the production DeepSeek pin;
+    ``reasoning_effort="max"`` is the gateway's own default tier (the
+    application default is now DeepSeek's ``"high"``).
+    """
+    defaults: dict[str, object] = {
+        "api_key": "test-key",
+        "base_url": ECNU_URL,
+        "model": "ecnu-max",
+        "provider": "ecnu",
+        "ecnu_compat_enabled": True,
+        "reasoning_effort": "max",
+    }
+    defaults.update(overrides)
+    return LLMSettings(**defaults)  # type: ignore[arg-type]
+
+
 def _model(**overrides: object) -> ECNUChatModel:
     kwargs: dict[str, object] = {
         "model": "ecnu-max",
@@ -184,27 +204,30 @@ async def test_concurrency_gate_allows_parallel_when_raised() -> None:
 
 
 def test_gateway_json_mode_routes_per_tier() -> None:
-    """The gateway's chat tier must request JSON; the reasoner tier must not.
+    """The gateway's structured tier must request JSON; the prose tier must not.
 
     The panel parses a JSON object from every expert, so losing JSON mode on
     the ECNU path silently broke the panel (observed live: a valid-looking
     response that the orchestrator could not parse). The two tiers also need
     separate model instances — a shared cache would let whichever tier was
     called first fix response_format for all later calls.
+
+    ``"chat"``/``"reasoner"`` are tier labels, not model ids: both tiers request
+    the resolved model and differ only in the output constraint.
     """
     from langchain_core.messages import HumanMessage
 
     from mindflow.agents.llm_gateway import LangChainGateway
 
-    settings = LLMSettings(
-        base_url=ECNU_URL, model="ecnu-max", api_key="k", provider="ecnu",
-    )
-    gateway = LangChainGateway(api_key="k", base_url=ECNU_URL, llm_settings=settings)
+    gateway = LangChainGateway(api_key="k", base_url=ECNU_URL, llm_settings=_settings())
 
-    chat = gateway._get_model("deepseek-chat")
-    reasoner = gateway._get_model("deepseek-reasoner")
+    chat = gateway._get_model("chat")
+    reasoner = gateway._get_model("reasoner")
 
     assert chat is not reasoner, "tiers must not share one cached instance"
+    # One model for both tiers — the resolved one (the campus gateway serves a
+    # single model; thinking is a request flag, not a model choice).
+    assert chat.model_name == reasoner.model_name == "ecnu-max"
     chat_payload = chat._get_request_payload([HumanMessage(content="x")])
     reasoner_payload = reasoner._get_request_payload([HumanMessage(content="x")])
     assert chat_payload["response_format"] == {"type": "json_object"}
@@ -213,6 +236,7 @@ def test_gateway_json_mode_routes_per_tier() -> None:
     assert chat_payload["extra_body"]["thinking"] == {"type": "enabled"}
     assert reasoner_payload["extra_body"]["thinking"] == {"type": "enabled"}
     assert chat_payload["reasoning_effort"] == "max"
+    assert reasoner_payload["reasoning_effort"] == "max"
 
 
 def test_explicit_base_url_overrides_ambient_ecnu_settings() -> None:

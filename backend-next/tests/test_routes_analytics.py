@@ -20,7 +20,7 @@ from mindflow.api.errors import register_exception_handlers
 from mindflow.api.routes.analytics import router as analytics_router
 from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.events import make_event
-from mindflow.domain.feature_schema import V2_FEATURE_NAMES
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
     activity_events,
@@ -256,7 +256,7 @@ def test_model_status_prefers_ready_v2_model() -> None:
     data = TestClient(app).get("/api/v1/analytics/model-status").json()
 
     assert data["mode"] == "ready"
-    assert data["feature_schema_version"] == 3
+    assert data["feature_schema_version"] == FEATURE_SCHEMA_VERSION
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
