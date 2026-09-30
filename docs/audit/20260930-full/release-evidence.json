@@ -1,6 +1,6 @@
 {
   "date": "2026-09-30",
-  "scope": "Local UI/API workflows and explicitly synthetic offline ML demo",
+  "scope": "Local UI/API workflows, explicitly synthetic offline ML demo, and a limited authorised live LLM supplement",
   "backend": {
     "passed": 3156,
     "skipped": 0,
@@ -63,8 +63,85 @@
     "websocket_connected": true,
     "physical_second_computer_tested": false
   },
+  "live_llm": {
+    "date": "2026-09-30",
+    "source_revision": "9923978b4dc2d854c083d3b8996d533223c921b2",
+    "authorised": true,
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "base_url_host": "api.deepseek.com",
+    "thinking_enabled": true,
+    "scenario_count": 1,
+    "repeat": 1,
+    "request_limit": 16,
+    "smoke_requests": 10,
+    "http_chat_requests": 1,
+    "total_requests": 11,
+    "http_200_responses": 11,
+    "retry_count": 0,
+    "failed_calls": 0,
+    "degraded_paths": 0,
+    "targets": {
+      "panel": {
+        "verdict": "PASS",
+        "requests": 6,
+        "schema_attempts": 6,
+        "schema_passes": 6,
+        "text_citations_detected": 0,
+        "text_citations_valid": 0
+      },
+      "chat": {
+        "verdict": "PASS",
+        "requests": 1
+      },
+      "tools": {
+        "verdict": "PASS",
+        "requests": 2,
+        "tool_calls": 1
+      },
+      "attribution": {
+        "verdict": "PASS",
+        "requests": 1,
+        "schema_attempts": 1,
+        "schema_passes": 1
+      }
+    },
+    "http_chat": {
+      "passed": true,
+      "interface": "FastAPI TestClient / ASGI HTTP with production ChatService and ChatGraph",
+      "cookie_authenticated": true,
+      "ticket_status": 200,
+      "exchange_status": 204,
+      "chat_status": 200,
+      "response_schema_valid": true,
+      "degraded": false,
+      "history_messages": 2
+    },
+    "provider_usage": {
+      "input_tokens": 12856,
+      "output_tokens": 9068,
+      "reasoning_tokens": 5389,
+      "reasoning_included_in_output": true
+    },
+    "privacy": {
+      "synthetic_inputs_only": true,
+      "data_isolated": true,
+      "production_files_modified": false,
+      "credentials_committed": false,
+      "raw_experiment_artifacts_committed": false,
+      "demo_permanently_switched_online": false
+    },
+    "observations": [
+      "No-history/no-evidence smoke chat inferred a past behaviour pattern; not a located production HTTP defect",
+      "Panel text-citation detection was 0/0; non-empty citations were not verified"
+    ],
+    "report": "live-llm.md"
+  },
   "not_certified": [
-    "Paid live LLM inference; zero real LLM calls in this run",
+    "All generated content and its factual or evidence grounding",
+    "Non-empty panel text citations",
+    "Multi-scenario repeated live LLM evaluation or long-term stability",
+    "All browser interactions with the live LLM",
     "Personal model prediction quality",
     "Strict reference pixel identity",
     "Native OS notification visual delivery",
