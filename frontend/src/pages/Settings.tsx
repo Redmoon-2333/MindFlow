@@ -483,8 +483,8 @@ export default function Settings() {
           </label>
         </div>
         <div className="form-row mt16" style={{ alignItems: "end" }}>
-          <div className="form-group"><label>输入桶保留天数</label><select value={telemetry?.preferences.interaction_retention_days ?? 7} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ interaction_retention_days: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
-          <div className="form-group"><label>活动与浏览器片段保留天数</label><select value={telemetry?.preferences.activity_retention_days ?? 30} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ activity_retention_days: Number(event.target.value) })}>{[7, 14, 30, 60, 90].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
+          <div className="form-group"><label>输入桶保留天数</label><select aria-label="输入桶保留天数" value={telemetry?.preferences.interaction_retention_days ?? 7} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ interaction_retention_days: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
+          <div className="form-group"><label>活动与浏览器片段保留天数</label><select aria-label="活动与浏览器片段保留天数" value={telemetry?.preferences.activity_retention_days ?? 30} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ activity_retention_days: Number(event.target.value) })}>{[7, 14, 30, 60, 90].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
           <button className="btn btn-primary" disabled={loading || telemetryLoading} onClick={handleCreatePairingCode}>生成浏览器配对码</button>
         </div>
         {pairingCode && <div style={{ marginTop: 16, padding: 16, borderRadius: 10, background: "var(--color-bg-secondary)" }}><div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>在扩展设置页输入，5 分钟内有效</div><div style={{ fontSize: 30, fontWeight: 700, letterSpacing: 8, marginTop: 6 }}>{pairingCode.code}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>到期：{formatTelemetryTime(pairingCode.expires_at)}</div></div>}
@@ -553,6 +553,7 @@ export default function Settings() {
                 type="number"
                 min={1}
                 max={72}
+                aria-label="暂停自主干预小时数"
                 value={pauseHours}
                 onChange={(e) => setPauseHours(Number(e.target.value))}
                 disabled={loading || autonomyLoading}
@@ -601,15 +602,18 @@ export default function Settings() {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 140px 80px auto", gap: 8, marginBottom: 12 }}>
           <input
             placeholder="进程名"
+            aria-label="进程名"
             value={newRule.process_name}
             onChange={(e) => setNewRule((r) => ({ ...r, process_name: e.target.value }))}
           />
           <input
             placeholder="窗口标题模式"
+            aria-label="窗口标题模式"
             value={newRule.window_title_pattern ?? ""}
             onChange={(e) => setNewRule((r) => ({ ...r, window_title_pattern: e.target.value }))}
           />
           <select
+            aria-label="分类"
             value={newRule.category}
             onChange={(e) => setNewRule((r) => ({ ...r, category: e.target.value as ClassificationRuleInput["category"] }))}
           >
@@ -627,6 +631,7 @@ export default function Settings() {
           <input
             type="number"
             placeholder="优先级"
+            aria-label="分类优先级"
             value={newRule.priority}
             onChange={(e) => setNewRule((r) => ({ ...r, priority: Number(e.target.value) }))}
           />
@@ -685,18 +690,18 @@ export default function Settings() {
         <div className="flex gap16" style={{ alignItems: "flex-end", flexWrap: "wrap" }}>
           <div style={{ minWidth: 100 }}>
             <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 4 }}>格式</div>
-            <select value={exportFmt} onChange={(e) => setExportFmt(e.target.value as "csv" | "json")}>
+            <select aria-label="导出格式" value={exportFmt} onChange={(e) => setExportFmt(e.target.value as "csv" | "json")}>
               <option value="csv">CSV</option>
               <option value="json">JSON</option>
             </select>
           </div>
           <div>
             <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 4 }}>开始日期</div>
-            <input type="date" value={exportStart} onChange={(e) => setExportStart(e.target.value)} />
+            <input type="date" aria-label="导出开始日期" value={exportStart} onChange={(e) => setExportStart(e.target.value)} />
           </div>
           <div>
             <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 4 }}>结束日期</div>
-            <input type="date" value={exportEnd} onChange={(e) => setExportEnd(e.target.value)} />
+            <input type="date" aria-label="导出结束日期" value={exportEnd} onChange={(e) => setExportEnd(e.target.value)} />
           </div>
           <button className="btn" onClick={handleExport} disabled={exporting}>
             {exporting ? "导出中..." : "导出"}
@@ -708,6 +713,7 @@ export default function Settings() {
       <div className="card mb24">
         <h3>偏好设置</h3>
         <textarea
+          aria-label="偏好设置 JSON"
           value={preferences}
           onChange={(e) => setPreferences(e.target.value)}
           rows={12}

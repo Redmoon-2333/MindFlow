@@ -41,6 +41,34 @@ _MERGEABLE_EVENT_TYPES: frozenset[str] = frozenset({"window_snapshot", "idle_cha
 # on large ranges (e.g. multi-week exports) without changing the return value.
 _QUERY_PAGE_SIZE: int = 5000
 
+# Text-search target columns: the three fields the activity log exposes.
+_SEARCH_COLUMNS: tuple[sa.ColumnElement[str], ...] = (
+    activity_events.c.app_name,
+    activity_events.c.process_name,
+    activity_events.c.window_title,
+)
+
+
+def _search_clause(search: str | None) -> sa.ColumnElement[bool] | None:
+    """Build a case-insensitive containment filter for activity search.
+
+    Empty/whitespace queries return ``None`` so callers keep the original
+    unfiltered behaviour. Values are bound as SQL parameters and LIKE
+    wildcards in the input are escaped, so user text can never alter the
+    query structure.
+    """
+    term = (search or "").strip()
+    if not term:
+        return None
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    return sa.or_(
+        *[
+            sa.func.lower(column).like(sa.func.lower(pattern), escape="\\")
+            for column in _SEARCH_COLUMNS
+        ]
+    )
+
 # ── Repository ────────────────────────────────────────────────────────
 
 
@@ -118,17 +146,27 @@ class SQLAlchemyActivityRepository:
         offset: int | None = None,
         descending: bool = False,
         cursor: tuple[str, str] | None = None,
+        search: str | None = None,
     ) -> list[ActivityEvent]:
         """Return events for *user_id* in [*start*, *end*], ordered by time.
 
         Paginated reads use one SQL query.  A ``cursor`` applies keyset
         pagination on ``(timestamp, id)`` and takes precedence over OFFSET.
         Full-range reads consume bounded keyset chunks internally.
+
+        ``search`` filters case-insensitively on app name, process name and
+        window title using bound parameters (never string interpolation).
         """
         start_iso = start.isoformat()
         end_iso = end.isoformat()
+        search_clause = _search_clause(search)
 
-        if limit is not None or offset is not None or cursor is not None:
+        if (
+            search_clause is not None
+            or limit is not None
+            or offset is not None
+            or cursor is not None
+        ):
             return await self._query_range_paginated(
                 user_id,
                 start_iso,
@@ -137,6 +175,7 @@ class SQLAlchemyActivityRepository:
                 offset=offset,
                 descending=descending,
                 cursor=cursor,
+                search_clause=search_clause,
             )
 
         events: list[ActivityEvent] = []
@@ -154,6 +193,7 @@ class SQLAlchemyActivityRepository:
         offset: int | None,
         descending: bool,
         cursor: tuple[str, str] | None,
+        search_clause: sa.ColumnElement[bool] | None = None,
     ) -> list[ActivityEvent]:
         """Single-query OFFSET/LIMIT or keyset fetch for paginated reads."""
         order = (
@@ -169,6 +209,8 @@ class SQLAlchemyActivityRepository:
             activity_events.c.timestamp >= start_iso,
             activity_events.c.timestamp <= end_iso,
         )
+        if search_clause is not None:
+            stmt = stmt.where(search_clause)
         if cursor is not None:
             cursor_value = sa.tuple_(cursor[0], cursor[1])  # type: ignore[arg-type]
             row_value = sa.tuple_(activity_events.c.timestamp, activity_events.c.id)
@@ -268,6 +310,8 @@ class SQLAlchemyActivityRepository:
         user_id: int,
         start: datetime,
         end: datetime,
+        *,
+        search: str | None = None,
     ) -> int:
         """Return the total number of events for *user_id* in [*start*, *end*].
 
@@ -275,6 +319,8 @@ class SQLAlchemyActivityRepository:
             user_id: User identifier.
             start: Inclusive start of the time range (timezone-aware UTC).
             end: Inclusive end of the time range (timezone-aware UTC).
+            search: Optional text filter; must match :meth:`query_range` so
+                pagination totals describe the same result set.
 
         Returns:
             The count of matching events.
@@ -287,6 +333,9 @@ class SQLAlchemyActivityRepository:
             activity_events.c.timestamp >= start_iso,
             activity_events.c.timestamp <= end_iso,
         )
+        search_clause = _search_clause(search)
+        if search_clause is not None:
+            stmt = stmt.where(search_clause)
 
         async with self._session_factory() as session:
             result = await session.execute(stmt)

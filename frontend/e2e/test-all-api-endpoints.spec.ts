@@ -4,30 +4,16 @@
  */
 
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { initSharedSession, sessionValue, ticketHeaders } from "./session";
 
-const BASE = "http://127.0.0.1:8765";
 const FRONTEND = "http://127.0.0.1:4173";
-// Real bootstrap root token must NOT be committed (audit report — hardcoded
-// token in E2E). Read it from the environment; tests skip with a clear message
-// when it is absent (CI / other machines without the token).
-const AUTH_TOKEN = process.env.MINDFLOW_TEST_TOKEN ?? "";
 
 // ── Shared auth helpers ──
 let _sharedCookie = "";
 
-async function initSharedSession(request: APIRequestContext) {
-  const ticketRes = await request.post(`${BASE}/api/v1/auth/bootstrap/ticket`, {
-    headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
-  });
-  expect(ticketRes.ok()).toBeTruthy();
-  const { ticket } = await ticketRes.json();
-  const bootstrapRes = await request.post(`${BASE}/api/v1/auth/bootstrap`, { data: { ticket } });
-  expect(bootstrapRes.ok()).toBeTruthy();
-  const cookies = bootstrapRes.headersArray();
-  const raw = cookies.find((h) => h.value?.includes("mindflow_session="));
-  const cookieVal = raw?.value ?? "";
-  const m = cookieVal.match(/(mindflow_session=[^;]+)/);
-  _sharedCookie = m?.[1] ?? "";
+/** Acquire one session for the whole suite (429-tolerant, see ./session). */
+async function initSuiteSession(request: APIRequestContext) {
+  _sharedCookie = await initSharedSession(request);
   return _sharedCookie;
 }
 
@@ -36,8 +22,7 @@ function H(): Record<string, string> {
 }
 
 function extractSessionValue(): string {
-  const m = _sharedCookie.match(/mindflow_session=([^;]+)/);
-  return m?.[1] ?? "";
+  return sessionValue(_sharedCookie);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -46,7 +31,7 @@ function extractSessionValue(): string {
 
 test.describe("API Endpoints", () => {
   test.beforeAll(async ({ request }) => {
-    await initSharedSession(request);
+    await initSuiteSession(request);
   });
 
   // ── Health ──
@@ -71,7 +56,7 @@ test.describe("API Endpoints", () => {
   // ── Auth ──
   test("POST /api/v1/auth/bootstrap/ticket", async ({ request }) => {
     const res = await request.post(`${FRONTEND}/api/v1/auth/bootstrap/ticket`, {
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      headers: ticketHeaders(),
     });
     expect(res.ok()).toBeTruthy();
     const d = await res.json();
@@ -79,7 +64,7 @@ test.describe("API Endpoints", () => {
   });
   test("POST /api/v1/auth/bootstrap with valid ticket", async ({ request }) => {
     const tRes = await request.post(`${FRONTEND}/api/v1/auth/bootstrap/ticket`, {
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      headers: ticketHeaders(),
     });
     const { ticket } = await tRes.json();
     const res = await request.post(`${FRONTEND}/api/v1/auth/bootstrap`, { data: { ticket } });
@@ -335,7 +320,13 @@ test.describe("API Endpoints", () => {
     const res = await request.get(`${FRONTEND}/api/v1/telemetry/focus-prediction`, { headers: H() });
     expect(res.ok()).toBeTruthy();
     const d = await res.json();
-    expect(d.prediction != null || d.focus_probability != null || d.status === "no_data").toBeTruthy();
+    // The domain exposes six operational statuses; a fresh/isolated database
+    // legitimately answers no_model with a null probability, so accept any of
+    // them rather than only `no_data`.
+    const STATUSES = ["ready", "no_model", "no_data", "stale", "schema_mismatch", "inference_error"];
+    expect(STATUSES).toContain(d.status);
+    expect(d).toHaveProperty("focus_probability");
+    expect(d).toHaveProperty("status");
     // The typed response intentionally exposes the stable four-field contract;
     // model metadata is available from the health/model-status endpoints.
     expect(d).toHaveProperty("mode");
@@ -358,7 +349,7 @@ test.describe("API Endpoints", () => {
 
 test.describe("Frontend Pages", () => {
   test.beforeAll(async ({ request }) => {
-    await initSharedSession(request);
+    await initSuiteSession(request);
   });
 
   async function setupBrowserAuth(page: Page) {
@@ -390,22 +381,22 @@ test.describe("Frontend Pages", () => {
     test(`Page ${p.title} (${p.path}) loads`, async ({ page }) => {
       await setupBrowserAuth(page);
       await page.goto(`${FRONTEND}${p.path}`, { waitUntil: "networkidle", timeout: 15000 });
-      await expect(page.locator("h1")).toContainText(p.title, { timeout: 10000 });
+      // The shell owns the page title (reference design: 20px top-bar heading).
+      await expect(page.locator(".mf-header-name")).toHaveText(p.title, { timeout: 10000 });
     });
   }
 
-  test("Dashboard shows KPI cards", async ({ page }) => {
+  test("Dashboard shows status and metric rows", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/`, { waitUntil: "networkidle" });
-    await expect(page.locator(".stat-card").first()).toBeVisible({ timeout: 10000 });
-    await expect(page.locator(".stat-card")).toHaveCount(4, { timeout: 10000 });
+    await expect(page.locator(".d-state-item")).toHaveCount(4, { timeout: 10000 });
+    await expect(page.locator(".d-statistic-item")).toHaveCount(4, { timeout: 10000 });
   });
 
-  test("Analytics shows 4 tabs", async ({ page }) => {
+  test("Analytics shows its three sections", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/analytics`, { waitUntil: "networkidle" });
-    await expect(page.locator(".tab").first()).toBeVisible();
-    await expect(page.locator(".tab")).toHaveCount(4);
+    await expect(page.locator(".analytics .title")).toHaveCount(3, { timeout: 10000 });
   });
 
   test("Settings shows all sections", async ({ page }) => {
@@ -443,21 +434,26 @@ test.describe("Frontend Pages", () => {
       { text: "专家面板", path: "/panel" },
       { text: "AI 对话", path: "/chat" },
       { text: "系统设置", path: "/settings" },
-      { text: "AI 诊断", path: "/diagnostics" },
       { text: "仪表盘", path: "/" },
     ];
     for (const nav of navLinks) {
-      await page.click(`.sidebar nav a:text("${nav.text}")`);
+      await page.locator(".mf-nav-item", { hasText: nav.text }).first().click();
       await page.waitForURL(`**${nav.path}`);
-      await expect(page.locator("h1")).toBeVisible({ timeout: 5000 });
+      await expect(page.locator(".mf-header-name")).toBeVisible({ timeout: 5000 });
     }
+    // AI 诊断 lives behind the advanced entry — open the group first.
+    await page.locator(".mf-nav-group-toggle").click();
+    await page.locator("#advanced-nav .mf-nav-item", { hasText: "AI 诊断" }).click();
+    await page.waitForURL("**/diagnostics");
+    await expect(page.locator(".mf-header-name")).toHaveText("AI 诊断", { timeout: 5000 });
   });
 
   test("Collector toggle from Dashboard", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/`, { waitUntil: "networkidle" });
-    await expect(page.locator("text=采集器状态")).toBeVisible({ timeout: 10000 });
-    const toggleBtn = page.locator("button").filter({ hasText: /停止采集|启动采集/ }).first();
+    await expect(page.locator(".d-state-item", { hasText: "采集器" })).toBeVisible({ timeout: 10000 });
+    // The floating switch is the reference's collector control.
+    const toggleBtn = page.locator(".d-switch");
     await expect(toggleBtn).toBeVisible({ timeout: 10000 });
     const originalText = await toggleBtn.textContent();
     await toggleBtn.click();

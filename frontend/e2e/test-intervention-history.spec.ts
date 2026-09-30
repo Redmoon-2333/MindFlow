@@ -8,6 +8,10 @@
 
 import { test, expect, type Page } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.routeWebSocket("**/api/v1/ws", () => {});
+});
+
 // ── Shared page setup ──
 
 async function setupPage(page: Page) {

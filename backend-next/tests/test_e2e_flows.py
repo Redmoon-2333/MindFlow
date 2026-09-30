@@ -784,6 +784,14 @@ class TestAutoInterventionE2E:
 _LIVE_BASE_URL = os.environ.get("MINDFLOW_E2E_BASE_URL", "http://127.0.0.1:8765").rstrip("/")
 
 
+@pytest.mark.live_server
+@pytest.mark.skipif(
+    not (
+        os.environ.get("MINDFLOW_E2E_BASE_URL")
+        and os.environ.get("MINDFLOW_E2E_TOKEN_FILE")
+    ),
+    reason="Live smoke tests require an explicit isolated URL and token file",
+)
 class TestHealthIntegrationE2E:
     def test_health_live_against_running_server(self) -> None:
         """If the backend is running, live endpoint should return alive."""

@@ -17,7 +17,7 @@ async def request_bootstrap_url(settings: Settings) -> str:
     # while explicit IPv6 binds use the bracketed loopback literal.
     host = "[::1]" if settings.host in {"::", "::1", "[::1]"} else "127.0.0.1"
     base_url = f"http://{host}:{settings.port}"
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
         response = await client.post(
             f"{base_url}/api/v1/auth/bootstrap/ticket",
             headers={"Authorization": f"Bearer {token}"},

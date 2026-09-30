@@ -1,0 +1,73 @@
+{
+  "date": "2026-09-30",
+  "scope": "Local UI/API workflows and explicitly synthetic offline ML demo",
+  "backend": {
+    "passed": 3156,
+    "skipped": 0,
+    "warnings": 20,
+    "seconds": 553.94,
+    "ruff": "passed",
+    "strict_mypy_files": 190
+  },
+  "frontend": {
+    "build": "passed",
+    "lint_errors": 0,
+    "existing_lint_warnings": 17,
+    "contract_groups_passed": 11,
+    "browser_tests_passed": 219,
+    "browser_retries": 0,
+    "responsive_checks_passed": 75,
+    "api_matrix_passed": 70,
+    "api_matrix_failed": 0,
+    "api_matrix_skipped": 6,
+    "isolated_lifecycle_groups_passed": 9,
+    "publication_guard_paths_passed": ["A", "B", "C"]
+  },
+  "dependency_audits": {
+    "npm_vulnerabilities": 0,
+    "python_vulnerabilities": 0
+  },
+  "personal_model": {
+    "version": "20260827_182610_841df8",
+    "copy_load_succeeded": false,
+    "saved_sklearn": "1.6.1",
+    "current_sklearn": "1.9.0",
+    "production_files_modified": false
+  },
+  "published_demo": {
+    "version": "demo_v4",
+    "source": "synthetic_v2",
+    "users": 6,
+    "days_per_user": 14,
+    "seed": 42,
+    "feature_schema_version": 4,
+    "feature_count": 28,
+    "artifact_bytes": 5159685,
+    "manifest_sha256": "ae66ae8b19669e98b342cb35de8e1519d8382bc65450db8531e371a9de904199",
+    "loaded": true,
+    "personal_model_ready": false,
+    "mode": "shadow",
+    "demo_only": true,
+    "signing": "Fresh machine-local HMAC key; regular verification retained"
+  },
+  "clean_environment": {
+    "python": "3.12.12",
+    "dependency_installation": "completed",
+    "demo_auth_regressions_passed": 23,
+    "demo_auth_regression_seconds": 37.79,
+    "documented_direct_cli": "passed without PYTHONPATH",
+    "viewports": [1440, 390],
+    "api_probability": 0.896373,
+    "ui_display": "89.6%",
+    "cookie_authentication": "passed",
+    "websocket_connected": true,
+    "physical_second_computer_tested": false
+  },
+  "not_certified": [
+    "Paid live LLM inference; zero real LLM calls in this run",
+    "Personal model prediction quality",
+    "Strict reference pixel identity",
+    "Native OS notification visual delivery",
+    "Other physical computers or operating systems"
+  ]
+}

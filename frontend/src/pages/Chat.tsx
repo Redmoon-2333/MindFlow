@@ -140,6 +140,7 @@ export default function Chat() {
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (e: unknown) {
+      if (targetGen !== conversationGenRef.current) return;
       if (targetSessionId !== activeSessionIdRef.current) return;
       setError(getErrorMessage(e, "Request failed"));
     } finally {
@@ -171,13 +172,11 @@ export default function Chat() {
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 16, height: "calc(100vh - 180px)", minHeight: 500 }}>
+      <div className="chat-layout">
         {/* Session Sidebar */}
         <div
-          className="card"
+          className="card chat-sessions"
           style={{
-            width: 200,
-            flexShrink: 0,
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
@@ -198,14 +197,19 @@ export default function Chat() {
           {!sessionsLoading && sessions.length > 0 && (
             <div style={{ flex: 1, overflowY: "auto" }}>
               {sessions.map((s) => (
-                <div
+                <button
+                  type="button"
                   key={s.session_id}
+                  aria-pressed={activeSessionId === s.session_id}
                   onClick={() => handleSelectSession(s.session_id)}
                   style={{
                     padding: "10px 12px",
                     cursor: "pointer",
                     borderRadius: 8,
                     fontSize: 13,
+                    width: "100%",
+                    textAlign: "left",
+                    border: "none",
                     marginBottom: 4,
                     background:
                       activeSessionId === s.session_id
@@ -229,14 +233,14 @@ export default function Chat() {
                   }}
                 >
                   {`会话 ${s.session_id.slice(0, 8)}`}
-                </div>
+                </button>
               ))}
             </div>
           )}
         </div>
 
         {/* Chat Main Area */}
-        <div className="card" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div className="card chat-main" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {/* Message List */}
           <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
             {messagesLoading && <div className="spinner" />}
@@ -307,6 +311,7 @@ export default function Chat() {
           >
             <textarea
               ref={textareaRef}
+              aria-label="消息输入"
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);

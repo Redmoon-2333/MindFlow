@@ -1,5 +1,7 @@
 import { useState } from "react";
+import ParticleText from "../components/ParticleText";
 import { AUTH_MARKER, AUTH_REQUIRED_EVENT } from "../api";
+import "./login.css";
 
 const DEV_LOGIN_TIMEOUT_MS = 10_000;
 
@@ -57,7 +59,7 @@ export default function Login({ bootstrapError = null, onClearBootstrapError }: 
       if (!bootstrapRes.ok) {
         throw new Error(
           bootstrapRes.status === 401
-            ? "认证失败 (401)：票据已失效，请重新点击 Dev 登录"
+            ? "认证失败 (401)：票据已失效，请重新点击进入"
             : `认证失败 (${bootstrapRes.status})`,
         );
       }
@@ -74,44 +76,64 @@ export default function Login({ bootstrapError = null, onClearBootstrapError }: 
   };
 
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: "var(--color-bg)" }}>
-      <div className="card" style={{ width: 440, padding: 40, textAlign: "center" }}>
-        <h1 style={{ fontSize: 28, color: "var(--color-primary)", marginBottom: 8 }}>MindFlow</h1>
-        <p style={{ color: "var(--color-text-secondary)", marginBottom: 24 }}>本地优先的智能专注助手</p>
-        <div className="info-box" style={{ lineHeight: 1.7, marginBottom: 16 }}>
-          请通过 MindFlow 启动器打开界面。启动器会生成一次性认证链接，主令牌不会暴露给网页脚本。
+    <div className="mf-login-page">
+      <ParticleText />
+      <div className="login-overlay" />
+
+      <div className="login-card">
+        <div className="login-card-header">
+          <h1 className="login-title">欢迎回来！</h1>
+          <p className="login-subtitle">进入您的 MindFlow 本地工作台</p>
         </div>
-        {bootstrapError && (
-          <div style={{ marginTop: 12, fontSize: 12, color: "var(--color-danger)" }}>
-            认证失败：{bootstrapError}
-            {onClearBootstrapError && (
-              <button className="btn btn-sm mt8" onClick={onClearBootstrapError} style={{ marginLeft: 8 }}>
-                关闭
-              </button>
-            )}
+
+        <form className="login-form" onSubmit={(e) => { e.preventDefault(); handleDevLogin(); }}>
+          <div className="info-box login-note">
+            本机认证使用一次性启动票据：请通过 MindFlow 启动器打开界面，主令牌不会暴露给网页脚本。
+          </div>
+
+          {bootstrapError && (
+            <div className="login-error login-error-row" role="alert">
+              认证失败：{bootstrapError}
+              {onClearBootstrapError && (
+                <button type="button" className="btn btn-sm btn-ghost" onClick={onClearBootstrapError}>
+                  关闭
+                </button>
+              )}
+            </div>
+          )}
+
+          <button className="login-btn" type="submit" disabled={devLoading || devSuccess}>
+            {devLoading ? "认证中..." : devSuccess ? "认证成功，正在进入..." : "进入 MindFlow"}
+          </button>
+        </form>
+
+        {devError && (
+          <div className="login-error login-error-row" role="alert">
+            {devError}
+            <button type="button" className="btn btn-sm btn-ghost" onClick={handleDevLogin} disabled={devLoading}>
+              重试
+            </button>
           </div>
         )}
-        <button className="btn btn-primary mt16" onClick={() => window.location.reload()}>
-          已通过启动器打开，重新检查
-        </button>
 
-        <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--color-border)" }}>
-          <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 8 }}>开发模式</div>
+        <div className="login-divider">
+          <div className="login-divider-label">开发模式</div>
           <button
-            className="btn btn-ghost"
+            type="button"
+            className="login-btn login-btn--ghost"
             onClick={handleDevLogin}
             disabled={devLoading || devSuccess}
-            style={{ width: "100%" }}
           >
             {devLoading ? "认证中..." : devSuccess ? "认证成功" : "Dev 登录（本地调试）"}
           </button>
-          {devError && (
-            <div style={{ marginTop: 8, fontSize: 12, color: "var(--color-danger)" }}>
-              {devError}
-            </div>
-          )}
+        </div>
+
+        <div className="login-footer">
+          没有账号体系：本地票据即凭证，退出后需重新认证。
         </div>
       </div>
+
+      <div className="introduction">MindFlow&nbsp;&nbsp;&nbsp;一款注意力分析工具软件</div>
     </div>
   );
 }

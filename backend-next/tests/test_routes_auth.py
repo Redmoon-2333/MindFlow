@@ -1,4 +1,4 @@
-﻿"""Tests for one-time local authentication routes."""
+"""Tests for one-time local authentication routes."""
 
 from __future__ import annotations
 
@@ -50,3 +50,40 @@ def test_exchange_rejects_invalid_ticket() -> None:
         "/api/v1/auth/bootstrap", json={"ticket": "x" * 32}
     )
     assert response.status_code == 401
+
+
+def _session_cookie(client: TestClient) -> str:
+    ticket = client.post("/api/v1/auth/bootstrap/ticket").json()["ticket"]
+    response = client.post("/api/v1/auth/bootstrap", json={"ticket": ticket})
+    session_id = response.cookies.get("mindflow_session")
+    assert session_id
+    return session_id
+
+
+def test_logout_revokes_only_the_calling_session() -> None:
+    store = SessionTokenStore()
+    app = FastAPI()
+    app.state.system_token = "test-system-token"
+    app.state.bootstrap_tickets = BootstrapTicketStore()
+    app.state.browser_sessions = store
+    app.include_router(auth.router, prefix="/api/v1")
+    client = TestClient(app)
+
+    first = _session_cookie(client)
+    second = store.issue()
+    assert store.verify(first) is True
+
+    response = client.post("/api/v1/auth/logout")
+    assert response.status_code == 204
+    assert store.verify(first) is False
+    # A different session must be unaffected by this logout.
+    assert store.verify(second) is True
+    # The cookie is expired on the same path it was issued with.
+    assert "mindflow_session=" in response.headers["set-cookie"]
+    assert 'Path=/api' in response.headers["set-cookie"]
+
+
+def test_logout_is_idempotent_for_an_unknown_session() -> None:
+    client = _make_client()
+    # No cookie at all: the endpoint still answers 204 so the UI can finish.
+    assert client.post("/api/v1/auth/logout").status_code == 204

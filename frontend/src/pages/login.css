@@ -1,0 +1,204 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Login — migration of the reference `pages/Login/LoginPage.css`.
+   Verified: 400×450 panel, 40px padding, 16px radius, radial background
+   `#0a1628 → #020810`, gradient button. The reference flips this panel to a
+   registration side; locally that slot holds the ticket/bootstrap state
+   instead (agreed deviation).
+   ────────────────────────────────────────────────────────────────────────── */
+
+.mf-login-page {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at 50% 50%, #0a1628 0%, #020810 100%);
+  overflow: hidden;
+}
+
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, transparent 30%, rgba(2, 8, 16, 0.5) 100%);
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* The reference panel is a fixed 400×450 box. Local content replaces the
+   reference's registration face, so the inner rhythm is tightened to fit the
+   same footprint; a taller-than-expected state (e.g. a bootstrap error) scrolls
+   inside the panel instead of growing it past the reference geometry. */
+.login-card {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 400px;
+  height: 450px;
+  overflow-y: auto;
+  padding: 40px;
+  background: rgba(10, 20, 40, 0.65);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border: 1px solid rgba(100, 160, 255, 0.12);
+  border-radius: 16px;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.login-card-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.login-title {
+  font-size: 26px;
+  font-weight: 700;
+  color: #e8f0fe;
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+}
+
+.login-subtitle {
+  font-size: 14px;
+  color: rgba(180, 200, 230, 0.7);
+  margin: 0;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.login-form .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.login-form .form-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(180, 200, 230, 0.8);
+}
+.login-form .form-input {
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  font-size: 14px;
+  color: #e0e8f4;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(100, 160, 255, 0.15);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.login-form .form-input::placeholder {
+  color: rgba(160, 180, 210, 0.4);
+}
+.login-form .form-input:focus {
+  border-color: rgba(100, 160, 255, 0.4);
+  box-shadow: 0 0 0 3px rgba(100, 160, 255, 0.1);
+}
+
+.login-btn {
+  width: 100%;
+  height: 46px;
+  margin-top: 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #1a6dd4, #3a8fd9);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.15s;
+  font-family: inherit;
+}
+.login-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.login-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.login-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-btn--ghost {
+  background: rgba(100, 160, 255, 0.12);
+  border: 1px solid rgba(100, 160, 255, 0.3);
+  margin-top: 0;
+}
+
+.login-footer {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 13px;
+  color: rgba(180, 200, 230, 0.6);
+}
+
+.login-note {
+  background: rgba(100, 160, 255, 0.1);
+  border: 1px solid rgba(100, 160, 255, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(180, 200, 230, 0.85);
+}
+
+.login-error {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #f78181;
+}
+.login-error-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.login-success {
+  background: rgba(126, 248, 165, 0.12);
+  border: 1px solid rgba(126, 248, 165, 0.35);
+  color: #67d790;
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.login-divider {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(100, 160, 255, 0.15);
+}
+.login-divider-label {
+  font-size: 12px;
+  color: rgba(160, 180, 210, 0.55);
+  margin-bottom: 8px;
+}
+
+.introduction {
+  position: absolute;
+  bottom: 150px;
+  font-size: 12px;
+  color: rgba(180, 200, 230, 0.6);
+  z-index: 2;
+}
+
+@media (max-width: 767px) {
+  .login-card {
+    max-width: calc(100vw - 32px);
+    padding: 28px 24px;
+    min-height: 0;
+  }
+  .introduction {
+    bottom: 24px;
+    width: 100%;
+    text-align: center;
+  }
+}

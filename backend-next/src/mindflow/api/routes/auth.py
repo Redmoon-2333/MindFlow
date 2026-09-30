@@ -1,4 +1,4 @@
-﻿"""One-time bootstrap authentication routes for the local desktop UI."""
+"""One-time bootstrap authentication routes for the local desktop UI."""
 
 from __future__ import annotations
 
@@ -52,5 +52,29 @@ async def exchange_bootstrap_ticket(request: Request, body: BootstrapRequest) ->
         secure=False,
         path="/api",
         max_age=24 * 60 * 60,
+    )
+    return response
+
+
+@router.post("/auth/logout", status_code=204)
+async def logout(request: Request) -> Response:
+    """Revoke the session behind the current cookie and expire that cookie.
+
+    Only this session is removed — other browser sessions stay valid. An
+    already-invalid session still answers 204 so a stale client can finish
+    its logout instead of retrying forever.
+    """
+    session_store = getattr(request.app.state, "browser_sessions", None)
+    cookie = request.cookies.get(_COOKIE_NAME, "")
+    if isinstance(session_store, SessionTokenStore) and cookie:
+        session_store.revoke(cookie)
+
+    response = Response(status_code=204)
+    response.delete_cookie(
+        key=_COOKIE_NAME,
+        path="/api",
+        httponly=True,
+        samesite="strict",
+        secure=False,
     )
     return response

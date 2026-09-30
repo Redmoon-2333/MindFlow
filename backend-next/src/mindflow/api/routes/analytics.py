@@ -199,11 +199,13 @@ async def get_model_status(
         tier = "full_ready"
     if v2_model_manager is not None:
         readiness = v2_model_manager.readiness_status()
-        is_ready = bool(readiness["ready"])
+        demo_only = getattr(request.app.state, "demo_mode", False) is True
+        is_ready = bool(readiness["ready"]) and not demo_only
         return {
             "loaded": True,
             "ready": is_ready,
-            "mode": "ready" if is_ready else "rule_engine_only",
+            "mode": "shadow" if demo_only else ("ready" if is_ready else "rule_engine_only"),
+            "demo_only": demo_only,
             "deployment_tier": "full_ready" if is_ready else tier,
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "v2_mode": "ready" if is_ready else v2_training_mode,
@@ -211,7 +213,8 @@ async def get_model_status(
             "available_versions": v2_model_manager.list_versions(),
             "reasons": readiness["reasons"],
             "message": (
-                "Feature schema v2 model loaded and ready for inference"
+                "Synthetic demo model loaded; personal quality gates have not been passed"
+                if demo_only else "Feature schema v2 model loaded and ready for inference"
                 if is_ready
                 else "Feature schema v2 artifacts failed readiness checks"
             ),

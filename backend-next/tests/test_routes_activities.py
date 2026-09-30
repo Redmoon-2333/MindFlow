@@ -190,3 +190,82 @@ def test_list_activities_cursor_pagination(client: TestClient) -> None:
 def test_list_activities_rejects_invalid_cursor(client: TestClient) -> None:
     response = client.get("/api/v1/activities?cursor=not-a-valid-cursor")
     assert response.status_code == 422
+
+
+def test_list_activities_search_matches_app_name(client: TestClient) -> None:
+    """``q`` narrows the page *and* the total to the same condition."""
+    resp = client.get("/api/v1/activities", params={"q": "TestApp1"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert [item["data"]["app_name"] for item in body["items"]] == ["TestApp1"]
+
+
+def test_list_activities_search_is_case_insensitive(client: TestClient) -> None:
+    resp = client.get("/api/v1/activities", params={"q": "testapp2"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["data"]["app_name"] == "TestApp2"
+
+
+def test_list_activities_search_matches_window_title(client: TestClient) -> None:
+    resp = client.get("/api/v1/activities", params={"q": "Window 3"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["data"]["window_title"] == "Window 3"
+
+
+def test_list_activities_empty_search_keeps_original_behaviour(
+    client: TestClient,
+) -> None:
+    """An empty/whitespace ``q`` must not filter anything (back-compat)."""
+    unfiltered = client.get("/api/v1/activities").json()
+    for blank in ("", "   "):
+        body = client.get("/api/v1/activities", params={"q": blank}).json()
+        assert body["total"] == unfiltered["total"]
+        assert len(body["items"]) == len(unfiltered["items"])
+
+
+def test_list_activities_search_no_match_returns_empty(client: TestClient) -> None:
+    body = client.get("/api/v1/activities", params={"q": "NoSuchApp"}).json()
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
+def test_list_activities_search_page_and_total_use_same_condition(
+    client: TestClient,
+) -> None:
+    """Pagination totals must describe the filtered set, not the raw range."""
+    all_filtered = client.get("/api/v1/activities", params={"q": "TestApp"}).json()
+    assert all_filtered["total"] == 5
+
+    page = client.get(
+        "/api/v1/activities",
+        params={"q": "TestApp", "page_size": 2},
+    ).json()
+    assert len(page["items"]) == 2
+    assert page["total"] == 5
+
+    second_page = client.get(
+        "/api/v1/activities",
+        params={"q": "TestApp", "page_size": 2, "page": 2},
+    ).json()
+    assert len(second_page["items"]) == 2
+    assert second_page["total"] == 5
+    assert {i["id"] for i in page["items"]}.isdisjoint(
+        i["id"] for i in second_page["items"]
+    )
+
+
+def test_list_activities_search_escapes_like_wildcards(client: TestClient) -> None:
+    """``%``/``_`` in the query are literal text, not wildcards."""
+    body = client.get("/api/v1/activities", params={"q": "%"}).json()
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
+def test_list_activities_search_too_long_rejected(client: TestClient) -> None:
+    resp = client.get("/api/v1/activities", params={"q": "x" * 201})
+    assert resp.status_code == 422

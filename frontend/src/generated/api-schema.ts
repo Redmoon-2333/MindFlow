@@ -104,6 +104,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Logout
+         * @description Revoke the session behind the current cookie and expire that cookie.
+         *
+         *     Only this session is removed — other browser sessions stay valid. An
+         *     already-invalid session still answers 204 so a stale client can finish
+         *     its logout instead of retrying forever.
+         */
+        post: operations["logout_api_v1_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/autonomy": {
         parameters: {
             query?: never;
@@ -220,6 +244,7 @@ export interface paths {
          * @description Return paginated activity events within a date range.
          *
          *     Results are ordered by timestamp descending (most recent first).
+         *     ``q`` narrows both the page and the total so pagination stays coherent.
          */
         get: operations["list_activities_api_v1_activities_get"];
         put?: never;
@@ -1112,6 +1137,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ai/provider-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Llm Provider Status
+         * @description Report the configured LLM provider without contacting it.
+         *
+         *     Reads the resolved L1 target from the shared ``ProviderRegistry`` and the
+         *     Ollama flag from settings. No network call is made, so ``configured`` only
+         *     means "a credential is present locally" — never "the provider answers".
+         *     Credentials, base URLs and hosts are deliberately not returned.
+         */
+        get: operations["get_llm_provider_status_api_v1_ai_provider_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ai/graph": {
         parameters: {
             query?: never;
@@ -1783,6 +1833,24 @@ export interface components {
             skip_reason?: string | null;
         };
         /**
+         * LLMProviderStatusResponse
+         * @description Allowlisted LLM configuration summary — no credentials, no probing.
+         *
+         *     ``configured`` reports whether a credential exists locally; it is a
+         *     configuration fact, not a connectivity check, and the UI must label it
+         *     accordingly.
+         */
+        LLMProviderStatusResponse: {
+            /** Provider */
+            provider: string;
+            /** Model */
+            model: string;
+            /** Configured */
+            configured: boolean;
+            /** Ollama Enabled */
+            ollama_enabled: boolean;
+        };
+        /**
          * NodeEventSummary
          * @description Sanitised node event: structural metadata only — no prompts or content.
          */
@@ -2145,6 +2213,21 @@ export interface components {
             } | null;
             /** Error */
             error?: string | null;
+            /**
+             * Allow Activation
+             * @default true
+             */
+            allow_activation: boolean;
+            /** Publication */
+            publication?: {
+                [key: string]: unknown;
+            } | null;
+            /** Evaluation Candidate */
+            evaluation_candidate?: string | null;
+            /** Deployed Classifier */
+            deployed_classifier?: string | null;
+            /** Activation Blocked Reason */
+            activation_blocked_reason?: string | null;
         };
         /**
          * TrainingJobSummary
@@ -2433,6 +2516,24 @@ export interface operations {
             };
         };
     };
+    logout_api_v1_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     get_autonomy_status_api_v1_autonomy_get: {
         parameters: {
             query?: never;
@@ -2579,6 +2680,8 @@ export interface operations {
                 start_date?: string | null;
                 /** @description End date (YYYY-MM-DD, inclusive). Defaults to today. */
                 end_date?: string | null;
+                /** @description Optional text filter matched against application name, process name and window title. Omitted or empty keeps the original unfiltered behaviour. */
+                q?: string | null;
             };
             header?: never;
             path?: never;
@@ -3936,6 +4039,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_llm_provider_status_api_v1_ai_provider_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMProviderStatusResponse"];
                 };
             };
         };

@@ -68,6 +68,34 @@ def test_authenticated_launcher_can_issue_and_exchange_one_time_ticket() -> None
         assert replay.status_code == 401
 
 
+def test_logout_ends_the_session_and_clears_the_cookie() -> None:
+    """A real logout must invalidate the session behind the cookie."""
+    with TestClient(_app()) as client:
+        issued = client.post(
+            "/api/v1/auth/bootstrap/ticket",
+            headers={"Authorization": "Bearer system-secret"},
+        )
+        ticket = issued.json()["ticket"]
+        exchanged = client.post("/api/v1/auth/bootstrap", json={"ticket": ticket})
+        assert exchanged.status_code == 204
+        assert client.get("/api/v1/protected").status_code == 200
+
+        logged_out = client.post("/api/v1/auth/logout")
+        assert logged_out.status_code == 204
+        # The cookie is expired for the caller...
+        assert "Max-Age=0" in logged_out.headers["set-cookie"]
+        # ...and the server-side session no longer authenticates requests.
+        assert client.get("/api/v1/protected").status_code == 401
+
+        # Re-issuing a fresh session still works after logging out.
+        ticket = client.post(
+            "/api/v1/auth/bootstrap/ticket",
+            headers={"Authorization": "Bearer system-secret"},
+        ).json()["ticket"]
+        assert client.post("/api/v1/auth/bootstrap", json={"ticket": ticket}).status_code == 204
+        assert client.get("/api/v1/protected").status_code == 200
+
+
 def test_bootstrap_ticket_store_is_one_time_expiring_and_bounded() -> None:
     now = [100.0]
     store = BootstrapTicketStore(ttl_s=5, max_entries=2, clock=lambda: now[0])

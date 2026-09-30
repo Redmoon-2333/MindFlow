@@ -1,0 +1,65 @@
+{
+  "version": "demo_v4",
+  "source": "synthetic_v2",
+  "demo_only": true,
+  "feature_schema_version": 4,
+  "feature_names": [
+    "app_switch_count",
+    "domain_switch_count",
+    "longest_segment_ratio",
+    "idle_ratio",
+    "keypress_rate_per_min",
+    "mouse_click_rate_per_min",
+    "scroll_rate_per_min",
+    "mouse_distance_per_min",
+    "input_active_ratio",
+    "interaction_bursts_per_min",
+    "click_key_ratio",
+    "browser_ratio",
+    "audible_browser_ratio",
+    "active_seconds_ratio",
+    "top_app_ratio",
+    "top_domain_ratio",
+    "interaction_interval_mean_s",
+    "interaction_interval_std_s",
+    "interaction_interval_cv",
+    "hour_sin",
+    "hour_cos",
+    "weekday_sin",
+    "weekday_cos",
+    "task_type_code",
+    "task_type_entropy",
+    "task_type_dominant_ratio",
+    "task_context_transition",
+    "task_unknown_ratio"
+  ],
+  "packages": {
+    "scikit-learn": "1.9.0",
+    "numpy": "2.3.5",
+    "scipy": "1.17.1",
+    "joblib": "1.5.3",
+    "xgboost": "3.2.0"
+  },
+  "recipe": {
+    "users": 6,
+    "days": 14,
+    "seed": 42
+  },
+  "files": {
+    "clustering": {
+      "name": "clustering-demo_v4.pkl",
+      "sha256": "1ca5a330c50c5d68b14e436cbb00ecc6b16321ec9f816a266c3fc84616cf0267",
+      "bytes": 1710355
+    },
+    "classifier": {
+      "name": "classifier-demo_v4.pkl",
+      "sha256": "61d814c01a4312d74f29c5e1068a3032c279f5db2dfdc965382da575a9467b40",
+      "bytes": 3449185
+    },
+    "hmm": {
+      "name": "hmm-demo_v4.pkl",
+      "sha256": "acfdd90a0e855b2cad00ef836a8d20703e193dbe9679a6cb71e98ddc9f1e0408",
+      "bytes": 145
+    }
+  }
+}

@@ -147,6 +147,7 @@ async def test_rollup_persists_clipped_quality_without_inventing_switches(tmp_pa
     activity.query_range.return_value = []
     activity.last_event_before.return_value = event
     repository = AsyncMock()
+    repository.last_feature_window_before.return_value = None
     repository.list_interaction_buckets.return_value = []
     repository.list_browser_segments.return_value = []
     repository.last_browser_segment_before.return_value = None

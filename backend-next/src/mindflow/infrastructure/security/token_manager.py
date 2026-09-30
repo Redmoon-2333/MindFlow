@@ -180,6 +180,28 @@ class SessionTokenStore:
             self._entries = self._entries[-self._max_entries :]
         return token
 
+    def revoke(self, provided: str) -> bool:
+        """Remove one session token; other sessions keep working.
+
+        Returns True when the supplied token matched a live entry, so callers
+        can tell "logged out" apart from "session was already unknown".
+        """
+        if not provided:
+            return False
+        now = self._clock()
+        candidate = self._digest(provided)
+        retained: list[_SessionToken] = []
+        revoked = False
+        for entry in self._entries:
+            if entry.expires_at <= now:
+                continue
+            if not revoked and secrets.compare_digest(candidate, entry.digest):
+                revoked = True
+                continue
+            retained.append(entry)
+        self._entries = retained
+        return revoked
+
     def verify(self, provided: str) -> bool:
         """Validate an unexpired browser session token without consuming it."""
         if not provided:

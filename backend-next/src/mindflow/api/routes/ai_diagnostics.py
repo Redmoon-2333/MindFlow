@@ -22,7 +22,13 @@ from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 from loguru import logger
 
 from mindflow.api.deps import get_workflow_runs_repo
-from mindflow.api.schemas import DiagnosticsListResponse, NodeEventSummary, RunDetail, RunSummary
+from mindflow.api.schemas import (
+    DiagnosticsListResponse,
+    LLMProviderStatusResponse,
+    NodeEventSummary,
+    RunDetail,
+    RunSummary,
+)
 
 router = APIRouter(tags=["ai-diagnostics"])
 
@@ -192,6 +198,42 @@ async def get_workflow_run(
 
     return _run_to_detail(full, events)
 
+
+
+@router.get("/ai/provider-status", response_model=LLMProviderStatusResponse)
+async def get_llm_provider_status(request: Request) -> LLMProviderStatusResponse:
+    """Report the configured LLM provider without contacting it.
+
+    Reads the resolved L1 target from the shared ``ProviderRegistry`` and the
+    Ollama flag from settings. No network call is made, so ``configured`` only
+    means "a credential is present locally" — never "the provider answers".
+    Credentials, base URLs and hosts are deliberately not returned.
+    """
+    registry = getattr(request.app.state, "provider_registry", None)
+    settings = getattr(request.app.state, "settings", None)
+    llm_settings = getattr(settings, "llm", None)
+    ollama_enabled = bool(getattr(llm_settings, "ollama_enabled", False))
+
+    provider = ""
+    model = ""
+    configured = False
+    describe = getattr(registry, "describe", None)
+    if callable(describe):
+        try:
+            info = describe()
+        except Exception:  # pragma: no cover — defensive: never fail the read
+            logger.exception("Failed to describe provider registry")
+            info = {}
+        provider = str(info.get("provider") or "")
+        model = str(info.get("model") or "")
+        configured = bool(info.get("credential_present"))
+
+    return LLMProviderStatusResponse(
+        provider=provider or "unknown",
+        model=model or "unknown",
+        configured=configured,
+        ollama_enabled=ollama_enabled,
+    )
 
 
 @router.get("/ai/graph")

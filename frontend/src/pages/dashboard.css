@@ -1,0 +1,768 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Dashboard — migration of the reference `pages/dashContent/DC.scss`.
+   Geometry (source-verified): status row 100px/90px items, activity+chart
+   280px, statistics 180px, control+intervention 350px, page gutter 45px,
+   main radius 14px.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* The reference parks the date + collector switch absolutely against the
+   content column (its `.container` is unpositioned), which lands them inside
+   the 65px top bar. Positioning the page root instead would drop them onto
+   the status row where the LLM icon box blocks the switch. */
+.d-container {
+  width: 100%;
+  min-height: calc(100vh - 65px);
+  padding: 0 45px;
+  background: transparent;
+  display: flow-root;
+}
+
+.d-float-header {
+  position: absolute;
+  top: 12px;
+  right: 35px;
+  display: flex;
+  justify-content: right;
+  align-items: center;
+  gap: 35px;
+  height: 40px;
+}
+.d-time {
+  font-size: 15px;
+  color: var(--mf-text-dim);
+  white-space: nowrap;
+}
+.d-switch {
+  font-size: 16px;
+  color: var(--mf-green);
+  border: 1px solid var(--mf-green);
+  border-radius: 25px;
+  position: relative;
+  height: 40px;
+  width: 100px;
+  cursor: pointer;
+  text-align: center;
+  line-height: 38px;
+  background: transparent;
+  font-family: inherit;
+  padding: 0;
+}
+.d-switch-dot {
+  width: 8px;
+  height: 8px;
+  position: absolute;
+  background: var(--mf-green);
+  border-radius: 50%;
+  left: 14px;
+  top: 50%;
+  margin-top: -4px;
+  transition: all 0.3s ease;
+}
+@keyframes d-colorChange {
+  0% { background-color: var(--mf-green); }
+  50% { background-color: green; }
+  100% { background-color: var(--mf-green); }
+}
+
+.d-content {
+  width: 100%;
+  margin-top: 25px;
+  padding-bottom: 30px;
+}
+
+/* ── Status row ─────────────────────────────────────────────────────────── */
+.d-state {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  height: 100px;
+}
+.d-state-item {
+  width: 23%;
+  height: 90px;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border-radius: 14px;
+  position: relative;
+}
+.d-state-title {
+  position: absolute;
+  top: 15px;
+  left: 20px;
+  font-size: 15px;
+  color: var(--mf-text);
+  font-weight: 600;
+}
+.d-state-content {
+  font-size: 16px;
+  color: #ffffff;
+  font-weight: 600;
+  position: absolute;
+  top: 45px;
+  left: 40px;
+}
+.d-state-content::after {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #18a14a;
+  top: 55%;
+  left: -17px;
+  transform: translateY(-50%);
+  box-shadow: inset 2px 2px 4px rgba(180, 255, 182, 0.5);
+}
+.d-state-close {
+  font-size: 16px;
+  color: #ffffff;
+  font-weight: 600;
+  position: absolute;
+  top: 45px;
+  left: 40px;
+}
+.d-state-close::after {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #5b5b5b;
+  top: 55%;
+  left: -17px;
+  transform: translateY(-50%);
+  box-shadow: inset 2px 2px 4px rgba(63, 81, 64, 0.5);
+}
+.d-icon-box {
+  width: 45px;
+  height: 45px;
+  position: absolute;
+  background: #caffde28;
+  right: 25px;
+  border-radius: 20%;
+  line-height: 45px;
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+.d-icon-box .icon {
+  font-size: 25px;
+  color: var(--mf-green);
+}
+.d-icon-box-close {
+  background: #80808028;
+}
+.d-icon-box-close .icon {
+  color: #ffffff41;
+}
+.d-state-item:nth-child(3) .d-icon-box {
+  background: #06b6d428;
+}
+.d-state-item:nth-child(3) .d-icon-box .icon {
+  color: var(--mf-cyan);
+}
+.d-state-item:nth-child(4) .d-icon-box {
+  background: #f69c002a;
+}
+.d-state-item:nth-child(4) .d-icon-box .icon {
+  color: var(--mf-orange);
+}
+
+/* ── Activity + 7-day chart ─────────────────────────────────────────────── */
+.d-activity-chart {
+  display: flex;
+  margin-top: 25px;
+  justify-content: space-around;
+  align-items: center;
+  height: 280px;
+}
+.d-activity,
+.d-chart {
+  width: 48%;
+  height: 280px;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  gap: 20px;
+}
+.d-activity-title,
+.d-chart-title {
+  position: relative;
+  top: 15px;
+  left: 30px;
+  font-size: 18px;
+  color: var(--mf-text);
+  font-weight: 600;
+  display: flex;
+  margin-bottom: 20px;
+}
+.d-activity-item {
+  margin-left: 30px;
+  display: flex;
+  gap: 30px;
+}
+.d-activity-item-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--mf-text);
+}
+.d-activity-item-content {
+  font-size: 15px;
+  font-weight: 600;
+  color: #ffffff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+.d-activity-item-contain {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.d-activity-item-contain-content {
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--mf-panel);
+  border-radius: 15px;
+  height: 25px;
+  padding: 0 15px;
+  margin-top: -1px;
+  line-height: 23px;
+  padding-left: 25px;
+  position: relative;
+}
+.d-activity-item-contain-content::after {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #18a14a;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+  box-shadow: inset 2px 2px 4px rgba(180, 255, 182, 0.5);
+}
+.d-activity-item-contain-content--off::after {
+  background-color: #5b5b5b;
+  box-shadow: inset 2px 2px 4px rgba(63, 81, 64, 0.5);
+}
+.d-subline {
+  height: 0.5px;
+  position: absolute;
+  background: var(--mf-panel-border);
+  margin: 10px 30px;
+  width: calc(100% - 60px);
+  bottom: 50px;
+}
+.d-activity-time {
+  display: flex;
+  justify-content: left;
+  margin-left: 30px;
+  height: 20px;
+  line-height: 20px;
+  gap: 10px;
+  margin-top: 5px;
+  font-size: 14px;
+  color: var(--mf-text);
+}
+.d-chart-box {
+  width: calc(100% - 60px);
+  height: 145px;
+  margin-left: 30px;
+  display: flex;
+  justify-content: space-between;
+}
+.d-chart-box-item {
+  width: 12%;
+  height: 100%;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  position: relative;
+  gap: 10px;
+}
+.d-chart-box-item-column {
+  width: 40px;
+  height: 0;
+  background-color: var(--mf-green);
+  transform-origin: bottom center;
+  border-radius: 8px 8px 0 0;
+  animation: d-growUp 0.8s ease forwards;
+  transform: scaleY(0);
+  position: relative;
+}
+.d-chart-box-item-column--today {
+  background-color: #ffcc00;
+}
+.d-chart-box-item-number {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 14px;
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+@keyframes d-growUp {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+.d-chart-box-item-week {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mf-text);
+}
+.d-chart-demonstration {
+  height: 20px;
+  margin-left: 30px;
+  width: calc(100% - 60px);
+  margin-top: 5px;
+  display: flex;
+  flex-direction: row;
+  gap: 15px;
+}
+.d-chart-demonstration-item {
+  display: flex;
+  width: 120px;
+  position: relative;
+  padding-left: 20px;
+}
+.d-chart-demonstration-item-text {
+  font-size: 14px;
+  color: var(--mf-text);
+}
+.d-chart-demonstration-item-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background-color: #18a14a;
+  top: 55%;
+  left: 5px;
+  transform: translateY(-50%);
+}
+.d-chart-demonstration-item-dot--today {
+  background-color: #ffcc00;
+}
+
+/* ── Statistics row ─────────────────────────────────────────────────────── */
+.d-statistic {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  height: 180px;
+  margin-top: 30px;
+}
+.d-statistic-item {
+  width: 23%;
+  height: 180px;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 14px;
+  position: relative;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 30px;
+  display: flex;
+}
+.d-statistic-title {
+  margin-top: 20px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--mf-text);
+}
+.d-statistic-content {
+  margin-top: 5px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.d-statistic-number {
+  font-size: 35px;
+  font-weight: 600;
+  color: #ffffff;
+}
+.d-statistic-unit {
+  margin-bottom: 4px;
+  font-size: 18px;
+  color: var(--mf-text);
+}
+.d-statistic-icon {
+  font-size: 20px;
+  font-weight: 600;
+}
+.d-statistic-icon--flat {
+  opacity: 0.45;
+}
+.d-statistic-stat {
+  margin-top: 3px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.d-statistic-stat--flat {
+  color: var(--mf-text-dim);
+}
+
+/* ── Control + recent interventions ─────────────────────────────────────── */
+.d-control-inference {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  height: 350px;
+  margin-top: 30px;
+  margin-bottom: 30px;
+}
+.d-control,
+.d-inference {
+  width: 48%;
+  height: 350px;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 14px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  padding-left: 30px;
+}
+.d-control-title,
+.d-inference-title {
+  margin-top: 20px;
+  font-size: 18px;
+  color: var(--mf-text);
+  font-weight: 600;
+}
+.d-control-module {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  margin-left: 30px;
+  margin-top: 30px;
+  gap: 15px;
+  height: 30px;
+  align-items: center;
+}
+.d-control-module-statement {
+  position: relative;
+  padding: 4px 8px;
+  background: #a0ffc363;
+  color: #16db1c;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 15px;
+}
+.d-control-module-statement::after {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  left: -20px;
+  top: 10px;
+  background: #18a14a;
+  box-shadow: #274a286e inset 1px 1px 1px 2px;
+}
+.d-control-module-jingao {
+  position: relative;
+  padding: 4px 8px;
+  background: #f59f0b4e;
+  color: var(--mf-orange);
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 15px;
+}
+.d-control-module-jingao::after {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  left: -20px;
+  top: 10px;
+  background: var(--mf-orange);
+  box-shadow: #f59f0b4e inset 1px 1px 1px 2px;
+}
+.d-control-module-text {
+  font-size: 15px;
+  color: var(--mf-text);
+}
+.d-control-pause {
+  display: flex;
+  margin-top: 60px;
+  height: 30px;
+  align-items: center;
+}
+.d-control-pause-text {
+  font-weight: 600;
+  margin: 0 10px;
+  color: var(--mf-text);
+}
+.d-control-pause-time {
+  width: 50px;
+  height: 30px;
+  padding: 2px 15px 2px 5px;
+  border-radius: 8px;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  outline: 2px solid var(--mf-panel);
+  color: #fff;
+  margin-top: 2px;
+  font-family: inherit;
+  font-size: 14px;
+}
+.d-control-submit,
+.d-control-restore {
+  margin-left: 80px;
+  padding: 0 15px;
+  height: 36px;
+  border-radius: 15px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 600;
+  transition: all 0.3s ease;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  color: var(--mf-text);
+  font-family: inherit;
+}
+.d-control-restore {
+  margin-left: 10px;
+}
+.d-control-submit:hover:not(:disabled),
+.d-control-restore:hover:not(:disabled) {
+  transform: translateY(1px);
+}
+.d-control-submit:active:not(:disabled),
+.d-control-restore:active:not(:disabled) {
+  transform: translateY(1px) scale(0.98);
+}
+.d-control-submit:disabled,
+.d-control-restore:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.d-control-tip {
+  display: flex;
+  margin-top: 60px;
+  line-height: 20px;
+  margin-left: 10px;
+  color: var(--mf-text);
+  align-items: flex-start;
+}
+.d-control-tip .iconfont {
+  margin-right: 3px;
+  margin-top: 1px;
+}
+.d-control-tip--warn,
+.d-control-tip--warn .control-tips-text {
+  color: var(--mf-orange);
+}
+.d-todetail {
+  position: absolute;
+  top: 23px;
+  right: 50px;
+  color: #9b9a9a;
+  font-weight: 600;
+  cursor: pointer;
+  background: none;
+  border: none;
+  font-size: 14px;
+  font-family: inherit;
+  padding: 0;
+}
+.d-todetail:hover {
+  color: var(--mf-brand);
+}
+/* Scroll wrapper for long intervention lists. It must not inset the items:
+   the reference stacks them as direct flex children of `.inference` with the
+   parent's 15px gap, so the same gap is reproduced here. */
+.d-inference-scroll {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  overflow-y: auto;
+  max-height: 255px;
+}
+.d-inference-item {
+  width: calc(100% - 40px);
+  flex: 0 0 auto;
+  background-color: #61bdff1a;
+  border-radius: 20px;
+  position: relative;
+  height: 75px;
+  margin-bottom: 5px;
+}
+.d-inference-item .icon-box {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 30px;
+  width: 40px;
+  height: 40px;
+  background: #3fc7df6a;
+  line-height: 40px;
+  text-align: center;
+  border-radius: 10px;
+}
+.d-inference-item .icon-box .iconfont {
+  font-size: 25px;
+  color: #ffffff;
+}
+.d-inference-item .icon-box-orange {
+  background: #f59f0b38;
+}
+.d-inference-item .icon-box-orange .iconfont {
+  color: var(--mf-orange);
+}
+.d-inference-text {
+  position: absolute;
+  left: 90px;
+  top: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--mf-text);
+  right: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.d-inference-tag {
+  position: absolute;
+  left: 90px;
+  bottom: 15px;
+  font-size: 15px;
+  color: var(--mf-cyan);
+  background-color: #06b5d450;
+  padding: 2px 8px;
+  font-weight: 600;
+  border-radius: 20px;
+}
+.d-inference-tag-light {
+  background: #f59f0b38;
+  color: var(--mf-orange);
+}
+.d-inference-time {
+  position: absolute;
+  right: 30px;
+  top: 28px;
+  color: var(--mf-text);
+}
+.d-empty {
+  color: var(--mf-text-dim);
+  font-size: 14px;
+  margin-left: 30px;
+  margin-top: 24px;
+}
+
+/* Local-only detail appended after the replicable reference sections. */
+.d-extra {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 30px;
+  margin-bottom: 30px;
+}
+.d-extra-card {
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 14px;
+  padding: 20px 30px;
+  min-height: 120px;
+}
+.d-extra-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--mf-text);
+}
+.d-extra-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: #ffffff;
+  margin-top: 12px;
+}
+.d-extra-note {
+  font-size: 14px;
+  color: var(--mf-text-dim);
+  margin-top: 8px;
+}
+@media (max-width: 1023px) {
+  .d-extra { grid-template-columns: 1fr; }
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 1439px) {
+  .d-container { padding: 0 28px; }
+  .d-float-header { right: 20px; gap: 20px; }
+}
+
+@media (max-width: 1023px) {
+  .d-state { flex-wrap: wrap; height: auto; gap: 16px; padding-bottom: 8px; }
+  .d-state-item { width: calc(50% - 8px); min-height: 90px; }
+  .d-activity-chart { flex-direction: column; height: auto; gap: 20px; }
+  .d-activity, .d-chart { width: 100%; min-height: 280px; height: auto; }
+  .d-statistic { flex-wrap: wrap; height: auto; gap: 16px; }
+  .d-statistic-item { width: calc(50% - 8px); min-height: 180px; }
+  .d-control-inference { flex-direction: column; height: auto; gap: 20px; }
+  .d-control, .d-inference { width: 100%; min-height: 350px; height: auto; }
+}
+
+@media (max-width: 767px) {
+  .d-container { padding: 0 16px; }
+  /* The 30px/20px title indents are relative offsets: without resetting them
+     the titles poke past a 390px viewport and get clipped by the shell. */
+  .d-activity-title,
+  .d-chart-title { left: 0; top: 0; margin-bottom: 8px; }
+  .d-activity-item,
+  .d-chart-box,
+  .d-chart-demonstration,
+  .d-activity-time { margin-left: 0; width: calc(100% - 8px); }
+  .d-activity-item { flex-wrap: wrap; gap: 8px 16px; }
+  .d-activity-item-content { max-width: 100%; white-space: normal; }
+  .d-subline { width: calc(100% - 16px); margin: 10px 8px; }
+  .d-state-title { left: 16px; }
+  .d-state-content,
+  .d-state-close { left: 32px; }
+  .d-icon-box { right: 16px; }
+  .d-statistic-item { padding-left: 20px; }
+  .d-statistic-title,
+  .d-statistic-content,
+  .d-statistic-stat { margin-left: 0; }
+  .d-control,
+  .d-inference { padding-left: 16px; }
+  .d-control-module { margin-left: 20px; gap: 8px; flex-wrap: wrap; }
+  .d-inference-text { left: 74px; right: 16px; }
+  .d-inference-tag { left: 74px; }
+  .d-inference-item .icon-box { left: 16px; }
+  .d-float-header {
+    position: static;
+    justify-content: space-between;
+    margin-top: 16px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .d-state-item { width: 100%; }
+  .d-statistic-item { width: 100%; }
+  .d-control-pause { flex-wrap: wrap; height: auto; gap: 6px; }
+  .d-control-submit, .d-control-restore { margin-left: 0; }
+  .d-extra { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .d-chart-box-item-column { animation-duration: 0.01ms; transform: scaleY(1); }
+}

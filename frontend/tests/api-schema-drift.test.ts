@@ -24,7 +24,8 @@ import { fileURLToPath } from "node:url";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = resolve(TEST_DIR, "..");
-const BACKEND_EXPORT_SCRIPT = resolve(FRONTEND_ROOT, "../backend-next/scripts/export_openapi.py");
+const BACKEND_ROOT = resolve(FRONTEND_ROOT, "../backend-next");
+const BACKEND_EXPORT_SCRIPT = resolve(BACKEND_ROOT, "scripts/export_openapi.py");
 const OPENAPI_TYPESCRIPT_CLI = resolve(FRONTEND_ROOT, "node_modules/openapi-typescript/bin/cli.js");
 const TRACKED_SCHEMA = resolve(FRONTEND_ROOT, "src/generated/api-schema.ts");
 
@@ -44,8 +45,8 @@ function runGenerator(outDir: string): string {
   const schemaTs = join(outDir, "api-schema.ts");
   // Timeouts turn a hung generator (stuck backend import, dead CLI) into a
   // clean test failure instead of an indefinite wait.
-  execFileSync("python", [BACKEND_EXPORT_SCRIPT, openapiJson], {
-    cwd: FRONTEND_ROOT,
+  execFileSync("uv", ["run", "--no-sync", "python", BACKEND_EXPORT_SCRIPT, openapiJson], {
+    cwd: BACKEND_ROOT,
     stdio: "pipe",
     timeout: 120_000,
   });

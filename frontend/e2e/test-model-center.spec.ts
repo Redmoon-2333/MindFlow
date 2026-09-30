@@ -8,6 +8,11 @@
 
 import { test, expect, type Page } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/v1/**", route => route.fulfill({ status: 503 }));
+  await page.routeWebSocket("**/api/v1/ws", () => {});
+});
+
 // ── Shared page setup ──
 
 async function setupPage(page: Page) {
@@ -181,6 +186,27 @@ async function interceptAllApi(page: Page) {
 // ═══════════════════════════════════════════════════════════════════
 
 test.describe("Model Center", () => {
+  test("synthetic demo is shadow-only and never labelled an activated personal model", async ({ page }) => {
+    await interceptAllApi(page);
+    await page.route("**/api/v1/analytics/model-status", route => route.fulfill({
+      json: {
+        ...modelStatusResponse(), loaded: true, ready: false, demo_only: true,
+        mode: "shadow", v2_mode: "shadow", deployment_tier: "shadow",
+        version: "demo_v4", available_versions: ["demo_v4"],
+        message: "Synthetic demo model loaded; personal quality gates have not been passed",
+      },
+    }));
+    await setupPage(page);
+    await page.goto("/model-center");
+    await expect(page.locator(".mc-header")).toContainText("合成数据演示模型");
+    await expect(page.locator(".mc-header")).toContainText("未通过个人模型质量门");
+    await page.getByRole("tab", { name: "模型状态", exact: true }).click();
+    await expect(page.getByText("演示版本", { exact: true })).toBeVisible();
+    await expect(page.getByText("demo_v4", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("激活版本", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("影子模式", { exact: true })).toHaveCount(2);
+  });
+
   test("route renders with title and 4 tabs", async ({ page }) => {
     await interceptAllApi(page);
     await setupPage(page);

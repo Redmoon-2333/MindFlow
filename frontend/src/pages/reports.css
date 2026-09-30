@@ -1,0 +1,352 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Report centre — migration of the reference `pages/reports/Reports.scss`.
+   Verified geometry: capsule toggles 40px, stats row 120px (radius 30px),
+   insight 120px, distribution 300px, app table block, gutters 40px/50px.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.reports {
+  width: 100%;
+  min-height: calc(100vh - 65px);
+  background: transparent;
+  padding: 40px 50px 20px;
+  position: relative;
+}
+
+.reports .top-buttom {
+  display: flex;
+  width: 100%;
+  height: 40px;
+  flex-direction: row;
+  gap: 30px;
+}
+.reports .daily-report,
+.reports .weekly-report {
+  height: 100%;
+  background-color: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  display: flex;
+  align-items: center;
+  padding: 2px 25px;
+  padding-left: 30px;
+  justify-content: center;
+  border-radius: 30px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 5px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 1px 1px 5px rgba(100, 160, 255, 0.35);
+  color: var(--mf-text);
+  font-family: inherit;
+}
+.reports .daily-report:active,
+.reports .weekly-report:active {
+  transform: scale(0.95);
+}
+.reports .be-chose {
+  background-color: rgba(100, 160, 255, 0.35);
+  color: #ffffff;
+}
+
+.reports .report-datepicker {
+  position: absolute;
+  top: 12.5%;
+  left: 50px;
+  width: 250px;
+  z-index: 3;
+}
+
+.reports .t-state {
+  display: flex;
+  width: 100%;
+  height: 120px;
+  margin-top: 110px;
+  flex-direction: row;
+  justify-content: space-between;
+}
+.reports .state-item {
+  width: 23%;
+  height: 100%;
+  background-color: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 30px;
+  position: relative;
+}
+.reports .state-item-text {
+  color: #c4d2e2;
+  font-size: 18px;
+  margin-top: 20px;
+  margin-left: 30px;
+  font-weight: 600;
+}
+.reports .state-item-number {
+  color: #ffffff;
+  font-size: 30px;
+  margin-top: 12px;
+  margin-left: 30px;
+  font-weight: 600;
+}
+.reports .icon-box {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  right: 40px;
+  width: 55px;
+  height: 55px;
+  background: #caffde28;
+  line-height: 55px;
+  text-align: center;
+  border-radius: 10px;
+}
+.reports .icon-box .iconfont {
+  font-size: 35px;
+  color: var(--mf-green);
+}
+.reports .state-item:nth-child(2) .icon-box {
+  background: #cdda7628;
+}
+.reports .state-item:nth-child(2) .icon-box .icon {
+  color: #c2c570;
+}
+.reports .state-item:nth-child(3) .icon-box {
+  background: #f69c002a;
+}
+.reports .state-item:nth-child(3) .icon-box .icon {
+  color: var(--mf-orange);
+}
+.reports .state-item:nth-child(4) .icon-box {
+  background: #06b6d428;
+}
+.reports .state-item:nth-child(4) .icon-box .icon {
+  color: var(--mf-cyan);
+}
+
+.reports .zhuanzhudongcha {
+  width: 100%;
+  min-height: 120px;
+  background-color: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 30px;
+  margin-top: 30px;
+  overflow: hidden;
+}
+.reports .zhuanzhudongcha-title {
+  width: 100%;
+  height: 55px;
+  color: #c4d2e2;
+  font-size: 18px;
+  line-height: 60px;
+  font-weight: 600;
+  margin-left: 30px;
+}
+.reports .zhuanzhudongcha-text {
+  width: 96%;
+  min-height: 50px;
+  color: #c4d2e2;
+  font-size: 16px;
+  font-weight: 500;
+  margin-left: 30px;
+  line-height: 1.6;
+}
+
+.reports .chart-box {
+  background-color: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 30px;
+  width: 100%;
+  height: 300px;
+  margin-top: 30px;
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+}
+.reports .chart-box .title {
+  position: absolute;
+  width: 100%;
+  height: 60px;
+  color: #c4d2e2;
+  font-size: 18px;
+  line-height: 60px;
+  font-weight: 600;
+  margin-left: 30px;
+}
+.reports .chart-box-item {
+  width: 12%;
+  height: 100%;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  position: relative;
+  gap: 10px;
+}
+.reports .chart-box-item-column {
+  width: 60px;
+  height: 0;
+  background-color: var(--mf-green);
+  transform-origin: bottom center;
+  border-radius: 8px 8px 0 0;
+  animation: r-growUp 0.8s ease forwards;
+  transform: scaleY(0);
+  position: relative;
+}
+.reports .chart-box-item-number {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 14px;
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+@keyframes r-growUp {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+.reports .chart-box-item-during {
+  margin-bottom: 20px;
+  color: var(--mf-text);
+}
+
+.reports .report-detail-list {
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  width: 100%;
+  border-radius: 30px;
+  margin-top: 30px;
+  padding-bottom: 40px;
+  position: relative;
+}
+.reports .report-detail-title {
+  position: absolute;
+  width: 100%;
+  height: 60px;
+  color: #c4d2e2;
+  font-size: 18px;
+  line-height: 60px;
+  font-weight: 600;
+  margin-left: 30px;
+}
+.reports .simple-table {
+  width: 95%;
+  border-collapse: collapse;
+  border: none;
+  margin: 50px auto 0;
+}
+.reports .simple-table tr,
+.reports .simple-table td {
+  height: 20px;
+}
+.reports .simple-table th,
+.reports .simple-table td {
+  border: none;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 12px 16px;
+  text-align: left;
+  font-size: 14px;
+  color: var(--mf-text);
+}
+.reports .simple-table th {
+  background: none !important;
+  color: #fff !important;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.reports .report-empty {
+  padding: 48px;
+  text-align: center;
+  color: var(--mf-text-dim);
+}
+.reports .report-error {
+  width: 100%;
+}
+
+/* Weekly reuses the same layout language with the reference's blocks. */
+.reports .weekly-detail-table {
+  width: 95%;
+  border-collapse: collapse;
+  margin: 50px auto 0;
+}
+.reports .weekly-detail-table th,
+.reports .weekly-detail-table td {
+  border: none;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 12px 16px;
+  text-align: left;
+  font-size: 14px;
+  color: var(--mf-text);
+}
+.reports .weekly-detail-table th {
+  color: #fff !important;
+  font-weight: 600;
+}
+.reports .trend-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 24px 30px 8px;
+}
+.reports .trend-pill {
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 20px;
+  padding: 8px 18px;
+  min-width: 170px;
+}
+.reports .trend-pill .label {
+  font-size: 14px;
+  color: var(--mf-text-dim);
+}
+.reports .trend-pill .value {
+  font-size: 24px;
+  font-weight: 600;
+  color: #ffffff;
+  margin-top: 4px;
+}
+.reports .trend-pill .value.good { color: var(--mf-green); }
+.reports .trend-pill .value.bad { color: #f78181; }
+.reports .trend-pill .sub {
+  font-size: 13px;
+  margin-top: 2px;
+  color: var(--mf-text-dim);
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 1439px) {
+  .reports { padding: 32px 28px 20px; }
+  .reports .report-datepicker { left: 28px; }
+}
+
+@media (max-width: 1023px) {
+  .reports .top-buttom { flex-wrap: wrap; height: auto; gap: 12px; }
+  .reports .daily-report, .reports .weekly-report { height: 40px; font-size: 18px; letter-spacing: 3px; }
+  .reports .report-datepicker { position: relative; top: 0; left: 0; margin-top: 16px; width: 250px; }
+  .reports .t-state { flex-wrap: wrap; height: auto; gap: 16px; margin-top: 32px; }
+  .reports .state-item { width: calc(50% - 8px); min-height: 120px; }
+  .reports .chart-box { height: auto; flex-wrap: wrap; gap: 8px; padding-bottom: 40px; }
+  .reports .chart-box-item { width: 22%; height: 240px; }
+}
+
+@media (max-width: 767px) {
+  .reports { padding: 20px 16px; }
+  /* Reset the reference's 30px title indents — at 390px they push the
+     headings past the viewport where the shell clips them. */
+  .reports .zhuanzhudongcha-title,
+  .reports .zhuanzhudongcha-text,
+  .reports .chart-box .title,
+  .reports .report-detail-title {
+    margin-left: 16px;
+    width: calc(100% - 32px);
+  }
+  .reports .state-item { width: 100%; }
+  .reports .chart-box-item { width: 45%; }
+  .reports .report-detail-list { overflow-x: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reports .chart-box-item-column {
+    animation-duration: 0.01ms;
+    transform: scaleY(1);
+  }
+}

@@ -1,0 +1,537 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Focus analysis — migration of the reference `pages/Focus/Focus.scss`.
+   Verified geometry: stats row 120px (100px cards), trend panel 400px with
+   radius 20px, session rows 210px min-height, gutters 4%/92%.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.f-page {
+  width: 100%;
+  min-height: calc(100vh - 65px);
+  background: transparent;
+  padding-bottom: 20px;
+  position: relative;
+}
+
+.f-first-row {
+  display: flex;
+  position: relative;
+  flex-direction: row;
+  top: 30px;
+  /* Zero flow height: the reference parks the picker and the refresh button
+     absolutely inside this row, so it must not push the sections below. */
+  height: 0;
+  align-items: center;
+}
+.f-datepicker {
+  position: absolute;
+  top: 0;
+  left: 4%;
+  width: 250px;
+}
+.f-reset {
+  position: absolute;
+  left: 350px;
+  top: 0;
+  height: 50px;
+  color: #ffffff;
+  line-height: 48px;
+  justify-content: center;
+  display: flex;
+  width: 80px;
+  background-color: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease-in-out;
+  font-family: inherit;
+  font-size: 15px;
+  padding: 0;
+}
+.f-reset:active {
+  transform: scale(0.95);
+}
+.f-reset:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* The MUI DatePicker skin itself lives in picker.css (shared with the
+   activities and reports pages); this file only positions the control. */
+
+.f-state {
+  display: flex;
+  position: relative;
+  width: 95%;
+  left: 2.5%;
+  height: 120px;
+  top: 110px;
+  flex-direction: row;
+  justify-content: space-around;
+}
+.f-state .state-item {
+  width: 22%;
+  height: 100%;
+  background-color: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 20px;
+  position: relative;
+}
+.f-state .state-item-text {
+  color: #c4d2e2;
+  font-size: 18px;
+  margin-top: 20px;
+  margin-left: 30px;
+  font-weight: 600;
+}
+.f-state .state-item-number {
+  color: #ffffff;
+  font-size: 30px;
+  margin-top: 12px;
+  margin-left: 30px;
+  font-weight: 600;
+}
+.f-state .icon-box {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  right: 40px;
+  width: 55px;
+  height: 55px;
+  background: #caffde28;
+  line-height: 55px;
+  text-align: center;
+  border-radius: 10px;
+}
+.f-state .icon-box .iconfont {
+  font-size: 35px;
+  color: var(--mf-green);
+}
+.f-state .state-item:nth-child(2) .icon-box {
+  background: #cdda7628;
+}
+.f-state .state-item:nth-child(2) .icon-box .icon {
+  color: #c2c570;
+}
+.f-state .state-item:nth-child(3) .icon-box {
+  background: #f69c002a;
+}
+.f-state .state-item:nth-child(3) .icon-box .icon {
+  color: var(--mf-orange);
+}
+.f-state .state-item:nth-child(4) .icon-box {
+  background: #06b6d428;
+}
+.f-state .state-item:nth-child(4) .icon-box .icon {
+  color: var(--mf-cyan);
+}
+
+.f-description {
+  position: relative;
+  width: 92%;
+  left: 4%;
+  top: 130px;
+  color: #c4d2e2;
+  font-size: 14px;
+}
+
+.f-statics {
+  position: relative;
+  width: 92%;
+  left: 4%;
+  top: 155px;
+  height: 400px;
+  background-color: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 20px;
+}
+.f-statics-title {
+  position: relative;
+  width: 100%;
+  height: 50px;
+  color: #c4d2e2;
+  font-size: 18px;
+  line-height: 50px;
+  font-weight: 600;
+  margin-left: 30px;
+}
+.statics-chart {
+  width: 90%;
+  position: absolute;
+  left: 5%;
+  top: 5%;
+  height: 85%;
+  display: flex;
+  justify-content: space-around;
+  border-bottom: 1px solid var(--mf-panel-border);
+  padding-bottom: 5px;
+}
+.statics-chart-item {
+  width: 10%;
+  height: 100%;
+  flex-direction: column-reverse;
+  display: flex;
+  position: relative;
+}
+.statics-chart-item .date-week {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  gap: 15px;
+  margin-bottom: 5px;
+  margin-top: 10px;
+}
+.statics-chart-item .date,
+.statics-chart-item .week {
+  color: #c4d2e2;
+  font-size: 14px;
+  text-align: center;
+}
+.statics-chart-item .chartbox {
+  position: relative;
+  width: 100%;
+  height: 70%;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-around;
+}
+.statics-chart-item .chartbox-fenxin {
+  width: 40%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: absolute;
+  bottom: 0;
+  left: 5%;
+  background-color: #fbbf24a0;
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  animation: f-growUp 0.8s ease forwards;
+  transform: scaleY(0);
+  transform-origin: bottom center;
+}
+.statics-chart-item .chartbox-zhuanzhu {
+  width: 40%;
+  height: 100%;
+  background-color: rgba(100, 160, 255, 0.6);
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  animation: f-growUp 0.8s ease forwards;
+  transform: scaleY(0);
+  transform-origin: bottom center;
+  position: absolute;
+  bottom: 0;
+  right: 5%;
+}
+.statics-chart-item .fenxin-number,
+.statics-chart-item .zhuanzhu-number {
+  color: #ffffff;
+  font-size: 16px;
+  text-align: center;
+  margin-top: -25px;
+  font-weight: 600;
+}
+@keyframes f-growUp {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+
+.bottom-index {
+  display: flex;
+  position: absolute;
+  bottom: -2px;
+  width: 100%;
+  height: 50px;
+  justify-content: center;
+  gap: 15px;
+}
+.bottom-index .fenxinbox,
+.bottom-index .zhuanzhubox {
+  width: 12px;
+  height: 12px;
+  background-color: #fbbf24a0;
+  border-radius: 3px;
+  margin-top: 20px;
+}
+.bottom-index .zhuanzhubox {
+  background-color: rgba(100, 160, 255, 0.6);
+}
+.bottom-index .bottom-index-fenxin,
+.bottom-index .bottom-index-zhuanzhu {
+  color: #c4d2e2;
+  font-size: 16px;
+  margin-top: 15px;
+}
+.bottom-index .bottom-index-fenxin {
+  margin-right: 20px;
+}
+
+.f-conversation {
+  position: relative;
+  width: 92%;
+  left: 4%;
+  top: 190px;
+  border: 1px solid var(--mf-panel-border);
+  background-color: var(--mf-panel);
+  padding: 15px 30px 25px 30px;
+  border-radius: 20px;
+}
+.f-conversation-title {
+  position: relative;
+  width: 100%;
+  height: 50px;
+  color: #c4d2e2;
+  font-size: 18px;
+  line-height: 50px;
+  font-weight: 600;
+}
+.conversation-table {
+  position: relative;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  border-radius: 20px;
+}
+.conversation-item {
+  position: relative;
+  width: 100%;
+  min-height: 210px;
+  background-color: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 20px;
+  margin-top: 10px;
+  padding: 20px 50px;
+}
+.statement-table {
+  margin-bottom: 15px;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  width: 100%;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.left-table {
+  flex-direction: row;
+  display: flex;
+  gap: 80px;
+  height: 50px;
+  align-items: center;
+}
+.left-table .time-table .time {
+  font-size: 16px;
+  color: var(--mf-text);
+}
+.left-table .time-table .date {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--mf-text);
+}
+.left-table .during-table .time-text {
+  font-size: 16px;
+  color: var(--mf-text);
+}
+.left-table .during-table .time {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--mf-text);
+}
+.left-table .change-table .change-text {
+  font-size: 16px;
+  color: var(--mf-text);
+}
+.left-table .change-table .change-time {
+  font-weight: 700;
+  color: var(--mf-text);
+}
+.right-table {
+  flex-direction: row;
+  display: flex;
+  gap: 80px;
+  height: 50px;
+  align-items: center;
+}
+.right-table .process {
+  background-color: rgba(100, 160, 255, 0.25);
+  padding: 5px 10px;
+  border-radius: 15px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--mf-text);
+}
+.right-table .score,
+.right-table .description {
+  background-color: rgba(222, 88, 88, 0.379);
+  color: rgb(218, 51, 51);
+  padding: 5px 10px;
+  border-radius: 15px;
+  font-size: 15px;
+  font-weight: 700;
+  margin-left: -25px;
+}
+.right-table .green {
+  background: #caffde28;
+  color: var(--mf-green);
+}
+
+.self-accession-table {
+  display: flex;
+  flex-direction: row;
+  justify-content: left;
+  gap: 200px;
+  width: 100%;
+  min-height: 70px;
+  align-items: end;
+  position: relative;
+  flex-wrap: wrap;
+}
+.accession-box {
+  display: flex;
+  flex-direction: column;
+}
+.accession-box .accssion-text {
+  margin-bottom: 10px;
+  color: var(--mf-text);
+  font-size: 14px;
+}
+.accession-box .selfStatement {
+  width: 140px;
+  height: 40px;
+  font-size: 18px;
+  font-weight: 600;
+  border-radius: 10px;
+  padding: 8px 12px 8px 25px;
+  background-color: rgba(100, 160, 255, 0.35);
+  border: 1px solid var(--mf-panel-border);
+  color: #ffffff;
+  cursor: pointer;
+  font-family: inherit;
+}
+.accession-box .selfStatement:focus {
+  outline: none;
+  border-color: var(--mf-panel-border);
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+.accession-box .selfStatement > option {
+  color: #333;
+  background-color: #fff;
+  font-size: 14px;
+  padding: 8px;
+  font-weight: 600;
+}
+.save-buttom {
+  background-color: rgba(100, 160, 255, 0.35);
+  border: 1px solid var(--mf-panel-border);
+  padding: 8px 20px;
+  border-radius: 20px;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: 100px;
+  box-shadow: 1px 1px 3px #3b6494;
+  transition: all 0.2s ease;
+  position: absolute;
+  right: 0;
+  font-family: inherit;
+  font-size: 15px;
+}
+.save-buttom:active {
+  transform: scale(0.95);
+}
+.save-buttom:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.accession-tip {
+  margin-top: 15px;
+  display: flex;
+  flex-direction: row;
+  height: 20px;
+  align-items: center;
+  gap: 5px;
+  color: var(--mf-text);
+}
+.accession-tip .accession-tip-text {
+  font-size: 14px;
+}
+.f-saved {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(100, 160, 255, 0.1);
+  border: 1px solid var(--mf-panel-border);
+  font-size: 14px;
+  color: var(--mf-text);
+}
+.f-empty {
+  text-align: center;
+  color: var(--mf-text-dim);
+  padding: 40px;
+}
+.f-bottom {
+  position: relative;
+  width: 92%;
+  left: 4%;
+  top: 190px;
+  height: 40px;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 1439px) {
+  .f-reset { left: 320px; }
+  .self-accession-table { gap: 80px; }
+  .left-table { gap: 40px; }
+  .right-table { gap: 40px; }
+}
+
+@media (max-width: 1023px) {
+  .f-state { flex-wrap: wrap; height: auto; gap: 16px; top: 110px; }
+  .f-state .state-item { width: calc(50% - 8px); min-height: 120px; }
+  .f-statics { height: auto; padding-bottom: 70px; }
+  .statics-chart { position: relative; left: 0; top: 0; width: 100%; height: 300px; }
+  .bottom-index { bottom: 8px; }
+  .self-accession-table { gap: 32px; }
+  .save-buttom { position: static; margin-left: 0; }
+}
+
+@media (max-width: 767px) {
+  .f-first-row { top: 20px; height: auto; flex-wrap: wrap; gap: 12px; }
+  .f-datepicker { position: relative; left: 0; width: 100%; }
+  .f-reset { position: relative; left: 0; top: 0; width: 100%; }
+  /* Titles are indented by 30px in the reference; that indent overflows a
+     390px viewport, so it is reset here along with the chart gutters. */
+  .f-statics-title {
+    margin-left: 16px;
+    width: calc(100% - 32px);
+  }
+  .bottom-index {
+    flex-wrap: wrap;
+    height: auto;
+    gap: 8px;
+    padding-bottom: 8px;
+    /* Absolutely positioned children size against the padding box, so 100%
+       here would be the padded width and overrun a 390px viewport. */
+    left: 16px;
+    width: calc(100% - 32px);
+    justify-content: flex-start;
+  }
+  .bottom-index .bottom-index-fenxin { margin-right: 8px; }
+  .f-state .state-item { width: 100%; }
+  .f-description, .f-statics, .f-conversation, .f-bottom { left: 0; width: 100%; }
+  .f-statics, .f-conversation { padding-left: 16px; padding-right: 16px; }
+  .conversation-item { padding: 16px; }
+  .left-table, .right-table { gap: 20px; height: auto; flex-wrap: wrap; }
+  .right-table .score, .right-table .description { margin-left: 0; }
+  .statics-chart-item { width: 12%; }
+  .statics-chart-item .date-week { gap: 6px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statics-chart-item .chartbox-fenxin,
+  .statics-chart-item .chartbox-zhuanzhu {
+    animation-duration: 0.01ms;
+    transform: scaleY(1);
+  }
+}

@@ -38,6 +38,7 @@ async function main() {
       const api = load("../src/api.ts", {
         "openapi-fetch": { default: () => ({}) },
         "./prediction-state": {}, "./report-state": {}, "./baseline-state": {},
+        "./date-utils": load("../src/date-utils.ts", {}),
       }, {
         setTimeout(fn, delay) {
           timers.set(++nextTimer, { fn, delay });

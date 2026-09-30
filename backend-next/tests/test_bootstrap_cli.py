@@ -21,7 +21,10 @@ async def test_request_bootstrap_url_uses_protected_ticket_endpoint(
         port=8765,
         data_dir=tmp_path,
     )
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.test:3128")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.example.test:3128")
     captured: dict[str, object] = {}
+    client_options: dict[str, object] = {}
 
     class Response:
         def raise_for_status(self) -> None:
@@ -41,11 +44,16 @@ async def test_request_bootstrap_url_uses_protected_ticket_endpoint(
             captured.update(url=url, headers=headers)
             return Response()
 
-    monkeypatch.setattr("mindflow.bootstrap.httpx.AsyncClient", lambda **_: Client())
+    def client_factory(**kwargs: object) -> Client:
+        client_options.update(kwargs)
+        return Client()
+
+    monkeypatch.setattr("mindflow.bootstrap.httpx.AsyncClient", client_factory)
 
     result = await request_bootstrap_url(settings)
 
     assert result == "http://127.0.0.1:8765/#bootstrap=ticket-value"
+    assert client_options["trust_env"] is False
     assert captured == {
         "url": "http://127.0.0.1:8765/api/v1/auth/bootstrap/ticket",
         "headers": {"Authorization": "Bearer system-token"},

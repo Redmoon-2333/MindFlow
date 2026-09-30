@@ -174,6 +174,20 @@ class DiagnosticsListResponse(BaseModel):
     next_offset: int | None = None
 
 
+class LLMProviderStatusResponse(BaseModel):
+    """Allowlisted LLM configuration summary — no credentials, no probing.
+
+    ``configured`` reports whether a credential exists locally; it is a
+    configuration fact, not a connectivity check, and the UI must label it
+    accordingly.
+    """
+
+    provider: str
+    model: str
+    configured: bool
+    ollama_enabled: bool
+
+
 # ── Training readiness schemas ───────────────────────────────────────────
 
 

@@ -1,0 +1,67 @@
+/* Shared MUI DatePicker skin.
+ *
+ * The reference styles the picker inline via `sx` on three pages (focus,
+ * activities, reports) with identical values. Centralising them here keeps a
+ * single source for those values and lets each page wrap the picker in
+ * `.mf-picker` instead of re-declaring the same `sx` block.
+ *
+ * Only stable public MUI class names are targeted (no generated hashes), so
+ * the rules survive MUI's internal class-name generation. */
+
+.mf-picker .MuiTextField-root {
+  background-color: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 20px;
+}
+.mf-picker .MuiFormLabel-root {
+  color: #ffffff !important;
+  font-weight: bold;
+  margin-left: 10px;
+}
+.mf-picker fieldset {
+  border: none !important;
+}
+.mf-picker .MuiSvgIcon-root {
+  color: #ffffff;
+  font-size: 28px;
+}
+.mf-picker .MuiButtonBase-root {
+  transform: translateX(-10px);
+}
+.mf-picker .MuiPickersSectionList-sectionContent,
+.mf-picker .MuiPickersInputBase-sectionAfter {
+  color: #ffffff !important;
+  font-size: 20px;
+}
+.mf-picker input {
+  color: #ffffff !important;
+  caret-color: #ffffff !important;
+}
+.mf-picker .MuiInputBase-inputPlaceholder {
+  color: #ffffff !important;
+}
+.mf-picker .MuiPickersInputBase-sectionsContainer {
+  padding: 10px 10px;
+}
+.mf-picker .Mui-focused {
+  background-color: var(--mf-panel) !important;
+}
+
+/* Calendar popover (reference: `#172E50`, 20px radius, 10px top gap). */
+.f-calendar .MuiPaper-root {
+  background-color: #172e50;
+  border-radius: 20px;
+  margin-top: 10px;
+  border: 1px solid var(--mf-panel-border);
+}
+.f-calendar .MuiSvgIcon-root,
+.f-calendar .MuiPickerDay-root,
+.f-calendar .MuiDayCalendar-weekDayLabel {
+  color: #ffffff;
+}
+.f-calendar .MuiPickersDay-root:not(.Mui-selected) {
+  color: #ffffff;
+}
+.f-calendar .MuiTypography-root {
+  color: #ffffff;
+}

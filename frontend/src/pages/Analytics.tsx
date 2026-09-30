@@ -1,9 +1,17 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import Timeline from "@mui/lab/Timeline";
+import TimelineItem from "@mui/lab/TimelineItem";
+import TimelineSeparator from "@mui/lab/TimelineSeparator";
+import TimelineConnector from "@mui/lab/TimelineConnector";
+import TimelineContent from "@mui/lab/TimelineContent";
+import TimelineDot from "@mui/lab/TimelineDot";
+import AdjustIcon from "@mui/icons-material/Adjust";
 import {
   getAnalyticsPatterns,
   getBaseline,
   getProfile,
   getModelStatus,
+  getAiProviderStatus,
   runAttribution,
   getErrorMessage,
   ApiError,
@@ -15,9 +23,10 @@ import type {
   BehavioralProfile,
   ModelStatus,
 } from "../api";
+import "./analytics.css";
 
 const DAYS_OPTIONS = [7, 14, 30, 90];
-const TABS = ["模式分析", "个人画像", "拖延归因", "模型状态"];
+const SECTION_TITLES = ["模式分析", "个人画像", "拖延归因"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -35,41 +44,90 @@ function profileDetailTrend(value: unknown): string {
   return value.trend;
 }
 
+/** One row of the reference's dual tables. */
+interface TableRow {
+  left: string;
+  right: string;
+}
+
+function toHighSwitchRows(patterns: AnalyticsPatterns | null): TableRow[] {
+  return (patterns?.high_switch_periods ?? []).map((p, i) => ({
+    left:
+      p.period ||
+      p.label ||
+      (p.hour != null
+        ? `${String(p.hour).padStart(2, "0")}:00 - ${String(p.hour + 1).padStart(2, "0")}:00`
+        : `时段 ${i + 1}`),
+    right: p.switch_count != null ? `${p.switch_count}次切换` : p.intensity || p.level || "—",
+  }));
+}
+
+function toTriggerAppRows(patterns: AnalyticsPatterns | null): TableRow[] {
+  return (patterns?.trigger_apps ?? []).map((a, i) => ({
+    left: a.app || a.app_name || a.name || `应用 ${i + 1}`,
+    right: a.count != null ? `${a.count}次` : String(a.percentage ?? "—"),
+  }));
+}
+
 export default function Analytics() {
   const [days, setDays] = useState(14);
-  const [activeTab, setActiveTab] = useState(TABS[0]);
 
   const [patterns, setPatterns] = useState<AnalyticsPatterns | null>(null);
   const [baseline, setBaseline] = useState<BaselineSummary | null>(null);
   const [profile, setProfile] = useState<BehavioralProfile | null>(null);
   const [modelStatus, setModelStatusState] = useState<ModelStatus | null>(null);
+  const [providerStatus, setProviderStatus] = useState<{ configured: boolean; model: string } | null>(null);
   const [attribution, setAttribution] = useState<AttributionResponse | null>(null);
 
   const [loading, setLoading] = useState<Record<string, boolean>>({});
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const error = Object.values(errors).filter(Boolean).join("；");
+  const setSectionError = useCallback((section: string, message: string | null) => {
+    setErrors((current) => ({ ...current, [section]: message }));
+  }, []);
+
+  // Scroll-linked progress rail — the reference highlights the section whose
+  // title has crossed the container's 40% line, and pins "拖延归因" once the
+  // bottom block enters the viewport.
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const titleRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  /** Latest-request guards (audit F3): each series owns its own sequence so a
+   *  slow 7-day response can neither commit data, clear the spinner, nor
+   *  overwrite the error of a newer 30-day request. */
+  const patternsSeqRef = useRef(0);
+  const profileSeqRef = useRef(0);
 
   const fetchPatterns = useCallback(async () => {
+    const seq = ++patternsSeqRef.current;
     setLoading((p) => ({ ...p, patterns: true }));
-    setError(null);
+    setPatterns(null);
+    setSectionError("patterns", null);
     try {
       const data = await getAnalyticsPatterns(days);
+      if (seq !== patternsSeqRef.current) return; // stale response
       setPatterns(data);
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "模式分析加载失败"));
+      if (seq !== patternsSeqRef.current) return;
+      // Never keep the previous range's rows on screen under the new label.
+      setPatterns(null);
+      setSectionError("patterns", getErrorMessage(e, "模式分析加载失败"));
     } finally {
-      setLoading((p) => ({ ...p, patterns: false }));
+      if (seq === patternsSeqRef.current) setLoading((p) => ({ ...p, patterns: false }));
     }
-  }, [days]);
+  }, [days, setSectionError]);
 
   const fetchBaseline = useCallback(async () => {
     setLoading((p) => ({ ...p, baseline: true }));
-    setError(null);
+    setSectionError("baseline", null);
     try {
       const state = await getBaseline();
       if (!state.ok) {
         // Malformed wire payload — hide the comparison card, surface the error.
         setBaseline(null);
-        setError(getErrorMessage(new ApiError("基线数据格式无效", 500), "基线数据加载失败"));
+        setSectionError("baseline", getErrorMessage(new ApiError("基线数据格式无效", 500), "基线数据加载失败"));
         return;
       }
       setBaseline(state);
@@ -79,399 +137,404 @@ export default function Analytics() {
         // (same as ModelCenter) instead of a red error banner.
         setBaseline(null);
       } else {
-        setError(getErrorMessage(e, "基线数据加载失败"));
+        setSectionError("baseline", getErrorMessage(e, "基线数据加载失败"));
       }
     } finally {
       setLoading((p) => ({ ...p, baseline: false }));
     }
-  }, []);
+  }, [setSectionError]);
 
   const fetchProfile = useCallback(async () => {
+    const seq = ++profileSeqRef.current;
     setLoading((p) => ({ ...p, profile: true }));
-    setError(null);
+    setProfile(null);
+    setSectionError("profile", null);
     try {
       const data = await getProfile(days);
+      if (seq !== profileSeqRef.current) return; // stale response
       setProfile(data);
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "个人画像加载失败"));
+      if (seq !== profileSeqRef.current) return;
+      setProfile(null);
+      setSectionError("profile", getErrorMessage(e, "个人画像加载失败"));
     } finally {
-      setLoading((p) => ({ ...p, profile: false }));
+      if (seq === profileSeqRef.current) setLoading((p) => ({ ...p, profile: false }));
     }
-  }, [days]);
+  }, [days, setSectionError]);
 
   const fetchModelStatus = useCallback(async () => {
     setLoading((p) => ({ ...p, modelStatus: true }));
-    setError(null);
+    setSectionError("modelStatus", null);
     try {
       const data = await getModelStatus();
       setModelStatusState(data);
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "模型状态加载失败"));
+      setSectionError("modelStatus", getErrorMessage(e, "模型状态加载失败"));
     } finally {
       setLoading((p) => ({ ...p, modelStatus: false }));
     }
+  }, [setSectionError]);
+
+  const fetchProviderStatus = useCallback(async () => {
+    try {
+      const data = await getAiProviderStatus();
+      setProviderStatus({ configured: data.configured, model: data.model });
+    } catch {
+      // Provider status is optional decoration on this page; a failure here
+      // must not blank the section (the other fetches report their own).
+    }
   }, []);
 
-  useEffect(() => { fetchBaseline(); fetchModelStatus(); }, [fetchBaseline, fetchModelStatus]);
-  useEffect(() => { fetchPatterns(); fetchProfile(); }, [fetchPatterns, fetchProfile]);
+  useEffect(() => {
+    fetchBaseline();
+    fetchModelStatus();
+    fetchProviderStatus();
+  }, [fetchBaseline, fetchModelStatus, fetchProviderStatus]);
+  useEffect(() => {
+    const patternRequests = patternsSeqRef;
+    const profileRequests = profileSeqRef;
+    fetchPatterns();
+    fetchProfile();
+    return () => {
+      patternRequests.current++;
+      profileRequests.current++;
+    };
+  }, [fetchPatterns, fetchProfile]);
+
+  useEffect(() => {
+    const targets = titleRefs.current.filter(Boolean) as HTMLDivElement[];
+    const bottomEl = bottomRef.current;
+    const page = pageRef.current;
+    if (!bottomEl || !page) return;
+
+    let lastBottom = false;
+
+    const pickTitleActive = () => {
+      if (lastBottom) {
+        setActiveIndex(2);
+        return;
+      }
+      const rect = page.getBoundingClientRect();
+      const triggerBottom = rect.top + rect.height * 0.4;
+      let bestIdx = 0;
+      let bestBottom = -Infinity;
+      targets.forEach((t, i) => {
+        const tRect = t.getBoundingClientRect();
+        if (tRect.top < triggerBottom) {
+          const bottom = tRect.bottom - rect.top;
+          if (bottom > bestBottom) {
+            bestBottom = bottom;
+            bestIdx = i;
+          }
+        }
+      });
+      setActiveIndex(bestIdx);
+    };
+
+    const titleObserver = new IntersectionObserver(() => pickTitleActive(), {
+      root: page,
+      rootMargin: "0px 0px -60% 0px",
+      threshold: [0, 0.25, 0.5, 1],
+    });
+    targets.forEach((t) => titleObserver.observe(t));
+
+    const bottomObserver = new IntersectionObserver(
+      (entries) => {
+        const atBottom = entries.some((entry) => entry.isIntersecting);
+        lastBottom = atBottom;
+        if (atBottom) setActiveIndex(2);
+        else pickTitleActive();
+      },
+      { root: page, rootMargin: "0px 0px -40px 0px", threshold: 0 },
+    );
+    bottomObserver.observe(bottomEl);
+
+    pickTitleActive();
+
+    return () => {
+      titleObserver.disconnect();
+      bottomObserver.disconnect();
+    };
+  }, [loading.patterns, loading.profile]);
 
   const handleAttribution = async () => {
     setLoading((p) => ({ ...p, attribution: true }));
-    setError(null);
+    setSectionError("attribution", null);
     setAttribution(null);
     try {
       const data = await runAttribution();
       setAttribution(data);
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "归因分析失败"));
+      setSectionError("attribution", getErrorMessage(e, "归因分析失败"));
     } finally {
       setLoading((p) => ({ ...p, attribution: false }));
     }
   };
 
-  const renderLoading = (key: string) => {
-    if (loading[key]) return <div className="spinner" />;
-    return null;
-  };
+  const highSwitchRows = toHighSwitchRows(patterns);
+  const triggerAppRows = toTriggerAppRows(patterns);
+  const profileDetails = profile?.details ? Object.entries(profile.details) : [];
 
-  const badgeClass = (value: unknown) => {
-    const map: Record<string, string> = { high: "badge-danger", medium: "badge-warning", low: "badge-success" };
-    return typeof value === "string" ? map[value.toLowerCase()] || "badge-info" : "badge-info";
-  };
+  const renderTitle = (text: string, index: number) => (
+    <div
+      className="title"
+      ref={(el) => {
+        titleRefs.current[index] = el;
+      }}
+    >
+      {text}
+    </div>
+  );
 
   return (
-    <div>
-      <div className="header">
-        <h1>行为洞察</h1>
-        <p>深度分析你的行为模式，识别拖延根源，获取个性化洞察</p>
-      </div>
+    <div className="analytics" ref={pageRef}>
+      <Timeline className="position">
+        {SECTION_TITLES.map((label, index) => (
+          <TimelineItem key={label}>
+            <TimelineContent className={activeIndex === index ? "is-active" : undefined}>{label}</TimelineContent>
+            <TimelineSeparator>
+              <TimelineDot sx={{ bgcolor: "transparent", boxShadow: "none", p: 0 }}>
+                <AdjustIcon sx={activeIndex === index ? { color: "#1890ff" } : { color: "#6a89ad" }} />
+              </TimelineDot>
+              {index < SECTION_TITLES.length - 1 && <TimelineConnector className="line" />}
+            </TimelineSeparator>
+          </TimelineItem>
+        ))}
+      </Timeline>
 
-      <div className="flex flex-between mb24">
-        <div className="tabs" style={{ marginBottom: 0 }}>
-          {TABS.map((t) => (
-            <button
-              key={t}
-              className={`tab${activeTab === t ? " active" : ""}`}
-              onClick={() => setActiveTab(t)}
-            >
-              {t}
-            </button>
+      <div className="time-box">
+        <div className="time-text">时间范围</div>
+        <select
+          className="time"
+          value={`近${days}天`}
+          aria-label="时间范围"
+          onChange={(e) => {
+            const parsed = Number(String(e.target.value).replace(/\D/g, ""));
+            if (Number.isFinite(parsed) && parsed > 0) setDays(parsed);
+          }}
+        >
+          {DAYS_OPTIONS.map((d) => (
+            <option key={d} value={`近${d}天`}>
+              近{d}天
+            </option>
           ))}
-        </div>
-
-        {(activeTab === "模式分析" || activeTab === "个人画像") && (
-          <div className="flex gap8" style={{ alignItems: "center" }}>
-            <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>时间范围</span>
-            <select
-              value={days}
-              onChange={(e) => setDays(Number(e.target.value))}
-              style={{ width: "auto" }}
-            >
-              {DAYS_OPTIONS.map((d) => (
-                <option key={d} value={d}>近 {d} 天</option>
-              ))}
-            </select>
-          </div>
-        )}
+        </select>
       </div>
 
       {error && (
-        <div className="error-box">
+        <div className="error-box error-slot" role="alert">
           {error}
-          <button className="btn btn-sm" style={{ marginLeft: 12 }} onClick={() => setError(null)}>
+          <button className="btn btn-sm" style={{ marginLeft: 12 }} onClick={() => setErrors({})}>
             关闭
           </button>
         </div>
       )}
 
-      {/* ── 模式分析 Tab ── */}
-      {activeTab === "模式分析" && (
-        <div className="flex gap16" style={{ flexDirection: "column" }}>
-          <div className="flex gap16">
-            <div className="card" style={{ flex: 1 }}>
-              <h3>高切换时段</h3>
-              {renderLoading("patterns")}
-              {patterns?.high_switch_periods?.length > 0 ? (
-                <ul style={{ listStyle: "none", padding: 0 }}>
-                  {patterns.high_switch_periods.map((p, i) => (
-                    <li
-                      key={i}
-                      className="flex flex-between"
-                      style={{
-                        padding: "8px 0",
-                        borderBottom: "1px solid var(--color-border)",
-                        fontSize: 13,
-                      }}
-                    >
-                      <span>{p.period || p.label || (p.hour != null ? `${String(p.hour).padStart(2, "0")}:00 - ${String(p.hour + 1).padStart(2, "0")}:00` : `时段 ${i + 1}`)}</span>
-                      <span className={`badge ${badgeClass(p.intensity || p.level)}`}>
-                        {p.switch_count != null ? `${p.switch_count} 次切换` : p.intensity || p.level}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                !loading.patterns && (
-                  <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>暂无数据</p>
-                )
-              )}
-            </div>
+      {renderTitle("模式分析", 0)}
 
-            <div className="card" style={{ flex: 1 }}>
-              <h3>触发应用 Top</h3>
-              {renderLoading("patterns")}
-              {patterns?.trigger_apps?.length > 0 ? (
-                <ul style={{ listStyle: "none", padding: 0 }}>
-                  {patterns.trigger_apps.map((a, i) => (
-                    <li
-                      key={i}
-                      className="flex flex-between"
-                      style={{
-                        padding: "8px 0",
-                        borderBottom: "1px solid var(--color-border)",
-                        fontSize: 13,
-                      }}
-                    >
-                      <span>{a.app || a.app_name || a.name || `应用 ${i + 1}`}</span>
-                      <span className="badge badge-warning">
-                        {a.count != null ? `${a.count} 次` : a.percentage}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                !loading.patterns && (
-                  <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>暂无数据</p>
-                )
-              )}
-            </div>
-          </div>
-
-          {baseline && (
-            <div className="card">
-              <h3>基线对比</h3>
-              <div className="flex gap16" style={{ fontSize: 13 }}>
-                <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>平均切换次数：</span>
-                  {baseline.mean_app_switch_count != null ? baseline.mean_app_switch_count : "N/A"}
-                </div>
-                <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>活跃时间占比：</span>
-                  {baseline.mean_active_seconds_ratio != null ? `${(baseline.mean_active_seconds_ratio * 100).toFixed(1)}%` : "N/A"}
-                </div>
-                <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>空闲时间占比：</span>
-                  {baseline.mean_idle_ratio != null ? `${(baseline.mean_idle_ratio * 100).toFixed(1)}%` : "N/A"}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── 个人画像 Tab ── */}
-      {activeTab === "个人画像" && (
-        <div className="flex gap16" style={{ flexDirection: "column" }}>
-          {renderLoading("profile")}
-          {profile && !loading.profile && (
-            <>
-              <div className="kpi-row" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
-                <div className="stat-card">
-                  <div className="label">专注高峰</div>
-                  <div className="value" style={{ fontSize: 22 }}>
-                    {profile.peak_focus || "N/A"}
-                  </div>
-                </div>
-                <div className="stat-card">
-                  <div className="label">效率应用</div>
-                  <div className="value" style={{ fontSize: 22 }}>
-                    {profile.productivity_apps?.length ?? 0}
-                  </div>
-                  <div className="sub" style={{ color: "var(--color-text-tertiary)" }}>
-                    {Array.isArray(profile.productivity_apps)
-                      ? profile.productivity_apps.slice(0, 3).join(", ")
-                      : "N/A"}
-                  </div>
-                </div>
-                <div className="stat-card">
-                  <div className="label">平均专注块</div>
-                  <div className="value" style={{ fontSize: 22 }}>
-                    {profile.avg_focus_block_min != null
-                      ? `${profile.avg_focus_block_min}m`
-                      : "N/A"}
-                  </div>
-                </div>
-                <div className="stat-card">
-                  <div className="label">触发应用</div>
-                  <div className="value" style={{ fontSize: 22 }}>
-                    {profile.trigger_apps?.length ?? 0}
-                  </div>
-                  <div className="sub" style={{ color: "var(--color-text-tertiary)" }}>
-                    {Array.isArray(profile.trigger_apps)
-                      ? profile.trigger_apps.slice(0, 3).join(", ")
-                      : "N/A"}
-                  </div>
-                </div>
-              </div>
-
-              <div className="card">
-                <h3>详细画像</h3>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>指标</th>
-                      <th>数值</th>
-                      <th>趋势</th>
+      <div className="top-box">
+        <div className="high-change">
+          <div className="high-change-title">高切换时段</div>
+          <div className="f-box">
+            {loading.patterns ? (
+              <div className="spinner" />
+            ) : highSwitchRows.length > 0 ? (
+              <table className="simple-table">
+                <tbody>
+                  {highSwitchRows.map((row, i) => (
+                    <tr key={i}>
+                      {/* The reference pills BOTH cells (table.scss sty=0) */}
+                      <td>
+                        <div className="full-box1">{row.left}</div>
+                      </td>
+                      <td>
+                        <div className="full-box1">{row.right}</div>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {profile.details &&
-                      Object.entries(profile.details).map(([key, value]) => {
-                        const trend = profileDetailTrend(value);
-                        return (
-                          <tr key={key}>
-                            <td>{key}</td>
-                            <td>{profileDetailValue(value)}</td>
-                            <td>
-                              <span className={`badge ${trend === "up" ? "badge-success" : trend === "down" ? "badge-danger" : "badge-info"}`}>
-                                {trend}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-          {!profile && !loading.profile && (
-            <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>暂无数据</p>
-          )}
-        </div>
-      )}
-
-      {/* ── 拖延归因 Tab ── */}
-      {activeTab === "拖延归因" && (
-        <div>
-          <div className="mb16">
-            <button className="btn" onClick={handleAttribution} disabled={loading.attribution}>
-              {loading.attribution ? "分析中..." : "运行归因分析"}
-            </button>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="f-empty">暂无数据</div>
+            )}
           </div>
+        </div>
 
-          {renderLoading("attribution")}
+        <div className="toggle-app">
+          <div className="toggle-app-title">触发应用 Top</div>
+          <div className="f-box">
+            {loading.patterns ? (
+              <div className="spinner" />
+            ) : triggerAppRows.length > 0 ? (
+              <table className="simple-table">
+                <tbody>
+                  {triggerAppRows.map((row, i) => (
+                    <tr key={i}>
+                      {/* The reference pills BOTH cells (table.scss sty=1) */}
+                      <td>
+                        <div className="full-box2">{row.left}</div>
+                      </td>
+                      <td>
+                        <div className="full-box2">{row.right}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="f-empty">暂无数据</div>
+            )}
+          </div>
+        </div>
+      </div>
 
-          {attribution && !loading.attribution && (
-            <div className="flex gap16" style={{ flexDirection: "column" }}>
-              {attribution.results && attribution.results.length > 0 ? (
-                attribution.results.map((r, i) => (
-                  <div className="card" key={i}>
-                    <div className="flex flex-between mb16">
-                      <h3 style={{ margin: 0 }}>
-                        {r.procrastination_type || r.type || `归因结果 ${i + 1}`}
-                      </h3>
-                      <span className={`badge ${badgeClass(r.confidence)}`}>
-                        置信度: {r.confidence != null ? r.confidence : "N/A"}
-                      </span>
-                    </div>
-                    {r.cbt_technique && (
-                      <div className="mb16">
-                        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
-                          CBT 技术
+      <div className="second-box">
+        <div className="box-title">基线对比</div>
+        <div className="second-content">
+          <div className="second-content-item">
+            平均切换次数：
+            <b>{baseline?.mean_app_switch_count ?? "N/A"}</b>
+          </div>
+          <div className="second-content-item">
+            活跃时间占比：
+            <b>
+              {baseline?.mean_active_seconds_ratio != null
+                ? `${(baseline.mean_active_seconds_ratio * 100).toFixed(1)}%`
+                : "N/A"}
+            </b>
+          </div>
+          <div className="second-content-item">
+            空闲时间占比：
+            <b>
+              {baseline?.mean_idle_ratio != null ? `${(baseline.mean_idle_ratio * 100).toFixed(1)}%` : "N/A"}
+            </b>
+          </div>
+        </div>
+      </div>
+
+      {renderTitle("个人画像", 1)}
+
+      <div className="third-box">
+        <div className="third-box-item">
+          <div className="third-item-title">专注高峰</div>
+          <div className="third-item-content">{profile?.peak_focus || "N/A"}</div>
+        </div>
+        <div className="third-box-item">
+          <div className="third-item-title">效率应用</div>
+          <div className="third-item-content">{profile ? profile.productivity_apps?.length ?? 0 : "—"}</div>
+          <div className="detail">
+            {Array.isArray(profile?.productivity_apps) ? profile.productivity_apps.slice(0, 3).join(", ") : "N/A"}
+          </div>
+        </div>
+        <div className="third-box-item">
+          <div className="third-item-title">平均专注块</div>
+          <div className="third-item-content">
+            {profile?.avg_focus_block_min != null ? `${profile.avg_focus_block_min}m` : "N/A"}
+          </div>
+        </div>
+        <div className="third-box-item">
+          <div className="third-item-title">触发应用</div>
+          <div className="third-item-content">{profile ? profile.trigger_apps?.length ?? 0 : "—"}</div>
+          <div className="detail">
+            {Array.isArray(profile?.trigger_apps) ? profile.trigger_apps.slice(0, 3).join(", ") : "N/A"}
+          </div>
+        </div>
+      </div>
+
+      <div className="fourth-box">
+        <div className="fourth-box-title">详细画像</div>
+        <div className="table-box">
+          {loading.profile ? (
+            <div className="spinner" />
+          ) : profileDetails.length === 0 ? (
+            <div className="f-empty">暂无数据</div>
+          ) : (
+            <table className="simple-table">
+              <thead>
+                <tr>
+                  <th>指标</th>
+                  <th>数值</th>
+                  <th>趋势</th>
+                </tr>
+              </thead>
+              <tbody>
+                {profileDetails.map(([key, value]) => {
+                  const trend = profileDetailTrend(value);
+                  return (
+                    <tr key={key}>
+                      <td>{key}</td>
+                      <td>{profileDetailValue(value)}</td>
+                      <td>
+                        <span
+                          className={`badge ${trend === "up" ? "badge-success" : trend === "down" ? "badge-danger" : "badge-info"}`}
+                        >
+                          {trend}
                         </span>
-                        <p style={{ fontSize: 13, marginTop: 4 }}>{r.cbt_technique}</p>
-                      </div>
-                    )}
-                    {r.evidence && (
-                      <div>
-                        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
-                          证据
-                        </span>
-                        <p style={{ fontSize: 13, marginTop: 4 }}>{r.evidence}</p>
-                      </div>
-                    )}
-                  </div>
-                ))
-              ) : (
-                <div className="card">
-                  <h3>归因结果</h3>
-                  <div className="mb16">
-                    <span className={`badge ${badgeClass(attribution.confidence)}`}>
-                      置信度: {attribution.confidence != null ? attribution.confidence : "N/A"}
-                    </span>
-                  </div>
-                  {attribution.procrastination_type && (
-                    <p style={{ fontSize: 13, marginBottom: 12 }}>
-                      <strong>拖延类型：</strong>
-                      {attribution.procrastination_type}
-                    </p>
-                  )}
-                  {attribution.cbt_technique && (
-                    <div className="mb16">
-                      <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>CBT 技术</span>
-                      <p style={{ fontSize: 13, marginTop: 4 }}>{attribution.cbt_technique}</p>
-                    </div>
-                  )}
-                  {attribution.evidence && (
-                    <div>
-                      <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>证据</span>
-                      <p style={{ fontSize: 13, marginTop: 4 }}>{attribution.evidence}</p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {!attribution && !loading.attribution && (
-            <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
-              点击上方按钮运行归因分析，识别拖延模式
-            </p>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
-      )}
+      </div>
 
-      {/* ── 模型状态 Tab ── */}
-      {activeTab === "模型状态" && (
-        <div>
-          {renderLoading("modelStatus")}
-          {modelStatus && !loading.modelStatus && (
-            <div className="card">
-              <h3>ML 模型状态</h3>
-              <div className="flex gap16" style={{ flexDirection: "column", fontSize: 13 }}>
-                <div className="flex flex-between">
-                  <span style={{ color: "var(--color-text-secondary)" }}>模型加载状态</span>
-                  <span className={`badge ${modelStatus.loaded ? "badge-success" : "badge-danger"}`}>
-                    {modelStatus.loaded ? "已加载" : "未加载"}
-                  </span>
-                </div>
-                {modelStatus.version && (
-                  <div className="flex flex-between">
-                    <span style={{ color: "var(--color-text-secondary)" }}>版本</span>
-                    <span>{modelStatus.version}</span>
-                  </div>
-                )}
-                {modelStatus.model_name && (
-                  <div className="flex flex-between">
-                    <span style={{ color: "var(--color-text-secondary)" }}>模型名称</span>
-                    <span>{modelStatus.model_name}</span>
-                  </div>
-                )}
-                {modelStatus.last_updated && (
-                  <div className="flex flex-between">
-                    <span style={{ color: "var(--color-text-secondary)" }}>最后更新</span>
-                    <span>{modelStatus.last_updated}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-          {!modelStatus && !loading.modelStatus && (
-            <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>暂无数据</p>
-          )}
+      {renderTitle("拖延归因", 2)}
+
+      <div className="fifth-box" ref={bottomRef}>
+        <div className="left-box">
+          <div className="left-box-title1">归因结果</div>
+          <div className="left-box-content1">
+            置信度：{attribution?.confidence != null ? attribution.confidence : "—"}
+          </div>
+          <div className="left-box-content2">
+            <b>拖延类型：</b>
+            {attribution?.procrastination_type ?? attribution?.results?.[0]?.procrastination_type ?? "—"}
+          </div>
+          <div className="left-box-title2">CBT 技术</div>
+          <div className="left-box-content2">
+            {attribution?.cbt_technique ?? attribution?.results?.[0]?.cbt_technique ?? "—"}
+          </div>
+          <div className="left-box-title2">证据</div>
+          <div className="left-box-content3">
+            {attribution?.evidence ?? attribution?.results?.[0]?.evidence ?? "尚未运行归因分析"}
+          </div>
+          <button
+            type="button"
+            className="btn attribution-action"
+            onClick={handleAttribution}
+            disabled={loading.attribution}
+          >
+            {loading.attribution ? "分析中..." : "运行归因分析"}
+          </button>
         </div>
-      )}
+
+        <div className="right-box">
+          <div className="right-box-title1">ML 模型状态</div>
+          <div className="content1">
+            模型加载状态:
+            <span
+              className={`model-pill ${modelStatus?.loaded ? "model-pill--on" : "model-pill--off"}`}
+            >
+              {modelStatus?.loaded ? "已加载" : "未加载"}
+            </span>
+          </div>
+          <div className="model-meta">
+            {providerStatus
+              ? providerStatus.configured
+                ? `LLM 已配置 · ${providerStatus.model}`
+                : "LLM 未配置"
+              : "LLM 状态未知"}
+          </div>
+          <div className="model-meta">
+            {modelStatus?.version ? `模型版本 ${modelStatus.version}` : "规则引擎模式"}
+          </div>
+          <div className="model-meta">
+            {modelStatus?.loaded ? `模式 ${modelStatus.mode ?? "ready"}` : "暂无已加载模型"}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,0 +1,476 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Behaviour insights — migration of the reference `pages/Analytics/Analytics.scss`.
+   Verified geometry: dual 400px tables, baseline 120px, four profile cards
+   160px, detail table 400px, bottom pair 270px, radius 30px, section titles
+   25px with the two decorative rules.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.analytics {
+  width: 95%;
+  min-height: calc(100vh - 65px);
+  background: transparent;
+  padding: 40px 50px;
+  position: relative;
+}
+
+/* ── Fixed right-hand progress rail (reference: MUI Timeline) ───────────── */
+.position {
+  position: fixed;
+  right: 0.5%;
+  top: 60%;
+  width: 300px;
+  transform: translateY(-50%);
+  z-index: 5;
+}
+.position .line {
+  height: 80px;
+}
+.position .MuiTimelineContent-root {
+  padding-top: 7px;
+  padding-right: 0;
+  position: relative;
+  transform: translateX(20px);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--mf-text-dim);
+}
+.position .MuiTimelineContent-root.is-active {
+  color: #1890ff;
+}
+.position .MuiTimelineDot-root {
+  margin: 5px 0;
+}
+
+/* ── Fixed right-hand time range ────────────────────────────────────────── */
+.analytics .time-box {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  right: 1.5%;
+  top: 23%;
+  z-index: 5;
+}
+.analytics .time-box .time-text {
+  margin-bottom: 15px;
+  display: flex;
+  font-size: 18px;
+  font-weight: 600;
+  align-items: center;
+  justify-content: center;
+  color: var(--mf-text);
+}
+.analytics .time-box .time {
+  width: 110px;
+  height: 40px;
+  font-size: 18px;
+  font-weight: 600;
+  border-radius: 20px;
+  padding: 8px 12px 8px 20px;
+  background-color: rgba(100, 160, 255, 0.35);
+  border: 1px solid var(--mf-panel-border);
+  color: #ffffff;
+  cursor: pointer;
+  font-family: inherit;
+}
+.analytics .time-box .time:focus {
+  outline: none;
+  border-color: var(--mf-panel-border);
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+.analytics .time-box .time > option {
+  color: #333;
+  background-color: #fff;
+  font-size: 14px;
+  padding: 8px;
+  font-weight: 600;
+}
+
+/* ── Section title with the two gradient rules ──────────────────────────── */
+.analytics .title {
+  font-size: 25px;
+  position: relative;
+  margin: 0 auto;
+  width: 100px;
+  transform: translateX(-25%);
+  margin-top: -10px;
+  margin-bottom: 30px;
+  font-weight: 600;
+  color: var(--mf-text);
+}
+.analytics .title::before {
+  content: "";
+  position: absolute;
+  right: calc(100% + 20px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 50px;
+  height: 2px;
+  background: linear-gradient(to right, transparent, #64a0ff);
+}
+.analytics .title::after {
+  content: "";
+  position: absolute;
+  left: calc(100% + 20px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 50px;
+  height: 2px;
+  background: linear-gradient(to left, transparent, #64a0ff);
+}
+
+/* ── Pattern analysis ───────────────────────────────────────────────────── */
+.analytics .top-box {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  width: 96%;
+}
+.analytics .high-change,
+.analytics .toggle-app {
+  width: 48.5%;
+  height: 400px;
+  position: relative;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.analytics .high-change-title,
+.analytics .toggle-app-title {
+  margin: 20px 0 0 30px;
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--mf-text);
+}
+.analytics .f-box {
+  margin-bottom: 20px;
+  overflow-y: auto;
+  width: 100%;
+  max-height: 320px;
+}
+/* Reference dual tables: `table.scss` — 90% wide, pill cells on the right. */
+.analytics .f-box .simple-table {
+  width: 90%;
+  border-collapse: collapse;
+  border: none;
+  margin: 20px auto 0;
+}
+.analytics .f-box .simple-table td {
+  padding: 12px 5px;
+  border: none;
+  border-bottom: 1px solid #e0e0e0;
+  font-size: 14px;
+  height: 20px;
+}
+.analytics .f-box .simple-table td:first-child {
+  text-align: left;
+  color: var(--mf-text);
+}
+.analytics .f-box .simple-table td:last-child {
+  text-align: right;
+  position: relative;
+  width: 130px;
+}
+/* Reference pills BOTH cells (table.scss); only the last cell's pill is
+   absolutely pinned to the right edge. */
+.analytics .f-box .full-box1,
+.analytics .f-box .full-box2 {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 3px 0;
+  border-radius: 20px;
+}
+.analytics .f-box .full-box1 {
+  width: 85px;
+  background: rgba(126, 248, 165, 0.25);
+  color: #2bb52b;
+}
+.analytics .f-box .full-box2 {
+  width: 60px;
+  background: rgba(173, 186, 87, 0.25);
+  color: #dec940;
+}
+.analytics .f-box td:last-child .full-box1,
+.analytics .f-box td:last-child .full-box2 {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  right: 0;
+}
+.analytics .f-empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--mf-text-dim);
+  font-size: 14px;
+}
+
+.analytics .second-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 96%;
+  height: 120px;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 30px;
+  margin: 30px 0;
+  margin-bottom: 50px;
+}
+.analytics .box-title {
+  margin: 20px 0 0 30px;
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--mf-text);
+}
+.analytics .second-content {
+  display: flex;
+  margin-top: 15px;
+  margin-left: 30px;
+  gap: 50px;
+  font-size: 15px;
+  color: var(--mf-text);
+  flex-wrap: wrap;
+}
+.analytics .second-content b {
+  color: #ffffff;
+}
+
+/* ── Profile ────────────────────────────────────────────────────────────── */
+.analytics .third-box {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  width: 96%;
+  height: 160px;
+  margin-bottom: 30px;
+}
+.analytics .third-box-item {
+  width: 23%;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 30px;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 0;
+  justify-content: space-between;
+}
+.analytics .third-item-title {
+  margin: 0 0 0 30px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--mf-text);
+}
+.analytics .third-item-content {
+  margin: 0 0 0 30px;
+  font-size: 28px;
+  font-weight: 500;
+  color: #ffffff;
+}
+.analytics .detail {
+  margin: 0 30px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+  font-size: 14px;
+  color: var(--mf-text-dim);
+}
+
+.analytics .fourth-box {
+  width: 96%;
+  height: 400px;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 30px;
+  margin-bottom: 50px;
+  padding-bottom: 20px;
+}
+.analytics .fourth-box-title {
+  margin: 30px 0 10px 30px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--mf-text);
+}
+.analytics .table-box {
+  height: 300px;
+  width: 100%;
+  overflow-y: auto;
+}
+.analytics .simple-table {
+  width: 95%;
+  border: none;
+  border-collapse: collapse;
+  margin: 20px auto 0;
+}
+.analytics .simple-table th,
+.analytics .simple-table td {
+  border: none;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 12px 5px;
+  text-align: left;
+  font-size: 14px;
+  color: var(--mf-text);
+}
+.analytics .simple-table th {
+  background: none !important;
+  color: #fff !important;
+  font-size: 14px;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+.analytics .simple-table tr,
+.analytics .simple-table td {
+  height: 20px;
+}
+
+/* ── Attribution ────────────────────────────────────────────────────────── */
+.analytics .fifth-box {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  width: 96%;
+  height: 270px;
+  margin-bottom: 30px;
+}
+.analytics .left-box,
+.analytics .right-box {
+  width: 48.5%;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 30px;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 0;
+  justify-content: space-between;
+  padding-left: 30px;
+}
+.analytics .left-box-title1,
+.analytics .left-box-title2 {
+  font-weight: 600;
+  font-size: 20px;
+  color: var(--mf-text);
+}
+.analytics .left-box {
+  position: relative;
+}
+.analytics .left-box-title2 {
+  margin-bottom: -5px;
+  font-size: 15px;
+}
+.analytics .left-box-content1 {
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  width: 140px;
+  padding: 3px 5px;
+  border-radius: 20px;
+  font-size: 14px;
+  align-items: center;
+  display: flex;
+  font-weight: 600;
+  justify-content: center;
+  color: #ffffff;
+}
+.analytics .left-box-content2 {
+  font-size: 15px;
+  color: var(--mf-text);
+}
+.analytics .left-box-content3 {
+  font-size: 14px;
+  color: var(--mf-text-dim);
+}
+.analytics .right-box {
+  justify-content: flex-start;
+  gap: 14px;
+}
+.analytics .right-box-title1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--mf-text);
+}
+.analytics .content1 {
+  margin-top: 40px;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 75px;
+  color: var(--mf-text);
+}
+.analytics .model-pill {
+  padding: 3px 12px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.analytics .model-pill--off {
+  background: rgba(247, 96, 93, 0.15);
+  border: 1px solid rgba(191, 47, 33, 0.3);
+  color: #cb3939;
+}
+.analytics .model-pill--on {
+  background: rgba(103, 215, 144, 0.15);
+  border: 1px solid rgba(103, 215, 144, 0.35);
+  color: var(--mf-green);
+}
+.analytics .model-meta {
+  font-size: 15px;
+  color: var(--mf-text-dim);
+}
+/* The reference's left-box distributes its children with space-between; the
+   local "run attribution" action would be a 7th child and shift every title
+   above it. Pin it to the free top-right corner to keep the reference rhythm. */
+.analytics .attribution-action {
+  position: absolute;
+  top: 20px;
+  right: 30px;
+  margin-left: 0;
+  align-self: auto;
+}
+
+.analytics .error-slot {
+  width: 96%;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 1439px) {
+  .analytics { padding: 32px 28px; }
+  .position { width: 220px; right: 0; }
+}
+
+@media (max-width: 1023px) {
+  .position {
+    position: static;
+    transform: none;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    margin-bottom: 16px;
+  }
+  .position .line { height: 24px; }
+  .analytics .time-box {
+    position: static;
+    align-items: flex-start;
+    margin-bottom: 24px;
+  }
+  .analytics .top-box { flex-direction: column; gap: 20px; height: auto; }
+  .analytics .high-change, .analytics .toggle-app { width: 100%; height: auto; min-height: 400px; }
+  .analytics .third-box { flex-wrap: wrap; height: auto; gap: 16px; }
+  .analytics .third-box-item { width: calc(50% - 8px); min-height: 160px; }
+  .analytics .fifth-box { flex-direction: column; height: auto; gap: 20px; }
+  .analytics .left-box, .analytics .right-box { width: 100%; min-height: 270px; }
+}
+
+@media (max-width: 767px) {
+  .analytics { padding: 20px 16px; width: 100%; }
+  .analytics .title { transform: none; width: 100px; text-align: center; }
+  .analytics .third-box-item { width: 100%; }
+  .analytics .second-content { gap: 16px; }
+}

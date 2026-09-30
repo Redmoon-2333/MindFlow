@@ -1,0 +1,3 @@
+# Release checksums cover exact bytes, independent of checkout newline settings.
+backend-next/demo-models/v4/bundle.json -text whitespace=cr-at-eol
+backend-next/demo-models/v4/*.pkl binary

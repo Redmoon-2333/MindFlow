@@ -11,34 +11,14 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
+import { initSharedSession } from "./session";
 
-const BASE = "http://127.0.0.1:8765";
 const FRONTEND = "http://127.0.0.1:4173";
-// Real bootstrap root token must NOT be committed (audit report — hardcoded
-// token in E2E). Read it from the environment; tests skip with a clear message
-// when it is absent (CI / other machines without the token).
-const AUTH_TOKEN = process.env.MINDFLOW_TEST_TOKEN ?? "";
 
-/** Issue a bootstrap ticket, exchange it for a session cookie, return the cookie value. */
+/** Issue a bootstrap ticket, exchange it for a session cookie, return the cookie value.
+ *  429-tolerant — the backend's global bucket drains during a full run. */
 async function getAuthToken(request: any): Promise<string> {
-  const ticketRes = await request.post(`${BASE}/api/v1/auth/bootstrap/ticket`, {
-    headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
-  });
-  expect(ticketRes.ok()).toBeTruthy();
-  const { ticket } = await ticketRes.json();
-
-  const bootstrapRes = await request.post(`${BASE}/api/v1/auth/bootstrap`, {
-    data: { ticket },
-  });
-  expect(bootstrapRes.ok()).toBeTruthy();
-
-  const cookies = await bootstrapRes.headersArray();
-  const setCookie = cookies.find(
-    (h: any) => h.name === "set-cookie" || h.value?.includes("mindflow_session"),
-  );
-  // Extract the cookie value from Set-Cookie header
-  const raw = cookies.find((h: any) => h.value?.includes("mindflow_session="));
-  return raw?.value ?? "";
+  return initSharedSession(request);
 }
 
 /** Navigate to the frontend, set localStorage auth marker, and add session cookie. */
@@ -66,6 +46,12 @@ async function setupAuth(page: Page, cookieHeader: string) {
 
 let sessionCookie = "";
 
+/** The shell owns the page title (reference design: 20px top-bar heading),
+ *  so assertions target the top bar rather than a per-page <h1>. */
+async function expectPageTitle(page: Page, title: string) {
+  await expect(page.locator(".mf-header-name")).toHaveText(title, { timeout: 10000 });
+}
+
 test.describe("MindFlow E2E", () => {
   test.beforeAll(async ({ request }) => {
     sessionCookie = await getAuthToken(request);
@@ -75,63 +61,66 @@ test.describe("MindFlow E2E", () => {
   test("Dashboard loads with system data", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/`);
-    await expect(page.locator("h1")).toContainText("仪表盘");
+    await expectPageTitle(page, "仪表盘");
 
-    // Wait for health data to load
-    await expect(page.locator(".stat-card").first()).toBeVisible({ timeout: 10000 });
-    // Should have KPI cards
-    const cards = page.locator(".stat-card");
-    await expect(cards).toHaveCount(4, { timeout: 10000 });
+    // Status row renders (系统健康 / 采集器 / 数据库 / LLM层)
+    await expect(page.locator(".d-state-item")).toHaveCount(4, { timeout: 10000 });
+    // Four metric cards below it
+    await expect(page.locator(".d-statistic-item")).toHaveCount(4, { timeout: 10000 });
   });
 
   test("Focus page loads with sessions", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/focus`);
-    await expect(page.locator("h1")).toContainText("专注分析");
+    await expectPageTitle(page, "专注分析");
 
     // Date picker should be visible
-    await expect(page.locator('input[type="date"]')).toBeVisible();
-    // KPI row should render
-    await expect(page.locator(".stat-card").first()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".f-datepicker input").first()).toBeVisible();
+    // Four KPI cards should render
+    await expect(page.locator(".f-state .state-item")).toHaveCount(4, { timeout: 10000 });
   });
 
   test("Activities page loads with table", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/activities`);
-    await expect(page.locator("h1")).toContainText("活动日志");
+    await expectPageTitle(page, "活动日志");
 
     // Table or empty state should be visible
     await expect(
       page.locator("table").or(page.locator("text=暂无活动记录")).first(),
     ).toBeVisible({ timeout: 10000 });
+    // Reference layout: filter row + paginated table block
+    await expect(page.locator(".search-box input")).toBeVisible();
+    await expect(page.locator(".changePage .page")).toBeVisible({ timeout: 10000 });
   });
 
-  test("Analytics page loads with tabs", async ({ page }) => {
+  test("Analytics page loads its three sections", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/analytics`);
-    await expect(page.locator("h1")).toContainText("行为洞察");
+    await expectPageTitle(page, "行为洞察");
 
-    // Tabs should be visible
-    await expect(page.locator(".tab").first()).toBeVisible();
-    const tabs = page.locator(".tab");
-    await expect(tabs).toHaveCount(4);
+    // Section titles with the decorative rules (reference design)
+    const titles = page.locator(".analytics .title");
+    await expect(titles).toHaveCount(3, { timeout: 10000 });
+    await expect(page.locator(".time-box .time")).toBeVisible();
   });
 
   test("Reports page loads daily and weekly", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/reports`);
-    await expect(page.locator("h1")).toContainText("报告中心");
+    await expectPageTitle(page, "报告中心");
 
-    // Daily/weekly tabs
-    await expect(page.locator(".tab").first()).toBeVisible();
+    // Daily/weekly capsules
+    await expect(page.locator(".daily-report")).toBeVisible();
+    await expect(page.locator(".weekly-report")).toBeVisible();
     // Date picker
-    await expect(page.locator('input[type="date"]')).toBeVisible();
+    await expect(page.locator(".report-datepicker input").first()).toBeVisible();
   });
 
   test("Intervention page loads with history", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/intervention`);
-    await expect(page.locator("h1")).toContainText("干预中心");
+    await expectPageTitle(page, "干预中心");
 
     // Trigger buttons should be visible
     await expect(page.locator("text=温和提醒")).toBeVisible({ timeout: 10000 });
@@ -142,7 +131,7 @@ test.describe("MindFlow E2E", () => {
   test("Panel page loads with controls", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/panel`);
-    await expect(page.locator("h1")).toContainText("专家面板");
+    await expectPageTitle(page, "专家面板");
 
     // Trigger and read buttons
     await expect(page.locator("text=运行专家面板")).toBeVisible({ timeout: 10000 });
@@ -152,7 +141,7 @@ test.describe("MindFlow E2E", () => {
   test("Chat page loads with session sidebar", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/chat`);
-    await expect(page.locator("h1")).toContainText("AI 对话");
+    await expectPageTitle(page, "AI 对话");
 
     // New chat button
     await expect(page.getByRole("button", { name: "新对话" })).toBeVisible({ timeout: 10000 });
@@ -164,7 +153,7 @@ test.describe("MindFlow E2E", () => {
   test("Settings page loads all sections", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/settings`);
-    await expect(page.locator("h1")).toContainText("系统设置");
+    await expectPageTitle(page, "系统设置");
 
     // Key sections
     await expect(page.locator("text=系统信息")).toBeVisible({ timeout: 10000 });
@@ -178,7 +167,7 @@ test.describe("MindFlow E2E", () => {
   test("Diagnostics page loads AI runs", async ({ page }) => {
     await setupAuth(page, sessionCookie);
     await page.goto(`${FRONTEND}/diagnostics`);
-    await expect(page.locator("h1")).toContainText("AI 诊断");
+    await expectPageTitle(page, "AI 诊断");
 
     // Health cards
     await expect(page.locator(".stat-card").first()).toBeVisible({ timeout: 10000 });
@@ -237,14 +226,58 @@ test.describe("MindFlow E2E", () => {
       { text: "专家面板", path: "/panel" },
       { text: "AI 对话", path: "/chat" },
       { text: "系统设置", path: "/settings" },
-      { text: "AI 诊断", path: "/diagnostics" },
       { text: "仪表盘", path: "/" },
     ];
 
     for (const nav of navLinks) {
-      await page.click(`.sidebar nav a:text("${nav.text}")`);
+      await page.locator(".mf-nav-item", { hasText: nav.text }).first().click();
       await page.waitForURL(`**${nav.path}`);
-      await expect(page.locator("h1")).toBeVisible({ timeout: 5000 });
+      await expect(page.locator(".mf-header-name")).toBeVisible({ timeout: 5000 });
     }
+  });
+
+  test("Advanced entry hides the three extra routes until opened", async ({ page }) => {
+    await setupAuth(page, sessionCookie);
+    await page.goto(`${FRONTEND}/`);
+
+    // Advanced group starts collapsed — the three extra items are not shown.
+    await expect(page.locator("#advanced-nav")).toHaveCount(0);
+    const toggle = page.locator(".mf-nav-group-toggle");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#advanced-nav .mf-nav-item")).toHaveCount(3);
+
+    // Entering an advanced route auto-expands the group.
+    await page.locator("#advanced-nav .mf-nav-item", { hasText: "模型中心" }).click();
+    await page.waitForURL("**/model-center");
+    await expect(page.locator(".mf-header-name")).toHaveText("模型中心");
+    await expect(page.locator(".mf-nav-group-toggle")).toHaveAttribute("aria-expanded", "true");
+
+    // AI 诊断 is reachable from the expanded group too.
+    await page.locator("#advanced-nav .mf-nav-item", { hasText: "AI 诊断" }).click();
+    await page.waitForURL("**/diagnostics");
+    await expect(page.locator(".mf-header-name")).toHaveText("AI 诊断");
+  });
+
+  test("Logout dialog cancels without ending the session, then confirms", async ({ page }) => {
+    await setupAuth(page, sessionCookie);
+    await page.goto(`${FRONTEND}/`);
+    await expectPageTitle(page, "仪表盘");
+
+    await page.locator(".mf-user").click();
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toBeVisible();
+    // Escape closes without changing auth state
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator(".mf-header-name")).toBeVisible();
+
+    // Confirm ends the session and returns to the login screen
+    await page.locator(".mf-user").click();
+    await page.locator(".mf-dialog-yes").click();
+    await expect(page.locator(".login-card")).toBeVisible({ timeout: 10000 });
+    expect(await page.evaluate(() => localStorage.getItem("mindflow_authenticated"))).toBeNull();
   });
 });

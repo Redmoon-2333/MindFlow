@@ -14,7 +14,7 @@ MindFlow 是一个**本地优先的智能专注助手**：记录电脑使用行�
 | 手动软件分类 | 用户把软件设为工作、娱乐或不确定，并支持进程名/窗口标题模式 | API/UI 已实现 |
 | 智能干预 | 深度工作保护、节流、内容安全、任务排序、站点拦截 | 已实现；工作态规则仍在持续收敛 |
 | LLM 分析 | DeepSeek → Ollama → RuleEngine 三层降级，支持归因、面板和聊天 | 已实现 |
-| ML 训练 | V3 特征窗口、用户窗口标签、显式反馈、分类器/聚类/HMM、7 项质量门禁 | 已实现 |
+| ML 训练 | V4 特征窗口、用户窗口标签、显式反馈、分类器/聚类/HMM、7 项质量门禁 | 已实现 |
 | 数据控制 | 导出、按范围清理、输入/浏览器追踪开关、采集器启停 | 已实现 |
 | 可观测性 | 工作流运行、节点事件、本地 OpenTelemetry SQLite exporter | 已实现 |
 
@@ -47,7 +47,7 @@ MindFlow 不把“应用切换次数多”直接等同于分心，而是采用�
 
 - Python 3.11+
 - uv
-- Node.js 18+
+- Node.js 20.19+ 或 22.12+
 - Windows 10/11；采集器另支持 macOS/Linux 的对应实现
 
 ### 启动后端
@@ -69,6 +69,35 @@ uv run python -m mindflow.bootstrap
 
 启动器使用本地 root token 换取一次性 bootstrap ticket，浏览器最终使用 `HttpOnly`、`SameSite=Strict` 的 session cookie；root token 不进入 URL 或网页脚本。
 
+### 新电脑离线体验
+
+仓库提供 `backend-next/demo-models/v4/` 合成数据预训练模型，不包含个人数据库、
+浏览记录、API 凭据或本机模型签名密钥。先构建前端，再启动独立演示后端：
+
+```powershell
+cd mindflow-app/frontend
+npm ci
+npm run build
+cd ../backend-next
+uv sync --locked --extra dev --extra ml
+uv run python scripts/demo.py
+```
+
+此入口使用独立的 `backend-next/data/demo/`，后端与构建好的前端统一运行在
+`http://127.0.0.1:8870`。在另一个终端执行
+`uv run python scripts/demo.py --login`，打开输出的一次性本地认证链接。
+首次启动会生成演示统计和当前特征窗口，不需要重新训练，也不接触正式数据目录。
+
+体验包校验发布版本的固定 SHA256 和依赖版本，随后在目标电脑生成自己的签名密钥；
+不接受未经验证的 pickle，不关闭原有 HMAC 校验。重复启动不覆盖已有演示模型。
+演示模型保持 `shadow`，不能冒充已通过个人数据质量门的正式模型。
+采集器和调度器默认关闭，可在演示界面单独开启。关闭采集时，初始窗口超过
+15 分钟会按正常保护显示“数据过期”；重启演示即可刷新合成窗口。
+
+本地 ML 提供专注概率及行为证据，不是本地大语言模型。无联网凭据时，对话、
+面板和归因使用现有规则降级；完整生成式能力仍需在正式运行环境配置
+DeepSeek 或 Ollama。本演示入口不会继承本机的在线密钥。
+
 ### 启动前端开发服务器
 
 ```bash
@@ -88,14 +117,14 @@ npm run dev
         ↓ 5 秒采集
 交互输入聚合桶（默认 30 秒，仅计数）
         ↓ 5 分钟 rollup
-behavior_feature_windows（FEATURE_SCHEMA_VERSION=3，24 维）
+behavior_feature_windows（FEATURE_SCHEMA_VERSION=4，28 维）
         ↓ 反馈时间重叠匹配 + 用户窗口标签
 V2TrainingData
-        ↓ 日期 GroupKFold + 7 项质量门禁
+        ↓ 前向日期评估 + 独立校准 + 7 项质量门禁
 shadow / ready 模型
 ```
 
-V3 特征包含 `keypress_rate_per_min`、`mouse_click_rate_per_min`、`scroll_rate_per_min`、`mouse_distance_per_min`、`input_active_ratio`、`interaction_bursts_per_min`、`click_key_ratio`、应用切换和空闲等指标。输入统计不保存按键字符、鼠标坐标或原始轨迹。
+V4 特征包含 `keypress_rate_per_min`、`mouse_click_rate_per_min`、`scroll_rate_per_min`、`mouse_distance_per_min`、`input_active_ratio`、`interaction_bursts_per_min`、`click_key_ratio`、应用切换、空闲和任务上下文等指标。输入统计不保存按键字符、鼠标坐标或原始轨迹。
 
 浏览器追踪若开启，只保存规范化域名、时长和是否外放，不保存完整 URL。LLM 分析发送的是聚合行为摘要，不发送原始窗口标题、文件路径或个人文件内容。
 
@@ -161,7 +190,9 @@ uv run python -m mindflow.train --rollback <version-tag>
 - candidate Brier ≤ rule Brier + 0.01
 - 日期 GroupKFold 稳定性通过
 
-截至 2026-08-27，正式模型目录中最新已验证制品为 `20260827_173356_a48c0c`：训练报告为 `ready`、`activated=true`、质量门 7/7 通过，训练样本为 focus 2440、distracted 955。运行中的后端进程需要重启后才会重新加载磁盘上的最新模型。
+2026-09-30 在正式模型副本上复核：active 指向 `20260827_182610_841df8`，但该制品保存时使用 scikit-learn 1.6.1，当前锁定环境为 1.9.0，正常加载器会拒绝版本不兼容的制品。原文件仍保留，未替换、重签或公开；恢复个人模型需要使用原兼容环境，或在当前环境另行重训并重新通过质量门。重启本身不能解决版本不兼容。
+
+新电脑体验请使用上面的独立合成演示入口。`demo_v4` 已在独立 Python 3.12 环境验证实际加载与 API/UI 概率一致，但保持 `shadow/demo_only`，不代替个人模型的质量认证。完整验收边界见 [本轮验收报告](docs/audit/20260930-full/acceptance.md)。
 
 ## LLM 与干预
 
@@ -217,7 +248,7 @@ npm run lint
 npm run build
 ```
 
-最近一次完整后端验收结果：`2250 passed`、Ruff 通过、mypy strict 在 163 个源文件中 0 错误；前端 lint 为 0 error（现有 E2E 文件有 10 条 unused-variable warning），生产构建成功。
+2026-09-30 本地发布验收：后端 `3156 passed`、0 skipped、20 条合成测试 fixture warnings；Ruff 通过，strict mypy 在 190 个源文件/辅助脚本中 0 错误；前端生产构建通过，lint 为 0 error、17 条既有 vendor/E2E warnings；浏览器 `219/219`、响应式 `75/75` 通过。独立 Python 3.12 环境的演示/认证回归 `23/23` 通过。付费 LLM、个人模型质量、原生通知实发和严格逐像素复刻不包含在本次通过结论中，详见验收报告。
 
 ## 项目结构
 
@@ -231,7 +262,7 @@ mindflow-app/
 │   │   ├── graph/              # AnalysisGraph / PanelGraph / ChatGraph
 │   │   ├── infrastructure/     # 采集器、仓库、LLM、通知
 │   │   ├── services/           # 分析、干预、调度、训练服务
-│   │   └── train/              # V3 训练、评估、版本管理
+│   │   └── train/              # V4 特征训练、评估、版本管理
 │   └── tests/                  # 后端 pytest 套件
 ├── frontend/                   # React + TypeScript + Vite
 ├── docs/                       # 架构、API、实验和设计文档
@@ -244,8 +275,8 @@ mindflow-app/
 
 - 后端依赖只使用 uv，不使用 pip、conda 或 poetry。
 - 新功能先写测试，修改后必须跑 Ruff、mypy、pytest 和受影响的前端构建。
-- 维持 V3 schema、确认切换计数、反馈会话统计、LLM schema 校验和隐私边界。
-- 不把真实数据库、token、模型制品或含个人行为明细的报告提交到 Git。
+- 维持 V4 schema、确认切换计数、反馈会话统计、LLM schema 校验和隐私边界。
+- 不把真实数据库、token、个人模型制品或含个人行为明细的报告提交到 Git；公开模型限于经校验、明确标记的合成演示包。
 - 使用 Conventional Commits；未明确要求时不要自动 commit/push。
 
 ## License

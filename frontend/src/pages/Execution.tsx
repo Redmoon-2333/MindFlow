@@ -220,6 +220,7 @@ export default function Execution() {
         <div className="flex gap8" style={{ marginBottom: 16, flexWrap: "wrap" }}>
           <input
             placeholder="任务标题（必填）"
+            aria-label="任务标题"
             value={taskTitle}
             onChange={(e) => setTaskTitle(e.target.value)}
             style={{ flex: 2, minWidth: 200 }}
@@ -228,6 +229,7 @@ export default function Execution() {
             value={taskPriority}
             onChange={(e) => setTaskPriority(Number(e.target.value))}
             title="优先级"
+            aria-label="任务优先级"
           >
             {[1, 2, 3, 4, 5].map((p) => (
               <option key={p} value={p}>
@@ -240,9 +242,11 @@ export default function Execution() {
             value={taskDeadline}
             onChange={(e) => setTaskDeadline(e.target.value)}
             title="截止时间（可选）"
+            aria-label="任务截止时间"
           />
           <input
             placeholder="预计分钟（可选）"
+            aria-label="预计分钟"
             type="number"
             min={1}
             value={taskMinutes}
@@ -354,12 +358,14 @@ export default function Execution() {
         <div className="flex gap8" style={{ marginBottom: 16, flexWrap: "wrap" }}>
           <input
             placeholder="域名，如 bilibili.com（必填）"
+            aria-label="要拦截的域名"
             value={blockDomain}
             onChange={(e) => setBlockDomain(e.target.value)}
             style={{ flex: 2, minWidth: 200 }}
           />
           <input
             placeholder="拦截原因（可选）"
+            aria-label="拦截原因"
             value={blockReason}
             onChange={(e) => setBlockReason(e.target.value)}
             style={{ flex: 1, minWidth: 160 }}

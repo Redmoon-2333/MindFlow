@@ -1,0 +1,311 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Activity log — migration of the reference `pages/activities/activities.scss`.
+   Verified geometry: page padding 40px/50px, top block 255px, table block
+   600px, pagination pinned to the bottom of that block, radius 20px.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.act-box {
+  display: flex;
+  flex-direction: row;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  width: 100%;
+  border-radius: 20px;
+}
+
+.activities {
+  width: 100%;
+  min-height: calc(100vh - 65px);
+  background: transparent;
+  padding: 40px 50px;
+  position: relative;
+}
+
+.activities .top-intro {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  height: 255px;
+  position: relative;
+  width: 100%;
+}
+.activities .present-acti {
+  display: flex;
+  width: 30%;
+  flex-direction: column;
+  padding: 20px 40px;
+  background: none;
+  border: none;
+  height: 120px;
+}
+.activities .present-acti .text-1 {
+  font-weight: 600;
+  font-size: 20px;
+  margin-bottom: 20px;
+  color: var(--mf-text);
+}
+.activities .present-acti .text-2 {
+  font-size: 20px;
+  color: var(--mf-text);
+}
+.activities .present-acti .text-2 b {
+  color: #ffffff;
+}
+
+.activities .choose-time {
+  width: 100%;
+  border: none;
+  height: 120px;
+  background: none;
+  position: absolute;
+  top: 120px;
+  gap: 30px;
+  left: 40px;
+}
+.activities .start-time-box,
+.activities .end-time-box {
+  display: flex;
+  position: relative;
+  flex-direction: column;
+}
+.activities .start-time-box { width: 19%; }
+.activities .end-time-box { width: 20%; }
+.activities .choose-time .box-text {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 20px 0;
+  color: var(--mf-text);
+}
+.activities .act-datepicker {
+  position: absolute;
+  top: 45%;
+  width: 250px;
+}
+
+.activities .check-primary-text {
+  display: flex;
+  justify-content: center;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  margin-top: 38px;
+  flex-wrap: wrap;
+  max-width: 40%;
+}
+.activities .check-primary-text input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--mf-brand);
+}
+.activities .check-primary-text .text {
+  font-size: 18px;
+  color: var(--mf-text);
+}
+/* Local addition: these switches drive real column visibility in the table. */
+.activities .column-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 15px;
+  color: var(--mf-text);
+  cursor: pointer;
+}
+.activities .column-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--mf-brand);
+}
+
+.activities .search-box {
+  display: flex;
+  justify-content: center;
+  flex-direction: column;
+  position: absolute;
+  gap: 15px;
+  width: 33%;
+  right: 80px;
+  top: 20px;
+}
+.activities .search-box .text {
+  font-size: 16px;
+  font-weight: 600;
+  margin-top: 0;
+  color: var(--mf-text);
+}
+.activities .search-box input {
+  height: 50px;
+  width: 100%;
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 20px;
+  margin-bottom: -5px;
+  font-size: 16px;
+  padding: 0 20px;
+  color: #fff;
+  font-family: inherit;
+}
+.activities .search-box input::placeholder {
+  color: rgba(255, 255, 255, 0.55);
+}
+.activities .search-box input:focus {
+  outline: none;
+  border-color: rgba(100, 160, 255, 0.6);
+}
+
+.activities .detail-list {
+  height: 600px;
+  margin-top: 30px;
+  display: block;
+  position: relative;
+  overflow: hidden;
+}
+.activities .table-scroll {
+  width: 95%;
+  transform: translateX(-50%);
+  left: 50%;
+  position: absolute;
+  margin-top: 20px;
+  max-height: 500px;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+.activities .simple-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: none;
+}
+.activities .simple-table tr,
+.activities .simple-table td {
+  height: 20px;
+}
+.activities .simple-table th,
+.activities .simple-table td {
+  border: none;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 12px 16px;
+  text-align: left;
+  color: var(--mf-text);
+  font-size: 14px;
+}
+.activities .simple-table th {
+  background: none !important;
+  color: #fff !important;
+  font-size: 14px;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.activities .simple-table td {
+  background: transparent;
+}
+.activities .simple-table tr:hover td {
+  background: rgba(100, 160, 255, 0.06);
+}
+.activities .cell-nowrap {
+  white-space: nowrap;
+}
+.activities .cell-ellipsis {
+  /* The reference lets window titles wrap; long titles are what make its
+     rows taller at 1440px. Truncating here would change the row rhythm. */
+  min-width: 220px;
+  max-width: 420px;
+  overflow-wrap: anywhere;
+}
+.activities .cell-raw {
+  font-size: 11px;
+  color: var(--mf-text-dim);
+}
+.activities .table-empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--mf-text-dim);
+}
+
+.activities .changePage {
+  width: 95%;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 70px;
+  position: absolute;
+  bottom: 0;
+  display: flex;
+  flex-direction: row;
+}
+.activities .changePage .page {
+  margin-top: 15px;
+  font-size: 18px;
+  color: var(--mf-text);
+}
+.activities .button-box {
+  position: absolute;
+  right: 0;
+  display: flex;
+  height: 100%;
+  margin-top: 15px;
+  gap: 20px;
+}
+.activities .last-page,
+.activities .next-page {
+  background: var(--mf-panel);
+  border: 1px solid var(--mf-panel-border);
+  width: 100%;
+  display: flex;
+  border-radius: 20px;
+  height: 35px;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 13px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  color: var(--mf-text);
+  font-family: inherit;
+  font-size: 15px;
+}
+.activities .last-page:active,
+.activities .next-page:active {
+  transform: scale(0.95);
+}
+.activities .last-page:disabled,
+.activities .next-page:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 1439px) {
+  .activities { padding: 32px 28px; }
+  .activities .search-box { right: 40px; width: 36%; }
+  /* The reference anchors the filter row 40px from the left while keeping it
+     100% wide; with the smaller gutter that overruns the viewport, so the row
+     is narrowed by exactly the indent. */
+  .activities .choose-time { width: calc(100% - 40px); }
+}
+
+@media (max-width: 1023px) {
+  .activities .top-intro { height: auto; flex-direction: column; gap: 16px; }
+  .activities .present-acti { width: 100%; height: auto; padding: 16px 24px; }
+  .activities .choose-time {
+    position: relative;
+    top: 0;
+    left: 0;
+    height: auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding-bottom: 16px;
+  }
+  .activities .start-time-box,
+  .activities .end-time-box { width: 100%; }
+  .activities .act-datepicker { position: relative; top: 0; width: 100%; }
+  .activities .search-box { position: relative; right: 0; top: 0; width: 100%; }
+  .activities .check-primary-text { margin-top: 0; }
+  .activities .detail-list { height: auto; min-height: 420px; }
+  .activities .table-scroll { position: relative; left: 0; transform: none; width: 100%; max-height: 420px; }
+  .activities .changePage { position: relative; left: 0; transform: none; width: 100%; margin-top: 12px; }
+}
+
+@media (max-width: 767px) {
+  .activities { padding: 20px 16px; }
+  .activities .cell-ellipsis { max-width: 160px; }
+}

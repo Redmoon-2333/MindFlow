@@ -224,6 +224,7 @@ async def test_rollup_uses_one_bulk_upsert_call(tmp_path: Any) -> None:
     ]
     activity_repository.last_event_before.return_value = None
     repository = AsyncMock()
+    repository.last_feature_window_before.return_value = None
     repository.list_interaction_buckets.return_value = []
     repository.list_browser_segments.return_value = []
     repository.last_browser_segment_before.return_value = None

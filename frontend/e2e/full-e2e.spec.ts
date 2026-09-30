@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Comprehensive E2E test for MindFlow — covers every interactive component
  * across all pages: Login, Dashboard, Focus, Activities, Analytics, Chat,
  * Reports, Settings, ModelCenter, Diagnostics, Intervention, Panel.
@@ -11,12 +11,25 @@ const BASE = "http://127.0.0.1:4173";
 
 async function devLogin(page: Page) {
   await page.goto(BASE);
-  // If we land on the login page, authenticate via dev mode
+  // `locator.isVisible()` does not wait, so right after navigation it reports
+  // false while React is still mounting and the login card never gets
+  // clicked — every later assertion then runs against the login screen.
   const devBtn = page.locator("button", { hasText: "Dev 登录" });
-  if (await devBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+  const onLoginPage = await devBtn
+    .waitFor({ state: "visible", timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+  if (onLoginPage) {
     await devBtn.click();
-    // Wait for the page to reload after auth
-    await page.waitForURL("**/", { timeout: 10000 });
+    // The ticket exchange and the follow-up reload are async; waiting on the
+    // auth marker instead of a fixed delay keeps the next navigation from
+    // racing the reload and landing back on the login card.
+    await page
+      .waitForFunction(() => window.localStorage.getItem("mindflow_authenticated") === "1", {
+        timeout: 20000,
+      })
+      .catch(() => {});
+    await page.waitForURL("**/", { timeout: 10000 }).catch(() => {});
     await page.waitForTimeout(1500);
   }
 }
@@ -60,7 +73,7 @@ test.describe("MindFlow Full E2E", () => {
     await page.waitForTimeout(1000);
 
     // Verify we see the login card
-    const title = page.locator("h1", { hasText: "MindFlow" });
+    const title = page.locator(".login-title");
     await expect(title).toBeVisible();
 
     // Click dev login
@@ -68,12 +81,17 @@ test.describe("MindFlow Full E2E", () => {
     await expect(devBtn).toBeVisible();
     await devBtn.click();
 
-    // Wait for redirect to dashboard
+    // Wait for the exchange to land (marker) and the page to settle
+    await page
+      .waitForFunction(() => window.localStorage.getItem("mindflow_authenticated") === "1", {
+        timeout: 20000,
+      })
+      .catch(() => {});
     await page.waitForURL("**/", { timeout: 15000 });
     await page.waitForTimeout(2000);
 
     // Verify dashboard loaded
-    await expect(page.locator("h1", { hasText: "仪表盘" })).toBeVisible();
+    await expect(page.locator(".mf-header-name", { hasText: "仪表盘" })).toBeVisible();
     await screenshot(page, "01-dashboard-after-login");
   });
 
@@ -124,8 +142,8 @@ test.describe("MindFlow Full E2E", () => {
       await page.waitForTimeout(2000);
     }
 
-    // ── Verify KPI cards ──
-    const kpiCards = page.locator(".stat-card");
+    // ── Verify KPI cards (reference layout: four metric cards) ──
+    const kpiCards = page.locator(".d-statistic-item");
     const kpiCount = await kpiCards.count();
     expect(kpiCount).toBeGreaterThanOrEqual(4);
   });
@@ -278,14 +296,14 @@ test.describe("MindFlow Full E2E", () => {
       await page.waitForTimeout(1500);
     }
 
-    // ── Day range selector ──
-    const daySelect = page.locator("select").first();
+    // ── Day range selector (reference control: right-hand 时间范围) ──
+    const daySelect = page.locator(".time-box .time");
     if (await daySelect.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await daySelect.selectOption("30");
+      await daySelect.selectOption({ label: "近30天" });
       await page.waitForTimeout(2000);
       await screenshot(page, "05b-analytics-30days");
 
-      await daySelect.selectOption("7");
+      await daySelect.selectOption({ label: "近7天" });
       await page.waitForTimeout(1500);
     }
 
@@ -835,7 +853,7 @@ test.describe("MindFlow Full E2E", () => {
     for (const route of routes) {
       await gotoPage(page, route.path, route.label);
       await waitForLoad(page);
-      const heading = page.locator("h1", { hasText: route.heading });
+      const heading = page.locator(".mf-header-name", { hasText: route.heading });
       await expect(heading).toBeVisible({ timeout: 5000 });
     }
 
@@ -852,7 +870,7 @@ test.describe("MindFlow Full E2E", () => {
     await waitForLoad(page);
 
     // Verify settings still loaded
-    const heading = page.locator("h1", { hasText: "系统设置" });
+    const heading = page.locator(".mf-header-name", { hasText: "系统设置" });
     await expect(heading).toBeVisible();
     await screenshot(page, "14-settings-after-reload");
 
@@ -861,7 +879,7 @@ test.describe("MindFlow Full E2E", () => {
     await waitForLoad(page);
     await page.reload();
     await waitForLoad(page);
-    const dashHeading = page.locator("h1", { hasText: "仪表盘" });
+    const dashHeading = page.locator(".mf-header-name", { hasText: "仪表盘" });
     await expect(dashHeading).toBeVisible();
     await screenshot(page, "14b-dashboard-after-reload");
   });

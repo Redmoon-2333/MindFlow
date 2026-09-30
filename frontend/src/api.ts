@@ -6,6 +6,7 @@ import { parseDailyReport, parseWeeklyReport } from "./report-state";
 import type { DailyReport, WeeklyReport } from "./report-state";
 import { parseBaselineSummary } from "./baseline-state";
 import type { BaselineSummaryState } from "./baseline-state";
+import { findDayByDate, localDateStr, previousLocalDateStr } from "./date-utils";
 
 const BASE = "/api/v1";
 export const AUTH_MARKER = "mindflow_authenticated";
@@ -225,7 +226,13 @@ export interface FocusTrendResponse {
 
 /** Derived KPI view computed from FocusTrendResponse.daily — never
  *  asserted from the wire payload (the backend returns only the daily array).
- *  All values are optional so a missing/empty trend renders "--". */
+ *  All values are optional so a missing/empty trend renders "--".
+ *
+ *  `todayKey`/`yesterdayKey` are **local date keys**, not array positions:
+ *  the trend is a sparse aggregation of recorded days (audit F1), so the last
+ *  entry may be an older day and neighbouring entries need not be adjacent.
+ *  A missing today means "no record" (the caller decides between 0 and --);
+ *  it is never substituted with another day's numbers. */
 export interface FocusTrendKpi {
   todayMinutes?: number;
   totalMinutes?: number;
@@ -238,26 +245,34 @@ export interface FocusTrendKpi {
   trendLabel?: string;
 }
 
-export function deriveFocusTrendKpi(trend: FocusTrendResponse | null): FocusTrendKpi {
+export function deriveFocusTrendKpi(
+  trend: FocusTrendResponse | null,
+  todayKey: string = localDateStr(),
+): FocusTrendKpi {
   if (!trend) return {};
   const days = trend.daily ?? [];
   if (days.length === 0) {
     return { sessionCount: trend.total_sessions || 0 };
   }
-  const today = days[days.length - 1];
-  const prev = days.length >= 2 ? days[days.length - 2] : undefined;
-  const todayMinutes = today.focus_min;
+  const yesterdayKey = previousLocalDateStr(todayKey);
+  // Keyed lookup: `days` is sparse, so positional indexing would promote a
+  // historical day to "today" and a non-adjacent day to "yesterday".
+  const today = findDayByDate(days, todayKey);
+  const prev = findDayByDate(days, yesterdayKey);
   const totalMinutes = days.reduce((sum, d) => sum + (d.focus_min ?? 0), 0);
   const sessionCount = trend.total_sessions ?? days.reduce((sum, d) => sum + (d.session_count ?? 0), 0);
   const totalFocusSessions = days.reduce((sum, d) => sum + (d.session_count ?? 0), 0);
   const avgDurationMinutes = totalFocusSessions > 0 ? totalMinutes / totalFocusSessions : undefined;
-  const avgScore = today.avg_score;
+  const todayMinutes = today?.focus_min;
+  const avgScore = today?.avg_score;
   const scoreChange =
-    prev != null && typeof prev.avg_score === "number" && typeof today.avg_score === "number" && prev.avg_score > 0
+    prev != null && typeof prev.avg_score === "number" && typeof today?.avg_score === "number" && prev.avg_score > 0
       ? ((today.avg_score - prev.avg_score) / prev.avg_score) * 100
       : undefined;
-  const totalActivity = today.focus_min + (today.distraction_min ?? 0);
-  const distractionRate = totalActivity > 0 ? (today.distraction_min ?? 0) / totalActivity : undefined;
+  const totalActivity =
+    today == null ? 0 : (today.focus_min ?? 0) + (today.distraction_min ?? 0);
+  const distractionRate =
+    today == null ? undefined : totalActivity > 0 ? (today.distraction_min ?? 0) / totalActivity : undefined;
   const distractionLabel =
     distractionRate == null ? undefined
       : distractionRate > 0.5 ? "分心偏高"
@@ -334,6 +349,7 @@ export interface BehavioralProfile {
 export interface ModelStatus {
   loaded: boolean;
   ready: boolean;
+  demo_only?: boolean;
   mode: string;
   v2_mode: string;
   message: string;
@@ -630,6 +646,25 @@ export async function bootstrapFromFragment(): Promise<boolean> {
 
 export const getHealth = () => request<HealthData>("/health");
 
+/** Sign out of the local session backing this browser.
+ *
+ *  The cookie is HttpOnly, so revocation has to happen server-side: POST the
+ *  session away, then drop the local marker. A 401 means the session already
+ *  expired — treat it as a successful logout instead of an error, otherwise a
+ *  stale tab can never leave the app. Anything else (network failure, 5xx) is
+ *  rethrown so the dialog can offer a retry rather than silently pretending
+ *  the user is signed out.
+ */
+export async function logout(): Promise<void> {
+  try {
+    await request<void>("/auth/logout", { method: "POST" });
+  } catch (error) {
+    if (!(error instanceof ApiError && error.status === 401)) throw error;
+  }
+  localStorage.removeItem(AUTH_MARKER);
+  window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+}
+
 function isActivityItem(value: unknown): value is ActivityItem {
   return isRecord(value) && typeof value.id === "string" && typeof value.timestamp === "string" && typeof value.duration_s === "number" && typeof value.event_type === "string" && isRecord(value.data) && typeof value.data.app_name === "string" && typeof value.data.window_title === "string" && typeof value.data.process_name === "string" && typeof value.data.is_idle === "boolean";
 }
@@ -680,6 +715,19 @@ export interface AiUsage {
   llm_cost_usd_30d: number;
   panel_count_30d: number;
 }
+
+/** Allowlisted LLM configuration summary.
+ *
+ *  `configured` means "a credential exists locally" — it is not a connectivity
+ *  probe, and the UI must not present it as one. */
+export interface AiProviderStatus {
+  provider: string;
+  model: string;
+  configured: boolean;
+  ollama_enabled: boolean;
+}
+export const getAiProviderStatus = () =>
+  request<AiProviderStatus>("/ai/provider-status");
 export const runAttribution = (body?: { date?: string; force?: boolean }) => request<AttributionResponse>("/analytics/attribution", { method: "POST", body: JSON.stringify(body || {}) }, AI_REQUEST_TIMEOUT_MS);
 
 export async function sendChat(message: string, sessionId?: string, signal?: AbortSignal): Promise<ChatReply> {

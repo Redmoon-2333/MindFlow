@@ -258,6 +258,7 @@ export default function ModelCenter() {
         quality_gate: null,
         evaluation: null,
         error: null,
+        allow_activation: true,
       });
       startPolling(result.job_id);
     } catch (e: unknown) {
@@ -329,7 +330,9 @@ export default function ModelCenter() {
     <div>
       <div className="mc-header">
         <h1>模型中心</h1>
-        <p>行为特征模型训练就绪评估与任务管理</p>
+        <p>{modelStatus?.demo_only
+          ? "合成数据演示模型 · 影子模式 · 未通过个人模型质量门"
+          : "行为特征模型训练就绪评估与任务管理"}</p>
       </div>
 
       {/* Tabs */}
@@ -726,7 +729,9 @@ export default function ModelCenter() {
                 <h3>模型版本</h3>
                 <div className="flex gap16" style={{ fontSize: 13, flexDirection: "column" }}>
                   <div className="flex flex-between">
-                    <span style={{ color: "var(--color-text-secondary)" }}>激活版本</span>
+                    <span style={{ color: "var(--color-text-secondary)" }}>
+                      {modelStatus.demo_only ? "演示版本" : "激活版本"}
+                    </span>
                     <span>{modelStatus.version ?? "N/A"}</span>
                   </div>
                   {modelStatus.feature_schema_version != null && (

@@ -64,10 +64,20 @@ async def list_activities(
         default=None,
         description="End date (YYYY-MM-DD, inclusive). Defaults to today.",
     ),
+    q: str | None = Query(  # noqa: B008
+        default=None,
+        max_length=200,
+        description=(
+            "Optional text filter matched against application name, process "
+            "name and window title. Omitted or empty keeps the original "
+            "unfiltered behaviour."
+        ),
+    ),
 ) -> dict[str, Any]:
     """Return paginated activity events within a date range.
 
     Results are ordered by timestamp descending (most recent first).
+    ``q`` narrows both the page and the total so pagination stays coherent.
     """
     settings = getattr(request.app.state, "settings", None)
     timezone: TimezoneLike = getattr(settings, "timezone", "local")
@@ -93,7 +103,9 @@ async def list_activities(
     total = (
         None
         if decoded_cursor is not None
-        else await activity_repo.count_range(user_id=1, start=start, end=end)
+        else await activity_repo.count_range(
+            user_id=1, start=start, end=end, search=q
+        )
     )
 
     events = await activity_repo.query_range(
@@ -104,6 +116,7 @@ async def list_activities(
         offset=offset,
         descending=True,
         cursor=decoded_cursor,
+        search=q,
     )
 
     has_more = len(events) > page_size

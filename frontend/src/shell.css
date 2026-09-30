@@ -1,0 +1,605 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   MindFlow shell — 1:1 migration of the reference design language
+   (yigu9181/MindFlow @ ae248cf: pages/DashBoard/DB.scss + index.css).
+
+   Scope is limited to the app frame: page background, sidebar, top bar,
+   logout dialog and the ambient glow. Page-level rules live in each page's
+   own stylesheet so nothing here leaks into them.
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Reference palette (source-verified, not re-picked) */
+  --mf-bg-radial: radial-gradient(ellipse at 30% 40%, #0c1a30 0%, #040b14 100%);
+  --mf-login-radial: radial-gradient(ellipse at 30% 40%, #0a1628 0%, #020810 100%);
+  --mf-panel: rgba(100, 160, 255, 0.15);
+  --mf-panel-border: rgba(100, 160, 255, 0.3);
+  --mf-hairline: rgba(100, 160, 255, 0.08);
+  --mf-sidebar-bg: rgba(8, 18, 35, 0.85);
+  --mf-topbar-bg: rgba(8, 18, 35, 0.6);
+  --mf-text: #c8d6e5;
+  --mf-text-dim: #8aa4be;
+  --mf-text-icon: #6a89ad;
+  --mf-brand: #7dbcf8;
+  --mf-accent-line: rgba(100, 160, 255, 0.15);
+  --mf-green: #67d790;
+  --mf-yellow: #fbbf24;
+  --mf-orange: #f59e0b;
+  --mf-cyan: #06b6d4;
+  --mf-red: #ef4444;
+  --mf-sidebar-w: 250px;
+  --mf-topbar-h: 65px;
+  --mf-ease-slide: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Shared primitives (buttons, tables, badges) keep the reference palette.
+     The old light-theme values are deliberately gone: mixing them with the
+     reference shell produced the "two themes in one page" artefact. */
+  --color-primary: #3a8fd9;
+  --color-primary-hover: #1a6dd4;
+  --color-primary-light: rgba(100, 160, 255, 0.15);
+  --color-bg: #040b14;
+  --color-bg-elevated: rgba(100, 160, 255, 0.15);
+  --color-bg-inset: rgba(100, 160, 255, 0.04);
+  --color-border: rgba(100, 160, 255, 0.3);
+  --color-text-primary: #c8d6e5;
+  --color-text-secondary: #8aa4be;
+  --color-text-tertiary: #6a89ad;
+  --color-success: #67d790;
+  --color-warning: #f59e0b;
+  --color-danger: #f78181;
+  --color-info: #06b6d4;
+  --sidebar-w: var(--mf-sidebar-w);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 16px;
+  color: var(--mf-text);
+  background: #040b14;
+}
+
+/* ── Page frame ─────────────────────────────────────────────────────────── */
+.mf-body {
+  width: 100%;
+  height: 100vh;
+  background: var(--mf-bg-radial);
+  color: var(--mf-text);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  overflow: hidden;
+  position: relative;
+}
+
+.mf-ambient-glow {
+  position: fixed;
+  top: -20%;
+  left: -10%;
+  width: 60vw;
+  height: 60vh;
+  background: radial-gradient(ellipse, rgba(26, 109, 212, 0.08) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+.mf-ambient-glow::after {
+  content: "";
+  position: absolute;
+  bottom: -40%;
+  right: -30%;
+  width: 50vw;
+  height: 50vh;
+  background: radial-gradient(ellipse, rgba(58, 143, 217, 0.06) 0%, transparent 70%);
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+.mf-navbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--mf-sidebar-w);
+  height: 100vh;
+  background: var(--mf-sidebar-bg);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-right: 1px solid rgba(100, 160, 255, 0.1);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+  transition: transform 0.5s var(--mf-ease-slide);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
+.mf-navbar.mf-navbar--collapsed {
+  transform: translateX(-250px);
+}
+.mf-navbar--blur {
+  filter: blur(2px);
+}
+
+.mf-logo {
+  width: var(--mf-sidebar-w);
+  height: 90px;
+  display: flex;
+  flex-shrink: 0;
+  position: relative;
+}
+.mf-logo-img {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  margin: 20px 0 0 20px;
+  text-align: center;
+  border-radius: 25%;
+  border: #3a8fd9 solid 1.4px;
+  box-shadow: 0 0 8px rgba(58, 143, 217, 0.3);
+}
+.mf-logo-title {
+  position: absolute;
+  left: 80px;
+  width: 140px;
+  height: 40px;
+  text-align: left;
+  padding-left: 15px;
+  border-left: 1px solid var(--mf-accent-line);
+  color: var(--mf-brand);
+  font-size: 22px;
+  font-weight: 700;
+  margin-top: 20px;
+  line-height: 40px;
+  letter-spacing: 1px;
+  transition: all 0.2s ease;
+  text-decoration: none;
+}
+.mf-logo-line {
+  position: absolute;
+  background: linear-gradient(90deg, rgba(100, 160, 255, 0.2), transparent);
+  left: 20px;
+  top: 80px;
+  width: 210px;
+  height: 1px;
+}
+
+.mf-nav-items {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-top: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.mf-nav-item {
+  position: relative;
+  width: 90%;
+  height: 48px;
+  margin-top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  line-height: 48px;
+  text-align: left;
+  padding-left: 28px;
+  color: var(--mf-text-dim);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+  text-decoration: none;
+  white-space: nowrap;
+  background: transparent;
+  font-family: inherit;
+}
+.mf-nav-item .iconfont {
+  font-size: 20px;
+  margin-right: 14px;
+  color: var(--mf-text-icon);
+  transition: color 0.2s;
+}
+.mf-nav-item:not(.mf-nav-item--active):hover {
+  color: #d0e2f5;
+  background: rgba(100, 160, 255, 0.06);
+  border-color: rgba(100, 160, 255, 0.1);
+  transform: translateX(-50%) translateY(-1px);
+}
+.mf-nav-item:not(.mf-nav-item--active):hover .iconfont {
+  color: var(--mf-brand);
+}
+.mf-nav-item--active {
+  background: linear-gradient(135deg, rgba(58, 143, 217, 0.25), rgba(90, 160, 230, 0.12));
+  border: 1px solid rgba(100, 160, 255, 0.2);
+  color: var(--mf-brand);
+  box-shadow: 0 2px 12px rgba(58, 143, 217, 0.15);
+}
+.mf-nav-item--active .iconfont {
+  color: var(--mf-brand);
+}
+.mf-nav-item:not(.mf-nav-item--active):active {
+  transform: translateX(-50%) translateY(-1px) scale(0.98);
+}
+
+/* Advanced entry — appended after the nine original items, collapsed by
+   default and auto-expanded while an advanced route is active. */
+.mf-nav-group {
+  width: 90%;
+  margin: 14px auto 0;
+  border-top: 1px solid var(--mf-hairline);
+  padding-top: 10px;
+}
+.mf-nav-group-toggle {
+  width: 100%;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--mf-text-dim);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.mf-nav-group-toggle:hover {
+  color: var(--mf-brand);
+  background: rgba(100, 160, 255, 0.06);
+}
+.mf-nav-group-toggle:focus-visible,
+.mf-nav-item:focus-visible,
+.mf-icon-button:focus-visible,
+.mf-user:focus-visible {
+  outline: 2px solid var(--mf-brand);
+  outline-offset: -2px;
+}
+.mf-nav-group-chevron {
+  font-size: 12px;
+  transition: transform 0.2s ease;
+}
+.mf-nav-group-chevron--open {
+  transform: rotate(180deg);
+}
+.mf-nav-group-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+}
+
+.mf-user {
+  width: 90%;
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
+  flex-shrink: 0;
+  margin-top: auto;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 48px;
+  color: var(--mf-text-dim);
+  font-size: 15px;
+  font-family: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: all 0.2s ease;
+  border-radius: 10px;
+  border: 1px solid rgba(100, 160, 255, 0.08);
+  background: rgba(100, 160, 255, 0.04);
+  cursor: pointer;
+}
+.mf-user-name {
+  width: 65%;
+  position: absolute;
+  left: 10%;
+  text-align: left;
+}
+.mf-user-icon {
+  position: absolute;
+  right: 10%;
+  font-size: 20px;
+  color: var(--mf-text-icon);
+  transition: color 0.2s;
+}
+.mf-user:hover {
+  background: rgba(100, 160, 255, 0.1);
+  border-color: rgba(100, 160, 255, 0.15);
+  transform: translateX(-50%) translateY(-1px);
+}
+.mf-user:hover .mf-user-icon {
+  color: #f78181;
+}
+
+/* ── Content column ─────────────────────────────────────────────────────── */
+.mf-content {
+  position: relative;
+  top: 0;
+  left: var(--mf-sidebar-w);
+  height: 100vh;
+  width: calc(100vw - var(--mf-sidebar-w));
+  background: transparent;
+  transition: left 0.5s var(--mf-ease-slide), width 0.5s var(--mf-ease-slide);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 1;
+}
+.mf-content--wide {
+  left: 0;
+  width: 100vw;
+}
+
+.mf-header {
+  background: var(--mf-topbar-bg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  height: var(--mf-topbar-h);
+  width: 100%;
+  border-bottom: 1px solid var(--mf-hairline);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+}
+.mf-header-toggle {
+  position: absolute;
+  left: 22px;
+  font-size: 24px;
+  color: var(--mf-text-icon);
+  width: 38px;
+  height: 38px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 2px;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.mf-header-toggle:hover {
+  background: rgba(100, 160, 255, 0.08);
+  color: var(--mf-brand);
+}
+.mf-header-toggle .iconfont {
+  font-size: 24px;
+}
+.mf-header-name {
+  position: absolute;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--mf-text);
+  left: 80px;
+}
+
+/* Per-page scroll region: height 100vh − topbar, independent of the body. */
+.mf-main {
+  height: calc(100vh - var(--mf-topbar-h));
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+}
+.mf-main:focus {
+  outline: none;
+}
+
+/* ── Logout dialog ──────────────────────────────────────────────────────── */
+.mf-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 999;
+}
+.mf-dialog {
+  position: absolute;
+  background: rgba(12, 25, 45, 0.92);
+  border: 1px solid rgba(100, 160, 255, 0.15);
+  border-radius: 16px;
+  width: 400px;
+  height: 200px;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+.mf-dialog-close {
+  position: absolute;
+  top: 5%;
+  right: 3%;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--mf-text-icon);
+  cursor: pointer;
+  height: 28px;
+  width: 28px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border-radius: 50%;
+  transition: all 0.2s;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.mf-dialog-close .iconfont {
+  font-size: 14px;
+  line-height: 1;
+}
+.mf-dialog-close:hover {
+  background: rgba(247, 129, 129, 0.15);
+  color: #f78181;
+}
+.mf-dialog-title {
+  position: absolute;
+  width: 80%;
+  height: 40%;
+  justify-content: center;
+  top: 20%;
+  font-size: 18px;
+  left: 50%;
+  text-align: center;
+  align-items: center;
+  transform: translateX(-50%);
+  color: var(--mf-text);
+  font-weight: 500;
+  margin: 0;
+  display: flex;
+}
+.mf-dialog-desc {
+  position: absolute;
+  left: 50%;
+  top: 55%;
+  transform: translateX(-50%);
+  width: 80%;
+  text-align: center;
+  font-size: 13px;
+  color: var(--mf-text-dim);
+  margin: 0;
+}
+.mf-dialog-error {
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 70%;
+  font-size: 12px;
+  color: #f78181;
+  background: rgba(247, 129, 129, 0.12);
+  border: 1px solid rgba(247, 129, 129, 0.35);
+  border-radius: 8px;
+  padding: 4px 8px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mf-dialog-yes,
+.mf-dialog-no {
+  transition: all 0.2s ease;
+  position: absolute;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 37%;
+  height: 22%;
+  bottom: 12%;
+  font-size: 16px;
+  border-radius: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.mf-dialog-yes {
+  left: 10%;
+  background: linear-gradient(135deg, #1a6dd4, #3a8fd9);
+  color: #fff;
+  font-weight: 600;
+  border: none;
+}
+.mf-dialog-yes:hover:not(:disabled) {
+  opacity: 0.88;
+  box-shadow: 0 2px 12px rgba(58, 143, 217, 0.35);
+}
+.mf-dialog-no {
+  right: 10%;
+  border: 1px solid rgba(100, 160, 255, 0.2);
+  font-weight: 500;
+  color: var(--mf-text-dim);
+  background: rgba(100, 160, 255, 0.04);
+}
+.mf-dialog-no:hover:not(:disabled) {
+  background: rgba(100, 160, 255, 0.1);
+  border-color: rgba(100, 160, 255, 0.3);
+  color: #a8c0d8;
+}
+.mf-dialog-yes:disabled,
+.mf-dialog-no:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Small utilities used by the shell ──────────────────────────────────── */
+.mf-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 8px;
+  z-index: 1000;
+  background: rgba(12, 25, 45, 0.95);
+  color: var(--mf-brand);
+  border: 1px solid var(--mf-panel-border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+}
+.mf-skip-link:focus {
+  left: 8px;
+}
+
+.mf-scrim {
+  display: none;
+}
+
+/* ── Responsive: preserve the reference proportions down to 1440, then
+      convert fixed heights to min-heights, then collapse to a drawer. ──── */
+@media (max-width: 1439px) {
+  .mf-header-name {
+    left: 72px;
+    font-size: 18px;
+    letter-spacing: 1px;
+  }
+}
+
+@media (max-width: 1023px) {
+  .mf-content {
+    left: 0;
+    width: 100vw;
+  }
+  .mf-navbar {
+    transform: translateX(-250px);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.55);
+  }
+  .mf-navbar.mf-navbar--open {
+    transform: translateX(0);
+  }
+  .mf-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    border: none;
+    padding: 0;
+    margin: 0;
+    z-index: 9;
+  }
+}
+
+@media (max-width: 767px) {
+  .mf-main {
+    height: calc(100vh - var(--mf-topbar-h));
+  }
+  .mf-header-name {
+    left: 64px;
+    font-size: 16px;
+  }
+  .mf-dialog {
+    width: min(400px, calc(100vw - 32px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mf-navbar,
+  .mf-content,
+  .mf-nav-item,
+  .mf-user {
+    transition-duration: 0.01ms !important;
+  }
+}

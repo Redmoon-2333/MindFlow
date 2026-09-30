@@ -562,3 +562,100 @@ class TestHealthDiagnosticsFields:
         assert "run_store" in data
         assert data["checkpoint_store"] == "unavailable"
         assert data["run_store"] == "available"
+
+
+# ── Provider status ──────────────────────────────────────────────────────
+
+
+class _FakeRegistry:
+    """Minimal ProviderRegistry stand-in exposing only describe()."""
+
+    def __init__(self, info: dict[str, object]) -> None:
+        self._info = info
+
+    def describe(self) -> dict[str, object]:
+        return self._info
+
+
+class _FakeLLMSettings:
+    def __init__(self, ollama_enabled: bool) -> None:
+        self.ollama_enabled = ollama_enabled
+
+
+class _FakeSettings:
+    def __init__(self, ollama_enabled: bool) -> None:
+        self.llm = _FakeLLMSettings(ollama_enabled)
+
+
+class TestProviderStatus:
+    def test_returns_allowlisted_fields(self) -> None:
+        app = _make_app()
+        app.state.provider_registry = _FakeRegistry(
+            {
+                "provider": "generic",
+                "model": "deepseek-flash",
+                "credential_present": True,
+                "base_url_host": "api.deepseek.com",
+                "provenance": "deepseek-direct",
+            }
+        )
+        app.state.settings = _FakeSettings(ollama_enabled=True)
+        client = TestClient(app)
+
+        resp = client.get("/api/v1/ai/provider-status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert set(data) == {"provider", "model", "configured", "ollama_enabled"}
+        assert data["provider"] == "generic"
+        assert data["model"] == "deepseek-flash"
+        assert data["configured"] is True
+        assert data["ollama_enabled"] is True
+        # Credentials/hosts must never leak through this endpoint.
+        assert "base_url_host" not in data
+        assert "api.deepseek.com" not in resp.text
+        assert "credential_present" not in data
+
+    def test_reports_unconfigured_without_failing(self) -> None:
+        app = _make_app()
+        app.state.provider_registry = _FakeRegistry(
+            {"provider": "generic", "model": "deepseek-flash", "credential_present": False}
+        )
+        app.state.settings = _FakeSettings(ollama_enabled=False)
+        client = TestClient(app)
+
+        data = client.get("/api/v1/ai/provider-status").json()
+        assert data["configured"] is False
+        assert data["ollama_enabled"] is False
+
+    def test_missing_registry_still_answers(self) -> None:
+        """A not-yet-ready runtime degrades to unknown, not to a 500."""
+        app = _make_app()
+        client = TestClient(app)
+
+        resp = client.get("/api/v1/ai/provider-status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "unknown"
+        assert data["model"] == "unknown"
+        assert data["configured"] is False
+
+    def test_describe_failure_is_degraded_not_500(self) -> None:
+        class _Boom:
+            def describe(self) -> dict[str, object]:
+                raise RuntimeError("registry closed")
+
+        app = _make_app()
+        app.state.provider_registry = _Boom()
+        app.state.settings = _FakeSettings(ollama_enabled=False)
+        client = TestClient(app)
+
+        resp = client.get("/api/v1/ai/provider-status")
+        assert resp.status_code == 200
+        assert resp.json()["configured"] is False
+
+    def test_requires_authentication(self) -> None:
+        app = _make_app(with_auth=True)
+        client = TestClient(app)
+        assert client.get("/api/v1/ai/provider-status").status_code == 401
+
