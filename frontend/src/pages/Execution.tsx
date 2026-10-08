@@ -1,3 +1,4 @@
+import WorkspacePage from "../components/WorkspacePage";
 import { useState, useEffect, useCallback } from "react";
 import {
   getTasks,
@@ -53,6 +54,9 @@ function localInputToUtcIso(value: string): string | null {
 }
 
 export default function Execution() {
+  const [tab, setTab] = useState("任务管理");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [taskDescription, setTaskDescription] = useState("");
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [tasksLoading, setTasksLoading] = useState(true);
@@ -105,12 +109,17 @@ export default function Execution() {
     setBusy(true);
     setError(null);
     try {
-      await createTask({
+      const save = editingId ? (data: Parameters<typeof createTask>[0]) => updateTask(editingId, data) : createTask;
+      if (taskMinutes && (!Number.isInteger(Number(taskMinutes)) || Number(taskMinutes) < 1 || Number(taskMinutes) > 100000)) throw new Error("预计分钟必须是 1–100000 的整数");
+      await save({
         title: taskTitle.trim(),
+        description: taskDescription.trim(),
         priority: taskPriority,
         deadline_utc: localInputToUtcIso(taskDeadline),
-        estimated_minutes: taskMinutes ? Number(taskMinutes) : undefined,
+        estimated_minutes: taskMinutes ? Number(taskMinutes) : null,
       });
+      setEditingId(null);
+      setTaskDescription("");
       setTaskTitle("");
       setTaskDeadline("");
       setTaskMinutes("");
@@ -147,6 +156,7 @@ export default function Execution() {
     setError(null);
     try {
       await deleteTask(task.id);
+      if (editingId === task.id) { setEditingId(null); setTaskTitle(""); setTaskDescription(""); setTaskDeadline(""); setTaskMinutes(""); setTaskPriority(3); }
       await loadTasks();
     } catch (e: unknown) {
       setError(getErrorMessage(e, "删除任务失败"));
@@ -197,35 +207,41 @@ export default function Execution() {
     }
   };
 
+  const handleEditTask = (task: TaskItem) => {
+    setEditingId(task.id); setTaskTitle(task.title); setTaskDescription(task.description); setTaskPriority(task.priority);
+    const date = task.deadline_utc ? new Date(task.deadline_utc) : null;
+    setTaskDeadline(date ? new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0,16) : "");
+    setTaskMinutes(task.estimated_minutes == null ? "" : String(task.estimated_minutes));
+    document.getElementById("task-editor")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    document.getElementById("task-title")?.focus({preventScroll:true});
+  };
   const filteredTasks =
     statusFilter === "all"
       ? tasks
       : tasks.filter((task) => task.status === statusFilter);
 
   return (
-    <div>
-      <div className="header">
-        <h1>干预执行</h1>
-        <p>任务优先级数据源与网站拦截执行（浏览器扩展自动应用）</p>
-      </div>
+    <WorkspacePage title="干预执行" description="把建议落到行动：整理待办任务，或暂时屏蔽容易让你分心的网站。" className="execution-page">
+      <div className="tabs" aria-label="执行功能">{["任务管理", "网站拦截"].map(name => <button type="button" key={name} className={`tab ${tab === name ? "active" : ""}`} aria-pressed={tab === name} onClick={() => setTab(name)}>{name}</button>)}</div>
 
       {error && <div className="error-box mb16">{error}</div>}
 
-      <div className="card mb24">
-        <h3>任务管理</h3>
+      {tab === "任务管理" && <div className="card mb24" id="task-editor">
+        <h3>{editingId ? "编辑任务" : "任务管理"}</h3>
         <p style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
-          优先级建议（smart_prioritization）干预会读取这里的待办任务，按截止时间与优先级排序后写入提醒
+          写下你准备完成的事情。专注提醒会参考截止时间与优先级，帮你选择下一步。优先级 5 为最高。
         </p>
 
-        <div className="flex gap8" style={{ marginBottom: 16, flexWrap: "wrap" }}>
-          <input
+        <div className="workspace-form">
+          <label className="workspace-field workspace-full">任务标题<input
+            id="task-title" maxLength={200}
             placeholder="任务标题（必填）"
             aria-label="任务标题"
             value={taskTitle}
             onChange={(e) => setTaskTitle(e.target.value)}
-            style={{ flex: 2, minWidth: 200 }}
-          />
-          <select
+          /></label>
+          <label className="workspace-field workspace-full">任务描述（可选）<textarea aria-label="任务描述" maxLength={2000} rows={2} value={taskDescription} onChange={e => setTaskDescription(e.target.value)} /></label>
+          <label className="workspace-field">优先级<select
             value={taskPriority}
             onChange={(e) => setTaskPriority(Number(e.target.value))}
             title="优先级"
@@ -236,23 +252,24 @@ export default function Execution() {
                 优先级 {p}
               </option>
             ))}
-          </select>
-          <input
+          </select></label>
+          <label className="workspace-field">截止时间（可选）<input
             type="datetime-local"
             value={taskDeadline}
             onChange={(e) => setTaskDeadline(e.target.value)}
             title="截止时间（可选）"
             aria-label="任务截止时间"
-          />
-          <input
+          /></label>
+          <label className="workspace-field">预计用时（分钟，可选）<input
             placeholder="预计分钟（可选）"
             aria-label="预计分钟"
             type="number"
             min={1}
             value={taskMinutes}
             onChange={(e) => setTaskMinutes(e.target.value)}
-            style={{ width: 140 }}
-          />
+            max={100000} step={1}
+          /></label>
+          <div className="workspace-actions">
           <button
             type="button"
             className="btn"
@@ -262,8 +279,10 @@ export default function Execution() {
             {busy && (
               <span className="spinner" style={{ width: 14, height: 14, margin: 0, borderWidth: 2 }} />
             )}
-            添加任务
+            {editingId ? "保存任务" : "添加任务"}
           </button>
+          {editingId && <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => { setEditingId(null); setTaskTitle(""); setTaskDescription(""); setTaskDeadline(""); setTaskMinutes(""); setTaskPriority(3); }}>取消编辑</button>}
+          </div>
         </div>
 
         <div className="tabs" style={{ marginBottom: 12 }}>
@@ -289,13 +308,7 @@ export default function Execution() {
           filteredTasks.map((task) => (
             <div
               key={task.id}
-              className="flex-between"
-              style={{
-                padding: "12px 0",
-                borderBottom: "1px solid var(--color-border)",
-                alignItems: "center",
-                gap: 12,
-              }}
+              className="workspace-record"
             >
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
@@ -318,11 +331,13 @@ export default function Execution() {
                     </span>
                   )}
                 </div>
+                {task.description && <p className="workspace-note" style={{margin: "10px 0"}}>{task.description}</p>}
                 <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>
                   截止：{formatDeadline(task.deadline_utc)}
                 </div>
               </div>
-              <div className="flex gap8" style={{ flexShrink: 0 }}>
+              <div className="workspace-actions">
+                <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={() => handleEditTask(task)}>编辑</button>
                 <button
                   type="button"
                   className="btn btn-sm"
@@ -346,29 +361,28 @@ export default function Execution() {
               </div>
             </div>
           ))}
-      </div>
+      </div>}
 
-      <div className="card">
+      {tab === "网站拦截" && <div className="card">
         <h3>网站拦截</h3>
         <p style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
-          环境优化（environment_optimization）干预触发时会自动把近期停留最久的干扰域名加入这里；
-          浏览器扩展每分钟同步一次并通过 declarativeNetRequest 规则真实拦截
+          先在系统设置中配对浏览器扩展，再添加想暂时屏蔽的域名。扩展每分钟同步名单；暂停拦截后可以恢复访问。
         </p>
 
-        <div className="flex gap8" style={{ marginBottom: 16, flexWrap: "wrap" }}>
+        <div className="workspace-form">
           <input
             placeholder="域名，如 bilibili.com（必填）"
             aria-label="要拦截的域名"
             value={blockDomain}
             onChange={(e) => setBlockDomain(e.target.value)}
-            style={{ flex: 2, minWidth: 200 }}
+            style={{ minWidth: 0 }}
           />
           <input
             placeholder="拦截原因（可选）"
             aria-label="拦截原因"
             value={blockReason}
             onChange={(e) => setBlockReason(e.target.value)}
-            style={{ flex: 1, minWidth: 160 }}
+            style={{ minWidth: 0 }}
           />
           <button
             type="button"
@@ -390,13 +404,7 @@ export default function Execution() {
           blocklist.map((item) => (
             <div
               key={item.domain}
-              className="flex-between"
-              style={{
-                padding: "12px 0",
-                borderBottom: "1px solid var(--color-border)",
-                alignItems: "center",
-                gap: 12,
-              }}
+              className="workspace-record"
             >
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
@@ -431,7 +439,7 @@ export default function Execution() {
               </div>
             </div>
           ))}
-      </div>
-    </div>
+      </div>}
+    </WorkspacePage>
   );
 }

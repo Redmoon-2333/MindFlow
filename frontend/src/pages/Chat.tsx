@@ -1,3 +1,4 @@
+import WorkspacePage from "../components/WorkspacePage";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { sendChat, getChatSessions, getChatMessages, getErrorMessage } from "../api";
 import type { ChatSession } from "../api";
@@ -46,7 +47,7 @@ export default function Chat() {
       const data = await getChatSessions();
       setSessions(Array.isArray(data) ? data : []);
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "Request failed"));
+      setError(getErrorMessage(e, "对话加载失败，请重试"));
     } finally {
       setSessionsLoading(false);
     }
@@ -64,7 +65,7 @@ export default function Chat() {
       setMessages(Array.isArray(data) ? data : []);
     } catch (e: unknown) {
       if (seq !== messagesSeqRef.current || targetGen !== conversationGenRef.current) return;
-      setError(getErrorMessage(e, "Request failed"));
+      setError(getErrorMessage(e, "对话加载失败，请重试"));
       setMessages([]);
     } finally {
       if (seq === messagesSeqRef.current && targetGen === conversationGenRef.current) {
@@ -142,7 +143,7 @@ export default function Chat() {
     } catch (e: unknown) {
       if (targetGen !== conversationGenRef.current) return;
       if (targetSessionId !== activeSessionIdRef.current) return;
-      setError(getErrorMessage(e, "Request failed"));
+      setError(getErrorMessage(e, "对话加载失败，请重试"));
     } finally {
       if (targetSessionId === activeSessionIdRef.current) setLoading(false);
       else setLoading(false);
@@ -157,11 +158,8 @@ export default function Chat() {
   };
 
   return (
-    <div>
-      <div className="header">
-        <h1>AI 对话</h1>
-        <p>MindFlow 智能助手</p>
-      </div>
+    <WorkspacePage title="AI 对话" description="聊聊当前任务、专注状态或遇到的困难。选择左侧历史会话可以继续之前的话题。" className="chat-page">
+
 
       {error && (
         <div className="error-box mb16">
@@ -242,7 +240,7 @@ export default function Chat() {
         {/* Chat Main Area */}
         <div className="card chat-main" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {/* Message List */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 0" }} aria-live="polite">
             {messagesLoading && <div className="spinner" />}
 
             {!messagesLoading && messages.length === 0 && (
@@ -256,7 +254,7 @@ export default function Chat() {
                   fontSize: 14,
                 }}
               >
-                {activeSessionId ? "暂无消息" : "开始新对话，向 MindFlow 智能助手提问"}
+                <div className="chat-starters"><p>{activeSessionId ? "这个会话还没有消息" : "今天，想从哪里开始？"}</p>{!activeSessionId && ["帮我把当前任务拆成容易开始的小步骤", "如何减少工作时的分心？", "帮我回顾今天的专注情况"].map(question => <button key={question} type="button" className="btn btn-ghost" onClick={() => { setInput(question); textareaRef.current?.focus(); }}>{question}</button>)}</div>
               </div>
             )}
 
@@ -340,6 +338,6 @@ export default function Chat() {
           </div>
         </div>
       </div>
-    </div>
+    </WorkspacePage>
   );
 }

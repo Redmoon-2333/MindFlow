@@ -1,3 +1,4 @@
+import WorkspacePage from "../components/WorkspacePage";
 import { useState, useEffect, useCallback } from "react";
 import {
   getHealth,
@@ -87,6 +88,7 @@ function normaliseUnknownApps(value: unknown): UnknownApp[] {
 }
 
 export default function Settings() {
+  const [section, setSection] = useState("采集与隐私");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -369,11 +371,8 @@ export default function Settings() {
   };
 
   return (
-    <div>
-      <div className="header">
-        <h1>系统设置</h1>
-        <p>管理 MindFlow 配置与数据</p>
-      </div>
+    <WorkspacePage title="系统设置" description="决定采集哪些数据、哪些应用属于工作，以及数据如何保留。设置只作用于本机。" className="settings-page">
+
 
       {error && (
         <div className="error-box mb16">
@@ -393,6 +392,8 @@ export default function Settings() {
         </div>
       )}
 
+      <div className="tabs settings-nav" aria-label="设置分组">{["采集与隐私", "应用分类", "数据与偏好", "系统状态"].map(name => <button key={name} type="button" className={`tab ${section === name ? "active" : ""}`} aria-pressed={section === name} onClick={() => setSection(name)}>{name}</button>)}</div>
+      {section === "系统状态" && <>
       {/* 1. System Info */}
       <div className="card mb24">
         <h3>系统信息</h3>
@@ -422,9 +423,6 @@ export default function Settings() {
         </div>
       </div>
 
-      <div className="card mb24">
-        <div className="flex flex-between" style={{ alignItems: "flex-start" }}>
-          <div>
           <div className="card mb24">
         <h3 style={{ marginBottom: 8 }}>AI 用量</h3>
         {aiUsage ? (
@@ -435,14 +433,19 @@ export default function Settings() {
               <>
                 <div>近 30 天 AI 分析：{aiUsage.llm_calls_30d} 次</div>
                 <div>专家面板：{aiUsage.panel_count_30d} 次</div>
-                <div>估算费用： USD</div>
+                <div>估算费用：{aiUsage.llm_cost_usd_30d.toFixed(4)} USD</div>
               </>
             )}
           </div>
         ) : (
-          <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>加载中...</div>
+          <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>暂无用量数据</div>
         )}
       </div>
+      </>}
+      {section === "采集与隐私" && <>
+      <div className="card mb24">
+        <div className="flex flex-between" style={{ alignItems: "flex-start" }}>
+          <div>
         <h3 style={{ marginBottom: 6 }}>隐私行为采集</h3>
             <p style={{ color: "var(--color-text-secondary)", fontSize: 13, margin: 0 }}>
               只保存 30 秒聚合计数和浏览器域名，不记录按键内容、鼠标坐标或完整网址。
@@ -473,16 +476,16 @@ export default function Settings() {
           </div>
         )}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginTop: 20 }}>
-          <label className="flex flex-between" style={{ padding: 14, border: "1px solid var(--color-border)", borderRadius: 10 }}>
+          <label className="settings-switch">
             <span><strong style={{ display: "block", fontSize: 14 }}>鼠标与键盘聚合统计</strong><span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>点击、滚动、移动距离和输入活跃秒数</span></span>
             <input type="checkbox" checked={telemetry?.preferences.input_telemetry_enabled ?? false} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ input_telemetry_enabled: event.target.checked })} />
           </label>
-          <label className="flex flex-between" style={{ padding: 14, border: "1px solid var(--color-border)", borderRadius: 10 }}>
+          <label className="settings-switch">
             <span><strong style={{ display: "block", fontSize: 14 }}>浏览器域名统计</strong><span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>仅 Edge / Chrome 活动标签页域名</span></span>
             <input type="checkbox" checked={telemetry?.preferences.browser_tracking_enabled ?? false} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ browser_tracking_enabled: event.target.checked })} />
           </label>
         </div>
-        <div className="form-row mt16" style={{ alignItems: "end" }}>
+        <div className="settings-retention">
           <div className="form-group"><label>输入桶保留天数</label><select aria-label="输入桶保留天数" value={telemetry?.preferences.interaction_retention_days ?? 7} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ interaction_retention_days: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
           <div className="form-group"><label>活动与浏览器片段保留天数</label><select aria-label="活动与浏览器片段保留天数" value={telemetry?.preferences.activity_retention_days ?? 30} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ activity_retention_days: Number(event.target.value) })}>{[7, 14, 30, 60, 90].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
           <button className="btn btn-primary" disabled={loading || telemetryLoading} onClick={handleCreatePairingCode}>生成浏览器配对码</button>
@@ -568,6 +571,8 @@ export default function Settings() {
         </div>
       </div>
 
+      </>}
+      {section === "应用分类" && <>
       {/* 4. App Classifications */}
       <div className="card mb24">
         <div className="flex-between mb16">
@@ -599,7 +604,7 @@ export default function Settings() {
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 140px 80px auto", gap: 8, marginBottom: 12 }}>
+        <div className="settings-classification-form">
           <input
             placeholder="进程名"
             aria-label="进程名"
@@ -643,7 +648,7 @@ export default function Settings() {
         {classifications.length === 0 ? (
           <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>暂无分类规则</div>
         ) : (
-          <table>
+          <div className="workspace-table"><table>
             <thead>
               <tr>
                 <th>进程名</th>
@@ -659,13 +664,8 @@ export default function Settings() {
                   <td>{rule.process_name}</td>
                   <td>{rule.window_title_pattern || "--"}</td>
                   <td>
-                    <span className={`badge ${
-                      rule.category === "productive" ? "badge-success"
-                      : rule.category === "distracting" ? "badge-danger"
-                      : rule.category === "neutral" ? "badge-info"
-                      : "badge-warning"
-                    }`}>
-                      {rule.category}
+                    <span className={`badge ${["code", "document", "browser_work"].includes(rule.category) ? "badge-success" : ["entertainment", "social"].includes(rule.category) ? "badge-danger" : "badge-info"}`}>
+                      {({code: "工作软件", document: "文档", browser_work: "浏览器工作", communication: "沟通", entertainment: "娱乐软件", social: "社交", other: "不一定"} as Record<string, string>)[rule.category] ?? rule.category}
                     </span>
                   </td>
                   <td>{rule.priority}</td>
@@ -680,10 +680,12 @@ export default function Settings() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 
+      </>}
+      {section === "数据与偏好" && <>
       {/* 5. Data Export */}
       <div className="card mb24">
         <h3>数据导出</h3>
@@ -710,8 +712,9 @@ export default function Settings() {
       </div>
 
       {/* 6. Preferences */}
-      <div className="card mb24">
-        <h3>偏好设置</h3>
+      <details className="workspace-details">
+        <summary>高级偏好设置 · JSON 编辑</summary>
+        <p className="workspace-note">按需修改自定义偏好。完整保存会替换已有内容，局部更新只合并填写的字段。</p>
         <textarea
           aria-label="偏好设置 JSON"
           value={preferences}
@@ -722,13 +725,14 @@ export default function Settings() {
         />
         <div className="flex gap8">
           <button className="btn btn-sm" onClick={handlePutPrefs} disabled={prefLoading}>
-            {prefLoading ? "保存中..." : "PUT 全量更新"}
+            {prefLoading ? "保存中..." : "完整保存"}
           </button>
           <button className="btn btn-sm btn-ghost" onClick={handlePatchPrefs} disabled={prefLoading}>
-            {prefLoading ? "更新中..." : "PATCH 增量更新"}
+            {prefLoading ? "更新中..." : "局部更新"}
           </button>
         </div>
-      </div>
-    </div>
+      </details>
+      </>}
+    </WorkspacePage>
   );
 }

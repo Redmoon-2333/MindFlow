@@ -1,3 +1,4 @@
+import WorkspacePage from "../components/WorkspacePage";
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getTrainingReadiness,
@@ -327,13 +328,7 @@ export default function ModelCenter() {
   };
 
   return (
-    <div>
-      <div className="mc-header">
-        <h1>模型中心</h1>
-        <p>{modelStatus?.demo_only
-          ? "合成数据演示模型 · 影子模式 · 未通过个人模型质量门"
-          : "行为特征模型训练就绪评估与任务管理"}</p>
-      </div>
+    <WorkspacePage title="模型中心" description={modelStatus?.demo_only ? "合成数据演示模型 · 影子模式 · 未通过个人模型质量门" : "先在专注分析中校准记录，再查看数据是否足够训练属于自己的行为模型。"} className="model-page">
 
       {/* Tabs */}
       <div className="tabs" role="tablist">
@@ -786,6 +781,6 @@ export default function ModelCenter() {
           )}
         </div>
       )}
-    </div>
+    </WorkspacePage>
   );
 }

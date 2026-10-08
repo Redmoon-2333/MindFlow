@@ -1,3 +1,4 @@
+import WorkspacePage from "../components/WorkspacePage";
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   triggerIntervention,
@@ -79,12 +80,15 @@ export default function Intervention() {
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
   const [skipNotice, setSkipNotice] = useState<string | null>(null);
   const shownAtRef = useRef<number>(0);
+  const historySeqRef = useRef(0);
 
   const loadHistory = useCallback(async () => {
+    const seq = ++historySeqRef.current;
     setLoading(true);
     setError(null);
     try {
       const data = await getInterventionHistory(days);
+      if (seq !== historySeqRef.current) return;
       const items = [...data.items].sort(
         (left, right) => interventionTimestamp(right) - interventionTimestamp(left),
       );
@@ -93,9 +97,11 @@ export default function Intervention() {
       setLatest(nextLatest);
       if (nextLatest) shownAtRef.current = performance.now();
     } catch (e: unknown) {
+      if (seq !== historySeqRef.current) return;
+      setHistory([]);
       setError(getErrorMessage(e, "加载干预历史失败"));
     } finally {
-      setLoading(false);
+      if (seq === historySeqRef.current) setLoading(false);
     }
   }, [days]);
 
@@ -197,11 +203,8 @@ export default function Intervention() {
   };
 
   return (
-    <div>
-      <div className="header">
-        <h1>干预中心</h1>
-        <p>管理智能干预策略，查看干预记录与响应情况</p>
-      </div>
+    <WorkspacePage title="干预中心" description="需要帮助回到专注状态时，选择一次提醒；再告诉我们，这次提醒是否对你有用。" className="intervention-page">
+
 
       {error && <div className="error-box mb16">{error}</div>}
 
@@ -216,12 +219,13 @@ export default function Intervention() {
         </div>
       )}
 
-      <div className="card mb24">
+      <div className="workspace-grid">
+      <div className="card">
         <h3>手动触发干预</h3>
         <p style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
           选择一个强度级别，手动触发一次专注干预
         </p>
-        <div className="flex gap8">
+        <div className="workspace-actions">
           {INTENSITY_OPTIONS.map((opt) => (
             <button
               type="button"
@@ -239,8 +243,8 @@ export default function Intervention() {
         </div>
       </div>
 
-      {latest && (
-        <div className="card mb24">
+      {latest ? (
+        <div className="card">
           <div className="flex-between mb16">
             <h3 style={{ margin: 0 }}>最新干预</h3>
             {getInterventionTypeBadge(latest.intervention_type)}
@@ -258,7 +262,7 @@ export default function Intervention() {
           <div style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
             {getStatusBadge(latest)}
             <span style={{ marginLeft: 8 }}>
-              {formatTime(latest.created_at || "")}
+              {formatTime(latest.triggered_at || latest.created_at || "")}
             </span>
           </div>
           <div className="flex gap8" style={{ marginTop: 12 }}>
@@ -291,7 +295,8 @@ export default function Intervention() {
             </button>
           </div>
         </div>
-      )}
+      ) : (<div className="card"><h3>最新干预</h3><div className="workspace-empty">暂时没有提醒。<br />需要时，可以从左侧选择一种强度。</div></div>)}
+      </div>
 
       <div className="card">
         <div className="flex-between mb16">
@@ -338,7 +343,7 @@ export default function Intervention() {
                   flexShrink: 0,
                 }}
               />
-              <div style={{ flex: 1 }}>
+              <div className="workspace-record-body">
                 <div className="flex-between">
                   <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
                     {getInterventionTypeBadge(item.intervention_type)}
@@ -368,6 +373,7 @@ export default function Intervention() {
                 {feedbackId === item.id ? (
                   <div className="mt8" style={{ background: "var(--color-bg-inset)", padding: 12, borderRadius: 8 }}>
                     <select
+                      aria-label="干预评分"
                       value={feedbackRating}
                       onChange={(e) => setFeedbackRating(e.target.value as InterventionRating | "")}
                       style={{ marginBottom: 8 }}
@@ -430,6 +436,6 @@ export default function Intervention() {
             </div>
           ))}
       </div>
-    </div>
+    </WorkspacePage>
   );
 }

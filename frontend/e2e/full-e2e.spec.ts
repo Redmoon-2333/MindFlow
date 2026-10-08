@@ -521,6 +521,7 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── 8f. Get unknown apps ──
+    await page.getByRole("button", { name: "应用分类", exact: true }).click();
     const unknownBtn = page.locator("button", { hasText: /获取未知应用/ });
     if (await unknownBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
       await unknownBtn.click();
@@ -536,7 +537,7 @@ test.describe("MindFlow Full E2E", () => {
       if (await titleInput.isVisible({ timeout: 1000 }).catch(() => false)) {
         await titleInput.fill("Test Window*");
       }
-      const categorySelect = page.locator("select").nth(2);
+      const categorySelect = page.getByLabel("分类", { exact: true });
       if (await categorySelect.isVisible({ timeout: 1000 }).catch(() => false)) {
         await categorySelect.selectOption("code");
       }
@@ -557,6 +558,7 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── 8i. Data export ──
+    await page.getByRole("button", { name: "数据与偏好", exact: true }).click();
     const exportSelect = page.locator("select").first();
     // Find the export format select
     const exportFmtSelect = page.locator("select").filter({ hasText: "CSV" });
@@ -574,9 +576,10 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── 8j. Preferences PUT ──
+    await page.getByText("高级偏好设置 · JSON 编辑", { exact: true }).click();
     const prefTextarea = page.locator("textarea").last();
     if (await prefTextarea.isVisible({ timeout: 2000 }).catch(() => false)) {
-      const putBtn = page.locator("button", { hasText: /PUT/ });
+      const putBtn = page.locator("button", { hasText: /完整保存/ });
       if (await putBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
         await putBtn.click();
         await page.waitForTimeout(2000);
@@ -584,7 +587,7 @@ test.describe("MindFlow Full E2E", () => {
       }
 
       // PATCH
-      const patchBtn = page.locator("button", { hasText: /PATCH/ });
+      const patchBtn = page.locator("button", { hasText: /局部更新/ });
       if (await patchBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
         await patchBtn.click();
         await page.waitForTimeout(2000);
@@ -592,6 +595,7 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── 8k. Clear telemetry buttons ──
+    await page.getByRole("button", { name: "采集与隐私", exact: true }).click();
     // Scroll to bottom and verify the privacy section exists
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(500);

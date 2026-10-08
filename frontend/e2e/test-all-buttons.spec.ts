@@ -591,8 +591,9 @@ test.describe("Settings", () => {
     await page.goto(`${FRONTEND}/settings`, { waitUntil: "networkidle" });
     await expect(page.locator(".mf-header-name")).toHaveText("系统设置");
 
-    for (const section of ["系统信息", "隐私行为采集", "数据采集", "自主控制", "应用分类", "数据导出", "偏好设置"]) {
-      await expect(page.locator(`text=${section}`)).toBeVisible({ timeout: 10000 });
+    for (const [tab, sections] of [["采集与隐私", ["隐私行为采集", "数据采集", "自主控制"]], ["应用分类", ["应用分类"]], ["数据与偏好", ["数据导出"]], ["系统状态", ["系统信息"]]] as const) {
+      await page.getByRole("button", { name: tab, exact: true }).click();
+      for (const section of sections) await expect(page.getByRole("heading", { name: section, exact: true })).toBeVisible({ timeout: 10000 });
     }
   });
 
@@ -668,7 +669,7 @@ test.describe("Settings", () => {
     await page.waitForTimeout(3000);
 
     // Scroll to app classification section
-    await page.locator("text=应用分类").scrollIntoViewIfNeeded();
+    await page.getByRole("button", { name: "应用分类", exact: true }).click();
     await page.waitForTimeout(500);
 
     // Fill in process name
@@ -709,6 +710,7 @@ test.describe("Settings", () => {
     await page.goto(`${FRONTEND}/settings`, { waitUntil: "networkidle" });
     await page.waitForTimeout(2000);
 
+    await page.getByRole("button", { name: "应用分类", exact: true }).click();
     const unknownBtn = page.locator("button").filter({ hasText: "获取未知应用" });
     if (await unknownBtn.isVisible()) {
       await unknownBtn.click();
@@ -721,12 +723,14 @@ test.describe("Settings", () => {
     await page.goto(`${FRONTEND}/settings`, { waitUntil: "networkidle" });
     await page.waitForTimeout(2000);
 
+    await page.getByRole("button", { name: "数据与偏好", exact: true }).click();
+    await page.getByText("高级偏好设置 · JSON 编辑", { exact: true }).click();
     const textarea = page.locator("textarea").last();
     if (await textarea.isVisible()) {
       // Read current value
       const current = await textarea.inputValue();
       // PUT save
-      const putBtn = page.locator("button").filter({ hasText: "PUT 全量更新" });
+      const putBtn = page.locator("button").filter({ hasText: "完整保存" });
       if (await putBtn.isVisible()) {
         await putBtn.click();
         await page.waitForTimeout(2000);
@@ -739,6 +743,7 @@ test.describe("Settings", () => {
     await page.goto(`${FRONTEND}/settings`, { waitUntil: "networkidle" });
     await page.waitForTimeout(2000);
 
+    await page.getByRole("button", { name: "数据与偏好", exact: true }).click();
     const exportBtn = page.locator("button").filter({ hasText: "导出" });
     if (await exportBtn.isVisible()) {
       // Just click it - download will be triggered

@@ -376,19 +376,19 @@ export interface AttributionResponse {
   assessment: {
     procrastination_types: string[];
     type_confidence: Record<string, number>;
-    cognitive_distortions: string[];
+    cognitive_distortions?: string[];
     cbt_technique: string | null;
     response_text: string;
-    next_action: string;
+    next_action?: string;
   };
-  source: "deepseek" | "ollama" | "rule_engine";
+  source: string;
   cached: boolean;
   meta: { degraded: boolean };
   results?: AttributionResult[];
-  confidence?: string | number;
-  procrastination_type?: string;
-  cbt_technique?: string;
-  evidence?: string;
+  confidence?: string | number | null;
+  procrastination_type?: string | null;
+  cbt_technique?: string | null;
+  evidence?: string | null;
 }
 
 export type Preferences = Record<string, unknown>;
@@ -874,7 +874,7 @@ export const addClassification = (data: ClassificationRuleInput) => request<Clas
 export const putClassifications = (data: ClassificationRuleInput[]) => request<ClassificationRule[]>("/app-classifications", { method: "PUT", body: JSON.stringify(data) });
 export const deleteClassification = (id: string) =>
   request<unknown>(`/app-classifications/${encodeURIComponent(id)}`, { method: "DELETE" });
-export const getUnknownApps = () => request<string[]>("/app-classifications/unknown-apps");
+export const getUnknownApps = () => request<{ process_name: string; count: number; last_seen: string | null }[]>("/app-classifications/unknown-apps");
 export const exportData = (fmt: "csv" | "json", start?: string, end?: string) => {
   const params = new URLSearchParams({ fmt });
   if (start) params.set("start", start);

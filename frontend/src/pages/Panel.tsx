@@ -1,6 +1,17 @@
+import WorkspacePage from "../components/WorkspacePage";
 import { useState } from "react";
 import { triggerPanel, getPanelResult, getErrorMessage } from "../api";
 import type { PanelResult } from "../api";
+
+const TYPE_LABELS: Record<string, string> = {
+  task_aversion: "任务畏惧型", impulsivity: "冲动分心型", decisional: "决策困难型",
+  perfectionism: "完美主义型", emotional_regulation: "情绪调节型",
+};
+const TECHNIQUE_LABELS: Record<string, string> = {
+  behavioral_experiment: "行为实验", cognitive_restructuring: "认知重构", stimulus_control: "刺激控制",
+  goal_setting: "目标设定", graded_exposure: "逐步接触任务", mindfulness: "正念练习",
+};
+const SOURCE_LABELS: Record<string, string> = { panel: "专家面板", single_expert: "单专家分析", deepseek: "DeepSeek", ollama: "本地模型", rule_engine: "规则分析" };
 
 const ROLE_COLORS: Record<string, string> = {
   analyst: "#4F6BF6",
@@ -71,11 +82,8 @@ export default function Panel() {
   const hasContent = Boolean(result && (types.length > 0 || result.technique || result.rationale || discussionRounds.length > 0));
 
   return (
-    <div>
-      <div className="header">
-        <h1>专家面板</h1>
-        <p>多智能体协作分析</p>
-      </div>
+    <WorkspacePage title="专家面板" description="让多个专家共同分析今天的行为，查看可能的原因和下一步建议。讨论细节按需展开。" className="panel-page">
+
 
       {error && (
         <div className="error-box mb16">
@@ -86,7 +94,7 @@ export default function Panel() {
         </div>
       )}
 
-      <div className="flex gap8 mb24">
+      <div className="workspace-actions mb24">
         <button className="btn" onClick={() => handleTrigger()} disabled={loading !== null}>
           {loading === "trigger" && (
             <span className="spinner" style={{ width: 16, height: 16, margin: 0, borderWidth: 2 }} />
@@ -103,6 +111,18 @@ export default function Panel() {
 
       {loading && !result && <div className="spinner" />}
 
+      {result?.insufficient_data && (
+        <div className="info-box mb24" role="status">
+          <strong>今天的数据还不足以形成可靠结论</strong>
+          <p>继续使用并采集一段时间后再试。{result.evidence_gaps?.join("；")}</p>
+        </div>
+      )}
+
+      {result && <div className="workspace-actions mb24">
+        <span className="badge badge-info">{result.cached ? "已保存的结果" : "本次分析结果"}</span>
+        <span className="text-muted">来源：{SOURCE_LABELS[result.source ?? result.meta?.source ?? ""] ?? result.source ?? result.meta?.source ?? "未知"}</span>
+      </div>}
+
       {result?.degraded && (
         <div className="card mb16" style={{ borderLeft: "3px solid var(--color-warning)" }}>
           <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
@@ -118,7 +138,7 @@ export default function Panel() {
       )}
 
       {hasContent && (
-        <div className="flex gap16" style={{ flexDirection: "column" }}>
+        <div className="panel-results">
           {types.length > 0 && (
             <div className="card">
               <h3>拖延类型分析</h3>
@@ -128,7 +148,7 @@ export default function Panel() {
                   return (
                     <div key={i}>
                       <div className="flex flex-between mb16" style={{ marginBottom: 6 }}>
-                        <span style={{ fontSize: 14, fontWeight: 500 }}>{t.name || `类型 ${i + 1}`}</span>
+                        <span style={{ fontSize: 14, fontWeight: 500 }}>{TYPE_LABELS[t.name] ?? (t.name || `类型 ${i + 1}`)}</span>
                         <span
                           className="badge"
                           style={{
@@ -167,12 +187,12 @@ export default function Panel() {
           {result?.technique && (
             <div className="card">
               <h3>推荐 CBT 技术</h3>
-              <p style={{ fontSize: 14, lineHeight: 1.6 }}>{result.technique}</p>
+              <p style={{ fontSize: 14, lineHeight: 1.6 }}>{TECHNIQUE_LABELS[result.technique] ?? result.technique}</p>
             </div>
           )}
 
           {result?.rationale && (
-            <div className="card">
+            <div className="card workspace-full">
               <h3>分析依据</h3>
               <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--color-text-secondary)" }}>
                 {result.rationale}
@@ -181,8 +201,8 @@ export default function Panel() {
           )}
 
           {discussionRounds.length > 0 && (
-            <div className="card">
-              <h3>专家讨论记录</h3>
+            <details className="workspace-details workspace-full">
+              <summary>专家讨论记录 · {discussionRounds.length} 条</summary>
               <div className="flex gap16" style={{ flexDirection: "column" }}>
                 {discussionRounds.map((round, i) => (
                   <div
@@ -221,16 +241,15 @@ export default function Panel() {
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
+          {(result?.dissent?.length ?? 0) > 0 && <details className="workspace-details workspace-full"><summary>不同意见 · {result?.dissent.length} 条</summary><div>{result?.dissent.map((opinion, index) => <p key={index}>{opinion}</p>)}</div></details>}
         </div>
       )}
 
-      {!loading && !hasContent && !error && (
-        <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
-          点击上方按钮触发专家面板分析或查看历史记录
-        </p>
+      {!loading && !hasContent && !error && !result?.insufficient_data && (
+        <div className="workspace-empty">今天的分析尚未显示。<br />点击“运行专家面板”获取分析，或“查看上次结果”读取已保存的结论。</div>
       )}
-    </div>
+    </WorkspacePage>
   );
 }

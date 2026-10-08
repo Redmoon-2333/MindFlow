@@ -11,6 +11,7 @@ import os
 import socket
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -45,6 +46,15 @@ def isolate_runtime_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
             monkeypatch.delenv(name)
     monkeypatch.setattr(config, "_cached_data_dir", tmp_path / "mindflow")
     monkeypatch.setattr(config, "SETTINGS", None)
+    # MaintenanceService has a standalone platformdirs fallback. Keep that
+    # fallback isolated too; no test should create the real user's data folder.
+    import mindflow.services.maintenance_service as maintenance
+
+    monkeypatch.setattr(
+        maintenance,
+        "platformdirs",
+        SimpleNamespace(user_data_dir=lambda *args, **kwargs: str(tmp_path)),
+    )
 
 
 @pytest.fixture(autouse=True)

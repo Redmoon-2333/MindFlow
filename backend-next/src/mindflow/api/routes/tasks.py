@@ -83,6 +83,10 @@ async def update_task(
 ) -> TaskResponse:
     """Update one task; omitted fields keep their stored values."""
     fields = body.model_dump(exclude_none=True)
+    # Explicit null clears optional planning fields; omitted fields stay intact.
+    for field in ("deadline_utc", "estimated_minutes"):
+        if field in body.model_fields_set:
+            fields[field] = getattr(body, field)
     task = await repo.update(task_id, **fields)
     if task is None:
         raise _not_found(f"任务 {task_id}")

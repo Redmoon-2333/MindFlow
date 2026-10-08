@@ -89,6 +89,33 @@ class TestTaskApi:
         resp = client.patch("/api/v1/tasks/nonexistent", json={"title": "x"})
         assert resp.status_code == 404
 
+    async def test_edit_preserves_omitted_and_clears_optional_fields(self, app) -> None:
+        client = TestClient(app)
+        created = client.post(
+            "/api/v1/tasks",
+            json={
+                "title": "报告",
+                "description": "准备材料",
+                "deadline_utc": "2026-10-02T12:00:00+00:00",
+                "estimated_minutes": 60,
+            },
+        ).json()
+        path = f"/api/v1/tasks/{created['id']}"
+        updated = client.patch(path, json={"title": "报告初稿"}).json()
+        assert updated["deadline_utc"] == created["deadline_utc"]
+        assert updated["estimated_minutes"] == 60
+        cleared = client.patch(
+            path, json={"deadline_utc": None, "estimated_minutes": None}
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["deadline_utc"] is None
+        assert cleared.json()["estimated_minutes"] is None
+        stored = client.get("/api/v1/tasks").json()["items"][0]
+        assert stored["description"] == "准备材料"
+        assert stored["title"] == "报告初稿"
+        assert stored["deadline_utc"] is None
+        assert stored["estimated_minutes"] is None
+
     async def test_create_rejects_out_of_range_priority(self, app) -> None:
         """The Pydantic boundary rejects out-of-range priority (422)."""
         client = TestClient(app)

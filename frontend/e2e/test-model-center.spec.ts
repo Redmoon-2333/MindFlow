@@ -198,8 +198,8 @@ test.describe("Model Center", () => {
     }));
     await setupPage(page);
     await page.goto("/model-center");
-    await expect(page.locator(".mc-header")).toContainText("合成数据演示模型");
-    await expect(page.locator(".mc-header")).toContainText("未通过个人模型质量门");
+    await expect(page.locator(".workspace-heading")).toContainText("合成数据演示模型");
+    await expect(page.locator(".workspace-heading")).toContainText("未通过个人模型质量门");
     await page.getByRole("tab", { name: "模型状态", exact: true }).click();
     await expect(page.getByText("演示版本", { exact: true })).toBeVisible();
     await expect(page.getByText("demo_v4", { exact: true }).first()).toBeVisible();
@@ -243,6 +243,15 @@ test.describe("Model Center", () => {
     // Calibration and stable folds also require an evaluated training report.
     await expect(gates.nth(5).locator(".badge-info")).toContainText("未评估");
     await expect(gates.nth(6).locator(".badge-info")).toContainText("未评估");
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      if (width < 1024) {
+        await expect(page.locator(".mf-navbar")).toHaveAttribute("inert", "");
+        await expect.poll(() => page.locator(".mf-content").evaluate(el => el.getBoundingClientRect().left)).toBe(0);
+      }
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+      await page.screenshot({ path: `screenshots/ui-review/模型中心-质量门-${width}.png`, fullPage: true });
+    }
   });
 
   test("blocker state shows blockers and disables training", async ({ page }) => {

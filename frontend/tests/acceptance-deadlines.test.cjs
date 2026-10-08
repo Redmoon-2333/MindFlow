@@ -98,6 +98,10 @@ async function main() {
     "../api": {},
     "../baseline-state": { EMPTY_BASELINE_VIEW: {} },
     "./model-center.css": {},
+    "../components/WorkspacePage": load("../src/components/WorkspacePage.tsx", {
+      "react/jsx-runtime": require("react/jsx-runtime"),
+      "./workspace.css": {},
+    }),
   }, {}, "\nexports.testState = {isNonterminal, jobStatusLabel};");
   assert.equal(page.testState.isNonterminal("interrupted"), false);
   assert.equal(page.testState.jobStatusLabel("interrupted"), "已中断");
