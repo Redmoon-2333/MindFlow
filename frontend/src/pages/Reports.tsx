@@ -1,15 +1,10 @@
+import NativeDateField from "../components/NativeDateField";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
-import dayjs from "dayjs";
-import "dayjs/locale/zh-cn";
 import { getDailyReport, getErrorMessage, getWeeklyReport } from "../api";
 import type { DailyReport, WeeklyReport } from "../report-state";
 import { toDailyReportView, toWeeklyReportView, formatMinutes, dayLabel } from "../report-view";
 import { toThreeHourBuckets } from "../report-buckets";
 import { localDateStr, mondayOf } from "../date-utils";
-import "./picker.css";
 import "./reports.css";
 
 type Tab = "daily" | "weekly";
@@ -167,7 +162,7 @@ export default function Reports() {
           : null;
 
   return (
-    <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="zh-cn">
+    <>
       <div className="reports">
         <div className="top-buttom">
           <button
@@ -189,22 +184,7 @@ export default function Reports() {
         </div>
 
         <div className="report-datepicker mf-picker">
-          <DatePicker
-            disableFuture
-            value={dayjs(tab === "daily" ? dailyDate : weekStart)}
-            onChange={(newValue, context) => {
-              if (!newValue?.isValid() || context.validationError != null) return;
-              if (tab === "daily") setDailyDate(newValue.format("YYYY-MM-DD"));
-              else setWeekStart(mondayOf(newValue.toDate()));
-            }}
-            format="YYYY/MM/DD"
-            label="选择日期"
-            slotProps={{
-              textField: { fullWidth: true, size: "small" },
-              layout: { className: "f-calendar" },
-              popper: { className: "f-calendar" },
-            }}
-          />
+          <NativeDateField label="选择日期" value={tab === "daily" ? dailyDate : weekStart} onChange={value => { if (tab === "daily") setDailyDate(value); else setWeekStart(mondayOf(new Date(`${value}T12:00:00`))); }} />
         </div>
 
         {error && (
@@ -333,6 +313,6 @@ export default function Reports() {
           )}
         </div>
       </div>
-    </LocalizationProvider>
+    </>
   );
 }

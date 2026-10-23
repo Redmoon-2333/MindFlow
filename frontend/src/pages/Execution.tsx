@@ -269,7 +269,7 @@ export default function Execution() {
             onChange={(e) => setTaskMinutes(e.target.value)}
             max={100000} step={1}
           /></label>
-          <div className="workspace-actions">
+          <div className="workspace-actions task-form-actions">
           <button
             type="button"
             className="btn"

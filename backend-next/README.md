@@ -282,3 +282,15 @@ sqlite3 mindflow.db ".backup mindflow_pre_migration.db"
 ## License
 
 MIT License © 2026 RedMoon (胡淙煜)
+
+### 网页选择 ChatECNU（2026-10-09）
+
+在系统设置的“外观与 AI”中选择 ChatECNU，填写校园 Key 并选择 `ecnu-max` / `ecnu-plus`，保存后重启后端。默认 DeepSeek 行为不变；遗留 ECNU 三元组不会自动启用校园服务，兼容开关仍默认关闭。
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `MINDFLOW_LLM__SERVICE` | `deepseek` | 显式选择 `ecnu` 才启用 ChatECNU |
+| `MINDFLOW_LLM__ECNU_API_KEY` | 未设置 | 独立校园凭证，不与 DeepSeek Key 混用 |
+| `MINDFLOW_LLM__ECNU_MODEL` | `ecnu-max` | 支持 `ecnu-max`、`ecnu-plus` |
+
+校园目标固定为 `https://chat.ecnu.edu.cn/open/api/v1`。所有校园 L1 路径共享并发门，不使用第二个独立 panel burst 门；上限 3。`GET/PUT/DELETE /api/v1/settings/ai` 需要本机会话认证，不回传密钥。PUT 支持 `service`、`ecnu_model`；省略 service 仍保存 DeepSeek。重启后从本机用户目录的 .env 加载，启动环境变量优先。缺选定服务的凭证时按既有 L2/L3 降级，不自动切到另一云端服务。

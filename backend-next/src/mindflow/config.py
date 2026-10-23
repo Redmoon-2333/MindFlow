@@ -73,10 +73,12 @@ class LLMSettings(BaseSettings):
     """LLM API configuration for attribution pipeline (Wave 6).
 
     Three-tier degradation chain (Architecture §3.3):
-      L1: **DeepSeek direct** (`provider=generic`,
+      L1: Explicit ``service="ecnu"`` selects ChatECNU with its dedicated
+          credential and model. Otherwise the default is **DeepSeek direct** (`provider=generic`,
           ``base_url=https://api.deepseek.com``, ``model=deepseek-flash``,
           credential from ``DEEPSEEK_API_KEY``).  The campus (ECNU) gateway is
-          *not* used in production and there is no ECNU→DeepSeek failover: a
+          used only with explicit service selection; there is no automatic provider
+          failover or credential sharing: a
           missing DeepSeek credential makes L1 unavailable and the existing
           L2 (Ollama, when enabled) / L3 (RuleEngine) tiers take over.
       L2: Ollama local (ollama_enabled + ollama_base_url + ollama_model)
@@ -102,7 +104,7 @@ class LLMSettings(BaseSettings):
         description=(
             "Primary provider: 'auto' (infer from base_url/model), 'ecnu', "
             "or 'generic' (plain OpenAI-compatible). Only consulted when "
-            "`ecnu_compat_enabled` is true; production always pins DeepSeek."
+            "`ecnu_compat_enabled` is true; use service for production selection."
         ),
     )
     # ── Production L1 pin (DeepSeek direct) ─────────────────────────────
@@ -125,6 +127,13 @@ class LLMSettings(BaseSettings):
             "output policies (JSON vs prose), not two different models."
         ),
     )
+    service: Literal["deepseek", "ecnu"] = Field(
+        default="deepseek",
+        description="Explicit production L1 selection; legacy values never select ECNU",
+    )
+    ecnu_api_key: str | None = Field(default=None, description="Dedicated ChatECNU credential")
+    ecnu_model: Literal["ecnu-max", "ecnu-plus"] = "ecnu-max"
+
     ecnu_compat_enabled: bool = Field(
         default=False,
         description=(
@@ -256,12 +265,24 @@ class LLMSettings(BaseSettings):
     def l1_target(self) -> L1Target:
         """Resolve the effective L1 provider/endpoint/model for this process.
 
-        Production (``ecnu_compat_enabled`` false, the default) always returns
+        Explicit ``service="ecnu"`` selects the campus endpoint with its own key.
+        Otherwise production (``ecnu_compat_enabled`` false, the default) returns
         the DeepSeek pin, overriding any legacy ECNU URL, model or key that is
         still present in the environment.  Setting ``ecnu_compat_enabled``
         returns the legacy triple unchanged so the ECNU adapter remains usable
         in its own tests and in diagnostics.
         """
+        if self.service == "ecnu":
+            return L1Target(
+                provider="ecnu",
+                api_key=(self.ecnu_api_key or "").strip() or None,
+                base_url="https://chat.ecnu.edu.cn/open/api/v1",
+                model=self.ecnu_model,
+                reasoning_effort=self.reasoning_effort,
+                thinking_enabled=self.thinking_enabled,
+                max_output_tokens=self.max_output_tokens,
+                provenance="ecnu-explicit",
+            )
         if self.ecnu_compat_enabled:
             legacy_ecnu = self.is_ecnu
             return L1Target(
@@ -371,14 +392,18 @@ class Settings(BaseSettings):
         default=5, ge=1, le=60, description="Collector tick interval in seconds"
     )
     idle_collect_interval_s: int = Field(
-        default=30, ge=5, le=600,
+        default=30,
+        ge=5,
+        le=600,
         description=(
             "Widened collector tick interval while the machine is idle "
             "(architecture plan H / adaptive frequency; saves battery)"
         ),
     )
     idle_threshold_s: int = Field(
-        default=120, ge=30, le=1800,
+        default=120,
+        ge=30,
+        le=1800,
         description=(
             "Seconds of no input before a snapshot is marked idle. Larger "
             "values keep focused-but-quiet reading/thinking from being "
@@ -390,9 +415,7 @@ class Settings(BaseSettings):
     )
 
     # --- Data Retention ---
-    event_retention_days: int = Field(
-        default=30, description="Raw event retention in days (7-90)"
-    )
+    event_retention_days: int = Field(default=30, description="Raw event retention in days (7-90)")
     workflow_retention_days: int = Field(
         default=30,
         description=(
@@ -412,7 +435,9 @@ class Settings(BaseSettings):
         description="OTel span exporter: 'console' | 'in_memory' | 'sqlite'",
     )
     otel_retention_days: int = Field(
-        default=30, ge=7, le=365,
+        default=30,
+        ge=7,
+        le=365,
         description="OTel span retention in days (cleaned by daily maintenance)",
     )
 
@@ -457,7 +482,9 @@ class Settings(BaseSettings):
         default=8, ge=0, le=23, description="Auto-intervention window start hour (local 24h)"
     )
     intervention_end_hour: int = Field(
-        default=23, ge=0, le=24,
+        default=23,
+        ge=0,
+        le=24,
         description="Auto-intervention window end hour (exclusive, local 24h)",
     )
 
@@ -487,14 +514,17 @@ class Settings(BaseSettings):
         description="Enable human review interrupt on low-confidence/high-disagreement verdicts",
     )
     human_review_confidence_threshold: float = Field(
-        default=0.5, ge=0.0, le=1.0,
+        default=0.5,
+        ge=0.0,
+        le=1.0,
         description="Confidence below which human review is triggered",
     )
     human_review_disagreement_threshold: float = Field(
-        default=0.3, ge=0.0, le=1.0,
+        default=0.3,
+        ge=0.0,
+        le=1.0,
         description=(
-            "Disagreement strength above which human review is triggered "
-            "(1.0 - agreement_strength)"
+            "Disagreement strength above which human review is triggered (1.0 - agreement_strength)"
         ),
     )
 

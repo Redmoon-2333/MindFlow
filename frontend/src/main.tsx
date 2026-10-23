@@ -1,5 +1,8 @@
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
+import { applyTheme, readTheme } from "./themes";
+
+applyTheme(readTheme());
 
 // Bootstrap ticket exchange is handled inside <App /> so the login screen can
 // show an in-progress state and keep the one-time ticket in the URL on failure

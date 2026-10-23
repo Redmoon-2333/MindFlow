@@ -45,6 +45,8 @@ class PanelMeta(BaseModel):
     insufficient_data: bool = False
     uncertainty: float | None = None
     evidence_gaps: list[str] = Field(default_factory=list)
+    attempt_status: Literal["succeeded", "degraded", "failed"] | None = None
+    attempt_degradation_path: list[str] = Field(default_factory=list)
 
 
 class PanelResponse(BaseModel):

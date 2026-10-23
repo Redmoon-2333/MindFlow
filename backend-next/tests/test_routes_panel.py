@@ -211,3 +211,40 @@ class TestPanelRateLimit:
         # Rate limit headers are added by middleware, not by the route itself
         # This just confirms the endpoint works; full ratelimit tests are in
         # test_middleware_ratelimit.py
+
+
+class TestRetryFeedback:
+    def test_retry_keeps_old_result_and_exposes_new_failure_path(self) -> None:
+        service = AsyncMock()
+        old = _make_verdict(source="single_expert", degradation_path=("panel_unavailable",))
+        new = _make_verdict(source="single_expert", degradation_path=("panel_rejected",))
+        service.get_stored_verdict.return_value = old
+        service.run_daily_panel.return_value = new
+        with TestClient(_make_app(service)) as client:
+            data = client.post("/api/v1/panel/today", json={"retry_if_degraded": True}).json()
+        assert data["cached"] is True
+        assert data["meta"]["attempt_status"] == "degraded"
+        assert data["meta"]["degradation_path"] == ["panel_unavailable"]
+        assert data["meta"]["attempt_degradation_path"] == ["panel_rejected"]
+        service.run_daily_panel.assert_awaited_once()
+
+    def test_retry_exception_is_explicit_and_sanitized(self) -> None:
+        service = AsyncMock()
+        service.get_stored_verdict.return_value = _make_verdict(source="single_expert")
+        service.run_daily_panel.side_effect = RuntimeError("private-provider-response")
+        with TestClient(_make_app(service)) as client:
+            response = client.post("/api/v1/panel/today", json={"retry_if_degraded": True})
+        assert response.status_code == 200
+        assert response.json()["meta"]["attempt_status"] == "failed"
+        assert response.json()["meta"]["attempt_degradation_path"] == ["retry_error"]
+        assert "private-provider-response" not in response.text
+
+    def test_success_and_cache_are_distinct(self) -> None:
+        service = AsyncMock()
+        service.get_stored_verdict.return_value = None
+        service.run_daily_panel.return_value = _make_verdict()
+        with TestClient(_make_app(service)) as client:
+            result = client.post("/api/v1/panel/today").json()
+            assert result["meta"]["attempt_status"] == "succeeded"
+            service.get_stored_verdict.return_value = _make_verdict()
+            assert client.post("/api/v1/panel/today").json()["meta"]["attempt_status"] is None

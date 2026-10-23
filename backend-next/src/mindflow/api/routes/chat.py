@@ -14,9 +14,9 @@ import asyncio
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, Response  # noqa: B008
+from fastapi import APIRouter, Depends, HTTPException, Request, Response  # noqa: B008
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from mindflow.api.deps import get_chat_service
 from mindflow.api.schemas import ChatResponse
@@ -43,6 +43,35 @@ class ChatRequest(BaseModel):
 
 
 # ── Routes ────────────────────────────────────────────────────────────
+
+
+class RenameChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=80)
+
+
+@router.patch("/chat/sessions/{session_id}")
+async def rename_session(
+    session_id: str,
+    body: RenameChatRequest,
+    chat_service: ChatService = Depends(get_chat_service),  # noqa: B008
+) -> dict[str, str]:
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(422, "会话标题不能为空")
+    if not await chat_service.rename_session(1, session_id, title):
+        raise HTTPException(404, "会话不存在")
+    return {"session_id": session_id, "title": title}
+
+
+@router.delete("/chat/sessions/{session_id}", status_code=204)
+async def delete_session(
+    session_id: str,
+    chat_service: ChatService = Depends(get_chat_service),  # noqa: B008
+) -> Response:
+    if not await chat_service.delete_session(1, session_id):
+        raise HTTPException(404, "会话不存在")
+    return Response(status_code=204)
 
 
 @router.post("/chat", response_model=ChatResponse)

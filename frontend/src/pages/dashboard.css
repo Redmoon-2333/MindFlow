@@ -98,7 +98,7 @@
 }
 .d-state-content {
   font-size: 16px;
-  color: #ffffff;
+  color: var(--mf-text);
   font-weight: 600;
   position: absolute;
   top: 45px;
@@ -118,7 +118,7 @@
 }
 .d-state-close {
   font-size: 16px;
-  color: #ffffff;
+  color: var(--mf-text);
   font-weight: 600;
   position: absolute;
   top: 45px;
@@ -156,7 +156,7 @@
   background: #80808028;
 }
 .d-icon-box-close .icon {
-  color: #ffffff41;
+  color: var(--mf-text-dim);
 }
 .d-state-item:nth-child(3) .d-icon-box {
   background: #06b6d428;
@@ -215,7 +215,7 @@
 .d-activity-item-content {
   font-size: 15px;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--mf-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -229,7 +229,7 @@
 .d-activity-item-contain-content {
   font-size: 14px;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--mf-text);
   background: var(--mf-panel);
   border-radius: 15px;
   height: 25px;
@@ -309,7 +309,7 @@
   left: 50%;
   transform: translateX(-50%);
   font-size: 14px;
-  color: #fff;
+  color: var(--mf-text);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -390,7 +390,7 @@
 .d-statistic-number {
   font-size: 35px;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--mf-text);
 }
 .d-statistic-unit {
   margin-bottom: 4px;
@@ -456,7 +456,7 @@
   position: relative;
   padding: 4px 8px;
   background: #a0ffc363;
-  color: #16db1c;
+  color: var(--color-success);
   font-size: 14px;
   font-weight: 600;
   border-radius: 15px;
@@ -515,7 +515,7 @@
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
   outline: 2px solid var(--mf-panel);
-  color: #fff;
+  color: var(--mf-text);
   margin-top: 2px;
   font-family: inherit;
   font-size: 14px;
@@ -571,7 +571,7 @@
   position: absolute;
   top: 23px;
   right: 50px;
-  color: #9b9a9a;
+  color: var(--mf-text-dim);
   font-weight: 600;
   cursor: pointer;
   background: none;
@@ -617,7 +617,7 @@
 }
 .d-inference-item .icon-box .iconfont {
   font-size: 25px;
-  color: #ffffff;
+  color: var(--mf-text);
 }
 .d-inference-item .icon-box-orange {
   background: #f59f0b38;
@@ -687,7 +687,7 @@
 .d-extra-value {
   font-size: 22px;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--mf-text);
   margin-top: 12px;
 }
 .d-extra-note {

@@ -2,6 +2,8 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from "react-router-dom";
 import "./theme.css";
 import "./shell.css";
+import "./layout-refinements.css";
+import "./themes.css";
 import "./assets/reference-font/iconfont.css";
 import {
   AUTH_REQUIRED_EVENT,
@@ -10,6 +12,7 @@ import {
   logout,
   getErrorMessage,
 } from "./api";
+import { resetChatRuntime } from "./lib/chat-runtime";
 import logo from "./assets/logo.png";
 import { realtimeClient, requestNotificationPermission } from "./realtime";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -365,6 +368,10 @@ export default function App() {
   const [authenticated, setAuthenticated] = useState(hasAuthenticatedSession);
   const [bootstrapping, setBootstrapping] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!authenticated) resetChatRuntime();
+  }, [authenticated]);
 
   // Handle bootstrap ticket from URL hash on first load. The one-time ticket
   // is only removed from the URL after a successful exchange (see api.ts), so

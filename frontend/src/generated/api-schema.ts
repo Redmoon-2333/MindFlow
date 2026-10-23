@@ -969,6 +969,24 @@ export interface paths {
         patch: operations["update_task_api_v1_tasks__task_id__patch"];
         trace?: never;
     };
+    "/api/v1/chat/sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Session */
+        delete: operations["delete_session_api_v1_chat_sessions__session_id__delete"];
+        options?: never;
+        head?: never;
+        /** Rename Session */
+        patch: operations["rename_session_api_v1_chat_sessions__session_id__patch"];
+        trace?: never;
+    };
     "/api/v1/chat": {
         parameters: {
             query?: never;
@@ -1181,6 +1199,25 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/ai": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Ai Settings */
+        get: operations["get_ai_settings_api_v1_settings_ai_get"];
+        /** Save Ai Settings */
+        put: operations["save_ai_settings_api_v1_settings_ai_put"];
+        post?: never;
+        /** Delete Ai Settings */
+        delete: operations["delete_ai_settings_api_v1_settings_ai_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1615,6 +1652,48 @@ export interface components {
              */
             status: "pending" | "preparing_data" | "training" | "succeeded" | "failed" | "cancelled" | "interrupted";
         };
+        /** CredentialInput */
+        CredentialInput: {
+            /**
+             * Api Key
+             * Format: password
+             */
+            api_key: string;
+            /**
+             * Service
+             * @default deepseek
+             * @enum {string}
+             */
+            service: "deepseek" | "ecnu";
+            /**
+             * Ecnu Model
+             * @default ecnu-max
+             * @enum {string}
+             */
+            ecnu_model: "ecnu-max" | "ecnu-plus";
+        };
+        /** CredentialStatus */
+        CredentialStatus: {
+            /** Saved */
+            saved: boolean;
+            /** Active Configured */
+            active_configured: boolean;
+            /** Environment Override */
+            environment_override: boolean;
+            /** Restart Required */
+            restart_required: boolean;
+            /** Provider */
+            provider: string;
+            /** Model */
+            model: string;
+            /**
+             * Service
+             * @enum {string}
+             */
+            service: "deepseek" | "ecnu";
+            /** Active Provider */
+            active_provider: string;
+        };
         /**
          * DailyReportResponse
          * @description Typed daily report returned by ``GET /reports/daily``.
@@ -1892,6 +1971,10 @@ export interface components {
             uncertainty?: number | null;
             /** Evidence Gaps */
             evidence_gaps?: string[];
+            /** Attempt Status */
+            attempt_status?: ("succeeded" | "degraded" | "failed") | null;
+            /** Attempt Degradation Path */
+            attempt_degradation_path?: string[];
         };
         /** PanelResponse */
         PanelResponse: {
@@ -1946,7 +2029,7 @@ export interface components {
             force: boolean;
             /**
              * Retry If Degraded
-             * @description Retry DeepSeek when the stored result is degraded.
+             * @description Retry the configured AI provider when the stored result is degraded.
              * @default false
              */
             retry_if_degraded: boolean;
@@ -1971,6 +2054,11 @@ export interface components {
              * @default 1
              */
             hours: number;
+        };
+        /** RenameChatRequest */
+        RenameChatRequest: {
+            /** Title */
+            title: string;
         };
         /**
          * RunDetail
@@ -3837,6 +3925,72 @@ export interface operations {
             };
         };
     };
+    delete_session_api_v1_chat_sessions__session_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_session_api_v1_chat_sessions__session_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_chat_api_v1_chat_post: {
         parameters: {
             query?: never;
@@ -4081,6 +4235,79 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    get_ai_settings_api_v1_settings_ai_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialStatus"];
+                };
+            };
+        };
+    };
+    save_ai_settings_api_v1_settings_ai_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_ai_settings_api_v1_settings_ai_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialStatus"];
                 };
             };
         };

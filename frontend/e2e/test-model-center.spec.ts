@@ -198,8 +198,8 @@ test.describe("Model Center", () => {
     }));
     await setupPage(page);
     await page.goto("/model-center");
-    await expect(page.locator(".workspace-heading")).toContainText("合成数据演示模型");
-    await expect(page.locator(".workspace-heading")).toContainText("未通过个人模型质量门");
+    await expect(page.locator(".model-demo-notice")).toContainText("合成数据演示模型");
+    await expect(page.locator(".model-demo-notice")).toContainText("未通过个人模型质量门");
     await page.getByRole("tab", { name: "模型状态", exact: true }).click();
     await expect(page.getByText("演示版本", { exact: true })).toBeVisible();
     await expect(page.getByText("demo_v4", { exact: true }).first()).toBeVisible();
@@ -211,7 +211,7 @@ test.describe("Model Center", () => {
     await interceptAllApi(page);
     await setupPage(page);
     await page.goto("/model-center", { waitUntil: "networkidle" });
-    await expect(page.locator("h1")).toContainText("模型中心");
+    await expect(page.locator(".mf-header-name")).toContainText("模型中心");
 
     const tabs = page.locator('[role="tab"]');
     await expect(tabs).toHaveCount(4);

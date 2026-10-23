@@ -23,10 +23,11 @@ from __future__ import annotations
 from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.ids import new_id
-from mindflow.infrastructure.schema import chat_messages
+from mindflow.infrastructure.schema import chat_messages, chat_sessions
 
 # ── Repository ─────────────────────────────────────────────────────────
 
@@ -153,12 +154,24 @@ class ChatRepository:
             .subquery()
         )
 
+        # Correlated first question supplies a default title without per-row queries.
+        first_question = sa.select(chat_messages.c.content).where(
+            chat_messages.c.user_id == user_id,
+            chat_messages.c.session_id == latest.c.session_id,
+            chat_messages.c.role == "user",
+        ).order_by(chat_messages.c.created_at, chat_messages.c.id).limit(1).scalar_subquery()
         # Filter to rn=1 (latest message per session), order by created_at DESC, id DESC
         stmt = (
             sa.select(
                 latest.c.session_id,
                 latest.c.created_at.label("last_message_at"),
+                chat_sessions.c.title,
+                first_question.label("first_question"),
             )
+            .outerjoin(chat_sessions, sa.and_(
+                chat_sessions.c.session_id == latest.c.session_id,
+                chat_sessions.c.user_id == user_id,
+            ))
             .where(latest.c.rn == 1)
             .order_by(sa.desc(latest.c.created_at), sa.desc(latest.c.id))
             .limit(limit)
@@ -166,13 +179,48 @@ class ChatRepository:
 
         async with self._session_factory() as session:
             result = await session.execute(stmt)
-            return [
+            sessions = [
                 {
                     "session_id": row.session_id,
                     "last_message_at": row.last_message_at,
+                    "title": row.title or " ".join((row.first_question or "新对话").split())[:40],
                 }
                 for row in result.fetchall()
             ]
+            return sessions
+
+    async def rename_session(self, user_id: int, session_id: str, title: str) -> bool:
+        """Persist a title only for an existing, user-owned conversation."""
+        async with self._session_factory() as session, session.begin():
+            exists = await session.scalar(sa.select(chat_messages.c.id).where(
+                chat_messages.c.user_id == user_id,
+                chat_messages.c.session_id == session_id,
+            ).limit(1))
+            if exists is None:
+                return False
+            await session.execute(insert(chat_sessions).values(
+                user_id=user_id, session_id=session_id, title=title,
+            ).on_conflict_do_update(
+                index_elements=["user_id", "session_id"], set_={"title": title},
+            ))
+            return True
+
+    async def delete_session(self, user_id: int, session_id: str) -> bool:
+        """Delete the owner's messages and title in one transaction."""
+        async with self._session_factory() as session, session.begin():
+            exists = await session.scalar(sa.select(chat_messages.c.id).where(
+                chat_messages.c.user_id == user_id,
+                chat_messages.c.session_id == session_id,
+            ).limit(1))
+            await session.execute(chat_messages.delete().where(
+                chat_messages.c.user_id == user_id,
+                chat_messages.c.session_id == session_id,
+            ))
+            await session.execute(chat_sessions.delete().where(
+                chat_sessions.c.user_id == user_id,
+                chat_sessions.c.session_id == session_id,
+            ))
+            return exists is not None
 
     def __repr__(self) -> str:
         return "<ChatRepository>"

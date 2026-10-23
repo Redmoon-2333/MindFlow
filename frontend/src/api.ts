@@ -105,6 +105,7 @@ export interface ActivitiesResponse {
 export interface ChatSession {
   session_id: string;
   last_message_at: string;
+  title?: string;
 }
 
 export interface ChatMessageRecord {
@@ -646,6 +647,11 @@ export async function bootstrapFromFragment(): Promise<boolean> {
 
 export const getHealth = () => request<HealthData>("/health");
 
+export interface AICredentialStatus { saved: boolean; active_configured: boolean; environment_override: boolean; restart_required: boolean; provider: string; model: string; service?: "deepseek" | "ecnu"; active_provider?: string; }
+export const getAISettings = () => request<AICredentialStatus>("/settings/ai");
+export const saveAISettings = (apiKey: string, service: "deepseek" | "ecnu" = "deepseek", ecnuModel: "ecnu-max" | "ecnu-plus" = "ecnu-max") => request<AICredentialStatus>("/settings/ai", { method: "PUT", body: JSON.stringify({ api_key: apiKey, ...(service === "ecnu" ? {service, ecnu_model: ecnuModel} : {}) }) });
+export const deleteAISettings = () => request<AICredentialStatus>("/settings/ai", { method: "DELETE" });
+
 /** Sign out of the local session backing this browser.
  *
  *  The cookie is HttpOnly, so revocation has to happen server-side: POST the
@@ -740,6 +746,12 @@ export async function sendChat(message: string, sessionId?: string, signal?: Abo
 export async function getChatSessions(): Promise<ChatSession[]> {
   return unwrap(await withTimeout(client.GET("/api/v1/chat/sessions", requestOptions()))) as unknown as ChatSession[];
 }
+export const renameChatSession = (sessionId: string, title: string) =>
+  request<{session_id: string; title: string}>(`/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH", body: JSON.stringify({title}),
+  });
+export const deleteChatSession = (sessionId: string) =>
+  request<void>(`/chat/sessions/${encodeURIComponent(sessionId)}`, {method: "DELETE"});
 export async function getChatMessages(sessionId: string): Promise<ChatMessageRecord[]> {
   return unwrap(await withTimeout(client.GET("/api/v1/chat/{session_id}/messages", { ...requestOptions(), params: { path: { session_id: sessionId } } }))) as unknown as ChatMessageRecord[];
 }

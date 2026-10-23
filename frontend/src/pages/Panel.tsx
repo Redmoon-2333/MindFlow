@@ -1,7 +1,8 @@
 import WorkspacePage from "../components/WorkspacePage";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { triggerPanel, getPanelResult, getErrorMessage } from "../api";
 import type { PanelResult } from "../api";
+import { Link } from "react-router-dom";
 
 const TYPE_LABELS: Record<string, string> = {
   task_aversion: "任务畏惧型", impulsivity: "冲动分心型", decisional: "决策困难型",
@@ -43,17 +44,51 @@ function confidencePct(v: number): string {
   return `${Math.round((v ?? 0) * 100)}%`;
 }
 
+const FAILURE_LABELS: Record<string, string> = {
+  panel_timeout: "多专家讨论超时", panel_unavailable: "专家面板未就绪或没有形成有效裁决",
+  panel_error: "专家讨论发生异常", panel_schema_invalid: "专家裁决格式校验未通过",
+  panel_rejected: "专家裁决未通过复核", panel_insufficient_evidence: "证据不足",
+  duplicate_timeout: "等待同一分析任务超时", retry_error: "重试请求在后端执行失败",
+};
+function failureReason(path: string[]) {
+  return path.filter(key => FAILURE_LABELS[key]).map(key => FAILURE_LABELS[key]).join("；")
+    || "未返回具体失败步骤，请查看 AI 诊断中的本次运行记录。";
+}
+
 export default function Panel() {
   const [loading, setLoading] = useState<"trigger" | "read" | null>(null);
   const [result, setResult] = useState<PanelResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [elapsed, setElapsed] = useState(0);
+  const [feedback, setFeedback] = useState<{kind: "success" | "warning"; message: string} | null>(null);
+  useEffect(() => {
+    if (loading !== "trigger") return;
+    setElapsed(0);
+    const started = Date.now();
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [loading]);
   const handleTrigger = async (retryIfDegraded = false) => {
     setLoading("trigger");
     setError(null);
+    setFeedback(null);
     try {
       const data = await triggerPanel(retryIfDegraded ? { retryIfDegraded: true } : undefined);
       setResult(data);
+      const status = data.meta?.attempt_status;
+      const path = status ? data.meta?.attempt_degradation_path ?? [] : data.meta?.degradation_path ?? [];
+      if (status === "failed") {
+        setError(`本次重试失败，当前仍展示此前保存的结果。${failureReason(path)}`);
+      } else if (data.insufficient_data) {
+        setFeedback({kind:"warning", message:"本次分析未形成结论：采集证据不足，请查看下方的数据缺口。"});
+      } else if (data.degraded) {
+        const lead = status === "degraded" ? (data.cached ? "本次重试仍未完成专家讨论，当前保留此前结果。" : "本次专家讨论未完成，已返回后备分析结果。")
+          : data.cached ? "服务器返回了已保存的降级结果，未确认本次重新分析是否执行。请检查后端版本。" : "本次专家讨论未完成，已返回后备分析结果。";
+        setFeedback({kind:"warning", message:lead + failureReason(path)});
+      } else {
+        setFeedback({kind:"success", message:data.cached ? "已读取保存的专家分析结果，本次未启动新分析。" : "专家分析已完成，以下为本次结果。"});
+      }
     } catch (e: unknown) {
       setError(getErrorMessage(e, "专家面板请求失败"));
     } finally {
@@ -64,6 +99,7 @@ export default function Panel() {
   const handleRead = async () => {
     setLoading("read");
     setError(null);
+    setFeedback(null);
     try {
       const data = await getPanelResult();
       setResult(data);
@@ -86,7 +122,7 @@ export default function Panel() {
 
 
       {error && (
-        <div className="error-box mb16">
+        <div className="error-box mb16" role="alert">
           {error}
           <button className="btn btn-sm" style={{ marginLeft: 12 }} onClick={() => setError(null)}>
             关闭
@@ -99,17 +135,24 @@ export default function Panel() {
           {loading === "trigger" && (
             <span className="spinner" style={{ width: 16, height: 16, margin: 0, borderWidth: 2 }} />
           )}
-          运行专家面板
+          {loading === "trigger" ? "分析中…" : "运行专家面板"}
         </button>
         <button className="btn btn-ghost" onClick={handleRead} disabled={loading !== null}>
           {loading === "read" && (
             <span className="spinner" style={{ width: 16, height: 16, margin: 0, borderWidth: 2 }} />
           )}
-          查看上次结果
+          {loading === "read" ? "读取中…" : "查看上次结果"}
         </button>
       </div>
 
-      {loading && !result && <div className="spinner" />}
+      {loading === "trigger" && <div className="card mb24 panel-progress" role="status" aria-live="polite">
+        <span className="spinner" style={{width:20,height:20,margin:0,flexShrink:0}} />
+        <div><strong>正在运行 AI 专家分析 · 已等待 {elapsed} 秒</strong>
+          <p>专家分析需要多轮模型调用，可能等待数分钟。完成后会显示本次结果或失败原因。{result ? "下方暂时展示上次结果。" : ""}</p></div>
+      </div>}
+      {feedback && <div className={`${feedback.kind === "warning" ? "error-box" : "info-box"} mb24`} role="status">{feedback.message}</div>}
+      {(error || result?.degraded) && <div className="mb16"><Link to="/diagnostics">查看 AI 诊断与运行记录</Link></div>}
+      {loading === "read" && <div role="status" className="info-box mb24">正在读取已保存的结果…</div>}
 
       {result?.insufficient_data && (
         <div className="info-box mb24" role="status">
@@ -128,10 +171,10 @@ export default function Panel() {
           <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
             <span className="badge badge-warning">降级模式</span>
             <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-              来源：{result.meta?.source || "未知"}；再次点击将重新尝试 DeepSeek
+              来源：{SOURCE_LABELS[result.source ?? result.meta?.source ?? ""] ?? "其他分析"}；专家讨论未完成，重试将使用当前配置的 AI 服务
             </span>
             <button className="btn btn-sm" onClick={() => handleTrigger(true)} disabled={loading !== null} style={{ marginLeft: "auto" }}>
-              {loading === "trigger" ? "重试中…" : "重试 DeepSeek"}
+              {loading === "trigger" ? "重试中…" : "重试 AI 分析"}
             </button>
           </div>
         </div>
@@ -148,7 +191,7 @@ export default function Panel() {
                   return (
                     <div key={i}>
                       <div className="flex flex-between mb16" style={{ marginBottom: 6 }}>
-                        <span style={{ fontSize: 14, fontWeight: 500 }}>{TYPE_LABELS[t.name] ?? (t.name || `类型 ${i + 1}`)}</span>
+                        <span style={{ fontSize: 14, fontWeight: 500 }}>{TYPE_LABELS[t.name] ? `${TYPE_LABELS[t.name]}（${t.name}）` : (t.name || `类型 ${i + 1}`)}</span>
                         <span
                           className="badge"
                           style={{
@@ -186,8 +229,8 @@ export default function Panel() {
 
           {result?.technique && (
             <div className="card">
-              <h3>推荐 CBT 技术</h3>
-              <p style={{ fontSize: 14, lineHeight: 1.6 }}>{TECHNIQUE_LABELS[result.technique] ?? result.technique}</p>
+              <h3>推荐认知行为技术（CBT）</h3>
+              <p style={{ fontSize: 14, lineHeight: 1.6 }}>{TECHNIQUE_LABELS[result.technique] ? `${TECHNIQUE_LABELS[result.technique]}（${result.technique}）` : result.technique}</p>
             </div>
           )}
 

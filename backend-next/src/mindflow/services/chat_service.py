@@ -393,4 +393,15 @@ class ChatService:
         """
         return await self._chat_repo.recent(session_id, limit=limit, user_id=user_id)
 
+    async def rename_session(self, user_id: int, session_id: str, title: str) -> bool:
+        async with self._get_session_lock(user_id, session_id):
+            return await self._chat_repo.rename_session(user_id, session_id, title)
+
+    async def delete_session(self, user_id: int, session_id: str) -> bool:
+        async with self._get_session_lock(user_id, session_id):
+            deleted = await self._chat_repo.delete_session(user_id, session_id)
+            if deleted and self._chat_graph is not None:
+                self._chat_graph.forget_session(user_id, session_id)
+            return deleted
+
 

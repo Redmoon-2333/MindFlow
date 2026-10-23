@@ -1,12 +1,7 @@
+import NativeDateField from "../components/NativeDateField";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
-import dayjs from "dayjs";
-import "dayjs/locale/zh-cn";
 import { getActivities, getCurrentActivity, getErrorMessage } from "../api";
 import type { ActivityItem } from "../api";
-import "./picker.css";
 import "./activities.css";
 
 /** Reference page size — the original table shows 10 rows per page. */
@@ -140,7 +135,7 @@ export default function Activities() {
   ];
 
   return (
-    <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="zh-cn">
+    <>
       <div className="activities">
         <div className="top-intro act-box">
           <div className="present-acti act-box">
@@ -159,38 +154,14 @@ export default function Activities() {
 
           <div className="choose-time act-box">
             <div className="start-time-box">
-              <div className="box-text">开始日期</div>
               <div className="act-datepicker mf-picker">
-                <DatePicker
-                  disableFuture
-                  value={startDate ? dayjs(startDate) : null}
-                  onChange={(newValue) => setStartDate(newValue ? newValue.format("YYYY-MM-DD") : "")}
-                  format="YYYY/MM/DD"
-                  label="开始日期"
-                  slotProps={{
-                    textField: { fullWidth: true, size: "small" },
-                    layout: { className: "f-calendar" },
-                    popper: { className: "f-calendar" },
-                  }}
-                />
+                <NativeDateField label="开始日期" value={startDate} onChange={setStartDate} allowEmpty />
               </div>
             </div>
 
             <div className="end-time-box">
-              <div className="box-text">结束日期</div>
               <div className="act-datepicker mf-picker">
-                <DatePicker
-                  disableFuture
-                  value={endDate ? dayjs(endDate) : null}
-                  onChange={(newValue) => setEndDate(newValue ? newValue.format("YYYY-MM-DD") : "")}
-                  format="YYYY/MM/DD"
-                  label="结束日期"
-                  slotProps={{
-                    textField: { fullWidth: true, size: "small" },
-                    layout: { className: "f-calendar" },
-                    popper: { className: "f-calendar" },
-                  }}
-                />
+                <NativeDateField label="结束日期" value={endDate} onChange={setEndDate} allowEmpty />
               </div>
             </div>
 
@@ -313,6 +284,6 @@ export default function Activities() {
           </div>
         </div>
       </div>
-    </LocalizationProvider>
+    </>
   );
 }

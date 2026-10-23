@@ -1,0 +1,31 @@
+:root { color-scheme: dark; }
+html, body, #root { background: var(--color-bg); color: var(--mf-text); }
+:root input, :root select, :root textarea { color: var(--mf-text); background: var(--color-bg-inset); }
+:root input::placeholder, :root textarea::placeholder { color: var(--mf-text-dim); opacity: 1; }
+:root select { appearance: none; padding-right: 40px !important; background-image: var(--mf-select-arrow) !important; background-repeat: no-repeat; background-size: 12px 8px; background-position: right 14px center; color-scheme: inherit; }
+:root select > option { color: var(--mf-text) !important; background: var(--color-bg-elevated) !important; }
+:root .btn { background: var(--color-primary); color: var(--color-on-primary); }
+:root .btn-ghost { background: var(--color-primary-light); color: var(--mf-text); }
+:root .btn-danger { background: var(--color-bg-inset); color: var(--color-danger); border-color: var(--color-danger); }
+:root .badge-success { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 12%, var(--color-bg-elevated)); }
+:root .badge-warning { color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 12%, var(--color-bg-elevated)); }
+:root .badge-danger { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 12%, var(--color-bg-elevated)); }
+:root .badge-info { color: var(--color-info); background: color-mix(in srgb, var(--color-info) 12%, var(--color-bg-elevated)); }
+:root .stat-card .value { color: var(--mf-text); }
+:root .chat-user { background: var(--color-primary); color: var(--color-on-primary); }
+:root .mf-dialog { background: var(--color-bg-elevated); }
+:root .mf-dialog-yes { background: var(--color-primary); color: var(--color-on-primary); }
+:root .mf-dialog-no { color: var(--mf-text); }
+:root .mf-login-page { background: var(--mf-login-radial); }
+:root .login-box, :root .login-card { background: var(--color-bg-elevated); }
+:root .mf-skip-link { background: var(--color-bg-elevated); color: var(--mf-text); }
+:root .mf-nav-item--active { background: var(--color-primary-light); }
+.theme-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.theme-option { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-bg-inset); color: var(--mf-text); font: inherit; cursor: pointer; }
+.theme-option[aria-pressed="true"] { outline: 2px solid var(--mf-brand); outline-offset: 2px; }
+.theme-swatch { width: 24px; height: 24px; flex-shrink: 0; border: 1px solid var(--color-border); border-radius: 50%; }
+.theme-white .theme-swatch { background: #fff; }
+.theme-black .theme-swatch { background: #111; }
+.theme-navy .theme-swatch { background: #172b46; }
+.theme-burgundy .theme-swatch { background: #35212b; }
+@media (max-width: 700px) { .theme-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

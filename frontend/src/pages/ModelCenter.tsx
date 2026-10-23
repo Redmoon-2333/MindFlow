@@ -1,3 +1,4 @@
+import { userTerm } from "../lib/user-terms";
 import WorkspacePage from "../components/WorkspacePage";
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
@@ -329,6 +330,7 @@ export default function ModelCenter() {
 
   return (
     <WorkspacePage title="模型中心" description={modelStatus?.demo_only ? "合成数据演示模型 · 影子模式 · 未通过个人模型质量门" : "先在专注分析中校准记录，再查看数据是否足够训练属于自己的行为模型。"} className="model-page">
+      {modelStatus?.demo_only && <div className="info-box mb24 model-demo-notice" role="status">合成数据演示模型 · 影子模式 · 未通过个人模型质量门</div>}
 
       {/* Tabs */}
       <div className="tabs" role="tablist">
@@ -397,7 +399,7 @@ export default function ModelCenter() {
 
               {/* Trainability & Evaluability */}
               <div className="mc-section">
-                <div className="mc-kpi-row" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}>
+                <div className="mc-kpi-row">
                   <div className="stat-card">
                     <div className="label">可训练性</div>
                     <div className="value" style={{ fontSize: 22 }}>
@@ -432,7 +434,7 @@ export default function ModelCenter() {
               <div className="card mc-section">
                 <h3>质量门禁（7 项检查）</h3>
                 <p style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
-                  not_evaluated 指标在训练运行后出现。not_implemented 检查不代表通过。
+                  未评估（not_evaluated）的指标在训练后出现；未实现（not_implemented）的检查不代表通过。
                 </p>
                 <div className="mc-gates">
                   {rd.gates.map((gate) => (
@@ -458,7 +460,7 @@ export default function ModelCenter() {
                   <div className="mc-blockers">
                     {rd.blockers.map((b) => (
                       <div className="mc-blocker" key={b.code}>
-                        <strong>[{b.code}]</strong> {b.message}
+                        <strong>{userTerm(b.code)}</strong> {b.message}
                       </div>
                     ))}
                   </div>
@@ -755,7 +757,7 @@ export default function ModelCenter() {
                   <h3>就绪原因</h3>
                   <ul style={{ fontSize: 13, paddingLeft: 20, color: "var(--color-text-secondary)" }}>
                     {modelStatus.reasons.map((r) => (
-                      <li key={r}>{r}</li>
+                      <li key={r}>{userTerm(r)}</li>
                     ))}
                   </ul>
                 </div>

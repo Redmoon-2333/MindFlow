@@ -154,6 +154,14 @@ intervention_logs = sa.Table(
 # ── chat_messages (from repositories/chat.py) ─────────────────────────
 # Matches migration 0003 and 0012.
 
+chat_sessions = sa.Table(
+    "chat_sessions",
+    metadata,
+    sa.Column("user_id", sa.Integer(), primary_key=True),
+    sa.Column("session_id", sa.Text(), primary_key=True),
+    sa.Column("title", sa.Text(), nullable=False),
+)
+
 chat_messages = sa.Table(
     "chat_messages",
     metadata,

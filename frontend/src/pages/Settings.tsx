@@ -1,4 +1,7 @@
+import { userTerm } from "../lib/user-terms";
 import WorkspacePage from "../components/WorkspacePage";
+import AppearanceSettings from "../components/AppearanceSettings";
+import AISettings from "../components/AISettings";
 import { useState, useEffect, useCallback } from "react";
 import {
   getHealth,
@@ -392,7 +395,8 @@ export default function Settings() {
         </div>
       )}
 
-      <div className="tabs settings-nav" aria-label="设置分组">{["采集与隐私", "应用分类", "数据与偏好", "系统状态"].map(name => <button key={name} type="button" className={`tab ${section === name ? "active" : ""}`} aria-pressed={section === name} onClick={() => setSection(name)}>{name}</button>)}</div>
+      <div className="tabs settings-nav" aria-label="设置分组">{["采集与隐私", "应用分类", "数据与偏好", "外观与 AI", "系统状态"].map(name => <button key={name} type="button" className={`tab ${section === name ? "active" : ""}`} aria-pressed={section === name} onClick={() => setSection(name)}>{name}</button>)}</div>
+      {section === "外观与 AI" && <><AppearanceSettings /><AISettings /></>}
       {section === "系统状态" && <>
       {/* 1. System Info */}
       <div className="card mb24">
@@ -443,7 +447,7 @@ export default function Settings() {
       </div>
       </>}
       {section === "采集与隐私" && <>
-      <div className="card mb24">
+      <div className="card mb24 privacy-settings">
         <div className="flex flex-between" style={{ alignItems: "flex-start" }}>
           <div>
         <h3 style={{ marginBottom: 6 }}>隐私行为采集</h3>
@@ -452,7 +456,7 @@ export default function Settings() {
             </p>
           </div>
           <span className={`badge ${telemetry?.input_watcher_status === "running" ? "badge-success" : "badge-warning"}`}>
-            输入 watcher：{telemetry?.input_watcher_status ?? "未知"}
+            输入采集器：{userTerm(telemetry?.input_watcher_status)}
           </span>
         </div>
         {telemetryMessage && <div className="success-box mt16">{telemetryMessage}</div>}
@@ -488,17 +492,17 @@ export default function Settings() {
         <div className="settings-retention">
           <div className="form-group"><label>输入桶保留天数</label><select aria-label="输入桶保留天数" value={telemetry?.preferences.interaction_retention_days ?? 7} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ interaction_retention_days: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
           <div className="form-group"><label>活动与浏览器片段保留天数</label><select aria-label="活动与浏览器片段保留天数" value={telemetry?.preferences.activity_retention_days ?? 30} disabled={loading || telemetryLoading} onChange={(event) => updateTelemetryPreferences({ activity_retention_days: Number(event.target.value) })}>{[7, 14, 30, 60, 90].map((days) => <option key={days} value={days}>{days} 天</option>)}</select></div>
-          <button className="btn btn-primary" disabled={loading || telemetryLoading} onClick={handleCreatePairingCode}>生成浏览器配对码</button>
         </div>
         {pairingCode && <div style={{ marginTop: 16, padding: 16, borderRadius: 10, background: "var(--color-bg-secondary)" }}><div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>在扩展设置页输入，5 分钟内有效</div><div style={{ fontSize: 30, fontWeight: 700, letterSpacing: 8, marginTop: 6 }}>{pairingCode.code}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>到期：{formatTelemetryTime(pairingCode.expires_at)}</div></div>}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginTop: 18 }}>
+        <div className="telemetry-stats">
           <div><span className="text-muted">数据库占用</span><strong style={{ display: "block" }}>{formatBytes(telemetry?.database_size_bytes ?? 0)}</strong></div>
           <div><span className="text-muted">今日输入桶</span><strong style={{ display: "block" }}>{telemetry?.interaction_bucket_count ?? 0}</strong></div>
           <div><span className="text-muted">今日浏览器片段</span><strong style={{ display: "block" }}>{telemetry?.browser_segment_count ?? 0}</strong></div>
           <div><span className="text-muted">最后输入采集</span><strong style={{ display: "block", fontSize: 12 }}>{formatTelemetryTime(telemetry?.last_interaction_at ?? null)}</strong></div>
           <div><span className="text-muted">最后浏览器采集</span><strong style={{ display: "block", fontSize: 12 }}>{formatTelemetryTime(telemetry?.last_browser_at ?? null)}</strong></div>
         </div>
-        <div className="flex gap8 mt16" style={{ flexWrap: "wrap" }}>
+        <div className="telemetry-actions">
+          <button className="btn btn-primary" disabled={loading || telemetryLoading} onClick={handleCreatePairingCode}>生成浏览器配对码</button>
           <button className="btn btn-ghost btn-sm" disabled={loading || telemetryLoading} onClick={() => handleClearTelemetry("interaction")}>清除输入数据</button>
           <button className="btn btn-ghost btn-sm" disabled={loading || telemetryLoading} onClick={() => handleClearTelemetry("browser")}>清除浏览器数据</button>
           <button className="btn btn-ghost btn-sm" disabled={loading || telemetryLoading} onClick={() => handleClearTelemetry("feedback")}>清除反馈数据</button>
@@ -507,18 +511,14 @@ export default function Settings() {
       </div>
 
       {/* 2. Data Collection */}
-      <div className="card mb24">
-        <div className="flex-between mb16">
+      <div className="settings-control-grid">
+      <div className="card settings-control-card">
+        <div className="settings-control-info">
           <h3 style={{ marginBottom: 0 }}>数据采集</h3>
           <span className={`badge ${isCollectorRunning ? "badge-success" : "badge-warning"}`}>
             {isCollectorRunning ? "运行中" : "已停止"}
           </span>
         </div>
-        {collector?.status && (
-          <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
-            {collector.status}
-          </div>
-        )}
         <button
           className={`btn btn-sm ${isCollectorRunning ? "btn-danger" : ""}`}
           onClick={handleCollectorToggle}
@@ -529,8 +529,8 @@ export default function Settings() {
       </div>
 
       {/* 3. Autonomy Control */}
-      <div className="card mb24">
-        <div className="flex-between mb16">
+      <div className="card settings-control-card">
+        <div className="settings-control-info">
           <div>
             <h3 style={{ marginBottom: 4 }}>自主控制</h3>
             <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
@@ -571,6 +571,7 @@ export default function Settings() {
         </div>
       </div>
 
+      </div>
       </>}
       {section === "应用分类" && <>
       {/* 4. App Classifications */}

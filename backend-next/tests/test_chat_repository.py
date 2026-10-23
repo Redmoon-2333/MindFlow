@@ -181,3 +181,18 @@ class TestListSessions:
         assert len(sessions) == 1
         assert "last_message_at" in sessions[0]
         assert sessions[0]["last_message_at"] is not None
+
+
+async def test_title_and_delete_are_owner_scoped(repo: ChatRepository) -> None:
+    await repo.append("shared", "user", "First question", user_id=1)
+    await repo.append("shared", "user", "Other owner", user_id=2)
+    assert (await repo.list_sessions(1))[0]["title"] == "First question"
+    assert await repo.rename_session(1, "shared", "Renamed")
+    assert (await repo.list_sessions(1))[0]["title"] == "Renamed"
+    assert (await repo.list_sessions(2))[0]["title"] == "Other owner"
+    assert not await repo.rename_session(3, "shared", "Not mine")
+    assert await repo.delete_session(1, "shared")
+    assert await repo.recent("shared", user_id=1) == []
+    assert await repo.list_sessions(1) == []
+    assert len(await repo.recent("shared", user_id=2)) == 1
+    assert not await repo.delete_session(1, "shared")

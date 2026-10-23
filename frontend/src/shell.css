@@ -95,7 +95,7 @@
   background: var(--mf-sidebar-bg);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  border-right: 1px solid rgba(100, 160, 255, 0.1);
+  border-right: 1px solid color-mix(in srgb, var(--mf-brand) 10%, transparent);
   box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
   transition: transform 0.5s var(--mf-ease-slide);
   display: flex;
@@ -145,7 +145,7 @@
 }
 .mf-logo-line {
   position: absolute;
-  background: linear-gradient(90deg, rgba(100, 160, 255, 0.2), transparent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--mf-brand) 20%, transparent), transparent);
   left: 20px;
   top: 80px;
   width: 210px;
@@ -193,9 +193,9 @@
   transition: color 0.2s;
 }
 .mf-nav-item:not(.mf-nav-item--active):hover {
-  color: #d0e2f5;
-  background: rgba(100, 160, 255, 0.06);
-  border-color: rgba(100, 160, 255, 0.1);
+  color: var(--mf-text);
+  background: color-mix(in srgb, var(--mf-brand) 6%, transparent);
+  border-color: color-mix(in srgb, var(--mf-brand) 10%, transparent);
   transform: translateX(-50%) translateY(-1px);
 }
 .mf-nav-item:not(.mf-nav-item--active):hover .iconfont {
@@ -203,7 +203,7 @@
 }
 .mf-nav-item--active {
   background: linear-gradient(135deg, rgba(58, 143, 217, 0.25), rgba(90, 160, 230, 0.12));
-  border: 1px solid rgba(100, 160, 255, 0.2);
+  border: 1px solid color-mix(in srgb, var(--mf-brand) 20%, transparent);
   color: var(--mf-brand);
   box-shadow: 0 2px 12px rgba(58, 143, 217, 0.15);
 }
@@ -241,7 +241,7 @@
 }
 .mf-nav-group-toggle:hover {
   color: var(--mf-brand);
-  background: rgba(100, 160, 255, 0.06);
+  background: color-mix(in srgb, var(--mf-brand) 6%, transparent);
 }
 .mf-nav-group-toggle:focus-visible,
 .mf-nav-item:focus-visible,
@@ -283,8 +283,8 @@
   text-overflow: ellipsis;
   transition: all 0.2s ease;
   border-radius: 10px;
-  border: 1px solid rgba(100, 160, 255, 0.08);
-  background: rgba(100, 160, 255, 0.04);
+  border: 1px solid color-mix(in srgb, var(--mf-brand) 8%, transparent);
+  background: color-mix(in srgb, var(--mf-brand) 4%, transparent);
   cursor: pointer;
 }
 .mf-user-name {
@@ -301,12 +301,12 @@
   transition: color 0.2s;
 }
 .mf-user:hover {
-  background: rgba(100, 160, 255, 0.1);
-  border-color: rgba(100, 160, 255, 0.15);
+  background: color-mix(in srgb, var(--mf-brand) 10%, transparent);
+  border-color: color-mix(in srgb, var(--mf-brand) 15%, transparent);
   transform: translateX(-50%) translateY(-1px);
 }
 .mf-user:hover .mf-user-icon {
-  color: #f78181;
+  color: var(--color-danger);
 }
 
 /* ── Content column ─────────────────────────────────────────────────────── */
@@ -360,7 +360,7 @@
   padding: 0;
 }
 .mf-header-toggle:hover {
-  background: rgba(100, 160, 255, 0.08);
+  background: color-mix(in srgb, var(--mf-brand) 8%, transparent);
   color: var(--mf-brand);
 }
 .mf-header-toggle .iconfont {
@@ -404,7 +404,7 @@
 .mf-dialog {
   position: absolute;
   background: rgba(12, 25, 45, 0.92);
-  border: 1px solid rgba(100, 160, 255, 0.15);
+  border: 1px solid color-mix(in srgb, var(--mf-brand) 15%, transparent);
   border-radius: 16px;
   width: 400px;
   height: 200px;
@@ -438,7 +438,7 @@
 }
 .mf-dialog-close:hover {
   background: rgba(247, 129, 129, 0.15);
-  color: #f78181;
+  color: var(--color-danger);
 }
 .mf-dialog-title {
   position: absolute;
@@ -473,7 +473,7 @@
   right: 10%;
   top: 70%;
   font-size: 12px;
-  color: #f78181;
+  color: var(--color-danger);
   background: rgba(247, 129, 129, 0.12);
   border: 1px solid rgba(247, 129, 129, 0.35);
   border-radius: 8px;
@@ -501,7 +501,7 @@
 .mf-dialog-yes {
   left: 10%;
   background: linear-gradient(135deg, #1a6dd4, #3a8fd9);
-  color: #fff;
+  color: var(--mf-text);
   font-weight: 600;
   border: none;
 }
@@ -511,15 +511,15 @@
 }
 .mf-dialog-no {
   right: 10%;
-  border: 1px solid rgba(100, 160, 255, 0.2);
+  border: 1px solid color-mix(in srgb, var(--mf-brand) 20%, transparent);
   font-weight: 500;
   color: var(--mf-text-dim);
-  background: rgba(100, 160, 255, 0.04);
+  background: color-mix(in srgb, var(--mf-brand) 4%, transparent);
 }
 .mf-dialog-no:hover:not(:disabled) {
-  background: rgba(100, 160, 255, 0.1);
-  border-color: rgba(100, 160, 255, 0.3);
-  color: #a8c0d8;
+  background: color-mix(in srgb, var(--mf-brand) 10%, transparent);
+  border-color: color-mix(in srgb, var(--mf-brand) 30%, transparent);
+  color: var(--mf-text-dim);
 }
 .mf-dialog-yes:disabled,
 .mf-dialog-no:disabled {

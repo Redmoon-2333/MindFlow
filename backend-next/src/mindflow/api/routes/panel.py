@@ -49,7 +49,7 @@ class PanelTodayRequest(BaseModel):
     force: bool = Field(default=False, description="Force re-analysis even if cached.")
     retry_if_degraded: bool = Field(
         default=False,
-        description="Retry DeepSeek when the stored result is degraded.",
+        description="Retry the configured AI provider when the stored result is degraded.",
     )
 
 
@@ -183,16 +183,25 @@ async def post_panel_today(
     except Exception:
         logger.exception("Panel service failed unexpectedly for user 1 on {}", today)
         if should_retry and existing is not None:
-            return _verdict_to_response(replace(existing, cached=True, retry_after_s=300))
+            response = _verdict_to_response(replace(existing, cached=True, retry_after_s=300))
+            response.meta.attempt_status = "failed"
+            response.meta.attempt_degradation_path = ["retry_error"]
+            return response
         from mindflow.api.errors import _internal_error
 
         raise _internal_error() from None
 
     if should_retry and existing is not None and verdict.source != "panel":
         logger.warning("Retry still degraded for user 1 on {}; keeping old result", today)
-        return _verdict_to_response(replace(existing, cached=True, retry_after_s=300))
+        response = _verdict_to_response(replace(existing, cached=True, retry_after_s=300))
+        response.meta.attempt_status = "degraded"
+        response.meta.attempt_degradation_path = list(verdict.degradation_path)
+        return response
 
-    return _verdict_to_response(verdict)
+    response = _verdict_to_response(verdict)
+    response.meta.attempt_status = "succeeded" if verdict.source == "panel" else "degraded"
+    response.meta.attempt_degradation_path = list(verdict.degradation_path)
+    return response
 
 
 @router.get("/panel", response_model=PanelResponse)

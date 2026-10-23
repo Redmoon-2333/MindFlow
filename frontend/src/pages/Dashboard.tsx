@@ -320,7 +320,7 @@ export default function Dashboard() {
           aria-pressed={collectorRunning}
           disabled={collectorLoading}
           style={{
-            color: collectorRunning ? "var(--mf-green)" : "#94A3B8",
+            color: collectorRunning ? "var(--mf-green)" : "var(--mf-text-dim)",
             border: `1px solid ${collectorRunning ? "var(--mf-green)" : "#94A3B8"}`,
           }}
           onClick={handleCollectorToggle}
@@ -480,12 +480,12 @@ export default function Dashboard() {
                   the reference's vertical rhythm even without a delta. */}
               <div
                 className={`icon iconfont d-statistic-icon${item.delta == null ? " d-statistic-icon--flat" : ""} ${item.delta != null && item.delta > 0 ? "icon-tubiaoshangshengqushi" : "icon-xiajiang"}`}
-                style={{ color: item.delta == null ? "#6a89ad" : item.delta > 0 ? "#22C55E" : "#EF4444" }}
+                style={{ color: item.delta == null ? "var(--mf-text-dim)" : item.delta > 0 ? "var(--mf-green)" : "var(--mf-red)" }}
                 aria-hidden="true"
               />
               <div
                 className={`d-statistic-stat${item.delta == null ? " d-statistic-stat--flat" : ""}`}
-                style={item.delta == null ? undefined : { color: item.delta > 0 ? "#22C55E" : "#EF4444" }}
+                style={item.delta == null ? undefined : { color: item.delta > 0 ? "var(--mf-green)" : "var(--mf-red)" }}
               >
                 {item.delta != null
                   ? `较昨日 ${item.delta > 0 ? "+" : ""}${item.delta.toFixed(1)}%`

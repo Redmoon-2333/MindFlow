@@ -14,7 +14,7 @@
   border-radius: 20px;
 }
 .mf-picker .MuiFormLabel-root {
-  color: #ffffff !important;
+  color: var(--mf-text) !important;
   font-weight: bold;
   margin-left: 10px;
 }
@@ -22,7 +22,7 @@
   border: none !important;
 }
 .mf-picker .MuiSvgIcon-root {
-  color: #ffffff;
+  color: var(--mf-text);
   font-size: 28px;
 }
 .mf-picker .MuiButtonBase-root {
@@ -30,15 +30,15 @@
 }
 .mf-picker .MuiPickersSectionList-sectionContent,
 .mf-picker .MuiPickersInputBase-sectionAfter {
-  color: #ffffff !important;
+  color: var(--mf-text) !important;
   font-size: 20px;
 }
 .mf-picker input {
-  color: #ffffff !important;
-  caret-color: #ffffff !important;
+  color: var(--mf-text) !important;
+  caret-color: var(--mf-text) !important;
 }
 .mf-picker .MuiInputBase-inputPlaceholder {
-  color: #ffffff !important;
+  color: var(--mf-text) !important;
 }
 .mf-picker .MuiPickersInputBase-sectionsContainer {
   padding: 10px 10px;
@@ -57,11 +57,11 @@
 .f-calendar .MuiSvgIcon-root,
 .f-calendar .MuiPickerDay-root,
 .f-calendar .MuiDayCalendar-weekDayLabel {
-  color: #ffffff;
+  color: var(--mf-text);
 }
 .f-calendar .MuiPickersDay-root:not(.Mui-selected) {
-  color: #ffffff;
+  color: var(--mf-text);
 }
 .f-calendar .MuiTypography-root {
-  color: #ffffff;
+  color: var(--mf-text);
 }

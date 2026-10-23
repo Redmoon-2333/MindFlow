@@ -236,3 +236,31 @@ class TestGetMessages:
         assert resp.status_code == 200
         data = resp.json()
         assert data == []
+
+
+class TestSessionManagement:
+    def test_rename_validates_and_scopes_owner(self) -> None:
+        service = AsyncMock()
+        service.rename_session.return_value = True
+        with TestClient(_make_app(service)) as client:
+            response = client.patch("/api/v1/chat/sessions/s1", json={"title": "  我的任务  "})
+            assert response.status_code == 200
+            assert response.json()["title"] == "我的任务"
+            service.rename_session.assert_awaited_once_with(1, "s1", "我的任务")
+            for title in (" ", "", "a" * 81):
+                response = client.patch("/api/v1/chat/sessions/s1", json={"title": title})
+                assert response.status_code == 422
+
+    def test_missing_session_and_delete(self) -> None:
+        service = AsyncMock()
+        service.rename_session.return_value = False
+        service.delete_session.return_value = False
+        with TestClient(_make_app(service)) as client:
+            response = client.patch("/api/v1/chat/sessions/s1", json={"title": "Title"})
+            assert response.status_code == 404
+            assert client.delete("/api/v1/chat/sessions/s1").status_code == 404
+            service.delete_session.return_value = True
+            response = client.delete("/api/v1/chat/sessions/s1")
+            assert response.status_code == 204
+            assert response.content == b""
+            service.delete_session.assert_awaited_with(1, "s1")

@@ -35,7 +35,7 @@
   color: var(--mf-text-dim);
 }
 .position .MuiTimelineContent-root.is-active {
-  color: #1890ff;
+  color: var(--mf-brand);
 }
 .position .MuiTimelineDot-root {
   margin: 5px 0;
@@ -66,9 +66,9 @@
   font-weight: 600;
   border-radius: 20px;
   padding: 8px 12px 8px 20px;
-  background-color: rgba(100, 160, 255, 0.35);
+  background-color: color-mix(in srgb, var(--mf-brand) 35%, transparent);
   border: 1px solid var(--mf-panel-border);
-  color: #ffffff;
+  color: var(--mf-text);
   cursor: pointer;
   font-family: inherit;
 }
@@ -78,8 +78,8 @@
   box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
 }
 .analytics .time-box .time > option {
-  color: #333;
-  background-color: #fff;
+  color: var(--mf-text);
+  background-color: var(--mf-text);
   font-size: 14px;
   padding: 8px;
   font-weight: 600;
@@ -160,7 +160,7 @@
 .analytics .f-box .simple-table td {
   padding: 12px 5px;
   border: none;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--color-border);
   font-size: 14px;
   height: 20px;
 }
@@ -188,12 +188,12 @@
 .analytics .f-box .full-box1 {
   width: 85px;
   background: rgba(126, 248, 165, 0.25);
-  color: #2bb52b;
+  color: var(--color-success);
 }
 .analytics .f-box .full-box2 {
   width: 60px;
   background: rgba(173, 186, 87, 0.25);
-  color: #dec940;
+  color: var(--color-warning);
 }
 .analytics .f-box td:last-child .full-box1,
 .analytics .f-box td:last-child .full-box2 {
@@ -237,7 +237,7 @@
   flex-wrap: wrap;
 }
 .analytics .second-content b {
-  color: #ffffff;
+  color: var(--mf-text);
 }
 
 /* ── Profile ────────────────────────────────────────────────────────────── */
@@ -269,7 +269,7 @@
   margin: 0 0 0 30px;
   font-size: 28px;
   font-weight: 500;
-  color: #ffffff;
+  color: var(--mf-text);
 }
 .analytics .detail {
   margin: 0 30px;
@@ -313,7 +313,7 @@
 .analytics .simple-table th,
 .analytics .simple-table td {
   border: none;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--color-border);
   padding: 12px 5px;
   text-align: left;
   font-size: 14px;
@@ -321,7 +321,7 @@
 }
 .analytics .simple-table th {
   background: none !important;
-  color: #fff !important;
+  color: var(--mf-text) !important;
   font-size: 14px;
   font-weight: 600;
   position: sticky;
@@ -377,7 +377,7 @@
   display: flex;
   font-weight: 600;
   justify-content: center;
-  color: #ffffff;
+  color: var(--mf-text);
 }
 .analytics .left-box-content2 {
   font-size: 15px;
@@ -413,7 +413,7 @@
 .analytics .model-pill--off {
   background: rgba(247, 96, 93, 0.15);
   border: 1px solid rgba(191, 47, 33, 0.3);
-  color: #cb3939;
+  color: var(--color-danger);
 }
 .analytics .model-pill--on {
   background: rgba(103, 215, 144, 0.15);

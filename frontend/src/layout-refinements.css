@@ -1,0 +1,136 @@
+/* Content drives height; all screen sizes share one grid and date input. */
+:root .d-container, :root .f-page, :root .activities, :root .analytics, :root .reports, :root .workspace-page { width: 100%; max-width: none; padding: 28px clamp(16px, 3vw, 45px) 40px; margin: 0; }
+:root .d-content { margin-top: 0; }
+:root .d-state, :root .d-statistic { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; height: auto; }
+:root .d-state-item, :root .d-statistic-item { width: 100%; }
+:root .d-statistic-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: center; gap: 12px; height: auto; min-height: 125px; padding: 24px; }
+:root .d-statistic-title { grid-column: 1 / -1; margin: 0; }
+:root .d-statistic-content { margin: 0; align-items: baseline; flex-wrap: wrap; }
+:root .d-statistic-icon { display: none; }
+:root .d-statistic-stat { align-self: center; margin: 0; font-size: 12px; white-space: nowrap; }
+:root .d-statistic-number { font-size: 30px; }
+:root .d-control-inference { height: auto; align-items: start; }
+:root .d-control { height: auto; padding: 24px; gap: 24px; }
+:root .d-control-title { margin: 0; }
+:root .d-control-module { height: auto; margin: 0 0 0 20px; flex-wrap: wrap; }
+:root .d-control-pause, :root .d-control-tip { margin: 0; }
+:root .d-inference { height: auto; min-height: 230px; padding: 24px; }
+:root .d-inference-title { margin: 0; }
+:root .d-inference-scroll { margin-top: 0; width: 100%; max-height: 240px; }
+:root .f-state, :root .f-description, :root .f-statics, :root .f-conversation, :root .f-first-row { width: 100%; left: 0; margin-left: 0; margin-right: 0; }
+:root .f-state { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; height: auto; }
+:root .f-state .state-item { width: 100%; }
+:root .f-reset { align-items: center; padding: 0 20px; }
+:root .right-table .score, :root .right-table .description { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 12%, var(--color-bg-elevated)); margin-left: 0; }
+:root .right-table .green { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 12%, var(--color-bg-elevated)); }
+:root .intervention-trigger { display: flex; flex-direction: column; min-height: 180px; }
+:root .intervention-trigger > .workspace-actions { margin-top: auto; padding-top: 24px; }
+:root .intervention-response-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; margin-top: 16px; }
+:root .intervention-history-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 24px; }
+:root .intervention-history-body > .flex-between { grid-column: 1 / -1; }
+:root .intervention-history-title { grid-column: 1; grid-row: 2; }
+:root .intervention-history-message { grid-column: 1 / -1; grid-row: 3; }
+:root .intervention-history-evaluate { grid-column: 2; grid-row: 2; margin-top: 6px; }
+:root .intervention-feedback-editor { grid-column: 1 / -1; }
+:root .settings-control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-bottom: 24px; }
+:root .settings-control-card { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; }
+:root .settings-control-info { display: grid; gap: 12px; justify-items: start; }
+:root .settings-control-info h3 { margin: 0; }
+:root .settings-control-card > .flex { justify-content: flex-end; align-items: center; }
+:root .privacy-settings .form-group { display: grid; gap: 12px; }
+:root .privacy-settings .settings-switch { gap: 24px; }
+:root .privacy-settings .settings-switch strong { margin-bottom: 10px; }
+:root .privacy-settings .settings-retention { gap: 24px; align-items: end; margin-top: 24px; }
+:root .privacy-settings .settings-retention > .btn { width: auto; justify-self: start; grid-column: 1 / -1; }
+:root .analytics .top-box, :root .analytics .second-box, :root .analytics .third-box, :root .analytics .fourth-box, :root .analytics .fifth-box, :root .analytics .error-slot { width: 100%; }
+:root .analytics .fifth-box { height: auto; align-items: stretch; gap: 24px; }
+:root .analytics .left-box, :root .analytics .right-box { height: auto; min-height: 270px; overflow-wrap: anywhere; }
+:root .native-date-field { display: grid; gap: 10px; min-width: 0; font-size: 13px; font-weight: 500; color: var(--mf-text-dim); }
+:root .native-date-field input { min-height: 44px; width: 100%; color-scheme: inherit; }
+:root .f-first-row { position: static; height: auto; align-items: end; gap: 20px; width: 100%; margin: 0 0 28px; }
+:root .f-datepicker { position: static; width: min(280px, 100%); }
+:root .f-reset { position: static; min-height: 44px; height: 44px; line-height: normal; }
+:root .f-state, :root .f-description, :root .f-statics, :root .f-conversation { top: auto; }
+:root .f-description, :root .f-statics, :root .f-conversation { margin-top: 28px; }
+:root .reports .report-datepicker { position: static; height: auto; margin-top: 24px; }
+:root .reports .t-state { margin-top: 28px; }
+:root .d-extra, :root .d-activity-chart, :root .d-control-inference { display: grid; width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
+:root .d-extra { margin: 0 auto 30px; }
+:root .d-activity, :root .d-chart, :root .d-control, :root .d-inference { width: 100%; }
+:root .d-extra-card { min-width: 0; overflow-wrap: anywhere; }
+:root .d-control-pause { flex-wrap: wrap; gap: 8px; height: auto; padding-right: 24px; }
+:root .d-control-pause-text { margin: 0; white-space: nowrap; }
+:root .d-control-pause-time { flex: 0 0 50px; margin: 0; }
+:root .d-control-submit, :root .d-control-restore { margin: 0; flex-shrink: 0; white-space: nowrap; }
+:root .activities .top-intro { display: grid; height: auto; padding: 28px 32px; gap: 28px; }
+:root .activities .present-acti { width: 100%; height: auto; padding: 0; min-width: 0; }
+:root .activities .present-acti .text-1 { margin-bottom: 12px; }
+:root .activities .present-acti .text-2 { font-size: 16px; line-height: 1.8; overflow-wrap: anywhere; }
+:root .activities .choose-time { position: static; display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)) minmax(240px, 1.5fr); gap: 24px; height: auto; width: 100%; }
+:root .activities .start-time-box, :root .activities .end-time-box, :root .activities .act-datepicker { width: 100%; position: static; }
+:root .activities .check-primary-text { grid-column: 1 / -1; max-width: 100%; margin-top: 0; justify-content: flex-start; gap: 16px; }
+:root .activities .search-box { grid-column: 3; grid-row: 1; width: 100%; position: static; margin: 0; display: grid; gap: 10px; align-content: end; }
+:root .activities .search-box input { width: 100%; height: 44px; position: static; }
+:root .activities .search-box .text { margin: 0; font-size: 13px; }
+:root .activities .simple-table { min-width: 840px; }
+:root .activities .simple-table th { white-space: nowrap; background: var(--color-bg-elevated) !important; }
+:root .activities .simple-table th, :root .activities .simple-table td { padding: 14px 18px; }
+:root .analytics { width: 100%; }
+:root .analytics .time-box { position: static; flex-direction: row; align-items: center; justify-content: flex-end; gap: 16px; margin-bottom: 28px; }
+:root .analytics .time-box .time-text { margin: 0; }
+:root .analytics .f-box .full-box1, :root .analytics .f-box .full-box2 { display: inline-flex; width: auto; max-width: 100%; padding: 5px 12px; line-height: 1.6; white-space: normal; overflow-wrap: anywhere; }
+:root .analytics .f-box td:last-child .full-box1, :root .analytics .f-box td:last-child .full-box2 { position: static; transform: none; }
+:root .analytics .f-box .simple-table td:last-child { width: auto; min-width: 110px; }
+:root .analytics .f-first-box { align-items: stretch; }
+:root .analytics .f-box { height: auto; min-height: 240px; padding-bottom: 28px; }
+:root .mc-kpi-row { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; }
+:root .mc-kpi-row:has(> :nth-child(3):last-child) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+:root .mc-model-mode { padding: 12px 0; gap: 20px; flex-wrap: wrap; border-bottom: 1px solid var(--color-border); }
+:root .mc-model-mode .mode-label { min-width: 80px; }
+:root .task-form-actions { align-self: end; min-height: 44px; }
+:root .task-form-actions .btn { min-height: 44px; }
+:root input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--mf-brand); }
+@media (max-width: 1100px) {
+  :root .d-state, :root .d-statistic, :root .f-state { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  :root .activities .choose-time { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  :root .activities .search-box { grid-column: 1 / -1; grid-row: auto; }
+  :root .mc-kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  :root .settings-control-grid, :root .d-state, :root .d-statistic, :root .f-state { grid-template-columns: 1fr; }
+  :root .d-extra, :root .d-activity-chart, :root .d-control-inference { grid-template-columns: 1fr; height: auto; }
+  :root .activities .top-intro { padding: 24px 18px; }
+  :root .activities .choose-time, :root .mc-kpi-row, :root .mc-kpi-row:has(> :nth-child(3):last-child) { grid-template-columns: 1fr; }
+  :root .f-first-row { flex-wrap: wrap; }
+}
+:root .d-control-inference { align-items: stretch; }
+:root .d-control { justify-content: flex-start; }
+:root .d-control-tip { margin-top: auto; }
+:root .f-state .state-item { height: auto; min-height: 145px; padding: 24px; display: grid; align-content: center; gap: 16px; }
+:root .f-state .state-item-text, :root .f-state .state-item-number { margin: 0; padding-right: 68px; }
+:root .f-state .icon-box { right: 24px; }
+:root .analytics select.time { width: 140px; min-width: 140px; padding-left: 18px; text-align: left; }
+:root .analytics .third-box { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 24px; height: auto; }
+:root .analytics .third-box-item { width: 100%; min-height: 190px; padding: 24px; display: grid; grid-template-rows: auto minmax(60px,1fr) auto; gap: 12px; }
+:root .analytics .third-item-title, :root .analytics .third-item-content, :root .analytics .third-box-item .detail { margin: 0; }
+:root .analytics .third-item-content { align-self: center; text-align: center; font-size: 26px; overflow-wrap: anywhere; }
+:root .analytics .third-box-item .detail { min-height: 36px; overflow-wrap: anywhere; }
+:root .analytics .left-box, :root .analytics .right-box { padding: 24px; display: flex; flex-direction: column; justify-content: flex-start; gap: 20px; }
+:root .analytics .attribution-header, :root .analytics .attribution-summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+:root .analytics .attribution-action { position: static; }
+:root .analytics .left-box-title1, :root .analytics .right-box-title1, :root .analytics .left-box-title2 { margin: 0; }
+:root .analytics .attribution-details { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.4fr); gap: 24px; }
+:root .analytics .attribution-details > div { display: grid; align-content: start; gap: 12px; }
+:root .analytics .analysis-capabilities { gap: 14px; }
+:root .analytics .analysis-capabilities p, :root .analytics .analysis-capabilities .model-meta { margin: 0; line-height: 1.6; }
+:root .analytics .analysis-capabilities .model-pill { margin-left: 12px; }
+:root .telemetry-stats, :root .telemetry-actions { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 12px; margin-top: 20px; }
+:root .telemetry-stats > div { padding: 18px; border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-bg-secondary); display: grid; align-content: start; gap: 12px; overflow-wrap: anywhere; }
+:root .telemetry-actions > button { width: 100%; min-height: 44px; padding: 10px; white-space: normal; }
+@media (max-width:1100px) {
+  :root .analytics .third-box { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  :root .telemetry-stats, :root .telemetry-actions { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:700px) {
+  :root .analytics .third-box, :root .analytics .attribution-details, :root .telemetry-stats, :root .telemetry-actions { grid-template-columns: minmax(0,1fr); }
+}

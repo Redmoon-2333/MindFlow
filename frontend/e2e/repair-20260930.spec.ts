@@ -463,20 +463,20 @@ test("F3 analytics: profile has the same latest-request guarantee", async ({ pag
     .locator(".third-item-content");
 
   await expect(combo).toBeVisible({ timeout: 10000 });
-  await expect(avgBlock, "initial load uses the default 14-day range").toHaveText("14m");
+  await expect(avgBlock, "initial load uses the default 14-day range").toHaveText("14 分钟");
 
   hold7 = true;
   await combo.selectOption("近7天");
   await page.waitForTimeout(200);
   await combo.selectOption("近30天");
-  await expect(avgBlock, "30-day profile must be displayed").toHaveText("30m", { timeout: 10000 });
+  await expect(avgBlock, "30-day profile must be displayed").toHaveText("30 分钟", { timeout: 10000 });
 
   // Release the parked 7-day profile response *after* the 30-day one landed.
   expect(await api.release()).toBeGreaterThan(0);
   await page.waitForTimeout(700);
 
   await expect(combo).toHaveValue("近30天");
-  await expect(avgBlock, "the stale 7-day profile must not overwrite").toHaveText("30m");
+  await expect(avgBlock, "the stale 7-day profile must not overwrite").toHaveText("30 分钟");
   await expect(page.locator(".error-box")).toHaveCount(0);
 });
 
@@ -651,8 +651,7 @@ test("F4 keyboard: a hidden sidebar must not be reachable with the keyboard", as
 
 // Remaining loading, retry and concurrent-save boundaries.
 async function choosePreviousDate(page: Page, day: number) {
-  await page.getByRole("button", { name: /Choose date|选择日期/ }).click();
-  await page.getByRole("gridcell", { name: String(day), exact: true }).click();
+  await page.getByLabel("选择日期", { exact: true }).fill(`2026-09-${String(day).padStart(2, "0")}`);
 }
 
 test("boundary analytics: changing range hides the old profile summary while loading", async ({ page }) => {
@@ -665,12 +664,12 @@ test("boundary analytics: changing range hides the old profile summary while loa
   });
   await page.goto("/analytics");
   const avgBlock = page.locator(".third-box-item").filter({ hasText: "平均专注块" }).locator(".third-item-content");
-  await expect(avgBlock).toHaveText("14m");
+  await expect(avgBlock).toHaveText("14 分钟");
   await page.getByRole("combobox", { name: "时间范围" }).selectOption("近30天");
   await expect.poll(api.heldCount).toBeGreaterThan(0);
-  await expect(avgBlock).not.toHaveText("14m");
+  await expect(avgBlock).not.toHaveText("14 分钟");
   await api.release();
-  await expect(avgBlock).toHaveText("30m");
+  await expect(avgBlock).toHaveText("30 分钟");
 });
 
 test("boundary analytics: refreshing range does not dismiss a baseline failure", async ({ page }) => {
@@ -944,10 +943,123 @@ for (const route of ["/focus", "/reports"]) {
       await page.goto(route);
       await expect.poll(() => requests.length).toBeGreaterThan(0);
       const picker = page.locator(".mf-picker input").first();
-      await picker.fill(inputValue);
+      if (inputValue === "2026/02/31") {
+        await picker.evaluate((input: HTMLInputElement) => {
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+          setter.call(input, "2026-02-31");
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+      } else await picker.fill(inputValue.replaceAll("/", "-"));
       await picker.press("Enter");
       await page.waitForTimeout(400);
       expect(requests.every(date => date === TODAY), requests.join(", ")).toBe(true);
     });
   }
 }
+
+
+for (const theme of ["white", "black", "navy", "burgundy"]) {
+  test(`chat Markdown and content-sized bubbles ${theme}`, async ({page}) => {
+    await bootIsolated(page);
+    await page.addInitScript(value => localStorage.setItem("mindflow_theme", value), theme);
+    await installApi(page, {override: path => {
+      if (path === "/chat/sessions") return {json:[{session_id:"s1", title:"格式示例"}]};
+      if (path === "/chat/s1/messages") return {json:[
+        {id:"u",role:"user",content:"你好"},
+        {id:"a",role:"assistant",content:"## 标题\n\n**重点**\n\n- 第一步\n- 第二步\n\n> 引用\n\n```js\nconst x = 1;\n```\n\n| 项目 | 值 |\n| --- | --- |\n| 专注 | 30 |\n\n[链接](https://example.com)\n<script>alert(1)</script>"},
+      ]};
+    }});
+    await page.goto("/chat"); await page.getByRole("button", {name:"格式示例",exact:true}).click();
+    await expect(page.locator(".chat-ai h2")).toHaveText("标题");
+    await expect(page.locator(".chat-ai strong")).toHaveText("重点");
+    await expect(page.locator(".chat-ai li")).toHaveCount(2);
+    await expect(page.locator(".chat-ai table")).toBeVisible();
+    await expect(page.locator(".chat-ai pre code")).toContainText("const x = 1;");
+    await expect(page.locator(".chat-ai script")).toHaveCount(0);
+    const sizes = await page.locator(".chat-user, .chat-ai").evaluateAll(els => els.map(el => el.getBoundingClientRect().width));
+    expect(sizes[0]).toBeLessThan(sizes[1]);
+    if (theme === "white" || theme === "navy") await page.screenshot({path:`screenshots/20261009/chat-${theme}-desktop.png`});
+    await page.setViewportSize({width:390,height:844});
+    await expect.poll(() => page.locator(".mf-main").evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await expect.poll(() => page.locator(".mf-content").evaluate(el => Math.abs(el.getBoundingClientRect().x) < 1)).toBe(true);
+    if (theme === "white" || theme === "navy") await page.screenshot({path:`screenshots/20261009/chat-${theme}-mobile.png`});
+  });
+}
+
+test("chat session rename persists and deletion clears selected history", async ({page}) => {
+  await bootIsolated(page); let title="原会话", deleted=false;
+  await installApi(page);
+  await page.route("**/api/v1/chat/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() === "PATCH") { title=route.request().postDataJSON().title; await route.fulfill({json:{session_id:"s1",title}}); }
+    else if (route.request().method() === "DELETE") { deleted=true; await route.fulfill({status:204}); }
+    else if (path.endsWith("/sessions")) await route.fulfill({json:deleted ? [] : [{session_id:"s1",title}]});
+    else await route.fulfill({json:[{id:"m",role:"assistant",content:"历史内容"}]});
+  });
+  await page.goto("/chat"); await page.getByRole("button",{name:"原会话",exact:true}).click();
+  await expect(page.getByText("历史内容",{exact:true})).toBeVisible();
+  const row = page.locator(".chat-session-row").first();
+  const boxes = await row.locator("button").evaluateAll(els => els.map(el => el.getBoundingClientRect().y + el.getBoundingClientRect().height / 2));
+  expect(Math.max(...boxes) - Math.min(...boxes)).toBeLessThan(1);
+  await expect(page.getByRole("button",{name:"重命名 原会话"})).toHaveAttribute("title","重命名");
+  await page.getByRole("button",{name:"重命名 原会话"}).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByLabel("会话标题").fill("取消的标题"); await page.getByLabel("会话标题").press("Escape");
+  await expect(page.getByRole("button",{name:"原会话",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"重命名 原会话"}).click();
+  await page.getByLabel("会话标题").fill("新的标题"); await page.getByLabel("会话标题").press("Enter");
+  await expect(page.getByRole("button",{name:"新的标题",exact:true})).toBeVisible();
+  await page.reload(); await expect(page.getByRole("button",{name:"新的标题",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"新的标题",exact:true}).click();
+  await page.getByRole("button",{name:"删除 新的标题"}).click(); await page.getByRole("button",{name:"取消",exact:true}).click();
+  expect(deleted).toBe(false);
+  await page.getByRole("button",{name:"删除 新的标题"}).click(); await page.getByRole("button",{name:"确认删除"}).click();
+  await expect(page.getByText("历史内容",{exact:true})).toHaveCount(0);
+  await expect(page.getByText("暂无对话记录",{exact:true})).toBeVisible();
+  await page.reload(); await expect(page.getByText("暂无对话记录",{exact:true})).toBeVisible();
+});
+
+test("chat reveals progressively and cancels display on a new conversation", async ({page}) => {
+  await bootIsolated(page);
+  const answer="逐字回复内容。".repeat(100);
+  await installApi(page,{override:path => path === "/chat" ? {json:{answer,session_id:"s-new",degraded:false}} : path === "/chat/sessions" ? {json:[]} : undefined});
+  await page.goto("/chat"); await page.getByLabel("消息输入").fill("开始"); await page.getByRole("button",{name:"发送",exact:true}).click();
+  await expect(page.getByRole("button",{name:"立即显示全文"})).toBeVisible();
+  const partial=await page.locator(".chat-ai").innerText(); expect(partial.length).toBeLessThan(answer.length);
+  await page.getByRole("button",{name:"立即显示全文"}).click(); await expect(page.locator(".chat-ai")).toHaveText(answer);
+  await page.getByLabel("消息输入").fill("第二次"); await page.getByRole("button",{name:"发送",exact:true}).click();
+  await expect(page.getByRole("button",{name:"立即显示全文"})).toBeVisible();
+  await page.getByRole("button",{name:"新对话",exact:true}).click();
+  await expect(page.locator(".chat-ai")).toHaveCount(0);
+  await expect(page.getByLabel("消息输入")).toBeEnabled();
+  await expect(page.getByText("今天，想从哪里开始？",{exact:true})).toBeVisible();
+});
+
+
+test("inline rename explains unavailable backend method and retains the draft", async ({page}) => {
+  await bootIsolated(page); await installApi(page,{override:path => path === "/chat/sessions" ? {json:[{session_id:"s1",title:"原标题"}]} : undefined});
+  await page.route("**/api/v1/chat/sessions/s1",route => route.fulfill({status:405,json:{detail:"Method Not Allowed"}}));
+  await page.goto("/chat"); await page.getByRole("button",{name:"重命名 原标题"}).click();
+  await page.getByLabel("会话标题").fill("待保存标题"); await page.getByLabel("会话标题").press("Enter");
+  await expect(page.getByRole("alert")).toContainText("重启更新后的后端");
+  await expect(page.getByLabel("会话标题")).toHaveValue("待保存标题");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button",{name:"取消编辑"}).click();
+  await expect(page.getByRole("button",{name:"原标题",exact:true})).toBeVisible();
+  await page.screenshot({path:"screenshots/20261009/chat-inline-actions.png"});
+});
+
+test("panel fallback retries the configured AI provider rather than naming DeepSeek", async ({page}) => {
+  await bootIsolated(page); await installApi(page);
+  let retries=0;
+  await page.route("**/api/v1/panel**",route => {
+    if(route.request().method() === "POST") { expect(route.request().postDataJSON().retry_if_degraded).toBe(true); retries++; }
+    return route.fulfill({json:{types:["impulsivity"],confidence:{impulsivity:.95},rationale:"规则结果",degraded:true,cached:true,source:"rule_engine",meta:{source:"rule_engine"},transcript:[]}});
+  });
+  await page.goto("/panel"); await page.getByRole("button",{name:"查看上次结果"}).click();
+  await expect(page.getByText(/重试将使用当前配置的 AI 服务/)).toBeVisible();
+  await expect(page.getByRole("button",{name:"重试 DeepSeek"})).toHaveCount(0);
+  await page.getByRole("button",{name:"重试 AI 分析"}).click();
+  await expect.poll(() => retries).toBe(1);
+});

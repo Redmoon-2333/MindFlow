@@ -220,7 +220,7 @@ export default function Intervention() {
       )}
 
       <div className="workspace-grid">
-      <div className="card">
+      <div className="card intervention-trigger">
         <h3>手动触发干预</h3>
         <p style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
           选择一个强度级别，手动触发一次专注干预
@@ -259,13 +259,14 @@ export default function Intervention() {
               {latest.message}
             </div>
           )}
-          <div style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
+          <div className="intervention-response-row">
+          <div className="workspace-actions">
             {getStatusBadge(latest)}
             <span style={{ marginLeft: 8 }}>
               {formatTime(latest.triggered_at || latest.created_at || "")}
             </span>
           </div>
-          <div className="flex gap8" style={{ marginTop: 12 }}>
+          <div className="workspace-actions">
             <button
               type="button"
               className="btn btn-sm"
@@ -293,6 +294,7 @@ export default function Intervention() {
             >
               关闭
             </button>
+          </div>
           </div>
         </div>
       ) : (<div className="card"><h3>最新干预</h3><div className="workspace-empty">暂时没有提醒。<br />需要时，可以从左侧选择一种强度。</div></div>)}
@@ -343,14 +345,14 @@ export default function Intervention() {
                   flexShrink: 0,
                 }}
               />
-              <div className="workspace-record-body">
+              <div className="workspace-record-body intervention-history-body">
                 <div className="flex-between">
                   <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
                     {getInterventionTypeBadge(item.intervention_type)}
                     {getStatusBadge(item)}
                     {item.response_latency_s != null && (
                       <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
-                        延迟 {item.response_latency_s}s
+                        响应耗时 {item.response_latency_s.toFixed(1)} 秒
                       </span>
                     )}
                   </div>
@@ -360,18 +362,18 @@ export default function Intervention() {
                 </div>
 
                 {item.title && (
-                  <div style={{ fontSize: 14, fontWeight: 600, marginTop: 6 }}>
+                  <div className="intervention-history-title" style={{ fontSize: 14, fontWeight: 600, marginTop: 6 }}>
                     {item.title}
                   </div>
                 )}
                 {item.message && (
-                  <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 2 }}>
+                  <div className="intervention-history-message" style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 2 }}>
                     {item.message}
                   </div>
                 )}
 
                 {feedbackId === item.id ? (
-                  <div className="mt8" style={{ background: "var(--color-bg-inset)", padding: 12, borderRadius: 8 }}>
+                  <div className="mt8 intervention-feedback-editor" style={{ background: "var(--color-bg-inset)", padding: 12, borderRadius: 8 }}>
                     <select
                       aria-label="干预评分"
                       value={feedbackRating}
@@ -419,7 +421,7 @@ export default function Intervention() {
                   canFeedback(item) && (
                     <button
                       type="button"
-                      className="btn btn-sm btn-ghost mt8"
+                      className="btn btn-sm btn-ghost intervention-history-evaluate"
                       onClick={() => {
                         // Opening the editor for one record must not inherit
                         // another record's half-written draft.

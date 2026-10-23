@@ -3,7 +3,7 @@ import { defineConfig } from "@playwright/test";
 // Isolated UI checks: fixtures intercept all API and WebSocket traffic.
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: ["workspace-review.spec.ts", "test-model-center.spec.ts", "test-intervention-history.spec.ts", "repair-20260930.spec.ts"],
+  testMatch: ["panel-feedback.spec.ts", "chat-acceptance.spec.ts", "density-review.spec.ts", "theme-layout-review.spec.ts", "workspace-review.spec.ts", "test-model-center.spec.ts", "test-intervention-history.spec.ts", "repair-20260930.spec.ts"],
   timeout: 30000,
   retries: 0,
   workers: 2,

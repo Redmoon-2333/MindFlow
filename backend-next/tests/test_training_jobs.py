@@ -8,6 +8,7 @@ no auto-scheduler registration, and endpoint schema validation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from datetime import UTC, datetime, timedelta
@@ -315,6 +316,16 @@ class TestAccepted202:
 class TestDuplicate409:
     """POST /training-jobs returns 409 when a job is already active."""
 
+    @pytest.fixture(autouse=True)
+    def keep_first_job_pending(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Conflict tests require an active job, independent of training speed.
+        # The TestClient loop cancels this waiting task on context teardown.
+        async def pending(*_args: Any, **_kwargs: Any) -> None:
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(TrainingJobService, "_run", pending)
+
+
     async def test_duplicate_post_returns_409(
         self, engine, session_factory, tables,
     ) -> None:
@@ -328,7 +339,7 @@ class TestDuplicate409:
             r1 = client.post("/api/v1/analytics/training-jobs")
             assert r1.status_code == 202
 
-            # Second request: 409 (duplicate) — same event loop, task still alive
+            # Second request: 409 — the fixture explicitly keeps the first task active
             r2 = client.post("/api/v1/analytics/training-jobs")
             assert r2.status_code == 409
             body = r2.json()

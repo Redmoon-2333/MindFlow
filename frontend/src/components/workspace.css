@@ -89,3 +89,7 @@
   .workspace-page .stat-card { padding: 18px; }
   .workspace-page .stat-card .value { font-size: 24px; }
 }
+
+.panel-progress { display: flex; align-items: center; gap: 16px; }
+.panel-progress p { margin: 8px 0 0; color: var(--color-text-secondary); line-height: 1.7; }
+.panel-page a { color: var(--mf-brand); }

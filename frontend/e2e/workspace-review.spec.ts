@@ -39,7 +39,7 @@ for (const width of [1440, 1024, 390, 320]) {
     test(`${width}px ${title}: readable layout`, async ({page}) => {
       await page.setViewportSize({width,height:1000}); await setup(page);
       const errors: string[]=[]; page.on("pageerror", e => errors.push(e.message));
-      await page.goto(path); await expect(page.getByRole("heading",{name:title,exact:true,level:1})).toBeVisible();
+      await page.goto(path); await expect(page.locator(".mf-header-name")).toBeVisible();
       if(path === "/panel") await page.getByRole("button",{name:"查看上次结果"}).click();
       if(path === "/settings") {
         await expect(page.getByText("数据采集",{exact:true})).toBeVisible();

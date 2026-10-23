@@ -1,11 +1,5 @@
+import { userTerm } from "../lib/user-terms";
 import { useState, useEffect, useCallback, useRef } from "react";
-import Timeline from "@mui/lab/Timeline";
-import TimelineItem from "@mui/lab/TimelineItem";
-import TimelineSeparator from "@mui/lab/TimelineSeparator";
-import TimelineConnector from "@mui/lab/TimelineConnector";
-import TimelineContent from "@mui/lab/TimelineContent";
-import TimelineDot from "@mui/lab/TimelineDot";
-import AdjustIcon from "@mui/icons-material/Adjust";
 import {
   getAnalyticsPatterns,
   getBaseline,
@@ -26,7 +20,6 @@ import type {
 import "./analytics.css";
 
 const DAYS_OPTIONS = [7, 14, 30, 90];
-const SECTION_TITLES = ["模式分析", "个人画像", "拖延归因"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -92,7 +85,7 @@ export default function Analytics() {
   const pageRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const titleRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const [activeIndex, setActiveIndex] = useState(0);
+
 
   /** Latest-request guards (audit F3): each series owns its own sequence so a
    *  slow 7-day response can neither commit data, clear the spinner, nor
@@ -201,62 +194,6 @@ export default function Analytics() {
     };
   }, [fetchPatterns, fetchProfile]);
 
-  useEffect(() => {
-    const targets = titleRefs.current.filter(Boolean) as HTMLDivElement[];
-    const bottomEl = bottomRef.current;
-    const page = pageRef.current;
-    if (!bottomEl || !page) return;
-
-    let lastBottom = false;
-
-    const pickTitleActive = () => {
-      if (lastBottom) {
-        setActiveIndex(2);
-        return;
-      }
-      const rect = page.getBoundingClientRect();
-      const triggerBottom = rect.top + rect.height * 0.4;
-      let bestIdx = 0;
-      let bestBottom = -Infinity;
-      targets.forEach((t, i) => {
-        const tRect = t.getBoundingClientRect();
-        if (tRect.top < triggerBottom) {
-          const bottom = tRect.bottom - rect.top;
-          if (bottom > bestBottom) {
-            bestBottom = bottom;
-            bestIdx = i;
-          }
-        }
-      });
-      setActiveIndex(bestIdx);
-    };
-
-    const titleObserver = new IntersectionObserver(() => pickTitleActive(), {
-      root: page,
-      rootMargin: "0px 0px -60% 0px",
-      threshold: [0, 0.25, 0.5, 1],
-    });
-    targets.forEach((t) => titleObserver.observe(t));
-
-    const bottomObserver = new IntersectionObserver(
-      (entries) => {
-        const atBottom = entries.some((entry) => entry.isIntersecting);
-        lastBottom = atBottom;
-        if (atBottom) setActiveIndex(2);
-        else pickTitleActive();
-      },
-      { root: page, rootMargin: "0px 0px -40px 0px", threshold: 0 },
-    );
-    bottomObserver.observe(bottomEl);
-
-    pickTitleActive();
-
-    return () => {
-      titleObserver.disconnect();
-      bottomObserver.disconnect();
-    };
-  }, [loading.patterns, loading.profile]);
-
   const handleAttribution = async () => {
     setLoading((p) => ({ ...p, attribution: true }));
     setSectionError("attribution", null);
@@ -288,21 +225,7 @@ export default function Analytics() {
 
   return (
     <div className="analytics" ref={pageRef}>
-      <Timeline className="position">
-        {SECTION_TITLES.map((label, index) => (
-          <TimelineItem key={label}>
-            <TimelineContent className={activeIndex === index ? "is-active" : undefined}>{label}</TimelineContent>
-            <TimelineSeparator>
-              <TimelineDot sx={{ bgcolor: "transparent", boxShadow: "none", p: 0 }}>
-                <AdjustIcon sx={activeIndex === index ? { color: "#1890ff" } : { color: "#6a89ad" }} />
-              </TimelineDot>
-              {index < SECTION_TITLES.length - 1 && <TimelineConnector className="line" />}
-            </TimelineSeparator>
-          </TimelineItem>
-        ))}
-      </Timeline>
-
-      <div className="time-box">
+<div className="time-box">
         <div className="time-text">时间范围</div>
         <select
           className="time"
@@ -417,7 +340,7 @@ export default function Analytics() {
       <div className="third-box">
         <div className="third-box-item">
           <div className="third-item-title">专注高峰</div>
-          <div className="third-item-content">{profile?.peak_focus || "N/A"}</div>
+          <div className="third-item-content">{profile?.peak_focus?.replace(/\(avg\s+([\d.]+)\)/i, "（平均分 $1）") || "—"}</div><div className="detail">平均专注评分最高的时段</div>
         </div>
         <div className="third-box-item">
           <div className="third-item-title">效率应用</div>
@@ -429,8 +352,8 @@ export default function Analytics() {
         <div className="third-box-item">
           <div className="third-item-title">平均专注块</div>
           <div className="third-item-content">
-            {profile?.avg_focus_block_min != null ? `${profile.avg_focus_block_min}m` : "N/A"}
-          </div>
+            {profile?.avg_focus_block_min != null ? `${profile.avg_focus_block_min} 分钟` : "N/A"}
+          </div><div className="detail">每次连续专注的平均时长</div>
         </div>
         <div className="third-box-item">
           <div className="third-item-title">触发应用</div>
@@ -462,13 +385,13 @@ export default function Analytics() {
                   const trend = profileDetailTrend(value);
                   return (
                     <tr key={key}>
-                      <td>{key}</td>
+                      <td>{userTerm(key)}</td>
                       <td>{profileDetailValue(value)}</td>
                       <td>
                         <span
                           className={`badge ${trend === "up" ? "badge-success" : trend === "down" ? "badge-danger" : "badge-info"}`}
                         >
-                          {trend}
+                          {userTerm(trend)}
                         </span>
                       </td>
                     </tr>
@@ -484,55 +407,25 @@ export default function Analytics() {
 
       <div className="fifth-box" ref={bottomRef}>
         <div className="left-box">
-          <div className="left-box-title1">归因结果</div>
-          <div className="left-box-content1">
-            置信度：{attribution?.confidence != null ? attribution.confidence : "—"}
+          <div className="attribution-header"><div className="left-box-title1">归因结果</div>
+            <button type="button" className="btn attribution-action" onClick={handleAttribution} disabled={loading.attribution}>{loading.attribution ? "分析中..." : "运行归因分析"}</button>
           </div>
-          <div className="left-box-content2">
-            <b>拖延类型：</b>
-            {attribution?.procrastination_type ?? attribution?.results?.[0]?.procrastination_type ?? "—"}
+          <div className="attribution-summary">
+            <div><b>拖延类型：</b>{userTerm(attribution?.procrastination_type ?? attribution?.results?.[0]?.procrastination_type)}</div>
+            <span className="badge badge-info">置信度：{attribution?.confidence ?? attribution?.results?.[0]?.confidence ?? "—"}</span>
           </div>
-          <div className="left-box-title2">CBT 技术</div>
-          <div className="left-box-content2">
-            {attribution?.cbt_technique ?? attribution?.results?.[0]?.cbt_technique ?? "—"}
+          <div className="attribution-details">
+            <div><div className="left-box-title2">认知行为技术（CBT）</div><div>{userTerm(attribution?.cbt_technique ?? attribution?.results?.[0]?.cbt_technique)}</div></div>
+            <div><div className="left-box-title2">证据</div><div className="text-muted">{attribution?.evidence ?? attribution?.results?.[0]?.evidence ?? "尚未运行归因分析"}</div></div>
           </div>
-          <div className="left-box-title2">证据</div>
-          <div className="left-box-content3">
-            {attribution?.evidence ?? attribution?.results?.[0]?.evidence ?? "尚未运行归因分析"}
-          </div>
-          <button
-            type="button"
-            className="btn attribution-action"
-            onClick={handleAttribution}
-            disabled={loading.attribution}
-          >
-            {loading.attribution ? "分析中..." : "运行归因分析"}
-          </button>
         </div>
-
-        <div className="right-box">
-          <div className="right-box-title1">ML 模型状态</div>
-          <div className="content1">
-            模型加载状态:
-            <span
-              className={`model-pill ${modelStatus?.loaded ? "model-pill--on" : "model-pill--off"}`}
-            >
-              {modelStatus?.loaded ? "已加载" : "未加载"}
-            </span>
-          </div>
-          <div className="model-meta">
-            {providerStatus
-              ? providerStatus.configured
-                ? `LLM 已配置 · ${providerStatus.model}`
-                : "LLM 未配置"
-              : "LLM 状态未知"}
-          </div>
-          <div className="model-meta">
-            {modelStatus?.version ? `模型版本 ${modelStatus.version}` : "规则引擎模式"}
-          </div>
-          <div className="model-meta">
-            {modelStatus?.loaded ? `模式 ${modelStatus.mode ?? "ready"}` : "暂无已加载模型"}
-          </div>
+        <div className="right-box analysis-capabilities">
+          <div className="right-box-title1">个人模型与云端 AI</div>
+          <div><b>个人专注模型（ML）</b><span className={`model-pill ${modelStatus?.loaded ? "model-pill--on" : "model-pill--off"}`}>{!modelStatus ? "状态未知" : !modelStatus.loaded ? "未加载" : modelStatus.ready ? "已就绪" : "已加载，未就绪"}</span></div>
+          <p>根据你的行为与反馈预测专注或分心。未就绪时，系统仍可用规则引擎分析。</p>
+          <div className="model-meta">{modelStatus?.version ? `版本 ${modelStatus.version} · ${userTerm(modelStatus.mode)}` : "暂无个人模型版本"}</div>
+          <div><b>云端 AI（LLM）</b>：{!providerStatus ? "状态未知" : providerStatus.configured ? `已配置 · ${providerStatus.model}` : "未配置"}</div>
+          <p>用于拖延归因、专家讨论与建议生成；独立于个人模型。已配置仅表示有凭证，调用成功还取决于服务可用性。</p>
         </div>
       </div>
     </div>

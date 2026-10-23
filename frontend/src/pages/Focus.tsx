@@ -1,13 +1,8 @@
+import NativeDateField from "../components/NativeDateField";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
-import dayjs from "dayjs";
-import "dayjs/locale/zh-cn";
 import { getErrorMessage, getFocusSessions, getFocusTrend, submitFocusFeedback } from "../api";
 import type { FocusSession, FocusTrendDay, FocusTrendResponse } from "../api";
 import { dayLabel, localDateStr } from "../date-utils";
-import "./picker.css";
 import "./focus.css";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -231,26 +226,11 @@ export default function Focus() {
   };
 
   return (
-    <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="zh-cn">
+    <>
       <div className="f-page">
         <div className="f-first-row">
           <div className="f-datepicker mf-picker">
-            <DatePicker
-              disableFuture
-              value={dayjs(date)}
-              onChange={(newValue, context) => {
-                if (newValue?.isValid() && context.validationError == null) {
-                  setDate(newValue.format("YYYY-MM-DD"));
-                }
-              }}
-              format="YYYY/MM/DD"
-              label="选择日期"
-              slotProps={{
-                textField: { fullWidth: true, size: "small" },
-                layout: { className: "f-calendar" },
-                popper: { className: "f-calendar" },
-              }}
-            />
+            <NativeDateField label="选择日期" value={date} onChange={setDate} />
           </div>
           <button type="button" className="f-reset" onClick={refresh} disabled={loading || trendLoading}>
             刷 新
@@ -272,8 +252,8 @@ export default function Focus() {
         </div>
 
         <div className="f-description">
-          <b>自动分析说明：</b>专注评分由后端 ML 模型自动计算，无需手动反馈。
-          评分基于应用切换频率、专注时长、应用类型等特征。
+          <b>自动分析说明：</b>专注评分由后端根据主要应用使用占比与切换频率自动计算，无需手动反馈。
+          个人 ML 模型另用于预测专注或分心状态。
           下方的“反馈”功能仅用于收集训练数据以改进模型精度，非必须操作。
         </div>
 
@@ -485,6 +465,6 @@ export default function Focus() {
         </div>
         <div className="f-bottom" />
       </div>
-    </LocalizationProvider>
+    </>
   );
 }

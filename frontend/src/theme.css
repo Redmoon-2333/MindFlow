@@ -50,7 +50,7 @@ body { min-height: 100vh; }
   padding: 16px;
 }
 .stat-card .label { font-size: 13px; color: var(--color-text-tertiary); letter-spacing: 0.03em; }
-.stat-card .value { font-size: 30px; font-weight: 600; margin-top: 4px; color: #fff; }
+.stat-card .value { font-size: 30px; font-weight: 600; margin-top: 4px; color: var(--mf-text); }
 .stat-card .sub { font-size: 12px; margin-top: 4px; }
 .stat-card .sub.good { color: var(--color-success); }
 .stat-card .sub.bad { color: var(--color-danger); }
@@ -62,16 +62,16 @@ body { min-height: 100vh; }
 /* Pill colours reuse the reference's translucent fills (see table.scss and
    the analytics/insight tags) instead of the old light-theme chips. */
 .badge-primary { background: var(--color-primary-light); color: var(--mf-brand); }
-.badge-success { background: rgba(126, 248, 165, 0.25); color: #2bb52b; }
+.badge-success { background: rgba(126, 248, 165, 0.25); color: var(--color-success); }
 .badge-warning { background: #f59f0b4e; color: var(--mf-orange); }
-.badge-danger { background: rgba(247, 96, 93, 0.15); color: #f78181; }
+.badge-danger { background: rgba(247, 96, 93, 0.15); color: var(--color-danger); }
 .badge-info { background: #06b5d450; color: var(--mf-cyan); }
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 8px 18px; border: none; border-radius: 15px;
   font-size: 14px; font-weight: 600; cursor: pointer;
-  background: linear-gradient(135deg, #1a6dd4, #3a8fd9); color: #fff;
+  background: linear-gradient(135deg, #1a6dd4, #3a8fd9); color: var(--mf-text);
   font-family: inherit;
   transition: all 0.2s ease;
 }
@@ -83,33 +83,33 @@ body { min-height: 100vh; }
   color: var(--mf-text);
   border: 1px solid var(--color-border);
 }
-.btn-ghost:hover { background: rgba(100, 160, 255, 0.1); opacity: 1; }
-.btn-danger { background: rgba(247, 129, 129, 0.2); border: 1px solid rgba(247, 129, 129, 0.45); color: #f78181; }
+.btn-ghost:hover { background: color-mix(in srgb, var(--mf-brand) 10%, transparent); opacity: 1; }
+.btn-danger { background: rgba(247, 129, 129, 0.2); border: 1px solid rgba(247, 129, 129, 0.45); color: var(--color-danger); }
 .btn-danger:hover { background: rgba(247, 129, 129, 0.3); opacity: 1; }
 .btn-sm { padding: 4px 12px; font-size: 13px; border-radius: 12px; }
 
 input, select, textarea {
   width: 100%; padding: 8px 12px; border: 1px solid var(--color-border);
   border-radius: 10px; font-size: 14px;
-  background: rgba(100, 160, 255, 0.1);
-  color: #fff;
+  background: color-mix(in srgb, var(--mf-brand) 10%, transparent);
+  color: var(--mf-text);
   font-family: inherit;
 }
-input::placeholder, textarea::placeholder { color: rgba(255, 255, 255, 0.5); }
+input::placeholder, textarea::placeholder { color: var(--mf-text-dim); }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: rgba(100, 160, 255, 0.6);
+  border-color: color-mix(in srgb, var(--mf-brand) 60%, transparent);
   box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
 }
-select > option { color: #333; background: #fff; }
+select > option { color: var(--mf-text); background: var(--mf-text); }
 
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th {
   text-align: left; padding: 12px 16px; font-size: 14px; font-weight: 600;
-  color: #fff; border-bottom: 1px solid #e0e0e0;
+  color: var(--mf-text); border-bottom: 1px solid var(--color-border);
 }
-td { padding: 12px 16px; border-bottom: 1px solid #e0e0e0; color: var(--mf-text); }
-tr:hover td { background: rgba(100, 160, 255, 0.06); }
+td { padding: 12px 16px; border-bottom: 1px solid var(--color-border); color: var(--mf-text); }
+tr:hover td { background: color-mix(in srgb, var(--mf-brand) 6%, transparent); }
 
 .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
 .tab {
@@ -120,10 +120,10 @@ tr:hover td { background: rgba(100, 160, 255, 0.06); }
   transition: all 0.2s ease;
 }
 .tab:hover { color: var(--mf-brand); }
-.tab.active { background: rgba(100, 160, 255, 0.35); color: #fff; }
+.tab.active { background: color-mix(in srgb, var(--mf-brand) 35%, transparent); color: var(--mf-text); }
 
 .spinner {
-  border: 3px solid rgba(100, 160, 255, 0.2);
+  border: 3px solid color-mix(in srgb, var(--mf-brand) 20%, transparent);
   border-top-color: var(--mf-brand);
   border-radius: 50%;
   width: 24px; height: 24px;
@@ -135,7 +135,7 @@ tr:hover td { background: rgba(100, 160, 255, 0.06); }
 .error-box {
   background: rgba(247, 96, 93, 0.12);
   border: 1px solid rgba(247, 96, 93, 0.35);
-  color: #f78181;
+  color: var(--color-danger);
   padding: 12px 16px;
   border-radius: 12px;
   font-size: 13px;
@@ -161,7 +161,7 @@ tr:hover td { background: rgba(100, 160, 255, 0.06); }
 .text-muted { color: var(--color-text-tertiary); }
 
 .chat-bubble { padding: 10px 14px; border-radius: 15px; font-size: 14px; max-width: 80%; line-height: 1.5; }
-.chat-user { background: linear-gradient(135deg, #1a6dd4, #3a8fd9); color: #fff; margin-left: auto; }
+.chat-user { background: linear-gradient(135deg, #1a6dd4, #3a8fd9); color: var(--mf-text); margin-left: auto; }
 .chat-ai { background: var(--color-bg-inset); border: 1px solid var(--color-border); color: var(--mf-text); }
 .chat-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; height: calc(100vh - 180px); min-height: 500px; }
 .chat-main { min-width: 0; }

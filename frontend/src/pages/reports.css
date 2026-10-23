@@ -35,7 +35,7 @@
   letter-spacing: 5px;
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 1px 1px 5px rgba(100, 160, 255, 0.35);
+  box-shadow: 1px 1px 5px color-mix(in srgb, var(--mf-brand) 35%, transparent);
   color: var(--mf-text);
   font-family: inherit;
 }
@@ -44,8 +44,8 @@
   transform: scale(0.95);
 }
 .reports .be-chose {
-  background-color: rgba(100, 160, 255, 0.35);
-  color: #ffffff;
+  background-color: color-mix(in srgb, var(--mf-brand) 35%, transparent);
+  color: var(--mf-text);
 }
 
 .reports .report-datepicker {
@@ -73,14 +73,14 @@
   position: relative;
 }
 .reports .state-item-text {
-  color: #c4d2e2;
+  color: var(--mf-text);
   font-size: 18px;
   margin-top: 20px;
   margin-left: 30px;
   font-weight: 600;
 }
 .reports .state-item-number {
-  color: #ffffff;
+  color: var(--mf-text);
   font-size: 30px;
   margin-top: 12px;
   margin-left: 30px;
@@ -106,7 +106,7 @@
   background: #cdda7628;
 }
 .reports .state-item:nth-child(2) .icon-box .icon {
-  color: #c2c570;
+  color: var(--color-warning);
 }
 .reports .state-item:nth-child(3) .icon-box {
   background: #f69c002a;
@@ -133,7 +133,7 @@
 .reports .zhuanzhudongcha-title {
   width: 100%;
   height: 55px;
-  color: #c4d2e2;
+  color: var(--mf-text);
   font-size: 18px;
   line-height: 60px;
   font-weight: 600;
@@ -142,7 +142,7 @@
 .reports .zhuanzhudongcha-text {
   width: 96%;
   min-height: 50px;
-  color: #c4d2e2;
+  color: var(--mf-text);
   font-size: 16px;
   font-weight: 500;
   margin-left: 30px;
@@ -164,7 +164,7 @@
   position: absolute;
   width: 100%;
   height: 60px;
-  color: #c4d2e2;
+  color: var(--mf-text);
   font-size: 18px;
   line-height: 60px;
   font-weight: 600;
@@ -195,7 +195,7 @@
   left: 50%;
   transform: translateX(-50%);
   font-size: 14px;
-  color: #fff;
+  color: var(--mf-text);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -221,7 +221,7 @@
   position: absolute;
   width: 100%;
   height: 60px;
-  color: #c4d2e2;
+  color: var(--mf-text);
   font-size: 18px;
   line-height: 60px;
   font-weight: 600;
@@ -240,7 +240,7 @@
 .reports .simple-table th,
 .reports .simple-table td {
   border: none;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--color-border);
   padding: 12px 16px;
   text-align: left;
   font-size: 14px;
@@ -248,7 +248,7 @@
 }
 .reports .simple-table th {
   background: none !important;
-  color: #fff !important;
+  color: var(--mf-text) !important;
   font-size: 14px;
   font-weight: 600;
 }
@@ -271,14 +271,14 @@
 .reports .weekly-detail-table th,
 .reports .weekly-detail-table td {
   border: none;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--color-border);
   padding: 12px 16px;
   text-align: left;
   font-size: 14px;
   color: var(--mf-text);
 }
 .reports .weekly-detail-table th {
-  color: #fff !important;
+  color: var(--mf-text) !important;
   font-weight: 600;
 }
 .reports .trend-row {
@@ -301,11 +301,11 @@
 .reports .trend-pill .value {
   font-size: 24px;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--mf-text);
   margin-top: 4px;
 }
 .reports .trend-pill .value.good { color: var(--mf-green); }
-.reports .trend-pill .value.bad { color: #f78181; }
+.reports .trend-pill .value.bad { color: var(--color-danger); }
 .reports .trend-pill .sub {
   font-size: 13px;
   margin-top: 2px;

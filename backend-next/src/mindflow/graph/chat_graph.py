@@ -1311,6 +1311,12 @@ class ChatGraph:
                 answer=_LLM_DOWN_REPLY, session_id=session_id, degraded=True,
             )
 
+    def forget_session(self, user_id: int, session_id: str) -> None:
+        """Evict cached tool exchanges after durable conversation deletion."""
+        for key in list(self._protocol_turns):
+            if key[:2] == (user_id, session_id):
+                del self._protocol_turns[key]
+
     async def _ask_serialized(
         self,
         user_id: int,

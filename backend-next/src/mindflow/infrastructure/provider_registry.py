@@ -103,14 +103,19 @@ class ProviderRegistry:
         )
         # Every consumer shares one gate so the provider's per-user concurrency
         # cap is respected no matter which entry point is calling.
-        self.concurrency = LLMConcurrencyGate(settings.max_concurrent_requests)
+        self.concurrency = LLMConcurrencyGate(
+            min(settings.max_concurrent_requests, 3)
+            if self._target.is_ecnu
+            else settings.max_concurrent_requests
+        )
 
         # ── Structured attribution client (L1 of degradation chain) ──────────
         self._deepseek_client: DeepSeekClient | None = None
         if self._target.api_key:
             try:
                 self._deepseek_client = DeepSeekClient(
-                    self._pinned_settings(), self.concurrency,
+                    self._pinned_settings(),
+                    self.concurrency,
                 )
                 logger.debug("ProviderRegistry: structured attribution client created")
             except Exception as exc:
@@ -139,7 +144,11 @@ class ProviderRegistry:
         # dedicated gateway with its own gate, while every other L1 path keeps
         # the global cap. Built lazily-used: None means "reuse the main
         # gateway" so the process still owns exactly one pool by default.
-        fanout_limit = max(1, min(settings.panel_fanout_concurrency, 8))
+        # ChatECNU has a per-user/model limit of 3. All campus paths share
+        # the same gate; a second independent fan-out gate could exceed it.
+        fanout_limit = (
+            1 if self._target.is_ecnu else max(1, min(settings.panel_fanout_concurrency, 8))
+        )
         self._fanout_gateway: LangChainGateway | None = None
         self._fanout_concurrency = fanout_limit
         if fanout_limit > 1:
@@ -153,8 +162,7 @@ class ProviderRegistry:
                 target=self._target,
             )
             logger.info(
-                "ProviderRegistry: panel fan-out gateway created (burst={}, "
-                "global={})",
+                "ProviderRegistry: panel fan-out gateway created (burst={}, global={})",
                 fanout_limit,
                 self.concurrency.limit,
             )
@@ -182,7 +190,8 @@ class ProviderRegistry:
                 "(or MINDFLOW_LLM__DEEPSEEK_API_KEY) to enable L1; a legacy ECNU "
                 "key is never reused, by design.",
                 " (a legacy ECNU credential/endpoint is present but not reused)"
-                if legacy_present else "",
+                if legacy_present
+                else "",
             )
 
         # ── Standalone chat model for ChatService's LangGraph agent ─────────────
@@ -223,15 +232,17 @@ class ProviderRegistry:
         every consumer re-deriving it. The pinned copy carries the DeepSeek
         endpoint, so its own ``is_ecnu``/``l1_target`` resolve identically.
         """
-        return self._settings.model_copy(update={
-            "api_key": self._target.api_key,
-            "base_url": self._target.base_url,
-            "model": self._target.model,
-            "provider": self._target.provider,
-            "deepseek_api_key": self._target.api_key,
-            "deepseek_model": self._target.model,
-            "deepseek_base_url": self._target.base_url,
-        })
+        return self._settings.model_copy(
+            update={
+                "api_key": self._target.api_key,
+                "base_url": self._target.base_url,
+                "model": self._target.model,
+                "provider": self._target.provider,
+                "deepseek_api_key": self._target.api_key,
+                "deepseek_model": self._target.model,
+                "deepseek_base_url": self._target.base_url,
+            }
+        )
 
     def get_chat_model(self) -> BaseChatModel | None:
         """Return a cached chat model for LangGraph/Tool-calling usage.
@@ -239,7 +250,7 @@ class ProviderRegistry:
         Returns ``None`` when no API key is configured so the degradation
         path (LLM-down safe reply) stays reachable.
 
-        For the campus gateway (compat mode only) this is an
+        For an explicitly selected campus gateway or compat mode this is an
         :class:`ECNUChatModel`, which adds the thinking fields and preserves
         ``reasoning_content`` across tool calls. Production uses the pinned
         DeepSeek endpoint, where thinking is requested per call through the
@@ -446,7 +457,8 @@ class ProviderRegistry:
             await self._fallback_http.aclose()
         logger.debug(
             "ProviderRegistry: fallback pool closed (constructed={}, closed={})",
-            self._fallback_http.constructions, self._fallback_http.closes,
+            self._fallback_http.constructions,
+            self._fallback_http.closes,
         )
 
         logger.info("ProviderRegistry shutdown complete")
