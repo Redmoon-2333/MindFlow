@@ -671,6 +671,9 @@ class TestGoldenTopology:
             "insufficient_data",
             "uncertainty",
             "evidence_gaps",
+            # Contract §2/§3 payloads (2026-11 midterm upgrade).
+            "deviation",
+            "tmt",
         }
         assert fields == expected
 

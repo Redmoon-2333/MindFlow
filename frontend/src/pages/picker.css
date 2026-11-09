@@ -11,7 +11,7 @@
 .mf-picker .MuiTextField-root {
   background-color: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 20px;
+  border-radius: var(--radius-md);
 }
 .mf-picker .MuiFormLabel-root {
   color: var(--mf-text) !important;
@@ -50,7 +50,7 @@
 /* Calendar popover (reference: `#172E50`, 20px radius, 10px top gap). */
 .f-calendar .MuiPaper-root {
   background-color: #172e50;
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
   margin-top: 10px;
   border: 1px solid var(--mf-panel-border);
 }

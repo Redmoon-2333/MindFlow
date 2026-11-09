@@ -14,7 +14,7 @@ Key contract:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION
 
@@ -50,6 +50,10 @@ class FocusPrediction:
         top_factors: Top 3 most influential features, each with name, value, importance.
         explanation_method: How ``top_factors`` was computed
             (e.g. ``"global_importance_times_observation"``).
+        explanation: Additive local explanation of ``focus_probability``
+            (contract §1), as a plain dict so this domain type stays free of
+            the API schemas: ``{method, base_value, output_space,
+            contributions[], note}``. None when no prediction was produced.
         reason: Human-readable Chinese explanation of the status.
     """
 
@@ -65,6 +69,7 @@ class FocusPrediction:
     feature_schema_version: int = FEATURE_SCHEMA_VERSION
     top_factors: list[dict[str, float | str]] = field(default_factory=list)
     explanation_method: str = ""
+    explanation: dict[str, Any] | None = None
     reason: str = ""
 
 

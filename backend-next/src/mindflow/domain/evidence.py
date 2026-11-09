@@ -134,6 +134,15 @@ class EvidenceBundle:
         novelty_flags: Detected novel behaviour patterns (Phase A: simple heuristic).
         events: Activity events used to build this bundle, retained for workflow
             contracts that distinguish an empty window from degraded analysis.
+        deviation_summary: The structured personal-baseline deviation
+            (``DeviationDetector.to_summary``: empirical-Bayes shrunk robust
+            z-scores, see API contract §2), or None when the baseline cannot
+            yet support one. Kept as a plain dict so this module stays
+            framework-free; the API layer validates it with a Pydantic model.
+        tmt: Temporal Motivation Theory decomposition computed from behavioural
+            proxies (``domain/tmt.py``), or None when it was not computed.
+            Optional with a default so every existing construction site keeps
+            working unchanged.
     """
 
     user_id: int
@@ -143,6 +152,8 @@ class EvidenceBundle:
     intervention_history: tuple[InterventionRecord, ...]
     novelty_flags: tuple[str, ...]
     events: tuple[object, ...] = ()
+    deviation_summary: dict[str, Any] | None = None
+    tmt: object | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

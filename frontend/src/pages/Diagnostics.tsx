@@ -1,4 +1,5 @@
 import WorkspacePage from "../components/WorkspacePage";
+import EmptyState from "../components/EmptyState";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getAIRuns, getAIRunDetail, getFocusPrediction, getHealthLive, getHealthReady, getErrorMessage, getAnalysisGraph } from "../api";
 import type { AIRunItem, AIRunDetail, AnalysisGraphTopology, FocusPredictionResponse, HealthLiveResponse, HealthReadyResponse } from "../api";
@@ -142,7 +143,11 @@ export default function Diagnostics() {
           <div className="value" style={{ fontSize: 22 }}>
             {live?.status === "ok" ? "正常" : ready?.status === "ok" ? "就绪" : "--"}
           </div>
-          <div className="sub good">live: {live?.status ?? "--"}</div>
+          {/* Colour must follow the probe result: a failed liveness check used to
+              render green because the class was hardcoded. */}
+          <div className={`sub ${live ? (live.status === "ok" ? "good" : "bad") : ""}`}>
+            live: {live?.status ?? "--"}
+          </div>
         </div>
         <div className="stat-card">
           <div className="label">就绪探测</div>
@@ -180,9 +185,11 @@ export default function Diagnostics() {
         <div className="flex-between mb16"><h3 style={{margin: 0}}>AI 工作流运行记录</h3><button type="button" className="btn btn-ghost btn-sm" disabled={loading} onClick={fetchRuns}>刷新记录</button></div>
         {loading && <div className="spinner" role="status" aria-label="加载运行记录" />}
         {!loading && (runs.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>
-            暂无运行记录
-          </div>
+          <EmptyState
+            title="暂无运行记录"
+            description="分析运行后会在这里留下一条记录；触发一次专家面板分析即可生成第一条。"
+            icon="icon-fenzhixing"
+          />
         ) : (
           <div className="workspace-table">
             <table>

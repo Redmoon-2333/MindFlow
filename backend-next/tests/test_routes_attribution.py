@@ -277,3 +277,125 @@ class TestAttributionRoute:
         data = resp.json()
         assert "validation-error" in data["type"]
         mock_service.analyze.assert_not_called()
+
+
+class TestContractPayloadExposure:
+    """Contract §2/§3 on the attribution route.
+
+    The workflow path carries the bundle's ``deviation_summary`` and TMT
+    breakdown through the verdict; the single-expert fallback never builds an
+    evidence bundle, so it must report both as null rather than fabricate.
+    """
+
+    _TMT = {
+        "motivation": 0.18,
+        "motivation_level": "medium",
+        "dominant_barrier": "expectancy",
+        "components": {
+            "expectancy": {
+                "score": 0.3, "raw": 2.0, "label": "成功预期",
+                "source": "focus_session_feedback（近14天 3 次自评）",
+                "evidence_ids": ["focus.tmt_expectancy"],
+            },
+            "value": {
+                "score": 0.7, "raw": 4.0, "label": "任务价值",
+                "source": "tasks.priority（3 个未完成任务）",
+                "evidence_ids": ["focus.tmt_value"],
+            },
+            "impulsiveness": {
+                "score": 0.55, "raw": 0.2, "label": "冲动性",
+                "source": "deviation_summary（切换频率/最长分段稳健 z）",
+                "evidence_ids": ["focus.tmt_impulsiveness"],
+            },
+            "delay": {
+                "score": 0.9, "raw": 216.0, "label": "奖赏延迟",
+                "source": "最近未完成任务截止时间",
+                "evidence_ids": ["focus.tmt_delay"],
+            },
+        },
+        "note": "基于行为代理变量的近似，不是心理测量或临床诊断",
+    }
+
+    _DEVIATION = {
+        "overall_score": 0.41,
+        "severity": "mild",
+        "method": "eb_shrinkage_mad",
+        "bucket": {
+            "hour_of_day": 15,
+            "day_of_week": 4,
+            "n_samples": 60,
+            "shrinkage": 0.5,
+        },
+        "features": [
+            {
+                "feature": "idle_ratio",
+                "label": "空闲占比",
+                "value": 0.22,
+                "expected": 0.08,
+                "robust_z": 2.2,
+                "weight": 0.3,
+            }
+        ],
+    }
+
+    def _verdict(self, **overrides: object) -> PanelVerdict:
+        defaults: dict[str, object] = {
+            "types": (ProcrastinationType.IMPULSIVITY,),
+            "confidence": {ProcrastinationType.IMPULSIVITY: 0.8},
+            "recommended_technique": None,
+            "rationale": "workflow result",
+            "dissent": (),
+            "transcript": (),
+            "escalated": False,
+            "call_count": 0,
+            "source": "deepseek",
+        }
+        defaults.update(overrides)
+        return PanelVerdict(**defaults)  # type: ignore[arg-type]
+
+    def test_workflow_path_exposes_both_payloads(self) -> None:
+        workflow_port = MagicMock()
+        workflow_port.run_analysis = AsyncMock(
+            return_value=AnalysisResult(
+                verdict=self._verdict(deviation=self._DEVIATION, tmt=self._TMT)
+            )
+        )
+        app = _make_app(MagicMock())
+        app.state.workflow_port = workflow_port
+
+        data = TestClient(app).post(
+            "/api/v1/analytics/attribution", json={"date": "2026-07-17"}
+        ).json()
+
+        assert data["tmt"]["motivation_level"] == "medium"
+        assert data["tmt"]["dominant_barrier"] == "expectancy"
+        assert data["deviation"]["severity"] == "mild"
+        assert data["deviation"]["features"][0]["feature"] == "idle_ratio"
+
+    def test_legacy_workflow_verdict_reports_both_as_null(self) -> None:
+        workflow_port = MagicMock()
+        workflow_port.run_analysis = AsyncMock(
+            return_value=AnalysisResult(verdict=self._verdict())
+        )
+        app = _make_app(MagicMock())
+        app.state.workflow_port = workflow_port
+
+        data = TestClient(app).post(
+            "/api/v1/analytics/attribution", json={"date": "2026-07-17"}
+        ).json()
+
+        assert "tmt" in data and data["tmt"] is None
+        assert "deviation" in data and data["deviation"] is None
+
+    def test_single_expert_path_reports_both_as_null(self) -> None:
+        """No evidence bundle on this path, so nothing may be invented."""
+        service = MagicMock()
+        service.analyze = AsyncMock(return_value=_success_outcome())
+        app = _make_app(service)
+
+        data = TestClient(app).post(
+            "/api/v1/analytics/attribution", json={"date": "2026-07-17"}
+        ).json()
+
+        assert data["tmt"] is None
+        assert data["deviation"] is None

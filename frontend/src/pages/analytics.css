@@ -64,7 +64,7 @@
   height: 40px;
   font-size: 18px;
   font-weight: 600;
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   padding: 8px 12px 8px 20px;
   background-color: color-mix(in srgb, var(--mf-brand) 35%, transparent);
   border: 1px solid var(--mf-panel-border);
@@ -105,7 +105,8 @@
   transform: translateY(-50%);
   width: 50px;
   height: 2px;
-  background: linear-gradient(to right, transparent, #64a0ff);
+  background: var(--chart-1);
+  opacity: 0.4;
 }
 .analytics .title::after {
   content: "";
@@ -115,7 +116,8 @@
   transform: translateY(-50%);
   width: 50px;
   height: 2px;
-  background: linear-gradient(to left, transparent, #64a0ff);
+  background: var(--chart-1);
+  opacity: 0.4;
 }
 
 /* ── Pattern analysis ───────────────────────────────────────────────────── */
@@ -132,7 +134,7 @@
   position: relative;
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -183,7 +185,7 @@
   font-size: 14px;
   font-weight: 600;
   padding: 3px 0;
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
 }
 .analytics .f-box .full-box1 {
   width: 85px;
@@ -217,7 +219,7 @@
   height: 120px;
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   margin: 30px 0;
   margin-bottom: 50px;
 }
@@ -253,7 +255,7 @@
   width: 23%;
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
   padding: 20px 0;
@@ -289,7 +291,7 @@
   height: 400px;
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   margin-bottom: 50px;
   padding-bottom: 20px;
 }
@@ -346,7 +348,7 @@
   width: 48.5%;
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
   padding: 20px 0;
@@ -371,7 +373,7 @@
   border: 1px solid var(--mf-panel-border);
   width: 140px;
   padding: 3px 5px;
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   font-size: 14px;
   align-items: center;
   display: flex;
@@ -406,7 +408,7 @@
 }
 .analytics .model-pill {
   padding: 3px 12px;
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   font-size: 14px;
   font-weight: 600;
 }
@@ -473,4 +475,23 @@
   .analytics .title { transform: none; width: 100px; text-align: center; }
   .analytics .third-box-item { width: 100%; }
   .analytics .second-content { gap: 16px; }
+}
+
+/* ── Attribution evidence (contract additions §2/§3) ─────────────────────── */
+.attribution-evidence {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+  width: 96%;
+  margin-bottom: var(--space-7);
+}
+/* Wide blocks claim the full row. TMT joins them because its four component
+   bars need the horizontal room to stay a comparable scale; leaving it in a
+   half column left the second column empty. */
+.attribution-evidence > .callout,
+.attribution-evidence > section[aria-label="动机分解"],
+.attribution-evidence > section[aria-label="行为偏离"] { grid-column: 1 / -1; }
+.attribution-evidence .deviation-table { margin-top: var(--space-2); }
+@media (max-width: 1023px) {
+  .attribution-evidence { grid-template-columns: minmax(0, 1fr); width: 100%; }
 }

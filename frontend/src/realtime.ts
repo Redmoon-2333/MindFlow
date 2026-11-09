@@ -1,3 +1,6 @@
+import { parseFeedbackRequest } from "./types/explainability";
+import type { FeedbackRequest } from "./types/explainability";
+
 export type RealtimeStatus = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected";
 
 export interface ActivityUpdatePayload {
@@ -22,6 +25,9 @@ export interface InterventionEventPayload {
 interface RealtimeEvents {
   activity_update: ActivityUpdatePayload;
   intervention: InterventionEventPayload;
+  /** Proactive-learning prompt (contract §5). Fires only when the backend
+   *  decides a label would be informative — never on a timer. */
+  feedback_request: FeedbackRequest;
 }
 
 type Listener<T> = (payload: T, timestamp: string) => void;
@@ -103,25 +109,42 @@ class RealtimeClient {
     let message: unknown;
     try { message = JSON.parse(raw); } catch { return; }
     if (typeof message !== "object" || message === null) return;
-    const frame = message as { type?: unknown; payload?: unknown; timestamp?: unknown };
+    const frame = message as { type?: unknown; payload?: unknown; data?: unknown; timestamp?: unknown };
+    const timestamp = typeof frame.timestamp === "string" ? frame.timestamp : new Date().toISOString();
+
+    // Contract §5 frames carry their body under `data`; the older frames use
+    // `payload`. Accept both rather than forcing the backend to pick one.
+    if (frame.type === "feedback_request") {
+      const request = parseFeedbackRequest(frame.data ?? frame.payload);
+      if (!request) return;
+      this.emit("feedback_request", request, timestamp);
+      return;
+    }
+
     if (frame.type !== "activity_update" && frame.type !== "intervention") return;
     if (typeof frame.payload !== "object" || frame.payload === null) return;
-    const timestamp = typeof frame.timestamp === "string" ? frame.timestamp : new Date().toISOString();
 
     // Show desktop notification for intervention events
     if (frame.type === "intervention") {
       this.showDesktopNotification(frame.payload as InterventionEventPayload);
     }
 
-    const listeners = this.listeners.get(frame.type);
-    if (listeners) {
-      for (const listener of listeners) {
-        try {
-          listener(frame.payload as never, timestamp);
-        } catch {
-          // One failing listener must not break the remaining subscribers
-          // or the WebSocket receive loop.
-        }
+    this.emit(
+      frame.type,
+      frame.payload as ActivityUpdatePayload | InterventionEventPayload,
+      timestamp,
+    );
+  }
+
+  private emit<K extends keyof RealtimeEvents>(type: K, payload: RealtimeEvents[K], timestamp: string): void {
+    const listeners = this.listeners.get(type);
+    if (!listeners) return;
+    for (const listener of listeners) {
+      try {
+        listener(payload as never, timestamp);
+      } catch {
+        // One failing listener must not break the remaining subscribers
+        // or the WebSocket receive loop.
       }
     }
   }

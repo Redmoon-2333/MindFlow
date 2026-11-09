@@ -13,6 +13,9 @@
  *     with a meaningful status label and preserved reason — never a percentage.
  */
 
+import { parsePredictionExplanation } from "./types/explainability";
+import type { PredictionExplanation } from "./types/explainability";
+
 export const FOCUS_PREDICTION_STATUSES = [
   "ready",
   "no_model",
@@ -42,6 +45,8 @@ export interface FocusPredictionReadyState {
   readonly focus_probability: number;
   readonly mode: string;
   readonly reason: string;
+  /** Optional SHAP/linear attribution; absent until the backend ships it. */
+  readonly explanation?: PredictionExplanation;
 }
 
 export interface FocusPredictionUnavailableState {
@@ -49,6 +54,7 @@ export interface FocusPredictionUnavailableState {
   readonly focus_probability: null;
   readonly mode: string;
   readonly reason: string;
+  readonly explanation?: PredictionExplanation;
 }
 
 export interface FocusPredictionUnknownState {
@@ -58,6 +64,7 @@ export interface FocusPredictionUnknownState {
   readonly focus_probability: null;
   readonly mode: string;
   readonly reason: string;
+  readonly explanation?: PredictionExplanation;
 }
 
 export type FocusPredictionResponse =
@@ -83,20 +90,23 @@ export function parseFocusPrediction(value: unknown): FocusPredictionResponse {
   const status = typeof value.status === "string" ? value.status : "";
   const mode = typeof value.mode === "string" ? value.mode : "";
   const reason = typeof value.reason === "string" ? value.reason : "";
+  // Optional attribution — additive and independent of `status`, so it rides
+  // along on every variant without changing any existing render decision.
+  const explanation = parsePredictionExplanation(value.explanation);
 
   if (status === "ready") {
     const probability = value.focus_probability;
     if (typeof probability === "number" && Number.isFinite(probability)) {
-      return { status: "ready", focus_probability: probability, mode, reason };
+      return { status: "ready", focus_probability: probability, mode, reason, explanation };
     }
     // ready with null/NaN/missing probability is an unavailable state — never 0%, never NaN%.
-    return { status: "unknown", raw_status: status, focus_probability: null, mode, reason };
+    return { status: "unknown", raw_status: status, focus_probability: null, mode, reason, explanation };
   }
   if (isKnownStatus(status)) {
     // Non-ready statuses are present-and-null even if the wire leaks a number.
-    return { status, focus_probability: null, mode, reason };
+    return { status, focus_probability: null, mode, reason, explanation };
   }
-  return { status: "unknown", raw_status: status, focus_probability: null, mode, reason };
+  return { status: "unknown", raw_status: status, focus_probability: null, mode, reason, explanation };
 }
 
 export interface FocusPredictionView {

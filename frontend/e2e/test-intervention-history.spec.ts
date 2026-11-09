@@ -136,7 +136,7 @@ test.describe("Intervention History — title/message rendering", () => {
 
     // The type badge should show the Chinese label "环境优化", not the raw enum
     await expect(page.locator(".badge").filter({ hasText: "环境优化" }).first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator(".badge").filter({ hasText: "任务分解" })).toBeVisible();
+    await expect(page.locator(".badge").filter({ hasText: "任务拆解" })).toBeVisible();
   });
 
   test("latest-intervention section also shows concrete title/message", async ({ page }) => {

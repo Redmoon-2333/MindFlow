@@ -7,6 +7,11 @@ import type { DailyReport, WeeklyReport } from "./report-state";
 import { parseBaselineSummary } from "./baseline-state";
 import type { BaselineSummaryState } from "./baseline-state";
 import { findDayByDate, localDateStr, previousLocalDateStr } from "./date-utils";
+import { parseDeviation, parseFeedbackRequest, parseRationale, parseTmt } from "./types/explainability";
+import type {
+  DeviationSummary, ExplainableAttribution, ExplainablePanel, FeedbackAnswerResponse, FeedbackLabel,
+  FeedbackRequest, InterventionRationale, TmtBreakdown,
+} from "./types/explainability";
 
 const BASE = "/api/v1";
 export const AUTH_MARKER = "mindflow_authenticated";
@@ -16,8 +21,14 @@ const client = createClient<paths>();
 type CollectorStatusResponse = components["schemas"]["CollectorStatusResponse"];
 type ChatResponse = components["schemas"]["ChatResponse"];
 type PanelResponse = components["schemas"]["PanelResponse"];
-type InterventionTriggerResponse = components["schemas"]["InterventionTriggerResponse"];
 type InterventionPayload = components["schemas"]["InterventionPayload"];
+/** The trigger payload, re-typed so `rationale` is the parsed shape rather
+ *  than the raw wire object. Everything else comes straight from the schema. */
+export type InterventionTriggerResponse = {
+  intervention: (Omit<InterventionPayload, "rationale"> & { rationale?: InterventionRationale | null }) | null;
+  skipped: boolean;
+  skip_reason?: string | null;
+};
 type InterventionCommandResponse = components["schemas"]["InterventionCommandResponse"];
 type InterventionIntensity = components["schemas"]["InterventionTriggerRequest"]["intensity"];
 type InterventionResponse = components["schemas"]["InterventionResponseRequest"]["response"];
@@ -131,6 +142,8 @@ export interface InterventionHistoryItem {
   created_at: string;
   title?: string;
   message?: string;
+  /** Contract addition: why this reminder was chosen. Optional. */
+  rationale?: InterventionRationale | null;
 }
 
 export interface InterventionHistoryResponse {
@@ -390,7 +403,14 @@ export interface AttributionResponse {
   procrastination_type?: string | null;
   cbt_technique?: string | null;
   evidence?: string | null;
+  /** Contract additions (docs/audit/20261110-midterm/api-contract-additions.md).
+   *  Optional until `npm run generate:api` folds them into the generated schema. */
+  deviation?: DeviationSummary | null;
+  tmt?: TmtBreakdown | null;
 }
+
+/** Panel response plus the optional TMT block the backend is adding. */
+export type ExplainablePanelResult = PanelResult & ExplainablePanel;
 
 export type Preferences = Record<string, unknown>;
 
@@ -734,7 +754,8 @@ export interface AiProviderStatus {
 }
 export const getAiProviderStatus = () =>
   request<AiProviderStatus>("/ai/provider-status");
-export const runAttribution = (body?: { date?: string; force?: boolean }) => request<AttributionResponse>("/analytics/attribution", { method: "POST", body: JSON.stringify(body || {}) }, AI_REQUEST_TIMEOUT_MS);
+export const runAttribution = async (body?: { date?: string; force?: boolean }): Promise<AttributionResponse> =>
+  withExplainability(await request<AttributionResponse>("/analytics/attribution", { method: "POST", body: JSON.stringify(body || {}) }, AI_REQUEST_TIMEOUT_MS));
 
 export async function sendChat(message: string, sessionId?: string, signal?: AbortSignal): Promise<ChatReply> {
   return request<ChatReply>("/chat", {
@@ -756,8 +777,8 @@ export async function getChatMessages(sessionId: string): Promise<ChatMessageRec
   return unwrap(await withTimeout(client.GET("/api/v1/chat/{session_id}/messages", { ...requestOptions(), params: { path: { session_id: sessionId } } }))) as unknown as ChatMessageRecord[];
 }
 
-export const triggerPanel = async (body?: { force?: boolean; retryIfDegraded?: boolean }): Promise<PanelResult> =>
-  request<PanelResult>("/panel/today", {
+export const triggerPanel = async (body?: { force?: boolean; retryIfDegraded?: boolean }): Promise<ExplainablePanelResult> =>
+  withExplainability(await request<PanelResult>("/panel/today", {
     method: "POST",
     body: JSON.stringify({
       ...(body?.force !== undefined ? { force: body.force } : {}),
@@ -765,15 +786,44 @@ export const triggerPanel = async (body?: { force?: boolean; retryIfDegraded?: b
         ? { retry_if_degraded: body.retryIfDegraded }
         : {}),
     }),
-  }, AI_REQUEST_TIMEOUT_MS);
-export const getPanelResult = () => request<PanelResult>("/panel");
+  }, AI_REQUEST_TIMEOUT_MS));
+export const getPanelResult = async (): Promise<ExplainablePanelResult> =>
+  withExplainability(await request<PanelResult>("/panel"));
+
+/**
+ * Contract-addition bridge (docs/audit/20261110-midterm/api-contract-additions.md).
+ *
+ * Until `npm run generate:api` includes `deviation` / `tmt` / `rationale`, the
+ * wire payload is narrowed here — once, at the boundary — so components never
+ * see an unchecked shape. A malformed or absent field becomes `undefined`,
+ * which every consumer renders as "暂无解释数据".
+ */
+export function withExplainability<T extends object>(payload: T): T & ExplainablePanel & ExplainableAttribution {
+  const record = payload as unknown as Record<string, unknown>;
+  return {
+    ...payload,
+    ...(record.tmt !== undefined ? { tmt: parseTmt(record.tmt) ?? null } : {}),
+    ...(record.deviation !== undefined ? { deviation: parseDeviation(record.deviation) ?? null } : {}),
+  };
+}
 
 export async function triggerIntervention(intensity: InterventionIntensity, signal?: AbortSignal): Promise<InterventionTriggerResponse> {
-  return request<InterventionTriggerResponse>("/intervention/trigger", {
+  const response = await request<InterventionTriggerResponse>("/intervention/trigger", {
     method: "POST",
     body: JSON.stringify({ intensity }),
     signal,
   }, AI_REQUEST_TIMEOUT_MS);
+  // The trigger payload carries the same contract §4 rationale as history.
+  // Parsing it here keeps `InterventionRationale` meaning one thing: the
+  // normalised shape, never a raw wire object with optional members.
+  const rationale = response.intervention?.rationale;
+  if (!rationale) return response;
+  return {
+    ...response,
+    intervention: response.intervention
+      ? { ...response.intervention, rationale: parseRationale(rationale) ?? null }
+      : null,
+  };
 }
 export async function respondIntervention(
   id: string,
@@ -787,7 +837,74 @@ export async function feedbackIntervention(id: string, rating: InterventionRatin
   return unwrap(await withTimeout(client.POST("/api/v1/intervention/{intervention_id}/feedback", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { rating, comment } })));
 }
 export async function getInterventionHistory(days = 7): Promise<InterventionHistoryResponse> {
-  return unwrap(await withTimeout(client.GET("/api/v1/intervention/history", { ...requestOptions(), params: { query: { days } } }))) as unknown as InterventionHistoryResponse;
+  const raw = await unwrap(await withTimeout(client.GET("/api/v1/intervention/history", { ...requestOptions(), params: { query: { days } } }))) as unknown as InterventionHistoryResponse;
+  return withRationale(raw);
+}
+
+/** Narrow each history item's optional `rationale` once, at the boundary. */
+function withRationale(response: InterventionHistoryResponse): InterventionHistoryResponse {
+  if (!Array.isArray(response?.items)) return response;
+  return {
+    ...response,
+    items: response.items.map((item) => {
+      const record = item as unknown as Record<string, unknown>;
+      return record.rationale === undefined
+        ? item
+        : { ...item, rationale: parseRationale(record.rationale) ?? null };
+    }),
+  };
+}
+
+// ── Proactive-learning feedback requests (contract §5) ──
+//
+// 404 means "this backend build predates the feature". That is a normal,
+// expected state during the parallel roll-out, so it is logged at debug level
+// and surfaced as `undefined` instead of raising a user-visible error.
+
+function isFeatureUnavailable(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 404 || error.status === 501);
+}
+
+export async function getPendingFeedbackRequests(): Promise<FeedbackRequest[] | undefined> {
+  try {
+    const payload = await request<{ items?: unknown }>("/telemetry/feedback-requests/pending");
+    if (!Array.isArray(payload?.items)) return [];
+    return payload.items
+      .map(parseFeedbackRequest)
+      .filter((entry): entry is FeedbackRequest => entry !== undefined);
+  } catch (error) {
+    if (isFeatureUnavailable(error)) {
+      console.debug("[feedback] 主动反馈接口不可用（404），跳过轮询兜底");
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+export async function answerFeedbackRequest(requestId: string, label: FeedbackLabel): Promise<FeedbackAnswerResponse | undefined> {
+  try {
+    return await request<FeedbackAnswerResponse>(
+      `/telemetry/feedback-requests/${encodeURIComponent(requestId)}/answer`,
+      { method: "POST", body: JSON.stringify({ label }) },
+    );
+  } catch (error) {
+    // A 404 on *answer* does not mean "feature absent" — the user is looking at
+    // a prompt, so /pending must have answered. The backend reserves 404 for
+    // "unknown, already answered, or evicted id" (routes/telemetry.py). No
+    // label was written, so reporting success would claim a write that never
+    // happened. Report it as `expired`: the request can no longer be answered,
+    // which is exactly what the prompt already knows how to say.
+    if (error instanceof ApiError && error.status === 404) {
+      console.debug("[feedback] 反馈请求已失效（404），本次标注未写入", requestId);
+      return { request_id: requestId, labeled_windows: 0, status: "expired" };
+    }
+    // 501 is the genuine "this build does not implement it" signal.
+    if (error instanceof ApiError && error.status === 501) {
+      console.debug("[feedback] 主动反馈接口不可用（501），已忽略本次作答");
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 // ── Intervention execution: tasks (smart_prioritization) ──

@@ -21,7 +21,7 @@ html, body, #root { background: var(--color-bg); color: var(--mf-text); }
 :root .mf-skip-link { background: var(--color-bg-elevated); color: var(--mf-text); }
 :root .mf-nav-item--active { background: var(--color-primary-light); }
 .theme-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
-.theme-option { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-bg-inset); color: var(--mf-text); font: inherit; cursor: pointer; }
+.theme-option { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-inset); color: var(--mf-text); font: inherit; cursor: pointer; }
 .theme-option[aria-pressed="true"] { outline: 2px solid var(--mf-brand); outline-offset: 2px; }
 .theme-swatch { width: 24px; height: 24px; flex-shrink: 0; border: 1px solid var(--color-border); border-radius: 50%; }
 .theme-white .theme-swatch { background: #fff; }

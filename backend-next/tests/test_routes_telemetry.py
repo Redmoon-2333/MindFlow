@@ -152,6 +152,8 @@ class TestFocusPredictionResponseContract:
             "status": "ready",
             "mode": "ready",
             "reason": "",
+            # Contract §1: present-and-null when no explanation was produced.
+            "explanation": None,
         }
 
     @pytest.mark.parametrize(
@@ -211,7 +213,9 @@ class TestFocusPredictionResponseContract:
             "status",
             "mode",
             "reason",
+            "explanation",
         }
+        assert response.json()["explanation"] is None
 
     def test_focus_prediction_rejects_invalid_status_from_service(self) -> None:
         app = _app_with_focus_prediction(

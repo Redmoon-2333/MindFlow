@@ -58,7 +58,23 @@ async def test_explicit_ecnu_routes_registry_and_requests_to_campus(model: str) 
     assert all(p["thinking"]["type"] == "enabled" for p in wire.recorder.payloads)
 
 
-async def test_selected_ecnu_without_key_does_not_borrow_direct_or_legacy_key() -> None:
+async def test_selected_ecnu_without_key_does_not_borrow_direct_or_legacy_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ``LLMSettings`` has no env prefix, so the machine's bare ECNU_API_KEY
+    # (and the legacy CHATECNU_* aliases) would otherwise populate
+    # ``ecnu_api_key`` and make this test pass only on a clean machine.
+    for name in (
+        "ECNU_API_KEY",
+        "CHATECNU_API_KEY",
+        "CHATECNU_API",
+        "CHATECNU_BASE_URL",
+        "API_KEY",
+        "DEEPSEEK_API_KEY",
+        "MINDFLOW_LLM__ECNU_API_KEY",
+        "MINDFLOW_LLM__DEEPSEEK_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
     registry = ProviderRegistry(
         LLMSettings(service="ecnu", deepseek_api_key="sk-direct-test", api_key="sk-legacy-test")
     )

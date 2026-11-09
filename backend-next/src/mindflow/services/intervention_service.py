@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Sequence
+import random
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Literal, cast
@@ -72,12 +73,25 @@ from mindflow.infrastructure.notification import (
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
 )
+from mindflow.services.intervention_policy import (
+    ALLOWED_INTERVENTIONS,
+    Selection,
+    candidate_types_for,
+    context_bucket,
+    has_evidence,
+    load_history,
+    posteriors_from_logs,
+    rationale_payload,
+    rule_selection,
+    thompson_select,
+)
 from mindflow.services.intervention_throttle import (
     InterventionThrottle,
     ThrottleDecision,
     ThrottleReason,
 )
 from mindflow.services.safety_guard import evaluate_safety
+from mindflow.time_utils import resolve_timezone
 
 # ── Type -> detail/suggestion templates (Chinese, NF-S7 compliant) ───────
 # All suggestions are desktop actions — MindFlow is a desktop assistant,
@@ -104,14 +118,12 @@ _TYPE_TEMPLATES: dict[str, dict[str, str]] = {
 
 _MAX_TYPES: int = 3
 
-# ProcrastinationType -> InterventionType mapping
-_TYPE_MAP: dict[ProcrastinationType, InterventionType] = {
-    ProcrastinationType.TASK_AVERSION: "task_breakdown",
-    ProcrastinationType.IMPULSIVITY: "environment_optimization",
-    ProcrastinationType.DECISIONAL: "nudge",
-    ProcrastinationType.PERFECTIONISM: "smart_prioritization",
-    ProcrastinationType.EMOTIONAL_REGULATION: "nudge",
-}
+# ProcrastinationType -> ordered InterventionType candidates (primary first).
+# One source of truth: the bandit may only rank these tuples, so exploration
+# never leaves the CBT-mapped option set.
+_TYPE_MAP: Mapping[ProcrastinationType, tuple[InterventionType, ...]] = (
+    ALLOWED_INTERVENTIONS
+)
 
 # InterventionType -> CBT technique override (when assessment has no technique)
 _INTERVENTION_CBT_MAP: dict[InterventionType, str] = {
@@ -165,6 +177,8 @@ class InterventionResult:
         skipped: True if the intervention was skipped (deep work / throttle / no type).
         skip_reason: Human-readable explanation for the skip.
         throttle_decision: The throttle decision, for debugging.
+        rationale: Contract §4 selection rationale (bandit or rule), or None
+            when the intervention was skipped before a selection was made.
     """
 
     def __init__(
@@ -173,11 +187,13 @@ class InterventionResult:
         skipped: bool = False,
         skip_reason: str = "",
         throttle_decision: ThrottleDecision | None = None,
+        rationale: dict[str, Any] | None = None,
     ) -> None:
         self.intervention = intervention
         self.skipped = skipped
         self.skip_reason = skip_reason
         self.throttle_decision = throttle_decision
+        self.rationale = rationale
 
 
 # Worked block length (seconds) that signals genuine deep work even when the
@@ -331,7 +347,8 @@ def _select_intervention_type(
     ):
         return None
     ptype = assessment.types[0]
-    return _TYPE_MAP.get(ptype)
+    candidates = _TYPE_MAP.get(ptype)
+    return candidates[0] if candidates else None
 
 
 def _task_context_lines(tasks: Sequence[Task]) -> list[str]:
@@ -645,6 +662,10 @@ def _enrich_history_item(row: dict[str, Any]) -> dict[str, Any]:
     title = ctx.get("title")
     message = ctx.get("message")
 
+    # Selection rationale (contract §4) — present on rows logged by the bandit.
+    if isinstance(ctx, dict) and isinstance(ctx.get("rationale"), dict):
+        row["rationale"] = ctx["rationale"]
+
     if title and message:
         # New record with stored prompt text — promote to top-level
         row["title"] = title
@@ -688,6 +709,10 @@ class InterventionService:
         ollama_base_url: Optional Ollama base URL for L2 fallback. When set,
             Ollama is tried if DeepSeek is unavailable or has no API key.
         ollama_model: Ollama model name for L2 fallback.
+        prediction_service: Optional focus-prediction service. When wired, the
+            latest predicted focus probability selects the bandit's context
+            bucket; when absent the bucket reports state ``unknown``.
+        timezone: Business timezone for the bandit's local time-of-day band.
     """
 
     def __init__(  # noqa: PLR0913 — service wiring
@@ -706,6 +731,8 @@ class InterventionService:
         ollama_base_url: str | None = None,
         ollama_model: str = "qwen3:8b",
         classification_repo: object | None = None,
+        prediction_service: object | None = None,
+        timezone: str = "local",
     ) -> None:
         self._repo = intervention_repo
         self._throttle = throttle
@@ -721,6 +748,11 @@ class InterventionService:
         self._ollama_base_url = ollama_base_url
         self._ollama_model = ollama_model
         self._classification_repo = classification_repo
+        self._prediction_service = prediction_service
+        self._timezone = timezone
+        # Bandit RNG — injectable so tests can seed it.  Production instances
+        # use an unseeded Random (independent of the global `random` state).
+        self._bandit_rng = random.Random()
 
     async def _load_user_rules(self, user_id: int) -> list[dict[str, Any]] | None:
         """Load the user's app-classification rules for the work-state gate.
@@ -776,6 +808,79 @@ class InterventionService:
         except Exception as exc:
             logger.debug("Blocklist execution failed (non-fatal): {}", safe_error_metadata(exc))
 
+    async def _select_with_policy(
+        self,
+        assessment: ProcrastinationAssessment,
+        *,
+        bypass_throttle: bool,
+        user_id: int,
+        now: datetime | None = None,
+    ) -> Selection:
+        """Pick the intervention arm with Thompson sampling (or the rule).
+
+        The candidate set is theory-gated by the assessment's detected types;
+        the posterior comes from the user's own intervention logs (no new
+        storage).  Any failure along the way (no prediction service, history
+        unreadable, empty candidate set) degrades to the deterministic primary
+        candidate rather than skipping the intervention.
+        """
+        candidates = candidate_types_for(assessment.types)
+        if not candidates:
+            raise ValueError("assessment has no theory-allowed intervention")
+
+        reference = now or datetime.now(UTC)
+        timezone = resolve_timezone(self._timezone)
+        local_now = reference.astimezone(timezone)
+        utc_offset = local_now.utcoffset()
+        offset_hours = (
+            utc_offset.total_seconds() / 3600.0 if utc_offset is not None else 0.0
+        )
+        bucket = context_bucket(local_now.hour, await self._current_focus_probability(user_id))
+
+        if bypass_throttle:
+            return rule_selection(assessment.types, bucket=bucket)
+
+        rows = await load_history(self._repo, user_id, now=reference)
+        posteriors = posteriors_from_logs(
+            rows,
+            candidates=candidates,
+            bucket=bucket,
+            now=reference,
+            timezone_offset_hours=offset_hours,
+        )
+        if not has_evidence(posteriors):
+            # Cold start: no observations anywhere, so there is nothing to
+            # explore from.  Fall back to the theory's primary candidate.
+            return rule_selection(
+                assessment.types, bucket=bucket, existing=posteriors
+            )
+        return thompson_select(
+            assessment.types,
+            bucket=bucket,
+            posteriors=posteriors,
+            rng=self._bandit_rng,
+        )
+
+    async def _current_focus_probability(self, user_id: int) -> float | None:
+        """Latest predicted focus probability, or None when unavailable.
+
+        None is the honest "unknown" state — the bucket records it as such
+        rather than guessing a state the model did not predict.
+        """
+        predict_latest = getattr(self._prediction_service, "predict_latest", None)
+        if predict_latest is None:
+            return None
+        try:
+            prediction = await predict_latest(user_id)
+        except Exception as exc:
+            logger.debug(
+                "Focus prediction unavailable for the bandit: {}",
+                safe_error_metadata(exc),
+            )
+            return None
+        probability = getattr(prediction, "focus_probability", None)
+        return float(probability) if isinstance(probability, (int, float)) else None
+
     # ── Public API ────────────────────────────────────────────────────
 
     async def maybe_intervene(  # noqa: PLR0913 — many params is intentional
@@ -807,12 +912,22 @@ class InterventionService:
             all return ``skipped=True`` with an observable ``skip_reason``.
         """
         # ── 1. Select intervention type ────────────────────────────────
-        intervention_type = _select_intervention_type(assessment)
-        if intervention_type is None:
+        # The theory-allowed candidate set comes from the assessment's top
+        # type; the bandit only ranks inside it.  Manual triggers bypass the
+        # throttle by design, so they also bypass exploration: the user asked
+        # for a specific kind of help, and re-rolling the arm would make the
+        # endpoint non-deterministic.  The gates below (work state, deep work,
+        # throttle, daily caps) are unchanged and still run first-to-last.
+        if _select_intervention_type(assessment) is None:
             return InterventionResult(
                 skipped=True,
                 skip_reason="未检测到显著的拖延模式，无需干预",
             )
+        selection = await self._select_with_policy(
+            assessment, bypass_throttle=bypass_throttle, user_id=user_id,
+        )
+        intervention_type = selection.intervention_type
+        rationale = rationale_payload(selection, assessment.types)
 
         # ── 1b. Intervention execution data: ranked task list ───────────
         # smart_prioritization now reads real tasks (deadline + priority
@@ -1015,6 +1130,7 @@ class InterventionService:
                 "message_source": message_source,
                 "title": title,
                 "message": message,
+                "rationale": rationale,
             }
             await self._repo.log_triggered(
                 user_id=user_id,
@@ -1078,10 +1194,12 @@ class InterventionService:
 
         # ── 11. Broadcast via WebSocket ───────────────────────────────
         await self._broadcast_intervention(
-            intervention, native_delivered=native_delivered
+            intervention,
+            native_delivered=native_delivered,
+            rationale=rationale,
         )
 
-        return InterventionResult(intervention=intervention)
+        return InterventionResult(intervention=intervention, rationale=rationale)
 
     async def _release_reserved_slot(
         self,
@@ -1217,7 +1335,11 @@ class InterventionService:
     # ── Internal helpers ──────────────────────────────────────────────
 
     async def _broadcast_intervention(
-        self, intervention: Intervention, *, native_delivered: bool = False,
+        self,
+        intervention: Intervention,
+        *,
+        native_delivered: bool = False,
+        rationale: dict[str, Any] | None = None,
     ) -> None:
         """Broadcast an intervention frame via WebSocket (best-effort).
 
@@ -1239,6 +1361,7 @@ class InterventionService:
                     "dismissible": intervention.dismissible,
                     "cbt_technique": intervention.cbt_technique,
                     "native_delivered": native_delivered,
+                    "rationale": rationale,
                 },
             }
             await self._broadcast_fn(message)

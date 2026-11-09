@@ -56,6 +56,16 @@ def _safe_error_metadata(exc: Exception) -> str:
     return f"type={type(exc).__name__}{suffix}"
 
 
+def _dict_or_none(value: object) -> dict[str, Any] | None:
+    """Coerce a cached transcript payload to a dict, or ``None`` when absent.
+
+    Cached rows written before contract §2/§3 existed carry no such key, and a
+    hand-edited row could carry anything; both degrade to ``None`` so the API
+    reports "no data" rather than a fabricated breakdown.
+    """
+    return dict(value) if isinstance(value, dict) else None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Runtime context — holds live dependencies injected at graph invocation time
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -203,6 +213,10 @@ class AnalysisGraphState(TypedDict, total=False):
     source: str
     degradation_path: list[str]
     degraded: bool
+
+    # ── Contract §2/§3 payloads (nullable; cached rows may lack them) ──
+    deviation_summary: dict[str, Any] | None
+    tmt_breakdown: dict[str, Any] | None
 
     # ── Final conversion ──
     verdict_json: dict[str, Any] | None  # serialized PanelVerdict-friendly dict
@@ -375,6 +389,8 @@ async def cache_idempotency_check_node(
     if cached is not None:
         logger.debug("AnalysisGraph cache hit for {}/{}", user_id, target_date)
         source, degraded, path = _cached_analysis_meta(cached)
+        transcript = cached.get("panel_transcript")
+        transcript = transcript if isinstance(transcript, dict) else {}
         return {
             "cache_hit": True,
             "cached_result": cached,
@@ -383,6 +399,8 @@ async def cache_idempotency_check_node(
             "degraded": degraded,
             "degradation_path": path,
             "error": None,
+            "deviation_summary": _dict_or_none(transcript.get("deviation")),
+            "tmt_breakdown": _dict_or_none(transcript.get("tmt")),
         }
 
     return {"cache_hit": False}
@@ -514,10 +532,13 @@ async def evidence_preparation_node(
     catalog = build_evidence_catalog(bundle)
     valid_metrics = tuple(evidence_catalog_ids(catalog))
 
+    tmt_to_dict = getattr(getattr(bundle, "tmt", None), "to_dict", None)
     return {
         "bundle_json": bundle_json,
         "valid_metrics": valid_metrics,
         "events_domain": list(getattr(bundle, "events", [])),
+        "deviation_summary": getattr(bundle, "deviation_summary", None),
+        "tmt_breakdown": tmt_to_dict() if callable(tmt_to_dict) else None,
     }
 
 
@@ -958,6 +979,8 @@ async def result_conversion_node(state: AnalysisGraphState) -> dict[str, Any]:
         "insufficient_data": verdict.insufficient_data,
         "uncertainty": verdict.uncertainty,
         "evidence_gaps": list(verdict.evidence_gaps),
+        "deviation": _dict_or_none(state.get("deviation_summary")),
+        "tmt": _dict_or_none(state.get("tmt_breakdown")),
     }
 
     return {
@@ -1034,6 +1057,8 @@ async def terminal_persistence_node(
                 "insufficient_data": bool(verdict_json.get("insufficient_data", False)),
                 "uncertainty": verdict_json.get("uncertainty"),
                 "evidence_gaps": list(verdict_json.get("evidence_gaps", [])),
+                "deviation": verdict_json.get("deviation"),
+                "tmt": verdict_json.get("tmt"),
             }
     else:
         procrastination_types = list(

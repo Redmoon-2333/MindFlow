@@ -1,15 +1,17 @@
 """Tests for deviation detection (pure stdlib, no pandas).
 
-NOTE on the V2 migration: ``BaselineModel`` now stores only the 24 V2 feature
-stats, while ``DeviationDetector`` (domain/deviation.py) still scores against
-its 12 legacy feature weights, which overlap the V2 vocabulary at exactly one
-name, ``idle_ratio``. The rows below carry their features inside
-``features_json`` rather than as flattened top-level keys, so none of the
-legacy weights finds a value to score: ``z_scores`` is empty and overall
-deviation is 0, hence every window scores "normal". The detector migration
-(re-weighting to the V2 vocabulary) is deliberately out of Todo 6 scope
-(product behavior beyond BaselineModel), so the affected tests below pin that
-degraded contract explicitly.
+``DeviationDetector`` scores a 5-minute V2 feature window against the user's
+own baseline for the same local (hour, weekday) bucket. Two estimators do the
+work, both from ``domain/baseline.py``:
+
+* the expected value is an empirical-Bayes (James–Stein) shrunk median, so a
+  sparse bucket leans on the user's global behaviour;
+* the dispersion is the median absolute deviation scaled by 1.4826, so a
+  handful of extreme days cannot inflate σ and mask the deviation.
+
+Feature weights are expressed over the V2 vocabulary and renormalised over the
+features actually present in a row (persisted rows carry their vector inside
+``features_json``; in-memory rows pass flattened keys — both are accepted).
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.deviation import DeviationDetector
@@ -52,10 +56,18 @@ def _make_feature_row(
     }
 
 
+#: Median of the training values below (10, 12, 14, 16, 18 repeating) — a row
+#: carrying it is, by construction, exactly typical for the bucket.
+_TYPICAL_SWITCHES = 14.0
+
+
 def _train_baseline(rows_per_bucket: int = 10) -> tuple[BaselineModel, list[dict]]:
     """Create a baseline from varied data at hour=10, dow=0.
 
-    Uses slight variation so std > 0 for meaningful z-score computation.
+    Uses slight variation so both the Welford and MAD scales are non-zero.
+    Every other feature stays constant at 0.0, so those features carry no
+    dispersion and the detector skips them instead of emitting a spurious
+    z-score from the scale floor.
     """
     model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
     train_rows = []
@@ -81,25 +93,28 @@ class TestDeviationDetectorNormal:
         assert "hour_of_day" in score
         assert "day_of_week" in score
         assert "top_deviations" in score
+        assert "scored_features" in score
 
     def test_normal_window_classification(self):
         """Window matching baseline should be 'normal'."""
         model, _ = _train_baseline()
         detector = DeviationDetector(model)
-        row = _make_feature_row(hour=10, dow=0, app_switch_count=10.0, unique_app_count=3.0)
+        row = _make_feature_row(
+            hour=10, dow=0, app_switch_count=_TYPICAL_SWITCHES, unique_app_count=3.0
+        )
         score = detector.score_window(row)
         assert score["severity"] == "normal"
 
     def test_insufficient_baseline_returns_normal(self):
-        """When baseline has <2 samples per feature, std=0 -> no deviation."""
+        """A single observation yields no robust scale, so nothing is scored."""
         model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
         model.update([_make_feature_row(hour=10, dow=0)])
         detector = DeviationDetector(model)
         row = _make_feature_row(hour=10, dow=0, app_switch_count=100.0)
         score = detector.score_window(row)
-        # With n<2, z_score is 0, so overall is 0
         assert score["overall_deviation"] == 0.0
         assert score["severity"] == "normal"
+        assert score["z_scores"] == {}
 
     def test_missing_features_skipped(self):
         model, _ = _train_baseline()
@@ -109,19 +124,20 @@ class TestDeviationDetectorNormal:
         assert score["overall_deviation"] == 0.0
         assert score["severity"] == "normal"
 
-    def test_legacy_weights_no_longer_match_v2_baseline(self):
-        """Extreme V2 feature values no longer trigger legacy-weighted severity.
+    def test_extreme_v2_feature_is_detected(self):
+        """A 25x jump in app switches must reach a non-normal severity.
 
-        The V2 baseline stores v2 feature stats only; DeviationDetector's
-        legacy feature weights match no baseline data, so z-scores are all 0
-        and the window scores "normal". Detector migration is out of scope.
+        This is the regression the V2 re-weighting fixes: before it, only
+        ``idle_ratio`` from the legacy weight table overlapped the V2
+        vocabulary, so this window scored 0 and reported "normal".
         """
         model, _ = _train_baseline()
         detector = DeviationDetector(model)
-        row = _make_feature_row(hour=10, dow=0, app_switch_count=100.0)
+        row = _make_feature_row(hour=10, dow=0, app_switch_count=500.0)
         score = detector.score_window(row)
-        assert score["overall_deviation"] == 0.0
-        assert score["severity"] == "normal"
+        assert score["z_scores"]["app_switch_count"] > 5.0
+        assert score["severity"] == "severe"
+        assert score["overall_deviation"] >= detector.SEVERE_THRESHOLD
 
     def test_severity_classes(self):
         model, _ = _train_baseline()
@@ -130,6 +146,18 @@ class TestDeviationDetectorNormal:
         assert detector.MILD_THRESHOLD == 1.5
         assert detector.MODERATE_THRESHOLD == 2.5
         assert detector.SEVERE_THRESHOLD == 4.0
+        assert detector.severity_for(0.0) == "normal"
+        assert detector.severity_for(1.5) == "mild"
+        assert detector.severity_for(2.5) == "moderate"
+        assert detector.severity_for(4.0) == "severe"
+
+    def test_constant_feature_is_not_scored(self):
+        """A feature that never varies has no honest scale — skip, don't cap."""
+        model, _ = _train_baseline()
+        detector = DeviationDetector(model)
+        row = _make_feature_row(hour=10, dow=0, app_switch_count=14.0, idle_ratio=0.9)
+        score = detector.score_window(row)
+        assert "idle_ratio" not in score["z_scores"]
 
 
 class TestDeviationDetectorAnalyze:
@@ -142,46 +170,51 @@ class TestDeviationDetectorAnalyze:
     def test_analyze_all_normal(self):
         model, _ = _train_baseline()
         detector = DeviationDetector(model)
-        rows = [_make_feature_row(hour=10, dow=0) for _ in range(3)]
-        result = detector.analyze_dataframe(rows)
-        assert result == []
-
-    def test_analyze_returns_no_anomalies_against_v2_baseline(self):
-        """After the V2 migration no legacy-weighted window can be an anomaly.
-
-        Extreme v2 feature values still score 0 against the legacy weights, so
-        analyze_dataframe returns [] (see module note)."""
-        model, _ = _train_baseline()
-        detector = DeviationDetector(model)
         rows = [
-            _make_feature_row(hour=10, dow=0, app_switch_count=10.0),
-            _make_feature_row(hour=10, dow=0, app_switch_count=500.0),
+            _make_feature_row(hour=10, dow=0, app_switch_count=_TYPICAL_SWITCHES)
+            for _ in range(3)
         ]
         result = detector.analyze_dataframe(rows)
         assert result == []
+
+    def test_analyze_flags_extreme_window(self):
+        model, _ = _train_baseline()
+        detector = DeviationDetector(model)
+        rows = [
+            _make_feature_row(hour=10, dow=0, app_switch_count=_TYPICAL_SWITCHES),
+            _make_feature_row(hour=10, dow=0, app_switch_count=500.0),
+        ]
+        result = detector.analyze_dataframe(rows)
+        assert len(result) == 1
+        assert result[0]["severity"] == "severe"
 
     def test_analyze_sorted_by_deviation(self):
-        """Empty result stays trivially sorted (no anomalies post-migration)."""
         model, _ = _train_baseline()
         detector = DeviationDetector(model)
         rows = [
-            _make_feature_row(hour=10, dow=0, app_switch_count=20.0),
+            _make_feature_row(hour=10, dow=0, app_switch_count=40.0),
             _make_feature_row(hour=10, dow=0, app_switch_count=500.0),
-            _make_feature_row(hour=10, dow=0, app_switch_count=200.0),
+            _make_feature_row(hour=10, dow=0, app_switch_count=120.0),
         ]
         result = detector.analyze_dataframe(rows)
-        assert result == []
+        assert len(result) == 3
+        deviations = [row["overall_deviation"] for row in result]
+        assert deviations == sorted(deviations, reverse=True)
 
-    def test_window_titles_return_no_anomalies(self):
-        """Title enrichment only applies to anomalies; none exist post-migration."""
+    def test_window_titles_attached_to_anomalies(self):
+        """Title enrichment applies to flagged windows only."""
         model, _ = _train_baseline()
         detector = DeviationDetector(model)
-        rows = [
-            _make_feature_row(hour=10, dow=0, app_switch_count=500.0),
-        ]
-        assert detector.analyze_dataframe(rows, window_titles=["VS Code - work"]) == []
-        assert detector.analyze_dataframe(rows, window_titles=[["t1", "t2"]]) == []
-        assert detector.analyze_dataframe(rows, window_titles=[""]) == []
+        rows = [_make_feature_row(hour=10, dow=0, app_switch_count=500.0)]
+        result = detector.analyze_dataframe(rows, window_titles=["VS Code - work"])
+        assert len(result) == 1
+        assert result[0]["sample_titles"] == ["VS Code - work"]
+
+        list_result = detector.analyze_dataframe(rows, window_titles=[["t1", "t2"]])
+        assert list_result[0]["sample_titles"] == ["t1", "t2"]
+
+        empty_result = detector.analyze_dataframe(rows, window_titles=[""])
+        assert empty_result[0]["sample_titles"] == []
 
     def test_sample_titles_helper_still_works(self):
         """The private title-enrichment helper keeps its behavior."""
@@ -199,6 +232,7 @@ class TestDeviationDetectorAnalyze:
         row = _make_feature_row(hour=10, dow=0, app_switch_count=500.0)
         score = detector.score_window(row)
         assert len(score["top_deviations"]) <= 3
+        assert score["top_deviations"][0]["feature"] == "app_switch_count"
         for d in score["top_deviations"]:
             assert "feature" in d
             assert "z_score" in d
@@ -212,8 +246,101 @@ class TestDeviationDetectorAnalyze:
         detector = DeviationDetector(model)
         row = _make_feature_row(hour=10, dow=0, app_switch_count=1e10)
         score = detector.score_window(row)
+        assert score["z_scores"]["app_switch_count"] == 10.0
         for feature, z in score["z_scores"].items():
             assert -10.0 <= z <= 10.0, f"Z-score {z} for {feature} not clamped"
+
+
+class TestDeviationSummary:
+    """``to_summary`` produces the API contract's ``DeviationSummary`` (§2)."""
+
+    def test_summary_shape_and_rank(self):
+        model, _ = _train_baseline()
+        detector = DeviationDetector(model)
+        summary = detector.to_summary(_make_feature_row(hour=10, dow=0, app_switch_count=500.0))
+        assert summary is not None
+        assert summary["method"] == "eb_shrinkage_mad"
+        assert summary["severity"] == "severe"
+        assert set(summary["bucket"]) == {
+            "hour_of_day",
+            "day_of_week",
+            "n_samples",
+            "shrinkage",
+        }
+        assert summary["bucket"]["hour_of_day"] == 10
+        assert summary["bucket"]["day_of_week"] == 0
+        assert summary["bucket"]["n_samples"] == 10
+        # k / (n + k) with k = 10 and n = 10.
+        assert summary["bucket"]["shrinkage"] == pytest.approx(0.5)
+        assert len(summary["features"]) <= 6
+        top = summary["features"][0]
+        assert top["feature"] == "app_switch_count"
+        # Chinese label comes from the shared domain/feature_labels map.
+        assert top["label"] == "应用切换次数"
+        assert top["value"] == 500.0
+        assert top["expected"] == pytest.approx(_TYPICAL_SWITCHES)
+        assert top["robust_z"] > 5.0
+        assert 0.0 < top["weight"] <= 1.0
+
+    def test_summary_feature_cap(self):
+        """At most 6 features, ordered by |z| * weight."""
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        varied = {
+            "app_switch_count",
+            "domain_switch_count",
+            "idle_ratio",
+            "active_seconds_ratio",
+            "keypress_rate_per_min",
+            "browser_ratio",
+            "top_app_ratio",
+            "longest_segment_ratio",
+        }
+        rows = []
+        for i in range(10):
+            extra = {name: float(i) for name in varied if name != "app_switch_count"}
+            rows.append(_make_feature_row(hour=10, dow=0, app_switch_count=float(i), **extra))
+        model.update(rows)
+        detector = DeviationDetector(model)
+        row = _make_feature_row(
+            hour=10,
+            dow=0,
+            app_switch_count=100.0,
+            **{name: 100.0 for name in varied if name != "app_switch_count"},
+        )
+        summary = detector.to_summary(row)
+        assert summary is not None
+        assert len(summary["features"]) == 6
+        scores = [
+            abs(item["robust_z"]) * item["weight"] for item in summary["features"]
+        ]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_summary_none_without_baseline_data(self):
+        """No feature in the window has baseline data → no summary."""
+        model, _ = _train_baseline()
+        detector = DeviationDetector(model)
+        assert detector.to_summary({"hour_of_day": 10, "day_of_week": 0}) is None
+
+    def test_features_json_and_flattened_row_agree(self):
+        """A persisted row (vector in ``features_json``) scores like a flat one.
+
+        Persisted windows carry their vector as JSON; in-memory rows pass the
+        values as top-level keys. Both must reach the same score so
+        ``EvidenceBundle`` and the API share one scoring path.
+        """
+        model, _ = _train_baseline()
+        detector = DeviationDetector(model)
+        row = _make_feature_row(hour=10, dow=0, app_switch_count=500.0)
+        flat = {
+            **{name: 0.0 for name in V2_FEATURE_NAMES},
+            "app_switch_count": 500.0,
+            "hour_of_day": 10,
+            "day_of_week": 0,
+        }
+        assert detector.score_window(row)["overall_deviation"] == pytest.approx(
+            detector.score_window(flat)["overall_deviation"]
+        )
+        assert detector.score_window(row)["z_scores"] == detector.score_window(flat)["z_scores"]
 
 
 class TestDeviationDetectorDailySummary:
@@ -238,22 +365,22 @@ class TestDeviationDetectorDailySummary:
         assert "most_anomalous_hour" in summary or summary["most_anomalous_hour"] is None
 
     def test_daily_summary_counts(self):
-        """Windows are counted; anomalies are 0 against the legacy-weighted detector."""
         model, _ = _train_baseline()
         detector = DeviationDetector(model)
         rows = [
-            _make_feature_row(hour=10, dow=0, app_switch_count=10.0),
+            _make_feature_row(hour=10, dow=0, app_switch_count=_TYPICAL_SWITCHES),
             _make_feature_row(hour=10, dow=0, app_switch_count=500.0),
         ]
         summary = detector.daily_summary(rows)
         assert summary["total_windows"] == 2
-        assert summary["anomaly_count"] == 0
-        assert summary["severity_counts"] == {"normal": 2}
+        assert summary["anomaly_count"] == 1
+        assert summary["anomaly_ratio"] == pytest.approx(0.5)
+        assert summary["severity_counts"] == {"normal": 1, "severe": 1}
 
     def test_daily_summary_most_anomalous_hour(self):
-        """Without legacy-matching stats no hour is anomalous → None."""
         model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
-        # Train baseline at multiple hours with varied values so std > 0
+        # Train every hour with the same varied values so each bucket has a
+        # meaningful scale.
         train_rows = []
         for h in range(24):
             for i in range(10):
@@ -264,11 +391,11 @@ class TestDeviationDetectorDailySummary:
         rows = [
             _make_feature_row(hour=9, dow=0, app_switch_count=500.0),
             _make_feature_row(hour=9, dow=0, app_switch_count=500.0),
-            _make_feature_row(hour=14, dow=0, app_switch_count=15.0),
+            _make_feature_row(hour=14, dow=0, app_switch_count=_TYPICAL_SWITCHES),
         ]
         summary = detector.daily_summary(rows)
-        assert summary["most_anomalous_hour"] is None
-        assert summary["anomaly_count"] == 0
+        assert summary["anomaly_count"] == 2
+        assert summary["most_anomalous_hour"] == 9
 
     def test_daily_summary_zero_total_weight(self):
         """When all features missing, total_weight=0 should not crash."""

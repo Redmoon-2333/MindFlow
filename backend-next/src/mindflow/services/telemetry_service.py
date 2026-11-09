@@ -1281,6 +1281,7 @@ class TelemetryService:
             "data_age_s": prediction.data_age_s,
             "coverage_ratio": prediction.coverage_ratio,
             "explanation_method": prediction.explanation_method,
+            "explanation": prediction.explanation,
             "reason": prediction.reason,
         }
 

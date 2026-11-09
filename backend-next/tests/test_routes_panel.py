@@ -248,3 +248,97 @@ class TestRetryFeedback:
             assert result["meta"]["attempt_status"] == "succeeded"
             service.get_stored_verdict.return_value = _make_verdict()
             assert client.post("/api/v1/panel/today").json()["meta"]["attempt_status"] is None
+
+class TestContractPayloadExposure:
+    """Contract §2/§3: the panel responses expose ``deviation`` and ``tmt``.
+
+    Both are nullable: a verdict cached before the midterm upgrade carries
+    neither, and the route must report that as null rather than inventing a
+    breakdown or dropping the key from the payload.
+    """
+
+    _TMT = {
+        "motivation": 0.42,
+        "motivation_level": "high",
+        "dominant_barrier": "value",
+        "components": {
+            "expectancy": {
+                "score": 0.8, "raw": 4.5, "label": "成功预期",
+                "source": "focus_session_feedback（近14天 4 次自评）",
+                "evidence_ids": ["focus.tmt_expectancy"],
+            },
+            "value": {
+                "score": 0.35, "raw": 2.0, "label": "任务价值",
+                "source": "tasks.priority（2 个未完成任务）",
+                "evidence_ids": ["focus.tmt_value"],
+            },
+            "impulsiveness": {
+                "score": 0.4, "raw": -0.4, "label": "冲动性",
+                "source": "deviation_summary（切换频率/最长分段稳健 z）",
+                "evidence_ids": ["focus.tmt_impulsiveness"],
+            },
+            "delay": {
+                "score": 0.5, "raw": 24.0, "label": "奖赏延迟",
+                "source": "最近未完成任务截止时间",
+                "evidence_ids": ["focus.tmt_delay"],
+            },
+        },
+        "note": "基于行为代理变量的近似，不是心理测量或临床诊断",
+    }
+
+    _DEVIATION = {
+        "overall_score": 0.62,
+        "severity": "moderate",
+        "method": "eb_shrinkage_mad",
+        "bucket": {
+            "hour_of_day": 10,
+            "day_of_week": 2,
+            "n_samples": 120,
+            "shrinkage": 0.35,
+        },
+        "features": [
+            {
+                "feature": "app_switch_count",
+                "label": "应用切换次数",
+                "value": 42.0,
+                "expected": 18.0,
+                "robust_z": 3.1,
+                "weight": 0.4,
+            }
+        ],
+    }
+
+    def test_get_panel_exposes_both_payloads(self) -> None:
+        service = AsyncMock()
+        service.get_stored_verdict.return_value = _make_verdict(
+            deviation=self._DEVIATION, tmt=self._TMT
+        )
+        with TestClient(_make_app(service)) as client:
+            data = client.get("/api/v1/panel").json()
+
+        assert data["tmt"]["motivation"] == 0.42
+        assert data["tmt"]["dominant_barrier"] == "value"
+        assert data["tmt"]["components"]["delay"]["score"] == 0.5
+        assert data["deviation"]["severity"] == "moderate"
+        assert data["deviation"]["features"][0]["robust_z"] == 3.1
+
+    def test_legacy_verdict_reports_both_as_null(self) -> None:
+        service = AsyncMock()
+        service.get_stored_verdict.return_value = _make_verdict()
+        with TestClient(_make_app(service)) as client:
+            data = client.get("/api/v1/panel").json()
+
+        assert "tmt" in data and data["tmt"] is None
+        assert "deviation" in data and data["deviation"] is None
+
+    def test_post_panel_today_exposes_both_payloads(self) -> None:
+        service = AsyncMock()
+        service.get_stored_verdict.return_value = None
+        service.run_daily_panel.return_value = _make_verdict(
+            deviation=self._DEVIATION, tmt=self._TMT
+        )
+        with TestClient(_make_app(service)) as client:
+            data = client.post("/api/v1/panel/today").json()
+
+        assert data["tmt"]["motivation_level"] == "high"
+        assert data["deviation"]["overall_score"] == 0.62

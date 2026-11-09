@@ -39,6 +39,19 @@ from mindflow.time_utils import TimezoneLike
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _mapping_or_none(value: Any) -> dict[str, Any] | None:
+    """Return *value* as a plain dict when it is a mapping, else ``None``.
+
+    Contract §2/§3 payloads arrive either as a dict (fresh graph run), or as
+    JSON already parsed out of ``panel_transcript`` (cached row).  Anything
+    else — a legacy row without the key, a malformed value — degrades to
+    ``None`` rather than raising during verdict construction.
+    """
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
 def analysis_dict_to_panel_verdict(
     assessment: dict[str, Any],
     *,
@@ -224,6 +237,13 @@ def analysis_dict_to_panel_verdict(
     if not isinstance(gaps_raw, list):
         gaps_raw = panel_data.get("evidence_gaps", [])
     evidence_gaps = tuple(str(g) for g in gaps_raw if isinstance(g, str))
+
+    # ── Parse the contract §2/§3 payloads (nullable for legacy rows) ────
+    deviation = _mapping_or_none(
+        assessment.get("deviation", panel_data.get("deviation"))
+    )
+    tmt = _mapping_or_none(assessment.get("tmt", panel_data.get("tmt")))
+
     return PanelVerdict(
         types=tuple(parsed_types),
         confidence=confidence,
@@ -240,6 +260,8 @@ def analysis_dict_to_panel_verdict(
         insufficient_data=insufficient_data,
         uncertainty=uncertainty,
         evidence_gaps=evidence_gaps,
+        deviation=deviation,
+        tmt=tmt,
     )
 
 

@@ -10,7 +10,7 @@
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
   width: 100%;
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
 }
 
 .activities {
@@ -137,7 +137,7 @@
   width: 100%;
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   margin-bottom: -5px;
   font-size: 16px;
   padding: 0 20px;
@@ -251,7 +251,7 @@
   border: 1px solid var(--mf-panel-border);
   width: 100%;
   display: flex;
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   height: 35px;
   align-items: center;
   justify-content: center;

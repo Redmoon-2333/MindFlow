@@ -16,6 +16,8 @@ import { resetChatRuntime } from "./lib/chat-runtime";
 import logo from "./assets/logo.png";
 import { realtimeClient, requestNotificationPermission } from "./realtime";
 import ErrorBoundary from "./components/ErrorBoundary";
+import Toaster from "./components/Toaster";
+import FeedbackPrompt from "./components/FeedbackPrompt";
 
 // Route-level code splitting (architecture review 💡 19): heavy pages
 // (ModelCenter, Diagnostics, Reports) load on demand to shrink the initial
@@ -273,6 +275,11 @@ function Layout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
+
+      {/* One mount each: a duplicate would render the same feedback question
+          (and every toast) twice, which the e2e spec caught. */}
+      <FeedbackPrompt />
+      <Toaster />
 
       {confirmLogout && (
         <div className="mf-modal-overlay" onMouseDown={closeLogout}>

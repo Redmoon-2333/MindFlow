@@ -16,6 +16,9 @@ Registered jobs (cron and working hours use the configured local timezone):
     without recording anything.
   - every 15 min — ``telemetry_rollup_recent``: roll up the trailing
     two-hour window of feature windows (idempotent — overlaps are safe).
+  - every 15 min — ``feedback_request_check``: ask for a label when active
+    sampling says it carries information (contract §5). Guarded by the
+    store's own cooldown, daily cap and pending-request slot.
 
 Jobs are idempotent — if a target date already has sessions or reports,
 the service skips recomputation.
@@ -844,6 +847,7 @@ def build_scheduler(
     autonomy_service: AutonomyService | None = None,
     telemetry_service: Any | None = None,
     training_job_service: Any | None = None,
+    feedback_request_store: Any | None = None,
     scheduled_job_runs_repository: ScheduledJobRunsPort | None = None,
     workflow_port: AnalysisWorkflowPort | None = None,
     event_retention_days: int = 30,
@@ -1227,6 +1231,11 @@ def build_scheduler(
             kwargs={
                 "activity_repo": activity_repository,
                 "intervention_service": intervention_service,
+                # The ML veto and the intervention-check audit ledger live in
+                # ``_auto_intervention_check`` behind ``telemetry_service``.
+                # Registration previously omitted it, so production never ran
+                # either path (the job saw ``None`` and skipped both).
+                "telemetry_service": telemetry_service,
                 "panel_service": panel_service,
                 "workflow_port": workflow_port,
                 "autonomy_service": autonomy_service,
@@ -1271,6 +1280,26 @@ def build_scheduler(
             minutes=_RECENT_ROLLUP_INTERVAL_MINUTES,
             coro=_rollup_recent_telemetry,
             name="telemetry_rollup_recent",
+        )
+
+    # ── Every 15 min — Proactive-learning feedback request (contract §5) ──
+    # A separate job from ``auto_intervention_check`` on purpose: asking for a
+    # label is not an intervention, and coupling the two would make one
+    # feature's throttle, working-hours window and confidence gates silently
+    # govern the other. The store owns its own cooldown and daily cap.
+    if feedback_request_store is not None:
+
+        async def _feedback_request_check() -> None:
+            try:
+                await feedback_request_store.maybe_create(user_id=1)
+            except Exception as exc:
+                # Never let a prompt failure kill the interval loop.
+                logger.error("Feedback request check failed: {}", exc)
+
+        scheduler.interval_minutes(
+            minutes=15,
+            coro=_feedback_request_check,
+            name="feedback_request_check",
         )
 
     # ── Hourly — Auto incremental training check (architecture plan F) ──

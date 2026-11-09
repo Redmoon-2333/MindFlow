@@ -17,13 +17,14 @@ stateless — a single instance is safe to share across requests.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.baseline import BaselineModel
+from mindflow.domain.classifier import AppClassifier
 from mindflow.domain.deviation import DeviationDetector
 from mindflow.domain.events import ActivityEvent
 from mindflow.domain.evidence import (
@@ -36,11 +37,18 @@ from mindflow.domain.features import (
     MAX_ACCEPTABLE_SWITCHES_PER_HOUR,
     QUIET_IDLE_TOLERANCE_S,
     app_usage_ranking,
+    count_confirmed_switches,
     focus_score,
     longest_focus_block_s,
     switch_rate_per_hour,
 )
 from mindflow.domain.procrastination import BehaviorSummary
+from mindflow.domain.tmt import (
+    TmtBreakdown,
+    TmtInputs,
+    compute_tmt,
+    deviation_z_mean,
+)
 from mindflow.infrastructure.llm.summary import build_behavior_summary
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
@@ -56,11 +64,13 @@ from mindflow.infrastructure.repositories.baseline import (
 from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
 )
+from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.services.effectiveness_service import (
     EffectivenessReport,
     EffectivenessService,
 )
 from mindflow.services.prediction_service import FocusPredictionService
+from mindflow.time_utils import resolve_timezone
 
 # Backward-compat alias: ``baseline_models.metadata`` is the MetaData the table
 # was registered on. Kept so ``baseline_models_metadata.create_all`` importers
@@ -115,6 +125,14 @@ _FEATURE_CONFIDENCE: float = 0.85
 
 # How many days of intervention history to include
 _INTERVENTION_LOOKBACK_DAYS: int = 7
+
+# TMT proxies: the self-report lookback for expectancy, the "due soon" horizon
+# for the value proxy, and how much confidence an info-level TMT row carries
+# (behavioural proxy, not a measurement — deliberately below the
+# feature-computation items).
+_TMT_FEEDBACK_LOOKBACK_DAYS: int = 14
+_TMT_DUE_SOON_DAYS: int = 7
+_TMT_CONFIDENCE: float = 0.6
 
 # How many top apps to consider for novelty detection
 _NOVELTY_TOP_N: int = 5
@@ -282,6 +300,15 @@ class EvidenceBundleBuilder:
         baseline_repo: Repository for reading the user's personal baseline.
             Defaults to a ``BaselineRepository`` built from *session_factory*
             (kept optional so existing call sites need no change).
+        prediction_service: Optional ML prediction service for ML evidence.
+        telemetry_repo: Optional reader for persisted V2 feature windows. When
+            injected, deviation detection scores the newest stored 5-minute
+            window (the same vector the classifier sees); otherwise it derives
+            a row from raw events. Also supplies self-reported focus feedback
+            for the TMT expectancy proxy.
+        task_repo: Optional task repository for the TMT value and delay
+            proxies (open-task priority and nearest deadline). Absent → those
+            proxies fall back to the behavioural/neutral values.
     """
 
     def __init__(
@@ -292,6 +319,8 @@ class EvidenceBundleBuilder:
         effectiveness_service: EffectivenessService | None = None,
         baseline_repo: BaselineRepository | None = None,
         prediction_service: FocusPredictionService | None = None,
+        telemetry_repo: TelemetryRepository | None = None,
+        task_repo: object | None = None,
     ) -> None:
         self._activity_repo = activity_repo
         self._intervention_repo = intervention_repo
@@ -301,6 +330,8 @@ class EvidenceBundleBuilder:
             session_factory=session_factory
         )
         self._prediction_service = prediction_service
+        self._telemetry_repo = telemetry_repo
+        self._task_repo = task_repo
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API
@@ -343,14 +374,27 @@ class EvidenceBundleBuilder:
         ml_items = await self._build_ml_items(events, window_start, window_end, user_id)
         items.extend(ml_items)
 
-        # 4. Run deviation detection
-        items.extend(self._build_deviation_items(baseline, events, window_start))
+        # 4. Run deviation detection (personal baseline, 5-min v2 windows)
+        deviation_items, deviation_summary = await self._build_deviation(
+            baseline, events, window_start, user_id
+        )
+        items.extend(deviation_items)
 
         # 5. Build behavior summary
         behavior_summary = build_behavior_summary(events) if events else self._empty_summary()
 
         # 7. Detect novelty flags
         novelty_flags = self._detect_novelty(events, baseline)
+
+        # 8. TMT decomposition from the same window (behavioural proxies)
+        tmt_inputs = await self._build_tmt_inputs(
+            events=events,
+            deviation_summary=deviation_summary,
+            window_end=window_end,
+            user_id=user_id,
+        )
+        tmt = compute_tmt(tmt_inputs)
+        items.extend(self._tmt_items(tmt))
 
         return EvidenceBundle(
             user_id=user_id,
@@ -360,6 +404,8 @@ class EvidenceBundleBuilder:
             intervention_history=tuple(interventions),
             novelty_flags=tuple(novelty_flags),
             events=tuple(events),
+            deviation_summary=deviation_summary,
+            tmt=tmt,
         )
 
     # ══════════════════════════════════════════════════════════════════════
@@ -603,113 +649,316 @@ class EvidenceBundleBuilder:
     # Baseline / deviation items
     # ══════════════════════════════════════════════════════════════════════
 
-    @staticmethod
-    def _build_deviation_items(
+    async def _build_deviation(
+        self,
         baseline: BaselineModel | None,
         events: list[ActivityEvent],
         window_start: datetime,
-    ) -> list[EvidenceItem]:
-        """Generate deviation-related EvidenceItems from the personal baseline.
+        user_id: int,
+    ) -> tuple[list[EvidenceItem], dict[str, Any] | None]:
+        """Score the latest 5-minute V2 window against the personal baseline.
 
-        Returns a single behavior_deviation item, or an info-level item explaining
-        that the baseline is still being built.
+        Two inputs feed the score, in priority order:
+
+        1. The newest persisted V2 feature window that starts inside the
+           analysis window (``behavior_feature_windows``, 5-minute rows). This
+           is the same vector the ML classifier sees, so the deviation and the
+           prediction describe the same behaviour.
+        2. A row derived from the raw activity events of the window, used only
+           when no persisted window exists (e.g. an analysis running before the
+           telemetry rollup caught up).
+
+        The v1 detector this replaces compared a hand-rolled 30-minute row
+        against 30-minute statistics; the feature vocabulary had since moved to
+        V2 5-minute windows, so only ``idle_ratio`` matched and every score was
+        capped near zero. Scoring the stored window keeps the bases identical.
+
+        Returns ``(items, summary)``: exactly one ``behavior_deviation`` item
+        (an info item when the baseline cannot support a score) and the
+        contract's ``DeviationSummary`` dict, or None when no summary applies.
         """
         if baseline is None:
-            return [
-                EvidenceItem(
-                    metric="behavior_deviation",
-                    value=0.0,
-                    baseline=None,
-                    severity="info",
-                    confidence=1.0,
-                    source="welford_baseline",
-                    human_readable="基线尚在建立中（尚无数据）",
-                )
-            ]
+            return (
+                [
+                    EvidenceItem(
+                        metric="behavior_deviation",
+                        value=0.0,
+                        baseline=None,
+                        severity="info",
+                        confidence=1.0,
+                        source="welford_baseline",
+                        human_readable="基线尚在建立中（尚无数据）",
+                    )
+                ],
+                None,
+            )
 
         if not baseline.has_sufficient_data():
-            return [
-                EvidenceItem(
-                    metric="behavior_deviation",
-                    value=0.0,
-                    baseline=None,
-                    severity="info",
-                    confidence=1.0,
-                    source="welford_baseline",
-                    human_readable=(
-                        f"基线尚在建立中（总计{baseline.total_samples()}个样本，"
-                        f"建议至少{MIN_BASELINE_DAYS * 6}个，可启动训练补齐）"
-                    ),
-                )
-            ]
+            return (
+                [
+                    EvidenceItem(
+                        metric="behavior_deviation",
+                        value=0.0,
+                        baseline=None,
+                        severity="info",
+                        confidence=1.0,
+                        source="welford_baseline",
+                        human_readable=(
+                            f"基线尚在建立中（总计{baseline.total_samples()}个样本，"
+                            f"建议至少{MIN_BASELINE_DAYS * 6}个，可启动训练补齐）"
+                        ),
+                    )
+                ],
+                None,
+            )
 
-        # Check per-bucket sufficiency for the current time window
-        hour = window_start.hour
-        dow = window_start.weekday()
-        if not baseline.has_bucket_sufficient_data(hour, dow):
-            return [
-                EvidenceItem(
-                    metric="behavior_deviation",
-                    value=0.0,
-                    baseline=None,
-                    severity="info",
-                    confidence=0.8,
-                    source="welford_baseline",
-                    human_readable=f"当前时段({hour}:00 周{dow})基线数据不足，暂无法计算偏差",
-                )
-            ]
+        row = await self._latest_feature_row(user_id, window_start)
+        if row is not None:
+            # Bucket the stored window in the baseline's own business timezone;
+            # using the naive UTC hour would compare a 08:00-local window
+            # against the 00:00-local bucket.
+            hour, dow = _local_bucket(window_start, baseline)
+        else:
+            row = _build_pseudo_row(events, window_start)
+            hour, dow = window_start.hour, window_start.weekday()
 
-        # Construct a pseudo feature row for the DeviationDetector
-        pseudo_row = _build_pseudo_row(events, window_start)
-        if pseudo_row is None:
-            return [
-                EvidenceItem(
-                    metric="behavior_deviation",
-                    value=0.0,
-                    baseline=None,
-                    severity="info",
-                    confidence=1.0,
-                    source="welford_baseline",
-                    human_readable="数据不足以计算基线偏差",
-                )
-            ]
+        if row is None:
+            return (
+                [
+                    EvidenceItem(
+                        metric="behavior_deviation",
+                        value=0.0,
+                        baseline=None,
+                        severity="info",
+                        confidence=1.0,
+                        source="welford_baseline",
+                        human_readable="数据不足以计算基线偏差",
+                    )
+                ],
+                None,
+            )
 
+        row = {**row, "hour_of_day": hour, "day_of_week": dow}
         detector = DeviationDetector(baseline)
-        deviation = detector.score_window(pseudo_row)
-        overall = deviation["overall_deviation"]
-        sev = _deviation_severity(deviation["severity"])
+        summary = detector.to_summary(row)
+        if summary is None:
+            # The window carries no feature the baseline has ever observed —
+            # nothing honest to report, so this is the "insufficient" path.
+            return (
+                [
+                    EvidenceItem(
+                        metric="behavior_deviation",
+                        value=0.0,
+                        baseline=None,
+                        severity="info",
+                        confidence=0.8,
+                        source="welford_baseline",
+                        human_readable=f"当前时段({hour}:00 周{dow})基线数据不足，暂无法计算偏差",
+                    )
+                ],
+                None,
+            )
+
+        overall = float(summary["overall_score"])
+        sev = _deviation_severity(str(summary["severity"]))
         conf = _deviation_to_confidence(overall)
 
         if sev == "info":
-            return [
+            return (
+                [
+                    EvidenceItem(
+                        metric="behavior_deviation",
+                        value=overall,
+                        baseline=0.0,
+                        severity="info",
+                        confidence=conf,
+                        source="welford_baseline",
+                        human_readable="行为模式与基线一致，无显著偏差",
+                    )
+                ],
+                summary,
+            )
+
+        # Name the feature that actually drove the score, in Chinese.
+        features = summary.get("features") or []
+        dev_detail = ""
+        if features:
+            top = features[0]
+            dev_detail = (
+                f"，主要偏离: {top['label']}(稳健 z={top['robust_z']:.1f}"
+                f"，当前 {top['value']:g} / 期望 {top['expected']:g})"
+            )
+
+        return (
+            [
                 EvidenceItem(
                     metric="behavior_deviation",
                     value=overall,
                     baseline=0.0,
-                    severity="info",
+                    severity=sev,
                     confidence=conf,
                     source="welford_baseline",
-                    human_readable="行为模式与基线一致，无显著偏差",
+                    human_readable=(
+                        f"行为模式偏离基线 {overall:.1f} 个稳健标准差（{sev}）{dev_detail}"
+                    ),
                 )
-            ]
+            ],
+            summary,
+        )
 
-        # Build a richer human_readable for non-info deviations
-        top_deviations = deviation.get("top_deviations", [])
-        dev_detail = ""
-        if top_deviations:
-            top = top_deviations[0]
-            dev_detail = f"，主要偏离: {top.get('feature', '未知')}(Z={top.get('z_score', 0):.1f})"
+    async def _latest_feature_row(
+        self,
+        user_id: int,
+        window_start: datetime,
+    ) -> dict[str, Any] | None:
+        """Newest persisted V2 feature window starting at or after *window_start*.
 
+        One bounded query: the analysis window is widened to 24 hours so a
+        panel run over a short slice still finds the most recent window.
+        Returns None when the repository is unavailable or has no such row —
+        both are normal (tests, pre-rollup analyses) and fall back to the
+        event-derived row rather than failing the pipeline.
+
+        ``hour_of_day`` / ``day_of_week`` are NOT derived here; the caller
+        buckets in the baseline's timezone because only it knows which
+        timezone the stored statistics were bucketed in.
+        """
+        if self._telemetry_repo is None:
+            return None
+        end = window_start + timedelta(hours=24)
+        try:
+            windows = await self._telemetry_repo.list_feature_windows_in_range(
+                user_id, window_start, end
+            )
+        except Exception as exc:
+            logger.warning(
+                "Deviation baseline query failed (falling back to event row): {}", exc
+            )
+            return None
+        if not windows:
+            return None
+        row = dict(windows[-1])
+        row["features_json"] = row.get("features_json")
+        # The repository leaves the feature vector in ``features_json``
+        # (and/or the fNN columns); ``DeviationDetector`` reads either.
+        return row
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TMT (Temporal Motivation Theory) decomposition
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _build_tmt_inputs(
+        self,
+        *,
+        events: list[ActivityEvent],
+        deviation_summary: dict[str, Any] | None,
+        window_end: datetime,
+        user_id: int,
+    ) -> TmtInputs:
+        """Collect the behavioural proxies ``compute_tmt`` consumes.
+
+        Every read is best-effort: a missing repository or a failed query
+        leaves that signal ``None``, which ``compute_tmt`` turns into the
+        documented neutral prior rather than a fabricated value.  The
+        impulsiveness proxy reuses the deviation summary the bundle already
+        carries instead of re-deriving switch statistics.
+        """
+        feedback = await self._load_focus_feedback(user_id, window_end)
+        tasks = await self._load_open_tasks(user_id)
+        value_task = _select_value_task(tasks, window_end)
+
+        productive_share, _ = _productive_and_leisure_shares(events)
+
+        return TmtInputs(
+            feedback_scores=_recent_feedback_scores(feedback),
+            task_priority=(
+                float(value_task.priority) if value_task is not None else None
+            ),
+            task_count=len(tasks),
+            productive_share=productive_share,
+            deviation_z_mean=deviation_z_mean(deviation_summary),
+            hours_to_deadline=_hours_to_deadline(tasks, window_end),
+        )
+
+    async def _load_focus_feedback(
+        self, user_id: int, window_end: datetime
+    ) -> list[dict[str, Any]]:
+        """Self-reported focus feedback from the last 14 days, or [].
+
+        Older rows are dropped because the expectancy proxy is meant to
+        reflect the user's *recent* success expectation, not a lifetime mean.
+        """
+        if self._telemetry_repo is None:
+            return []
+        lister = getattr(self._telemetry_repo, "list_focus_feedback", None)
+        if lister is None:
+            return []
+        try:
+            rows = await lister(user_id)
+        except Exception as exc:
+            logger.debug(
+                "Focus feedback unavailable for TMT expectancy: {}", _safe_error(exc)
+            )
+            return []
+        if not isinstance(rows, list):
+            return []
+        cutoff = window_end - timedelta(days=_TMT_FEEDBACK_LOOKBACK_DAYS)
+        return [
+            row
+            for row in rows
+            if isinstance(row, dict) and _feedback_is_recent(row, cutoff)
+        ]
+
+    async def _load_open_tasks(self, user_id: int) -> list[Any]:
+        """All open tasks (pending / in_progress), or [] when unavailable.
+
+        The whole list is needed: the value proxy asks for the most important
+        task *due within 7 days*, which is not necessarily in a top-N ranking
+        ordered by deadline.
+        """
+        if self._task_repo is None:
+            return []
+        lister = getattr(self._task_repo, "list_tasks", None)
+        if lister is None:
+            return []
+        try:
+            rows = await lister(user_id)
+        except Exception as exc:
+            logger.debug("Task list unavailable for TMT proxies: {}", _safe_error(exc))
+            return []
+        if not isinstance(rows, list):
+            return []
+        return [
+            task
+            for task in rows
+            if getattr(task, "status", None) in {"pending", "in_progress"}
+        ]
+
+    @staticmethod
+    def _tmt_items(tmt: TmtBreakdown) -> list[EvidenceItem]:
+        """One info-level EvidenceItem per TMT component (exactly four).
+
+        These are always ``info`` so they never inflate the anomaly count; the
+        compression layer keeps them only when they deviate from a baseline or
+        match a recent intervention keyword, and the catalog carries every id
+        regardless.  ``value`` is the component score so the critic can check
+        an expert's citation against a real number.
+        """
+        components = tmt.components.as_mapping()
         return [
             EvidenceItem(
-                metric="behavior_deviation",
-                value=overall,
-                baseline=0.0,
-                severity=sev,
-                confidence=conf,
-                source="welford_baseline",
-                human_readable=f"行为模式偏离基线 {overall:.1f} 个标准差（{sev}）{dev_detail}",
+                metric=f"tmt_{key}",
+                value=round(component.score, 4),
+                baseline=None,
+                severity="info",
+                confidence=_TMT_CONFIDENCE,
+                source=component.source,
+                human_readable=(
+                    f"TMT {component.label} {component.score:.2f}"
+                    f"（{_tmt_level_zh(component.score)}；{component.source}）"
+                ),
             )
+            for key, component in components.items()
         ]
 
     async def _load_baseline(self, user_id: int) -> BaselineModel | None:
@@ -883,12 +1132,156 @@ class EvidenceBundleBuilder:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _build_pseudo_row(events: list[ActivityEvent], window_start: datetime) -> dict[str, Any] | None:
-    """Build a pseudo feature-row dict for ``DeviationDetector.score_window``.
+def _local_bucket(window_start: datetime, baseline: BaselineModel) -> tuple[int, int]:
+    """Local (hour, weekday) of *window_start* in the baseline's timezone.
 
-    Extracts the features we can compute from the raw event list.  Features
-    that require title analysis (title_code_ratio, title_doc_ratio, …) are
-    omitted — ``DeviationDetector`` gracefully skips missing features.
+    ``BaselineModel`` buckets its statistics in the user's business timezone;
+    a detector that read ``window_start.hour`` from a UTC timestamp would
+    compare an 08:00 local window against the 00:00 local bucket (an 8-hour
+    offset for Asia/Shanghai). Naive timestamps are treated as UTC, matching
+    ``domain/baseline.py``.
+    """
+    tz = resolve_timezone(baseline.timezone)
+    if window_start.tzinfo is None:
+        window_start = window_start.replace(tzinfo=UTC)
+    local = window_start.astimezone(tz)
+    return local.hour, local.weekday()
+
+
+def _safe_error(exc: BaseException) -> str:
+    """Short, credential-free description of an exception for debug logs."""
+    return type(exc).__name__
+
+
+def _tmt_level_zh(score: float) -> str:
+    """Coarse Chinese qualifier for a TMT component score."""
+    if score >= 0.66:
+        return "偏高"
+    if score >= 0.34:
+        return "中等"
+    return "偏低"
+
+
+def _productive_and_leisure_shares(
+    events: list[ActivityEvent],
+) -> tuple[float | None, float | None]:
+    """Active-time shares of productive vs entertainment/social categories.
+
+    Uses the built-in :class:`AppClassifier` on the process name.  Idle time
+    is excluded from the denominator: a user away from the keyboard tells us
+    nothing about which apps they were working in.  Returns ``(None, None)``
+    when there is no active time to divide by.
+    """
+    non_idle = [event for event in events if not event.data.is_idle]
+    total = sum(event.duration_s for event in non_idle)
+    if total <= 0.0:
+        return None, None
+
+    classifier = AppClassifier()
+    productive_s = 0.0
+    leisure_s = 0.0
+    for event in non_idle:
+        category = classifier.classify(
+            event.data.process_name, getattr(event.data, "window_title", "") or ""
+        )
+        if category in {"code", "document", "browser_work"}:
+            productive_s += event.duration_s
+        elif category in {"entertainment", "social"}:
+            leisure_s += event.duration_s
+    return productive_s / total, leisure_s / total
+
+
+def _parse_feedback_time(row: dict[str, Any]) -> datetime | None:
+    """Parse a feedback row's ``created_at`` (ISO string or datetime)."""
+    raw = row.get("created_at")
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo is not None else raw.replace(tzinfo=UTC)
+    if isinstance(raw, str):
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def _feedback_is_recent(row: dict[str, Any], cutoff: datetime) -> bool:
+    """True when the feedback row is at or after *cutoff*.
+
+    An unparseable timestamp is dropped: silently keeping it would let an
+    arbitrarily old self-report drive the expectancy proxy.
+    """
+    created = _parse_feedback_time(row)
+    return created is not None and created >= cutoff
+
+
+def _recent_feedback_scores(rows: list[dict[str, Any]]) -> list[float]:
+    """Self-reported focus scores (1-5) from the given feedback rows."""
+    return [
+        float(row["score"])
+        for row in rows
+        if isinstance(row.get("score"), (int, float))
+        and not isinstance(row.get("score"), bool)
+        and 1.0 <= float(row["score"]) <= 5.0
+    ]
+
+
+def _select_value_task(tasks: list[Any], reference: datetime) -> Any | None:
+    """Most important open task due within 7 days, else most important overall.
+
+    ``Task.priority`` is 1 (lowest) … 5 (highest), so "most important" is the
+    highest number.  Ties break on the soonest deadline, then the stable id,
+    so the choice is deterministic.
+    """
+    horizon = reference + timedelta(days=_TMT_DUE_SOON_DAYS)
+    due_soon = [
+        task
+        for task in tasks
+        if isinstance(task.deadline_utc, datetime) and task.deadline_utc <= horizon
+    ]
+    pool = due_soon or tasks
+    if not pool:
+        return None
+    return min(
+        pool,
+        key=lambda task: (
+            -float(task.priority),
+            task.deadline_utc or datetime.max.replace(tzinfo=UTC),
+            str(task.id),
+        ),
+    )
+
+
+def _hours_to_deadline(tasks: list[Any], reference: datetime) -> float | None:
+    """Hours from *reference* to the nearest open-task deadline.
+
+    Overdue deadlines clamp to 0 in ``compute_tmt``; tasks without a deadline
+    are ignored here (they carry no delay information).  Returns None when no
+    open task has a deadline.
+    """
+    deadlines = [
+        task.deadline_utc
+        for task in tasks
+        if isinstance(task.deadline_utc, datetime)
+        and task.deadline_utc.tzinfo is not None
+    ]
+    if not deadlines:
+        return None
+    return (min(deadlines) - reference).total_seconds() / 3600.0
+
+
+def _build_pseudo_row(events: list[ActivityEvent], window_start: datetime) -> dict[str, Any] | None:
+    """Approximate a V2 feature row from raw events (fallback path only).
+
+    Used when no persisted 5-minute feature window covers the analysis window
+    (e.g. a panel run before the telemetry rollup caught up). It computes the
+    subset of the V2 vocabulary that raw events can honestly support:
+    confirmed app switches, the longest active segment's share of observed
+    time, idle / active shares and the dominant app's share. Interaction-rate
+    and browser features need collector buckets and browser heartbeats, which
+    this path does not have — ``DeviationDetector`` skips any feature the
+    baseline has no data for and renormalises the remaining weights, so a
+    partial row degrades rather than lying.
 
     Returns None when there are too few non-idle events to compute anything
     meaningful.
@@ -903,26 +1296,21 @@ def _build_pseudo_row(events: list[ActivityEvent], window_start: datetime) -> di
             app_durations.get(ev.data.process_name, 0.0) + ev.duration_s
         )
 
-    unique_app_count = len(app_durations)
-    max_app_duration = max(app_durations.values()) if app_durations else 0.0
-    switch_frequency = switch_rate_per_hour(non_idle)
-
-    # idle_ratio — cheap to compute and raises weighted coverage from 45% to
-    # 55% of DeviationDetector's feature weights (review M1 partial fix).
-    # Full classifier-backed productivity/entertainment/social/title ratios
-    # depend on AppClassifier + pandas and belong in G005.
     total_dur = sum(ev.duration_s for ev in events)
     idle_dur = sum(ev.duration_s for ev in events if ev.data.is_idle)
-    idle_ratio = idle_dur / total_dur if total_dur > 0 else 0.0
+    active_dur = total_dur - idle_dur
+    longest_segment = max(app_durations.values()) if app_durations else 0.0
+    dominant_app = max(app_durations.values()) if app_durations else 0.0
 
     return {
         "hour_of_day": window_start.hour,
         "day_of_week": window_start.weekday(),
-        "switch_frequency": switch_frequency,
-        "unique_app_count": float(unique_app_count),
-        "max_app_duration": max_app_duration,
-        "idle_ratio": idle_ratio,
         "window_start": window_start.isoformat(),
+        "app_switch_count": float(count_confirmed_switches(non_idle)),
+        "longest_segment_ratio": longest_segment / total_dur if total_dur > 0 else 0.0,
+        "idle_ratio": idle_dur / total_dur if total_dur > 0 else 0.0,
+        "active_seconds_ratio": active_dur / total_dur if total_dur > 0 else 0.0,
+        "top_app_ratio": dominant_app / active_dur if active_dur > 0 else 0.0,
     }
 
 

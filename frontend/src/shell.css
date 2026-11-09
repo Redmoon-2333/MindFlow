@@ -9,8 +9,8 @@
 
 :root {
   /* Reference palette (source-verified, not re-picked) */
-  --mf-bg-radial: radial-gradient(ellipse at 30% 40%, #0c1a30 0%, #040b14 100%);
-  --mf-login-radial: radial-gradient(ellipse at 30% 40%, #0a1628 0%, #020810 100%);
+  --mf-bg-radial: #040b14;
+  --mf-login-radial: #040b14;
   --mf-panel: rgba(100, 160, 255, 0.15);
   --mf-panel-border: rgba(100, 160, 255, 0.3);
   --mf-hairline: rgba(100, 160, 255, 0.08);
@@ -48,7 +48,8 @@
   --color-danger: #f78181;
   --color-info: #06b6d4;
   --sidebar-w: var(--mf-sidebar-w);
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* One stack for the whole app (see --font-ui in theme.css). */
+  font-family: var(--font-ui);
   font-size: 16px;
   color: var(--mf-text);
   background: #040b14;
@@ -60,7 +61,7 @@
   height: 100vh;
   background: var(--mf-bg-radial);
   color: var(--mf-text);
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-ui);
   overflow: hidden;
   position: relative;
 }
@@ -71,18 +72,11 @@
   left: -10%;
   width: 60vw;
   height: 60vh;
-  background: radial-gradient(ellipse, rgba(26, 109, 212, 0.08) 0%, transparent 70%);
+  /* Ambient glow removed with the "calm instrument panel" direction: the
+     backdrop stays a single flat surface, hierarchy comes from spacing. */
+  background: none;
   pointer-events: none;
   z-index: 0;
-}
-.mf-ambient-glow::after {
-  content: "";
-  position: absolute;
-  bottom: -40%;
-  right: -30%;
-  width: 50vw;
-  height: 50vh;
-  background: radial-gradient(ellipse, rgba(58, 143, 217, 0.06) 0%, transparent 70%);
 }
 
 /* ── Sidebar ────────────────────────────────────────────────────────────── */
@@ -145,7 +139,7 @@
 }
 .mf-logo-line {
   position: absolute;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--mf-brand) 20%, transparent), transparent);
+  background: color-mix(in srgb, var(--mf-brand) 22%, transparent);
   left: 20px;
   top: 80px;
   width: 210px;
@@ -178,7 +172,7 @@
   cursor: pointer;
   display: flex;
   align-items: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   transition: all 0.2s ease;
   text-decoration: none;
@@ -202,10 +196,10 @@
   color: var(--mf-brand);
 }
 .mf-nav-item--active {
-  background: linear-gradient(135deg, rgba(58, 143, 217, 0.25), rgba(90, 160, 230, 0.12));
-  border: 1px solid color-mix(in srgb, var(--mf-brand) 20%, transparent);
+  background: color-mix(in srgb, var(--mf-brand) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mf-brand) 22%, transparent);
   color: var(--mf-brand);
-  box-shadow: 0 2px 12px rgba(58, 143, 217, 0.15);
+  box-shadow: var(--shadow-1);
 }
 .mf-nav-item--active .iconfont {
   color: var(--mf-brand);
@@ -231,7 +225,7 @@
   padding: 0 14px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   color: var(--mf-text-dim);
   font-size: 14px;
   font-weight: 600;
@@ -282,7 +276,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   transition: all 0.2s ease;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--mf-brand) 8%, transparent);
   background: color-mix(in srgb, var(--mf-brand) 4%, transparent);
   cursor: pointer;
@@ -351,7 +345,7 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition: all 0.2s;
   margin-top: 2px;
@@ -405,7 +399,7 @@
   position: absolute;
   background: rgba(12, 25, 45, 0.92);
   border: 1px solid color-mix(in srgb, var(--mf-brand) 15%, transparent);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   width: 400px;
   height: 200px;
   left: 50%;
@@ -476,7 +470,7 @@
   color: var(--color-danger);
   background: rgba(247, 129, 129, 0.12);
   border: 1px solid rgba(247, 129, 129, 0.35);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 4px 8px;
   text-align: center;
   overflow: hidden;
@@ -494,14 +488,14 @@
   height: 22%;
   bottom: 12%;
   font-size: 16px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   font-family: inherit;
   cursor: pointer;
 }
 .mf-dialog-yes {
   left: 10%;
-  background: linear-gradient(135deg, #1a6dd4, #3a8fd9);
-  color: var(--mf-text);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
   font-weight: 600;
   border: none;
 }
@@ -536,7 +530,7 @@
   background: rgba(12, 25, 45, 0.95);
   color: var(--mf-brand);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 8px 14px;
   font-size: 14px;
 }

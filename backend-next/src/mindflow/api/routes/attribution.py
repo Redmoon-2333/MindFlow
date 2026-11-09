@@ -134,6 +134,10 @@ async def post_attribution(
                     else None
                 ),
                 "evidence": verdict.rationale,
+                # Contract §2/§3 — nullable for cached rows written before
+                # these features existed.
+                "deviation": getattr(verdict, "deviation", None),
+                "tmt": getattr(verdict, "tmt", None),
             }
             return response
         outcome = await llm_service.analyze(
@@ -166,4 +170,8 @@ async def post_attribution(
         "procrastination_type": types_list[0] if types_list else None,
         "cbt_technique": assessment.get("cbt_technique"),
         "evidence": assessment.get("response_text"),
+        # Contract §2/§3.  The single-expert path never builds an evidence
+        # bundle, so both stay null rather than being fabricated.
+        "deviation": None,
+        "tmt": None,
     }

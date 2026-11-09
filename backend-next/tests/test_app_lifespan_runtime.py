@@ -1,4 +1,4 @@
-﻿"""Full application lifespan smoke tests for runtime wiring."""
+"""Full application lifespan smoke tests for runtime wiring."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import mindflow.app as app_module
 from mindflow.app import create_app
 from mindflow.config import Settings
 from mindflow.runtime import RuntimeServices
+from mindflow.services.feedback_request_service import FeedbackRequestStore
 from mindflow.services.scheduler import AsyncioScheduler
 
 
@@ -46,6 +47,41 @@ def test_full_lifespan_starts_and_stops_with_background_roles_disabled(
             app.state.collector_service is None
             or app.state.collector_service.status != "running"
         )
+
+
+def test_feedback_request_store_is_shared_by_routes_and_scheduler(
+    tmp_path: Path,
+) -> None:
+    """Contract §5 needs ONE store: two instances would each allow a prompt."""
+    settings = Settings(
+        data_dir=tmp_path,
+        db_url=f"sqlite+aiosqlite:///{tmp_path / 'mindflow.db'}",
+        run_scheduler=False,
+        run_collectors=False,
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        store = app.state.feedback_request_store
+        assert isinstance(store, FeedbackRequestStore)
+        # The daily cap resets at the user's midnight, so the store must carry
+        # the configured business timezone rather than assuming UTC.
+        assert store.timezone == settings.timezone
+        # The scheduler job closes over the same object the routes resolve.
+        assert app.state.scheduler.get_job("feedback_request_check") is not None
+
+        host = {"host": "localhost"}
+        issued = client.post(
+            "/api/v1/auth/bootstrap/ticket",
+            headers={**host, "Authorization": f"Bearer {app.state.system_token}"},
+        )
+        client.post(
+            "/api/v1/auth/bootstrap",
+            headers=host,
+            json={"ticket": issued.json()["ticket"]},
+        )
+        response = client.get("/api/v1/telemetry/feedback-requests/pending", headers=host)
+        assert response.status_code == 200
+        assert response.json() == {"items": []}
 
 
 def test_full_app_bootstrap_cookie_static_api_and_websocket_flow(

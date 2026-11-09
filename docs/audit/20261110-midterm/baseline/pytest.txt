@@ -1,0 +1,135 @@
+........................................................................ [  2%]
+........................................................................ [  4%]
+........................................................................ [  6%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+.................................................F...................... [ 13%]
+........................................................................ [ 15%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+...............................................................F........ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 27%]
+......................................................ssss.............. [ 29%]
+..............F......................................................... [ 31%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 40%]
+........................................................................ [ 43%]
+........................................................................ [ 45%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 77%]
+........................................................................ [ 79%]
+........................................................................ [ 81%]
+........................................................................ [ 83%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 93%]
+........................................................................ [ 95%]
+........................................................................ [ 97%]
+........................................................................ [ 99%]
+.....                                                                    [100%]
+================================== FAILURES ===================================
+___________ test_create_then_update_keeps_one_row_and_creation_time ___________
+
+engine = <sqlalchemy.ext.asyncio.engine.AsyncEngine object at 0x000001D0E27BA840>
+session_factory = async_sessionmaker(class_='AsyncSession', bind=<sqlalchemy.ext.asyncio.engine.AsyncEngine object at 0x000001D0E27BA840>, autoflush=True, expire_on_commit=False)
+
+    async def test_create_then_update_keeps_one_row_and_creation_time(
+        engine, session_factory,
+    ) -> None:
+        """Given: no baseline. When: upsert, then upsert again after new windows.
+        Then: exactly one row; created_at untouched; model JSON/updated_at move on."""
+        await _create_tables(engine)
+        repository = BaselineRepository(session_factory=session_factory)
+    
+        assert await repository.get_latest(user_id=1) is None
+    
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        model.update([_v2_row(app_switch_count=10.0)])
+        await repository.upsert(model)
+        birth = model.created_at
+        first_updated_at = model.updated_at.isoformat()
+    
+        model.update([_v2_row(hour=14, dow=3, app_switch_count=20.0)])
+        await repository.upsert(model)
+    
+        assert await _count_rows(session_factory) == 1
+        row = await _fetch_row(session_factory, 1)
+        assert row is not None
+        assert row["created_at"] == birth.isoformat()
+>       assert row["updated_at"] != first_updated_at
+E       AssertionError: assert '2026-11-09T14:12:06.763395+00:00' != '2026-11-09T14:12:06.763395+00:00'
+
+tests\test_baseline_repository.py:115: AssertionError
+_________ test_queue_latency_is_measured_separately_from_http_latency _________
+
+    async def test_queue_latency_is_measured_separately_from_http_latency() -> None:
+        """A serialised attempt spends real time waiting; that time is attributed."""
+        wire, latch = _blocking_wire(target=1)
+        gate = LLMConcurrencyGate(1)
+    
+        with collect_http_attempts() as attempts:
+            task = asyncio.create_task(_run_gated(wire, gate, requests=2))
+            await asyncio.wait_for(latch.all_arrived.wait(), timeout=5)
+            await asyncio.sleep(0.05)  # the second caller waits this long
+            latch.release.set()
+            await asyncio.wait_for(task, timeout=10)
+    
+        assert len(attempts) == 2
+        assert attempts[0].queue_latency_ms < attempts[1].queue_latency_ms
+>       assert attempts[1].queue_latency_ms >= 50.0
+E       AssertionError: assert 46.32029999993392 >= 50.0
+E        +  where 46.32029999993392 = HTTPAttemptMetrics(queue_latency_ms=46.32029999993392, http_latency_ms=0.09349999982077861, status_class='2xx', error_category='').queue_latency_ms
+
+tests\test_concurrency_gate.py:373: AssertionError
+_____ test_selected_ecnu_without_key_does_not_borrow_direct_or_legacy_key _____
+
+    async def test_selected_ecnu_without_key_does_not_borrow_direct_or_legacy_key() -> None:
+        registry = ProviderRegistry(
+            LLMSettings(service="ecnu", deepseek_api_key="sk-direct-test", api_key="sk-legacy-test")
+        )
+        try:
+>           assert registry.get_chat_model() is None
+E           AssertionError: assert ECNUChatModel(metadata={'lc_versions': {'langchain-core': '1.5.0', 'langchain': '1.3.14', 'langchain-openai': '1.4.0'}....llm.http_client.ProviderHTTPClient object at 0x000001D0E2C5EC90>, stream_chunk_timeout=120.0, last_effort_sent='high') is None
+E            +  where ECNUChatModel(metadata={'lc_versions': {'langchain-core': '1.5.0', 'langchain': '1.3.14', 'langchain-openai': '1.4.0'}....llm.http_client.ProviderHTTPClient object at 0x000001D0E2C5EC90>, stream_chunk_timeout=120.0, last_effort_sent='high') = get_chat_model()
+E            +    where get_chat_model = <mindflow.infrastructure.provider_registry.ProviderRegistry object at 0x000001D10AFC2CD0>.get_chat_model
+
+tests\test_ecnu_service.py:66: AssertionError
+============================== warnings summary ===============================
+tests/test_acceptance_ml_regressions.py: 5 warnings
+tests/test_e2e_flows.py: 3 warnings
+tests/test_publication_guard.py: 1 warning
+tests/test_reliability_regressions.py: 1 warning
+tests/test_train_pipeline.py: 1 warning
+tests/test_train_v2.py: 1 warning
+tests/test_training_activation_policy.py: 6 warnings
+  D:\大学相关\01_学业与课程\07_双创\MindFlow\mindflow-app\backend-next\.venv\Lib\site-packages\sklearn\metrics\_classification.py:2939: UserWarning: y_pred contains classes not in y_true
+    warnings.warn("y_pred contains classes not in y_true")
+
+tests/test_e2e_flows.py::TestMLTrainingPipelineE2E::test_synthetic_v2_training_completes
+tests/test_train_evaluation_protocol.py::test_evaluation_never_scores_auxiliary_or_weak_labels
+  D:\大学相关\01_学业与课程\07_双创\MindFlow\mindflow-app\backend-next\.venv\Lib\site-packages\sklearn\metrics\_classification.py:614: UserWarning: A single label was found in 'y_true' and 'y_pred'. For the confusion matrix to have the correct shape, use the 'labels' parameter to pass all known labels.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_baseline_repository.py::test_create_then_update_keeps_one_row_and_creation_time
+FAILED tests/test_concurrency_gate.py::test_queue_latency_is_measured_separately_from_http_latency
+FAILED tests/test_ecnu_service.py::test_selected_ecnu_without_key_does_not_borrow_direct_or_legacy_key
+3 failed, 3166 passed, 4 skipped, 20 warnings in 339.46s (0:05:39)
+exit=1

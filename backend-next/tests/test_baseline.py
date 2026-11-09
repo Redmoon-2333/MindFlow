@@ -9,6 +9,7 @@ and the inclusive 30-sample readiness threshold.
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, time, timedelta
@@ -16,7 +17,13 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from mindflow.domain.baseline import BaselineModel
+import pytest
+
+from mindflow.domain.baseline import (
+    MAD_TO_SIGMA,
+    ROBUST_RESERVOIR_SIZE,
+    BaselineModel,
+)
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 
 _SH = ZoneInfo("Asia/Shanghai")
@@ -519,3 +526,271 @@ class TestMalformedPolicy:
         data["stats"]["13"]["0"]["app_switch_count"] = {"n": 5.0, "mean": float("inf"), "M2": 0.0}
         restored = BaselineModel.from_dict(data)
         assert restored.overall_mean("app_switch_count") is None
+
+
+class TestRobustBaseline:
+    """Empirical-Bayes / MAD statistics behind ``DeviationSummary`` (§2).
+
+    The expected value is a James–Stein posterior mean of the bucket's Welford
+    mean and the user's global median; the dispersion is the same posterior
+    combination of the bucket variance and the global MAD-based σ. The global
+    estimate comes from a bounded ring buffer of recent values per feature, so
+    it has a 50% breakdown point without inflating the persisted JSON.
+
+    These tests pin the arithmetic, the cold-start fallbacks (empty bucket →
+    global; short ring → pooled Welford), the zero-dispersion guard, the
+    outlier resistance that motivates the estimator, and the persistence
+    contract (the ``robust`` block is optional in both directions).
+    """
+
+    #: Global ring values of ``_two_bucket_model``: 10, 12, 14, 16, 18 and
+    #: 100, 102, 104, 106, 108. Median (18+100)/2; MAD of the deviations
+    #: (41,41,43,43,45,45,47,47,49,49) is 45.
+    _GLOBAL_MEDIAN = 59.0
+    _GLOBAL_MAD = 45.0
+    _GLOBAL_SIGMA = 45.0 * MAD_TO_SIGMA
+
+    @staticmethod
+    def _two_bucket_model() -> BaselineModel:
+        """(10,0) holds 10–18, (11,0) holds 100–108; medians 14 and 104."""
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        rows = [
+            _make_feature_row(_shanghai_utc(10, 0), app_switch_count=float(v))
+            for v in (10, 12, 14, 16, 18)
+        ] + [
+            _make_feature_row(_shanghai_utc(11, 0), app_switch_count=float(v))
+            for v in (100, 102, 104, 106, 108)
+        ]
+        model.update(rows)
+        return model
+
+    def test_global_robust_stats_are_median_and_scaled_mad(self) -> None:
+        model = self._two_bucket_model()
+        stats = model.global_robust_stats("app_switch_count")
+        assert stats is not None
+        assert stats["n"] == 10.0
+        assert stats["median"] == self._GLOBAL_MEDIAN
+        assert stats["mad"] == self._GLOBAL_MAD
+        assert stats["sigma"] == pytest.approx(self._GLOBAL_SIGMA, rel=1e-9)
+        # A feature observed with no dispersion still gets a ring entry, but
+        # its MAD is 0 — the zero-dispersion guard in shrunk_expected is what
+        # stops that from becoming a division by ~0.
+        flat = model.global_robust_stats("keypress_rate_per_min")
+        assert flat is not None and flat["mad"] == 0.0
+
+    def test_global_welford_stats_pool_every_bucket(self) -> None:
+        """The pooled mean is sample-weighted, the variance the union's."""
+        model = self._two_bucket_model()
+        stats = model.global_welford_stats("app_switch_count")
+        assert stats is not None
+        assert stats["n"] == 10.0
+        assert stats["mean"] == pytest.approx(59.0)
+        # Values 10..18 / 100..108 → Σ M2 = 40 + 40 = 80 over N-1 = 9.
+        assert stats["std"] == pytest.approx(math.sqrt(80.0 / 9.0), rel=1e-9)
+        assert model.global_welford_stats("keypress_rate_per_min") is not None
+        assert model.global_welford_stats("keypress_rate_per_min")["std"] == 0.0
+
+    def test_shrinkage_math(self) -> None:
+        """μ̂ and ŝ are both posterior combinations, not just the mean."""
+        model = self._two_bucket_model()
+        k = 10
+        n_b = 5.0
+        mean_b = 14.0
+        var_b = 10.0  # M2 40 / (5 - 1)
+        estimate = model.shrunk_expected("app_switch_count", 10, 0, k=k)
+        assert estimate is not None
+
+        expected = (n_b * mean_b + k * self._GLOBAL_MEDIAN) / (n_b + k)
+        variance = (n_b * var_b + k * self._GLOBAL_SIGMA**2) / (n_b + k)
+        assert estimate["expected"] == pytest.approx(expected)
+        assert estimate["scale"] == pytest.approx(math.sqrt(variance))
+        assert estimate["shrinkage"] == pytest.approx(k / (n_b + k))
+        assert estimate["n_bucket"] == n_b
+        assert estimate["n_global"] == 10.0
+
+    def test_scale_never_drops_below_the_relative_floor(self) -> None:
+        """A large mean with a tiny spread must not report huge z-scores."""
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        # Values hovering at 0.95 ± 0.001: absolute spread 1e-3, relative 1e-3.
+        model.update(
+            [
+                _make_feature_row(
+                    _shanghai_utc(10, 0), longest_segment_ratio=0.95 + delta
+                )
+                for delta in (0.0, 0.001, -0.001, 0.002, -0.002)
+            ]
+        )
+        estimate = model.shrunk_expected("longest_segment_ratio", 10, 0)
+        assert estimate is not None
+        floor = 1e-6 + 0.05 * abs(estimate["expected"])
+        assert estimate["scale"] == pytest.approx(floor)
+        assert estimate["scale"] > math.sqrt(1e-6)
+
+    def test_cold_start_falls_back_to_global(self) -> None:
+        """An empty bucket uses the global estimate verbatim (shrinkage 1.0)."""
+        model = self._two_bucket_model()
+        estimate = model.shrunk_expected("app_switch_count", 3, 4)
+        assert estimate is not None
+        assert estimate["n_bucket"] == 0.0
+        assert estimate["shrinkage"] == 1.0
+        assert estimate["expected"] == self._GLOBAL_MEDIAN
+        assert estimate["scale"] == pytest.approx(self._GLOBAL_SIGMA, rel=1e-9)
+
+    def test_unobserved_feature_returns_none(self) -> None:
+        """No data anywhere → None, so callers skip the feature."""
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        assert model.shrunk_expected("app_switch_count", 10, 0) is None
+        assert model.global_robust_stats("app_switch_count") is None
+        assert model.global_welford_stats("app_switch_count") is None
+        assert model.robust_z("app_switch_count", 3.0, 10, 0) is None
+
+    def test_short_ring_falls_back_to_pooled_welford(self) -> None:
+        """Fewer than MIN_ROBUST_SAMPLES values → the MAD is not trusted yet."""
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        model.update(
+            [
+                _make_feature_row(_shanghai_utc(10, 0), app_switch_count=float(v))
+                for v in (10, 12, 14, 16, 18)
+            ]
+        )
+        assert model.global_robust_stats("app_switch_count") is None
+        welford = model.global_welford_stats("app_switch_count")
+        assert welford is not None
+
+        # Inside the observed bucket the Welford prior is combined as usual.
+        estimate = model.shrunk_expected("app_switch_count", 10, 0)
+        assert estimate is not None
+        assert estimate["expected"] == pytest.approx(14.0)
+        assert estimate["n_global"] == 5.0
+        # Cold bucket: the pooled Welford mean/std *is* the estimate.
+        cold = model.shrunk_expected("app_switch_count", 3, 4)
+        assert cold is not None
+        assert cold["expected"] == pytest.approx(welford["mean"])
+        assert cold["scale"] == pytest.approx(welford["std"])
+        assert cold["shrinkage"] == 1.0
+
+    def test_zero_dispersion_feature_is_withheld(self) -> None:
+        """A feature that never varied has no honest scale — skip, don't cap."""
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        model.update(
+            [
+                _make_feature_row(_shanghai_utc(10, 0), app_switch_count=14.0)
+                for _ in range(10)
+            ]
+        )
+        assert model.global_robust_stats("app_switch_count") is None or (
+            model.global_robust_stats("app_switch_count")["sigma"] == 0.0
+        )
+        assert model.shrunk_expected("app_switch_count", 10, 0) is None
+        assert model.robust_z("app_switch_count", 500.0, 10, 0) is None
+
+    def test_mad_resists_a_single_extreme_window(self) -> None:
+        """One 1000-switch window must not inflate the scale (breakdown 50%)."""
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        values = [9.0, 10.0, 11.0] * 3 + [1000.0]
+        model.update(
+            [
+                _make_feature_row(_shanghai_utc(10, 0), app_switch_count=v)
+                for v in values
+            ]
+        )
+        stats = model.global_robust_stats("app_switch_count")
+        assert stats is not None
+        assert stats["median"] == 10.0
+        assert stats["mad"] == 1.0
+        assert stats["sigma"] == pytest.approx(MAD_TO_SIGMA)
+        # The Welford σ, by contrast, is dominated by the outlier.
+        welford = model.get_stats(10, 0)["app_switch_count"]
+        assert welford["std"] > 200.0
+        # ... and it drags the shrunk scale up with it, which is exactly why the
+        # robust prior is worth having: the global median is still 10.
+        estimate = model.shrunk_expected("app_switch_count", 10, 0)
+        assert estimate is not None
+        assert estimate["expected"] == pytest.approx(59.5)
+
+    def test_robust_z_uses_shrunk_expectation(self) -> None:
+        model = self._two_bucket_model()
+        estimate = model.shrunk_expected("app_switch_count", 10, 0)
+        assert estimate is not None
+        z = model.robust_z("app_switch_count", 500.0, 10, 0)
+        assert z is not None
+        assert z == (500.0 - estimate["expected"]) / estimate["scale"]
+        assert model.robust_z("app_switch_count", float("nan"), 10, 0) is None
+
+    def test_ring_is_bounded_and_keeps_recent_values(self) -> None:
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        values = [float(v) for v in range(ROBUST_RESERVOIR_SIZE + 20)]
+        model.update(
+            [
+                _make_feature_row(_shanghai_utc(10, 0), app_switch_count=v)
+                for v in values
+            ]
+        )
+        assert ROBUST_RESERVOIR_SIZE == 256
+        stats = model.global_robust_stats("app_switch_count")
+        assert stats is not None
+        assert stats["n"] == float(ROBUST_RESERVOIR_SIZE)
+        # The ring keeps the most recent values, so the median tracks the tail
+        # rather than the whole history.
+        tail = values[-ROBUST_RESERVOIR_SIZE:]
+        assert stats["median"] == (tail[len(tail) // 2 - 1] + tail[len(tail) // 2]) / 2
+
+    def test_robust_block_round_trips(self) -> None:
+        model = self._two_bucket_model()
+        restored = BaselineModel.from_dict(model.to_dict())
+        assert restored.global_robust_stats(
+            "app_switch_count"
+        ) == model.global_robust_stats("app_switch_count")
+        assert restored.shrunk_expected(
+            "app_switch_count", 10, 0
+        ) == model.shrunk_expected("app_switch_count", 10, 0)
+
+    def test_legacy_payload_without_robust_block_loads(self) -> None:
+        """Payloads written before this upgrade must load and stay usable."""
+        model = self._two_bucket_model()
+        payload = model.to_dict()
+        del payload["robust"]
+        restored = BaselineModel.from_dict(payload)
+        # Welford stats survive untouched.
+        assert restored.get_stats(10, 0)["app_switch_count"]["mean"] == 14.0
+        # No ring yet: the robust prior is absent, so the estimate degrades to
+        # the pooled Welford statistics rather than disappearing or crashing.
+        assert restored.global_robust_stats("app_switch_count") is None
+        welford = restored.global_welford_stats("app_switch_count")
+        assert welford is not None
+        estimate = restored.shrunk_expected("app_switch_count", 10, 0)
+        assert estimate is not None
+        assert estimate["expected"] == pytest.approx(
+            (5.0 * 14.0 + 10.0 * welford["mean"]) / 15.0
+        )
+        assert estimate["n_global"] == 10.0
+        # The next updates repopulate the ring from new windows only.
+        for value in (1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0):
+            restored.update(
+                [_make_feature_row(_shanghai_utc(10, 0), app_switch_count=value)]
+            )
+        stats = restored.global_robust_stats("app_switch_count")
+        assert stats is not None and stats["n"] == 8.0
+        assert stats["median"] == 8.0
+
+    def test_new_payload_shape_is_additive(self) -> None:
+        """The ``robust`` key is additive; every legacy key keeps its shape."""
+        payload = self._two_bucket_model().to_dict()
+        for key in (
+            "user_id",
+            "feature_schema_version",
+            "timezone",
+            "created_at",
+            "updated_at",
+            "total_days",
+            "local_dates",
+            "stats",
+            "top_apps",
+        ):
+            assert key in payload
+        assert payload["robust"]["reservoir_size"] == ROBUST_RESERVOIR_SIZE
+        # One global ring per feature — no per-bucket reservoirs in the JSON.
+        assert set(payload["robust"]) == {"reservoir_size", "global"}
+        assert payload["robust"]["global"]["app_switch_count"] == [
+            10.0, 12.0, 14.0, 16.0, 18.0, 100.0, 102.0, 104.0, 106.0, 108.0,
+        ]

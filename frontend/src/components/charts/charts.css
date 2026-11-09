@@ -1,0 +1,290 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   In-house SVG chart system. Every chart is a <figure> with an accessible
+   <figcaption>; colour comes from --chart-* / --type-* tokens only.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.mf-chart {
+  margin: 0;
+  min-width: 0;
+  position: relative;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.mf-chart figcaption {
+  font-size: var(--fs-sm);
+  color: var(--mf-text-dim);
+  line-height: var(--leading-normal);
+}
+
+.mf-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.mf-chart svg:focus-visible {
+  outline: 2px solid var(--mf-brand);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Axes & grid ───────────────────────────────────────────────────────── */
+.mf-chart-grid { stroke: var(--chart-grid); stroke-width: 1; shape-rendering: crispEdges; }
+.mf-chart-baseline { stroke: var(--chart-axis); stroke-width: 1; shape-rendering: crispEdges; }
+.mf-chart-tick {
+  fill: var(--mf-text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.mf-chart-tick--x { text-anchor: middle; }
+.mf-chart-tick--y { text-anchor: end; }
+.mf-chart-axis-title {
+  fill: var(--mf-text-dim);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* ── Bars ──────────────────────────────────────────────────────────────── */
+.mf-chart-bar {
+  transition: opacity 0.14s ease, filter 0.14s ease;
+}
+.mf-chart-bar--dim { opacity: 0.42; }
+.mf-chart-bar--active { filter: brightness(1.12); }
+.mf-chart-value-label {
+  fill: var(--mf-text);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.mf-chart-hit { fill: transparent; cursor: default; }
+
+
+/* HTML x ticks (opt-in via BarChart `htmlXLabelClass`). */
+.mf-chart-html-ticks {
+  position: absolute;
+  bottom: 0;
+  display: flex;
+  align-items: flex-start;
+  pointer-events: none;
+}
+.mf-chart-html-ticks > * {
+  display: block;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Tooltip ───────────────────────────────────────────────────────────── */
+.mf-chart-tooltip {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  min-width: 120px;
+  max-width: 260px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--chart-tooltip-bg);
+  border: 1px solid var(--chart-tooltip-border);
+  box-shadow: var(--shadow-2);
+  color: var(--mf-text);
+  font-size: var(--fs-xs);
+  line-height: var(--leading-normal);
+}
+.mf-chart-tooltip-title {
+  font-weight: 650;
+  margin-bottom: var(--space-1);
+  color: var(--mf-text);
+}
+.mf-chart-tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-variant-numeric: tabular-nums;
+}
+.mf-chart-tooltip-key { color: var(--mf-text-dim); }
+.mf-chart-tooltip-note {
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--chart-tooltip-border);
+  color: var(--mf-text-dim);
+}
+
+/* ── Legend ────────────────────────────────────────────────────────────── */
+.mf-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  font-size: var(--fs-xs);
+  color: var(--mf-text-dim);
+}
+.mf-chart-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.mf-chart-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
+}
+
+/* ── Horizontal / signed variants ──────────────────────────────────────── */
+.mf-chart-zero { stroke: var(--chart-axis); stroke-width: 1.5; shape-rendering: crispEdges; }
+.mf-chart-row-label {
+  fill: var(--mf-text);
+  font-size: 12px;
+  dominant-baseline: middle;
+}
+.mf-chart-row-value {
+  fill: var(--mf-text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  dominant-baseline: middle;
+  font-weight: 600;
+}
+.mf-chart-row-note {
+  fill: var(--mf-text-dim);
+  font-size: 10px;
+  dominant-baseline: middle;
+  font-variant-numeric: tabular-nums;
+}
+.mf-chart-pole {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  fill: var(--mf-text-dim);
+}
+
+.mf-chart-empty {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--mf-text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--leading-relaxed);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+/* ── TMT gauge ─────────────────────────────────────────────────────────── */
+.mf-tmt { display: grid; gap: var(--space-4); }
+.mf-tmt-formula {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--mf-text-dim);
+  letter-spacing: 0.02em;
+}
+.mf-tmt-headline {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.mf-tmt-value {
+  font-size: var(--fs-2xl);
+  font-weight: 650;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--mf-text);
+}
+/* The components share the card's full measure. Capping them left a wide dead
+   margin on the right of a full-row card, which read as a broken column. */
+.mf-tmt-components { display: grid; gap: var(--space-2); }
+.mf-tmt-component {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--fs-sm);
+}
+.mf-tmt-component[data-dominant="true"] .mf-tmt-component-label { color: var(--mf-text); font-weight: 650; }
+.mf-tmt-component-label { color: var(--mf-text-dim); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.mf-tmt-component-value { text-align: right; font-variant-numeric: tabular-nums; color: var(--mf-text); }
+.mf-tmt-track {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--chart-track);
+  overflow: hidden;
+}
+/* Dominant barrier: outlined, never recoloured. */
+.mf-tmt-component[data-dominant="true"] .mf-tmt-track {
+  box-shadow: 0 0 0 2px var(--warn);
+  margin: 2px 0;
+}
+.mf-tmt-fill { height: 100%; border-radius: var(--radius-pill); transition: width 0.4s ease; }
+.mf-tmt-note { font-size: var(--fs-xs); color: var(--mf-text-dim); line-height: var(--leading-relaxed); }
+
+/* ── Posterior (Beta) bars ─────────────────────────────────────────────── */
+.mf-posterior { display: grid; gap: var(--space-3); }
+.mf-posterior-row {
+  display: grid;
+  grid-template-columns: minmax(84px, 132px) minmax(0, 1fr) 58px;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--fs-sm);
+}
+.mf-posterior-label {
+  color: var(--mf-text-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mf-posterior-row[data-chosen="true"] .mf-posterior-label { color: var(--mf-text); font-weight: 650; }
+.mf-posterior-track {
+  position: relative;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  background: var(--chart-track);
+}
+.mf-posterior-ci {
+  position: absolute;
+  top: 50%;
+  height: 3px;
+  transform: translateY(-50%);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--mf-text-dim) 55%, transparent);
+}
+.mf-posterior-row[data-chosen="true"] .mf-posterior-ci {
+  background: color-mix(in srgb, var(--good) 55%, transparent);
+}
+.mf-posterior-mean {
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--mf-text-dim);
+  box-shadow: 0 0 0 2px var(--color-bg-elevated);
+}
+.mf-posterior-row:not([data-chosen="true"]) .mf-posterior-mean,
+.mf-posterior-row:not([data-chosen="true"]) .mf-posterior-ci { opacity: 0.4; }
+.mf-posterior-row[data-chosen="true"] .mf-posterior-mean { background: var(--good); }
+.mf-posterior-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--mf-text);
+}
+.mf-posterior-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  font-size: var(--fs-xs);
+  color: var(--mf-text-dim);
+}
+
+@media (max-width: 700px) {
+  .mf-tmt-component { grid-template-columns: 72px minmax(0, 1fr) 36px; }
+  /* At 375px the badge forces "D 延迟" onto two lines; the track outline plus
+     the legend already carry "this is the bottleneck". */
+  .mf-tmt-component-label .badge { display: none; }
+  .mf-posterior-row { grid-template-columns: minmax(70px, 96px) minmax(0, 1fr) 48px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mf-chart-bar,
+  .mf-tmt-fill { transition-duration: 0.01ms; }
+}

@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
+from mindflow.domain.feature_labels import feature_label
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 from mindflow.domain.prediction import (
     MIN_COVERAGE_RATIO,
@@ -33,7 +34,10 @@ from mindflow.domain.prediction import (
     FocusPrediction,
     FocusPredictionStatus,
 )
+from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.time_utils import resolve_timezone
+from mindflow.train.local_explanation import LocalExplainer
 from mindflow.train.models.manager import ModelManager
 
 # How many seconds of feature windows to fetch per ``predict_latest`` call
@@ -55,15 +59,26 @@ class FocusPredictionService:
         model_manager: Active model manager, or None (no_model state).
             Can be attached later via ``attach_model_manager()`` to
             support lazy loading after service construction.
+        baseline_repository: Optional repository for the user's personal
+            baseline. When present, each explanation contribution also reports
+            the expected value for the current local (hour, weekday) bucket;
+            absent, ``baseline_value`` is simply null.
     """
 
     def __init__(
         self,
         telemetry_repository: TelemetryRepository,
         model_manager: ModelManager | None = None,
+        baseline_repository: BaselineRepository | None = None,
     ) -> None:
         self._telemetry_repo = telemetry_repository
         self._model_manager = model_manager
+        self._baseline_repo = baseline_repository
+        #: One explainer per model version. TreeExplainer construction costs
+        #: 10–20 ms, so rebuilding it per request would dominate a 30 ms
+        #: explanation; keying on the version prevents a stale model serving
+        #: another version's SHAP values after a hot reload.
+        self._explainers: dict[str, LocalExplainer] = {}
 
     def attach_model_manager(self, model_manager: ModelManager) -> None:
         """Attach or replace the active model manager.
@@ -149,10 +164,12 @@ class FocusPredictionService:
         ):
             return FocusPrediction(status="no_model", reason="未加载 ML 模型")
 
+        baseline_values = await self._baseline_values(user_id, windows)
+
         # Offload CPU-bound numpy/sklearn inference to a worker thread so the
         # event loop is not blocked for concurrent HTTP requests (audit report).
         return await asyncio.to_thread(
-            self._predict_from_windows, windows, now, model_manager
+            self._predict_from_windows, windows, now, model_manager, baseline_values
         )
 
     async def predict_range(
@@ -224,7 +241,12 @@ class FocusPredictionService:
             return FocusPrediction(status="no_model", reason="未加载 ML 模型")
 
         return await asyncio.to_thread(
-            self._predict_from_windows, windows, now, model_manager
+            self._predict_from_windows,
+            windows,
+            now,
+            model_manager,
+            None,
+            False,
         )
 
     # ══════════════════════════════════════════════════════════════════════
@@ -236,12 +258,26 @@ class FocusPredictionService:
         windows: Sequence[dict[str, Any]],
         now: datetime,
         model_manager: ModelManager,
+        baseline_values: dict[str, float] | None = None,
+        explain: bool = True,
     ) -> FocusPrediction:
         """Run batch ML inference on a list of feature window rows.
 
         All degenerate states (schema mismatch, NaN features, inference
         errors) are captured as ``FocusPrediction`` status values — this
         method never raises.
+
+        Args:
+            windows: Feature window rows, ascending by start.
+            now: Reference time for staleness.
+            model_manager: The active model manager.
+            baseline_values: Per-feature personal-baseline expectations for the
+                current bucket, attached to each contribution as
+                ``baseline_value``.
+            explain: Whether to compute the local explanation. The focus-
+                prediction endpoint needs it; ``predict_range`` (panel evidence)
+                does not read it and SHAP would add tens of milliseconds per
+                build, so it opts out.
         """
         model_version = model_manager.current_version_tag
 
@@ -314,7 +350,10 @@ class FocusPredictionService:
         if matrix.ndim != 2 or matrix.shape[1] != len(V2_FEATURE_NAMES):
             return FocusPrediction(
                 status="schema_mismatch",
-                reason=f"特征矩阵形状异常：{matrix.shape}（期望 24 列）",
+                reason=(
+                    f"特征矩阵形状异常：{matrix.shape}"
+                    f"（期望 {len(V2_FEATURE_NAMES)} 列）"
+                ),
                 model_version=model_version,
                 window_count=window_count,
             )
@@ -408,6 +447,13 @@ class FocusPredictionService:
             logger.debug("Failed to compute top features, returning empty")
             top_factors = []
 
+        # ── Local explanation (contract §1) ─────────────────────────────
+        explanation: dict[str, Any] | None = None
+        if explain:
+            explanation = self._explain(
+                model_manager, matrix, focus_probas, baseline_values
+            )
+
         # ── Determine status ────────────────────────────────────────────
         status: FocusPredictionStatus = "ready"
         reason = ""
@@ -437,8 +483,107 @@ class FocusPredictionService:
             newest_window_start_utc=newest_window_start,
             top_factors=top_3,
             explanation_method="global_importance_times_observation",
+            explanation=explanation,
             reason=reason,
         )
+
+    def _explain(
+        self,
+        model_manager: ModelManager,
+        matrix: np.ndarray[Any, Any],
+        focus_probas: np.ndarray[Any, Any],
+        baseline_values: dict[str, float] | None,
+    ) -> dict[str, Any] | None:
+        """Serialise a :class:`LocalExplanation` for the response payload.
+
+        Returns None when no explanation could be produced, so the contract
+        field stays absent instead of carrying an empty-but-present object.
+        """
+        try:
+            explainer = self._explainer_for(model_manager)
+            local = explainer.explain(
+                matrix,
+                list(V2_FEATURE_NAMES),
+                focus_probas=focus_probas,
+                baseline_values=baseline_values,
+            )
+        except Exception as exc:
+            # ``LocalExplainer`` already degrades internally; this is the
+            # belt-and-braces path for anything it does not catch.
+            logger.opt(exception=True).warning(
+                "FocusPredictionService: local explanation failed: {}", exc
+            )
+            return None
+        if local.method == "unavailable" or not local.contributions:
+            return None
+        return {
+            "method": local.method,
+            "base_value": local.base_value,
+            "output_space": local.output_space,
+            "contributions": [
+                {
+                    "feature": item.feature,
+                    "label": feature_label(item.feature),
+                    "value": item.value,
+                    "baseline_value": item.baseline_value,
+                    "contribution": item.contribution,
+                }
+                for item in local.contributions
+            ],
+            "note": local.note,
+        }
+
+    def _explainer_for(self, model_manager: ModelManager) -> LocalExplainer:
+        """Cached ``LocalExplainer`` for the manager's current model version."""
+        version = model_manager.current_version_tag or "unknown"
+        explainer = self._explainers.get(version)
+        if explainer is None:
+            explainer = LocalExplainer(model_manager.classifier)
+            # A hot reload can change the model without changing the tag in a
+            # test fixture; keep only the newest entry so a stale one cannot
+            # outlive its model.
+            self._explainers = {version: explainer}
+        return explainer
+
+    async def _baseline_values(
+        self,
+        user_id: int,
+        windows: Sequence[dict[str, Any]],
+    ) -> dict[str, float] | None:
+        """Personal-baseline expectations for the newest window's bucket.
+
+        Contract §1 wants each contribution's ``baseline_value`` "for the same
+        time of day". The bucket is the local (hour, weekday) of the newest
+        window — the one the prediction is about — resolved in the baseline's
+        own timezone, the same rule ``EvidenceBundleBuilder`` uses.
+
+        Returns None (not an empty dict) when there is no baseline repository,
+        no stored baseline, or no timestamp to bucket on, so the payload
+        reports "unknown" rather than "zero".
+        """
+        if self._baseline_repo is None or not windows:
+            return None
+        try:
+            baseline = await self._baseline_repo.get_latest(user_id)
+        except Exception as exc:
+            logger.warning(
+                "FocusPredictionService: baseline load failed: {}", exc
+            )
+            return None
+        if baseline is None:
+            return None
+
+        bucket = _local_bucket(windows[-1], baseline.timezone)
+        if bucket is None:
+            return None
+        hour, dow = bucket
+
+        values: dict[str, float] = {}
+        for name in V2_FEATURE_NAMES:
+            estimate = baseline.shrunk_expected(name, hour, dow)
+            if estimate is not None:
+                values[name] = float(estimate["expected"])
+        return values or None
 
     async def check_health(self) -> dict[str, Any]:
         """Return a health-check summary of the prediction service.
@@ -484,6 +629,28 @@ def _parse_window_end(row: dict[str, Any]) -> datetime | None:
         return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
     except (ValueError, TypeError):
         return None
+
+
+def _local_bucket(
+    row: dict[str, Any], timezone: Any
+) -> tuple[int, int] | None:
+    """Local (hour, weekday) of *row*'s window start in *timezone*.
+
+    ``BaselineModel`` buckets in the user's business timezone, so reading
+    ``window_start_utc.hour`` directly would query the wrong bucket (an 8-hour
+    offset for Asia/Shanghai). Returns None when the row has no usable start.
+    """
+    start = row.get("window_start_utc")
+    if not start:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    local = dt.astimezone(resolve_timezone(timezone))
+    return local.hour, local.weekday()
 
 
 def _window_ends_after(row: dict[str, Any], threshold: datetime) -> bool:

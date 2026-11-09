@@ -65,6 +65,10 @@ class PanelResponse(BaseModel):
     insufficient_data: bool = False
     uncertainty: float | None = None
     evidence_gaps: list[str] = Field(default_factory=list)
+    #: Contract §2 / §3 — nullable so cached rows written before these
+    #: features existed still serialize.
+    deviation: DeviationSummary | None = None
+    tmt: TmtBreakdownModel | None = None
 
 
 InterventionIntensityValue = Literal["gentle", "standard", "strict"]
@@ -90,6 +94,35 @@ class InterventionFeedbackRequest(BaseModel):
     comment: str | None = None
 
 
+class InterventionRationaleCandidate(BaseModel):
+    """One arm's posterior at selection time (contract §4)."""
+
+    intervention_type: str
+    label: str
+    alpha: float
+    beta: float
+    posterior_mean: float
+    sample: float
+    chosen: bool
+
+
+class InterventionRationaleModel(BaseModel):
+    """Why the intervention engine chose this intervention (contract §4).
+
+    ``selection`` is ``thompson_sampling`` when the bandit decided and
+    ``rule`` when the theory's primary candidate was used (cold start or an
+    explicit manual trigger).
+    """
+
+    procrastination_type: str | None = None
+    intervention_type: str
+    selection: Literal["thompson_sampling", "rule"]
+    context_bucket: str
+    candidates: list[InterventionRationaleCandidate] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    note: str
+
+
 class InterventionPayload(BaseModel):
     id: str
     intervention_type: str
@@ -97,6 +130,7 @@ class InterventionPayload(BaseModel):
     message: str
     dismissible: bool
     created_at: datetime
+    rationale: InterventionRationaleModel | None = None
 
 
 class InterventionTriggerResponse(BaseModel):
@@ -436,6 +470,46 @@ class WeeklyReportResponse(BaseModel):
 # ── Focus prediction schemas ─────────────────────────────────────────────
 
 
+class ExplanationContribution(BaseModel):
+    """One feature's additive contribution to a focus prediction.
+
+    ``contribution`` is signed on the model's *output* scale: positive pushes
+    the prediction toward "focus", negative toward "distraction". The values
+    are Shapley values (Lundberg & Lee 2017), so they are locally additive:
+    ``base_value + Σ contribution`` reproduces the model output for this
+    window up to the explainer's numerical tolerance.
+    """
+
+    feature: str
+    label: str
+    value: float
+    baseline_value: float | None = None
+    contribution: float
+
+
+class Explanation(BaseModel):
+    """Local explanation of a single ``focus_probability`` (contract §1).
+
+    ``method`` states honestly how the numbers were produced:
+    ``tree_shap`` for the tree ensemble (TreeSHAP, Lundberg et al. 2020),
+    ``linear`` for the logistic-regression fallback (coefficient × deviation
+    from the training mean), ``unavailable`` when the loaded model offers no
+    faithful local decomposition — in which case ``contributions`` is empty
+    rather than a plausible-looking approximation.
+
+    ``output_space`` says what ``base_value`` and ``contribution`` are
+    measured in. ``probability`` means the calibrated probability of "focus";
+    ``logit`` means the model's raw log-odds, which the sigmoid maps to that
+    probability. The two are never mixed within one response.
+    """
+
+    method: Literal["tree_shap", "linear", "unavailable"]
+    base_value: float | None = None
+    output_space: Literal["probability", "logit"]
+    contributions: list[ExplanationContribution] = Field(default_factory=list)
+    note: str = ""
+
+
 class FocusPredictionResponse(BaseModel):
     """Canonical typed response for ``GET /telemetry/focus-prediction``.
 
@@ -445,12 +519,147 @@ class FocusPredictionResponse(BaseModel):
     ``domain/prediction.py``. ``mode`` is preserved as-is (e.g.
     ``"rule_engine_only"``) and ``reason`` carries the human-readable
     explanation.
+
+    ``explanation`` is the optional local attribution (contract §1). It is
+    ``None`` whenever no prediction was produced, so clients can treat its
+    absence as "nothing to explain".
     """
 
     focus_probability: float | None = Field(ge=0.0, le=1.0)
     status: FocusPredictionStatus
     mode: str
     reason: str
+    explanation: Explanation | None = None
+
+
+# ── Personal baseline deviation (contract §2) ────────────────────────────
+
+
+DeviationSeverity = Literal["normal", "mild", "moderate", "severe"]
+
+
+class DeviationFeature(BaseModel):
+    """One feature's robust deviation from the personal baseline."""
+
+    feature: str
+    label: str
+    value: float
+    expected: float
+    robust_z: float
+    weight: float
+
+
+class DeviationBucket(BaseModel):
+    """The (hour, weekday) bucket the deviation was measured against.
+
+    ``shrinkage`` is ``k / (n + k)``, the empirical-Bayes weight the global
+    estimate keeps in this bucket's expectation (Efron & Morris 1975). It is
+    1.0 for an unseen bucket and falls toward 0 as the bucket fills.
+    """
+
+    hour_of_day: int = Field(ge=0, le=23)
+    day_of_week: int = Field(ge=0, le=6)
+    n_samples: int = Field(ge=0)
+    shrinkage: float = Field(ge=0.0, le=1.0)
+
+
+class DeviationSummary(BaseModel):
+    """Personal-baseline deviation summary (contract §2).
+
+    ``method`` is pinned to ``eb_shrinkage_mad``: an empirical-Bayes shrunk
+    median as the expected value and MAD·1.4826 as the scale, so a handful of
+    extreme days cannot mask a real deviation. ``features`` is ordered by
+    ``|robust_z| · weight`` descending and capped at 6.
+    """
+
+    overall_score: float = Field(ge=0.0)
+    severity: DeviationSeverity
+    method: Literal["eb_shrinkage_mad"] = "eb_shrinkage_mad"
+    bucket: DeviationBucket
+    features: list[DeviationFeature] = Field(default_factory=list)
+
+
+# ── Proactive-learning feedback requests (contract §5) ───────────────────
+
+
+FeedbackAnswerLabel = Literal["focus", "distracted", "skip"]
+FeedbackAnswerStatus = Literal["recorded", "skipped", "expired"]
+
+
+class FeedbackRequestModel(BaseModel):
+    """One question about a 15-minute window (WS ``data``, or a list item).
+
+    ``probability`` is nullable because the prompt is still worth asking when
+    the model could not produce a number — the *reason* to ask (e.g. a rule/ML
+    conflict) can exist independently of a probability.
+    """
+
+    request_id: str
+    window_start: str
+    window_end: str
+    probability: float | None = Field(default=None, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list)
+    prompt: str
+
+
+class PendingFeedbackRequestsResponse(BaseModel):
+    """``GET /telemetry/feedback-requests/pending`` — at most one item."""
+
+    items: list[FeedbackRequestModel] = Field(default_factory=list)
+
+
+class FeedbackAnswerRequest(BaseModel):
+    """``POST /telemetry/feedback-requests/{request_id}/answer`` body."""
+
+    label: FeedbackAnswerLabel
+
+
+class FeedbackAnswerResponse(BaseModel):
+    """Answer acknowledgement; ``labeled_windows`` is 0 for skip/expired."""
+
+    request_id: str
+    labeled_windows: int = Field(ge=0)
+    status: FeedbackAnswerStatus
+
+
+# ── TMT motivation decomposition (contract §3) ───────────────────────────
+
+
+MotivationLevel = Literal["low", "medium", "high"]
+TmtBarrier = Literal["expectancy", "value", "impulsiveness", "delay"]
+
+
+class TmtComponentModel(BaseModel):
+    """One TMT factor: a bounded proxy score plus its provenance."""
+
+    score: float = Field(ge=0.0, le=1.0)
+    raw: float | None = None
+    label: str
+    source: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class TmtComponentsModel(BaseModel):
+    """The four TMT factors (contract §3)."""
+
+    expectancy: TmtComponentModel
+    value: TmtComponentModel
+    impulsiveness: TmtComponentModel
+    delay: TmtComponentModel
+
+
+class TmtBreakdownModel(BaseModel):
+    """TMT decomposition ``E·V/(1+I·D)`` over behavioural proxies.
+
+    ``note`` always states that these are behavioural proxies — not a
+    psychometric measurement and not a clinical assessment.
+    """
+
+    motivation: float = Field(ge=0.0, le=1.0)
+    motivation_level: MotivationLevel
+    dominant_barrier: TmtBarrier
+    components: TmtComponentsModel
+    note: str
 
 
 # ── Task schemas (smart-prioritization data source) ───────────────────────

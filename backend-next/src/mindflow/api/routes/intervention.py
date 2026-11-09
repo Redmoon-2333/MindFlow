@@ -111,6 +111,8 @@ async def trigger_intervention(
             "message": result.intervention.message,
             "dismissible": result.intervention.dismissible,
             "created_at": result.intervention.created_at,
+            # Contract §4 — why the engine picked this intervention.
+            "rationale": result.rationale,
         },
         "skipped": False,
     })

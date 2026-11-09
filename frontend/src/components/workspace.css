@@ -1,16 +1,12 @@
 .workspace-page {
   width: 100%; max-width: 1440px; margin: 0 auto;
-  padding: 36px 45px 56px; --workspace-gap: 24px;
+  padding: var(--space-6) var(--space-6) var(--space-8); --workspace-gap: var(--space-6);
 }
-.workspace-heading { margin-bottom: 32px; }
-.workspace-kicker { color: var(--mf-text-dim); font-size: 11px; letter-spacing: .16em; margin-bottom: 12px; }
-.workspace-heading h1 { font-size: 28px; font-weight: 600; color: var(--mf-text); line-height: 1.4; }
-.workspace-heading p { margin-top: 10px; color: var(--color-text-secondary); font-size: 14px; line-height: 1.8; max-width: 680px; }
 .workspace-page .card, .workspace-page .stat-card {
-  background: var(--mf-panel); border: 1px solid var(--mf-panel-border); border-radius: 20px;
-  padding: 28px; min-width: 0;
+  background: var(--mf-panel); border: 1px solid var(--mf-panel-border); border-radius: var(--radius-lg);
+  padding: var(--space-5); min-width: 0;
 }
-.workspace-page .card h3 { font-size: 18px; font-weight: 600; margin-bottom: 18px; }
+.workspace-page .card h3 { font-size: var(--fs-md); font-weight: 600; margin-bottom: var(--space-4); }
 .workspace-page p { line-height: 1.85; overflow-wrap: anywhere; }
 .workspace-page .flex-between { gap: 16px; flex-wrap: wrap; }
 .workspace-page .flex { flex-wrap: wrap; }
@@ -36,14 +32,14 @@
 .workspace-stack { display: grid; gap: var(--workspace-gap); }
 .workspace-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .workspace-note { color: var(--color-text-secondary); font-size: 13px; line-height: 1.85; margin-bottom: 20px; }
-.workspace-empty { padding: 40px 24px; text-align: center; color: var(--color-text-secondary); border: 1px dashed var(--color-border); border-radius: 16px; line-height: 1.9; }
+.workspace-empty { padding: var(--space-8) var(--space-6); text-align: center; color: var(--color-text-secondary); border: 1px dashed var(--color-border); border-radius: var(--radius-lg); line-height: var(--leading-relaxed); }
 .workspace-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 24px; }
 .workspace-field { display: grid; gap: 8px; font-size: 13px; color: var(--color-text-secondary); min-width: 0; }
 .workspace-full { grid-column: 1 / -1; }
 .workspace-table { width: 100%; overflow-x: auto; }
 .workspace-table table { min-width: 620px; }
 .workspace-table .badge { white-space: nowrap; overflow-wrap: normal; }
-.workspace-details { background: var(--color-bg-inset); border: 1px solid var(--color-border); border-radius: 14px; padding: 18px 20px; }
+.workspace-details { background: var(--color-bg-inset); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 18px 20px; }
 .workspace-details > summary { cursor: pointer; color: var(--mf-text); font-size: 14px; font-weight: 600; line-height: 1.8; }
 .workspace-details > summary + * { margin-top: 20px; }
 .workspace-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 24px; color: var(--color-text-secondary); font-size: 13px; }
@@ -55,28 +51,28 @@
 .settings-nav { padding: 4px 0; }
 .settings-classification-form { display: grid; grid-template-columns: 1.2fr 1.2fr 1fr 90px auto; gap: 12px; margin-bottom: 24px; align-items: end; }
 .settings-retention { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 24px; }
-.settings-switch { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 20px; border: 1px solid var(--color-border); border-radius: 14px; }
+.settings-switch { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 20px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
 .settings-switch strong { display: block; margin-bottom: 8px; }
 .settings-switch span { line-height: 1.8; }
 .panel-results { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 24px; }
 .panel-results > .workspace-full { grid-column: 1 / -1; }
 .panel-confidence { display: grid; gap: 24px; }
-.panel-confidence-track { height: 6px; background: var(--color-bg-inset); border-radius: 8px; overflow: hidden; margin-top: 12px; }
+.panel-confidence-track { height: 6px; background: var(--color-bg-inset); border-radius: var(--radius-pill); overflow: hidden; margin-top: 12px; }
 .panel-transcript { display: grid; gap: 14px; }
 .workspace-page .chat-layout { grid-template-columns: 240px minmax(0, 1fr); gap: 24px; height: calc(100dvh - 255px); min-height: 520px; }
 .workspace-page .chat-bubble { padding: 16px 20px; line-height: 1.9; max-width: 90%; }
 .workspace-page .chat-main { padding: 24px; }
 .workspace-page .chat-starters { display: grid; gap: 12px; width: min(100%, 480px); text-align: center; }
 .workspace-page .chat-starters p { margin-bottom: 8px; }
-.workspace-page .mc-gate { padding: 16px; gap: 16px; background: var(--color-bg-inset); border-radius: 12px; }
+.workspace-page .mc-gate { padding: 16px; gap: 16px; background: var(--color-bg-inset); border-radius: var(--radius-md); }
 .workspace-page .mc-gate .gate-detail { line-height: 1.8; }
 @media (max-width: 1100px) {
-  .workspace-page { padding: 28px; }
+  .workspace-page { padding: var(--space-6); }
   .settings-classification-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workspace-page .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 700px) {
-  .workspace-page { padding: 24px 16px 40px; }
+  .workspace-page { padding: var(--space-4); }
   .workspace-heading { margin-bottom: 24px; }
   .workspace-heading h1 { font-size: 24px; }
   .workspace-page .card { padding: 22px 18px; }

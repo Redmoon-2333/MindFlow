@@ -11,6 +11,7 @@ const terms: Record<string, string> = {
   insufficient_classes: "标签类别不足", not_evaluated: "未评估", not_implemented: "未实现",
   v2_models_not_loaded: "尚未加载个人模型", rule_engine_only: "仅规则引擎",
   running: "运行中", stopped: "已停止", disabled: "已关闭", ready: "就绪", shadow: "影子模式",
+  personal_model: "个人模型", demo_v4: "演示模型",
 };
 
 /** Keep unknown/free-form values intact; labels only affect presentation. */

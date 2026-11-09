@@ -51,6 +51,7 @@ from mindflow.services.autonomy_service import AutonomyService
 from mindflow.services.chat_service import ChatService
 from mindflow.services.collector_service import CollectorService
 from mindflow.services.effectiveness_service import EffectivenessService
+from mindflow.services.feedback_request_service import FeedbackRequestStore
 from mindflow.services.intervention_service import InterventionService
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
@@ -183,6 +184,11 @@ def get_baseline_repo(request: Request) -> BaselineRepository:
 
 def get_telemetry_service(request: Request) -> TelemetryService:
     return cast(TelemetryService, request.app.state.telemetry_service)
+
+
+def get_feedback_request_store(request: Request) -> FeedbackRequestStore:
+    """Return the proactive-learning store from app.state (contract §5)."""
+    return cast(FeedbackRequestStore, request.app.state.feedback_request_store)
 
 
 def get_task_repo(request: Request) -> SQLAlchemyTaskRepository:

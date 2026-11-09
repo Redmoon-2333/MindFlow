@@ -24,8 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.events import make_event
-from mindflow.domain.feature_schema import V2_FEATURE_NAMES
+from mindflow.domain.evidence_facts import build_evidence_catalog
+from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
 from mindflow.domain.features import MAX_ACCEPTABLE_SWITCHES_PER_HOUR
+from mindflow.domain.tasks import Task
+from mindflow.domain.tmt import PRIOR, deviation_z_mean
+from mindflow.infrastructure.database import create_session_factory
 from mindflow.infrastructure.repositories.activity import (
     SQLAlchemyActivityRepository,
     activity_events,
@@ -34,11 +38,19 @@ from mindflow.infrastructure.repositories.intervention import (
     InterventionLogRepository,
     intervention_logs,
 )
+from mindflow.infrastructure.repositories.tasks import SQLAlchemyTaskRepository
+from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.infrastructure.schema import (
+    behavior_feature_windows,
+    focus_session_feedback,
+)
 from mindflow.services.evidence_service import (
     EvidenceBundleBuilder,
     _block_severity,
     _deviation_severity,
     _focus_severity,
+    _hours_to_deadline,
+    _select_value_task,
     _switch_severity,
     baseline_models_metadata,
 )
@@ -55,6 +67,22 @@ def _local_utc(hour: int, dow: int, day: int) -> datetime:
     return (local + timedelta(days=shift)).astimezone(UTC)
 
 
+def _v2_features(
+    *,
+    app_switch_count: float = 10.0,
+    idle_ratio: float = 0.05,
+    active_seconds_ratio: float = 0.5,
+) -> dict[str, float]:
+    """Full V2 feature vector with the scored features overridden."""
+    features = {name: 0.0 for name in V2_FEATURE_NAMES}
+    features.update({
+        "app_switch_count": app_switch_count,
+        "idle_ratio": idle_ratio,
+        "active_seconds_ratio": active_seconds_ratio,
+    })
+    return features
+
+
 def _v2_row(
     start_utc: datetime,
     *,
@@ -64,12 +92,11 @@ def _v2_row(
     process_name: str = "code.exe",
 ) -> dict[str, Any]:
     """V2 feature-window row at the given UTC window start."""
-    features = {name: 0.0 for name in V2_FEATURE_NAMES}
-    features.update({
-        "app_switch_count": app_switch_count,
-        "idle_ratio": idle_ratio,
-        "active_seconds_ratio": active_seconds_ratio,
-    })
+    features = _v2_features(
+        app_switch_count=app_switch_count,
+        idle_ratio=idle_ratio,
+        active_seconds_ratio=active_seconds_ratio,
+    )
     return {
         "window_start_utc": start_utc,
         "features_json": json.dumps(features),
@@ -94,6 +121,7 @@ async def all_tables(engine):
         await conn.run_sync(activity_events.metadata.create_all)
         await conn.run_sync(intervention_logs.metadata.create_all)
         await conn.run_sync(baseline_models_metadata.create_all)
+        await conn.run_sync(behavior_feature_windows.metadata.create_all)
 
 
 @pytest.fixture
@@ -478,6 +506,117 @@ class TestSufficientBaseline:
         bundle = await builder.build(1, _WINDOW_START, _WINDOW_END)
         deviation_items = [i for i in bundle.items if i.metric == "behavior_deviation"]
         assert len(deviation_items) >= 1
+
+
+class TestStoredWindowDeviation:
+    """Deviation is scored against the newest persisted 5-minute V2 window.
+
+    The pre-B0(b) builder scored a hand-rolled 30-minute event row against a
+    baseline of 5-minute V2 windows whose vocabulary only overlapped at
+    ``idle_ratio``, so every score was capped near zero. These tests pin the
+    fixed contract: the stored window (same vector the classifier sees) is the
+    scored input, and it is bucketed in the baseline's own timezone.
+    """
+
+    #: _WINDOW_START is 2026-07-18T08:00Z == 16:00 Asia/Shanghai on a Saturday.
+    _LOCAL_HOUR = 16
+    _LOCAL_DOW = 5
+
+    @staticmethod
+    def _baseline_for_window() -> BaselineModel:
+        """Varied history in the bucket the stored window falls into."""
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        start = _WINDOW_START
+        for i in range(40):
+            model.update(
+                [
+                    _v2_row(
+                        start - timedelta(days=7 * (i // 10)),
+                        app_switch_count=10.0 + (i % 5) * 2.0,
+                        idle_ratio=0.05 + (i % 3) * 0.01,
+                        active_seconds_ratio=0.5 + (i % 2) * 0.1,
+                    )
+                ]
+            )
+        return model
+
+    @staticmethod
+    async def _store_window(
+        session_factory: async_sessionmaker[AsyncSession],
+        start: datetime,
+        **features: float,
+    ) -> None:
+        repo = TelemetryRepository(session_factory=session_factory)
+        await repo.save_feature_window(
+            user_id=1,
+            window_start_utc=start,
+            window_end_utc=start + timedelta(minutes=5),
+            feature_schema_version=FEATURE_SCHEMA_VERSION,
+            features_json=json.dumps(_v2_features(**features)),
+        )
+
+    @staticmethod
+    def _builder(
+        activity_repo: SQLAlchemyActivityRepository,
+        intervention_repo: InterventionLogRepository,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> EvidenceBundleBuilder:
+        return EvidenceBundleBuilder(
+            activity_repo=activity_repo,
+            intervention_repo=intervention_repo,
+            session_factory=session_factory,
+            telemetry_repo=TelemetryRepository(session_factory=session_factory),
+        )
+
+    async def test_normal_stored_window_reports_eb_summary(
+        self,
+        activity_repo: SQLAlchemyActivityRepository,
+        intervention_repo: InterventionLogRepository,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """A typical stored window → a summary whose severity is normal."""
+        await _insert_baseline(session_factory, self._baseline_for_window())
+        await self._store_window(session_factory, _WINDOW_START, app_switch_count=14.0)
+
+        builder = self._builder(activity_repo, intervention_repo, session_factory)
+        bundle = await builder.build(1, _WINDOW_START, _WINDOW_END)
+
+        summary = bundle.deviation_summary
+        assert summary is not None
+        assert summary["method"] == "eb_shrinkage_mad"
+        assert summary["severity"] == "normal"
+        # Bucketed in Asia/Shanghai, not the naive UTC hour (08:00).
+        assert summary["bucket"]["hour_of_day"] == self._LOCAL_HOUR
+        assert summary["bucket"]["day_of_week"] == self._LOCAL_DOW
+
+        items = [i for i in bundle.items if i.metric == "behavior_deviation"]
+        assert len(items) == 1
+        assert items[0].severity == "info"
+
+    async def test_extreme_stored_window_reaches_non_normal_severity(
+        self,
+        activity_repo: SQLAlchemyActivityRepository,
+        intervention_repo: InterventionLogRepository,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """A 50x jump in switches must surface as an anomaly, not "normal"."""
+        await _insert_baseline(session_factory, self._baseline_for_window())
+        await self._store_window(session_factory, _WINDOW_START, app_switch_count=500.0)
+
+        builder = self._builder(activity_repo, intervention_repo, session_factory)
+        bundle = await builder.build(1, _WINDOW_START, _WINDOW_END)
+
+        summary = bundle.deviation_summary
+        assert summary is not None
+        assert summary["severity"] in {"moderate", "severe"}
+        assert summary["features"][0]["feature"] == "app_switch_count"
+        assert summary["features"][0]["robust_z"] > 4.0
+
+        items = [i for i in bundle.items if i.metric == "behavior_deviation"]
+        assert len(items) == 1
+        assert items[0].severity in {"moderate", "severe"}
+        # The readable text names the driving feature in Chinese.
+        assert "应用切换次数" in items[0].human_readable
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -931,3 +1070,254 @@ class TestSeverityBoundaries:
         """switch_severity 30.01 → moderate (just above mild threshold)."""
         from mindflow.services.evidence_service import _switch_severity
         assert _switch_severity(30.01) == "moderate"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tests — TMT decomposition wiring (contract §3)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestTmtWiring:
+    """``build()`` always computes TMT and attaches it to the bundle.
+
+    ``domain/tmt.py`` has its own unit tests for the arithmetic; these cover
+    the wiring: which repository reads feed which proxy, that a missing
+    repository degrades to the documented prior instead of inventing data,
+    and that exactly four citeable ``tmt_*`` items reach the evidence catalog.
+    """
+
+    async def test_always_produces_a_breakdown(self, builder: EvidenceBundleBuilder) -> None:
+        """Even with no feedback and no tasks, TMT is present and all-prior."""
+        await _insert_events(builder._activity_repo, _make_events(count=15))
+
+        bundle = await builder.build(1, _WINDOW_START, _WINDOW_END)
+        assert bundle.tmt is not None
+        payload = bundle.tmt.to_dict()  # type: ignore[union-attr]
+        # No telemetry repo and no task repo were injected → E and V are prior.
+        assert payload["components"]["expectancy"]["source"] == "先验（无近14天自评）"
+        assert payload["components"]["value"]["source"] == "先验"
+
+    async def test_exactly_four_tmt_items_reach_the_catalog(
+        self, builder: EvidenceBundleBuilder
+    ) -> None:
+        """One item per component, and every id is citeable."""
+        await _insert_events(builder._activity_repo, _make_events(count=15))
+
+        bundle = await builder.build(1, _WINDOW_START, _WINDOW_END)
+        tmt_items = [item for item in bundle.items if item.metric.startswith("tmt_")]
+        assert {item.metric for item in tmt_items} == {
+            "tmt_expectancy",
+            "tmt_value",
+            "tmt_impulsiveness",
+            "tmt_delay",
+        }
+        assert all(item.severity == "info" for item in tmt_items)
+
+        catalog_ids = {fact.id for fact in build_evidence_catalog(bundle)}
+        assert {
+            "focus.tmt_expectancy",
+            "focus.tmt_value",
+            "focus.tmt_impulsiveness",
+            "focus.tmt_delay",
+        } <= catalog_ids
+
+    async def test_recent_feedback_drives_expectancy(self, engine, all_tables: None) -> None:
+        """Self-reports inside the 14-day lookback raise E above the prior."""
+        factory = create_session_factory(engine)
+        telemetry = TelemetryRepository(session_factory=factory)
+        await telemetry.save_focus_feedback(1, "s1", "focused", 5, None)
+        await telemetry.save_focus_feedback(1, "s2", "focused", 5, None)
+
+        builder = EvidenceBundleBuilder(
+            activity_repo=SQLAlchemyActivityRepository(
+                session_factory=factory, pulsetime_s=10
+            ),
+            intervention_repo=InterventionLogRepository(session_factory=factory),
+            session_factory=factory,
+            telemetry_repo=telemetry,
+        )
+        await _insert_events(builder._activity_repo, _make_events(count=15))
+
+        # The feedback rows are stamped "now"; analyse a window ending now so
+        # they fall inside the lookback.
+        now = datetime.now(UTC)
+        bundle = await builder.build(1, now - timedelta(hours=4), now)
+        expectancy = bundle.tmt.to_dict()["components"]["expectancy"]  # type: ignore[union-attr]
+        assert expectancy["score"] > PRIOR
+        assert "2 次自评" in expectancy["source"]
+
+    async def test_old_feedback_is_excluded(self, engine, all_tables: None) -> None:
+        """A self-report older than 14 days does not drive E."""
+        factory = create_session_factory(engine)
+        telemetry = TelemetryRepository(session_factory=factory)
+        await telemetry.save_focus_feedback(1, "s1", "focused", 5, None)
+        # Push the row back beyond the lookback window.
+        async with factory() as session, session.begin():
+            await session.execute(
+                sa.update(focus_session_feedback).values(
+                    created_at=(_WINDOW_END - timedelta(days=30)).isoformat()
+                )
+            )
+
+        builder = EvidenceBundleBuilder(
+            activity_repo=SQLAlchemyActivityRepository(
+                session_factory=factory, pulsetime_s=10
+            ),
+            intervention_repo=InterventionLogRepository(session_factory=factory),
+            session_factory=factory,
+            telemetry_repo=telemetry,
+        )
+        await _insert_events(builder._activity_repo, _make_events(count=15))
+
+        bundle = await builder.build(1, _WINDOW_START, _WINDOW_END)
+        expectancy = bundle.tmt.to_dict()["components"]["expectancy"]  # type: ignore[union-attr]
+        assert expectancy["score"] == PRIOR
+        assert expectancy["source"] == "先验（无近14天自评）"
+
+    async def test_open_tasks_drive_value_and_delay(self, engine, all_tables: None) -> None:
+        """A high-priority task due soon raises V and lowers D."""
+        factory = create_session_factory(engine)
+        task_repo = SQLAlchemyTaskRepository(session_factory=factory)
+        await task_repo.create(
+            1,
+            "thesis draft",
+            priority=5,
+            deadline_utc=(_WINDOW_END + timedelta(hours=2)).isoformat(),
+        )
+        builder = EvidenceBundleBuilder(
+            activity_repo=SQLAlchemyActivityRepository(
+                session_factory=factory, pulsetime_s=10
+            ),
+            intervention_repo=InterventionLogRepository(session_factory=factory),
+            session_factory=factory,
+            task_repo=task_repo,
+        )
+        await _insert_events(builder._activity_repo, _make_events(count=15))
+
+        bundle = await builder.build(1, _WINDOW_START, _WINDOW_END)
+        components = bundle.tmt.to_dict()["components"]  # type: ignore[union-attr]
+        # priority 5 → 1.0, blended 0.7/0.3 with the productive share (code.exe
+        # is 100% productive here) → exactly 1.0.
+        assert components["value"]["score"] == pytest.approx(1.0)
+        # Two hours out → D = 2 / (2 + 24).
+        assert components["delay"]["score"] == pytest.approx(2.0 / 26.0, abs=1e-4)
+
+    async def test_done_tasks_are_ignored(self, engine, all_tables: None) -> None:
+        """Only pending / in_progress tasks feed the V and D proxies."""
+        factory = create_session_factory(engine)
+        task_repo = SQLAlchemyTaskRepository(session_factory=factory)
+        await task_repo.create(
+            1,
+            "already finished",
+            priority=5,
+            status="done",
+            deadline_utc=(_WINDOW_END + timedelta(hours=1)).isoformat(),
+        )
+        builder = EvidenceBundleBuilder(
+            activity_repo=SQLAlchemyActivityRepository(
+                session_factory=factory, pulsetime_s=10
+            ),
+            intervention_repo=InterventionLogRepository(session_factory=factory),
+            session_factory=factory,
+            task_repo=task_repo,
+        )
+        await _insert_events(builder._activity_repo, _make_events(count=15))
+
+        bundle = await builder.build(1, _WINDOW_START, _WINDOW_END)
+        components = bundle.tmt.to_dict()["components"]  # type: ignore[union-attr]
+        assert components["value"]["score"] == PRIOR
+        assert components["delay"]["score"] == PRIOR
+
+    async def test_missing_task_repo_degrades_without_raising(
+        self, builder: EvidenceBundleBuilder
+    ) -> None:
+        """No task repo is a prior, not an exception."""
+        await _insert_events(builder._activity_repo, _make_events(count=15))
+        bundle = await builder.build(1, _WINDOW_START, _WINDOW_END)
+        components = bundle.tmt.to_dict()["components"]  # type: ignore[union-attr]
+        assert components["value"]["source"] == "先验"
+        assert components["delay"]["source"] == "无截止时间"
+
+    def test_deviation_summary_feeds_impulsiveness(self) -> None:
+        """The I proxy reads the contract §2 payload rather than re-deriving it."""
+        assert deviation_z_mean(None) is None
+        payload = {
+            "features": [
+                {"feature": "app_switch_count", "robust_z": 3.0},
+                {"feature": "longest_segment_ratio", "robust_z": -1.0},
+            ]
+        }
+        assert deviation_z_mean(payload) == pytest.approx(2.0)
+
+
+class TestValueTaskSelection:
+    """``_select_value_task`` prefers the important task that is actually due."""
+
+    def test_important_task_due_soon_beats_important_task_far_out(self) -> None:
+        soon = Task(
+            id="a", user_id=1, title="soon", description="", priority=4,
+            status="pending", deadline_utc=_WINDOW_END + timedelta(days=2),
+            estimated_minutes=None, created_at=_WINDOW_END, updated_at=_WINDOW_END,
+        )
+        far = Task(
+            id="b", user_id=1, title="far", description="", priority=5,
+            status="pending", deadline_utc=_WINDOW_END + timedelta(days=30),
+            estimated_minutes=None, created_at=_WINDOW_END, updated_at=_WINDOW_END,
+        )
+        assert _select_value_task([far, soon], _WINDOW_END) is soon
+
+    def test_no_due_soon_task_falls_back_to_highest_priority(self) -> None:
+        low = Task(
+            id="a", user_id=1, title="low", description="", priority=2,
+            status="pending", deadline_utc=None,
+            estimated_minutes=None, created_at=_WINDOW_END, updated_at=_WINDOW_END,
+        )
+        high = Task(
+            id="b", user_id=1, title="high", description="", priority=5,
+            status="pending", deadline_utc=None,
+            estimated_minutes=None, created_at=_WINDOW_END, updated_at=_WINDOW_END,
+        )
+        assert _select_value_task([low, high], _WINDOW_END) is high
+
+    def test_ties_break_on_the_soonest_deadline(self) -> None:
+        later = Task(
+            id="a", user_id=1, title="later", description="", priority=3,
+            status="pending", deadline_utc=_WINDOW_END + timedelta(days=6),
+            estimated_minutes=None, created_at=_WINDOW_END, updated_at=_WINDOW_END,
+        )
+        sooner = Task(
+            id="b", user_id=1, title="sooner", description="", priority=3,
+            status="pending", deadline_utc=_WINDOW_END + timedelta(days=1),
+            estimated_minutes=None, created_at=_WINDOW_END, updated_at=_WINDOW_END,
+        )
+        assert _select_value_task([later, sooner], _WINDOW_END) is sooner
+
+    def test_empty_task_list_returns_none(self) -> None:
+        assert _select_value_task([], _WINDOW_END) is None
+
+
+class TestHoursToDeadline:
+    """The D proxy's raw input."""
+
+    @staticmethod
+    def _task(deadline: datetime | None) -> Task:
+        return Task(
+            id="x", user_id=1, title="t", description="", priority=3,
+            status="pending", deadline_utc=deadline,
+            estimated_minutes=None, created_at=_WINDOW_END, updated_at=_WINDOW_END,
+        )
+
+    def test_nearest_deadline_wins(self) -> None:
+        tasks = [
+            self._task(_WINDOW_END + timedelta(hours=50)),
+            self._task(_WINDOW_END + timedelta(hours=5)),
+            self._task(None),
+        ]
+        assert _hours_to_deadline(tasks, _WINDOW_END) == pytest.approx(5.0)
+
+    def test_overdue_is_negative(self) -> None:
+        task = self._task(_WINDOW_END - timedelta(hours=3))
+        assert _hours_to_deadline([task], _WINDOW_END) == pytest.approx(-3.0)
+
+    def test_no_deadlines_returns_none(self) -> None:
+        assert _hours_to_deadline([self._task(None)], _WINDOW_END) is None

@@ -1,4 +1,4 @@
-import { type Page } from "@playwright/test";
+import { type Page, type Route } from "@playwright/test";
 
 const task = { id: "task-1", title: "完成研究报告", description: "整理实验结果与图表", priority: 4, status: "pending", deadline_utc: "2026-10-02T04:00:00Z", estimated_minutes: 60, created_at: "2026-10-01T04:00:00Z", updated_at: "2026-10-01T04:00:00Z" };
 const panel = { types: ["task_aversion"], confidence: {task_aversion: .8}, technique: "把任务拆成一个十分钟的小步骤", rationale: "近期任务较大，先从容易开始的步骤入手。".repeat(5), dissent: ["目前的证据还不能排除正常休息。"], transcript: [{role:"analyst", round:1, content:"根据今天的记录，我们需要结合任务难度分析。".repeat(8)}], escalated:false, call_count:6, degraded:false, cached:false, insufficient_data:false, source:"panel", meta:{source:"panel", cached:false, degradation_path:[]} };
@@ -44,3 +44,152 @@ export async function setup(page: Page) {
   });
 }
 
+// ── Explainability fixtures ───────────────────────────────────────────────
+// Shapes mirror docs/audit/20261110-midterm/api-contract-additions.md §1–§5.
+// Kept separate from `setup()` so the pre-existing specs keep the "feature
+// absent" behaviour they were written against; `setupExplainable()` layers
+// these routes on top (Playwright matches the most recent handler first).
+
+export const explanation = {
+  method: "tree_shap",
+  base_value: 0.41,
+  output_space: "probability",
+  note: "贡献按概率空间计算，正值把预测推向专注。",
+  contributions: [
+    { feature: "app_switch_rate", label: "应用切换频率", value: 18.4, baseline_value: 9.1, contribution: 0.21 },
+    { feature: "productive_app_ratio", label: "生产类应用占比", value: 0.63, baseline_value: 0.44, contribution: 0.17 },
+    { feature: "idle_ratio", label: "空闲占比", value: 0.31, baseline_value: 0.12, contribution: -0.14 },
+    { feature: "entertainment_ratio", label: "娱乐类应用占比", value: 0.22, baseline_value: 0.08, contribution: -0.09 },
+    { feature: "interaction_bursts", label: "输入突发次数", value: 42, baseline_value: 38, contribution: 0.03 },
+  ],
+};
+
+export const tmt = {
+  motivation: 0.34,
+  motivation_level: "low",
+  dominant_barrier: "delay",
+  components: {
+    expectancy: { score: 0.52, raw: 0.52, label: "同类任务历史专注成功率", source: "focus_history", evidence_ids: ["ev-1"] },
+    value: { score: 0.61, raw: 0.61, label: "生产类应用占比 × 任务优先级", source: "task_context", evidence_ids: ["ev-2"] },
+    impulsiveness: { score: 0.44, raw: 1.9, label: "应用切换频率（MAD-z）", source: "telemetry", evidence_ids: ["ev-3"] },
+    delay: { score: 0.86, raw: 3.1, label: "距离截止时间的剩余天数（MAD-z）", source: "tasks", evidence_ids: ["ev-4"] },
+  },
+  note: "由行为代理变量估算，不是心理测量；仅用于组织解释与建议。",
+};
+
+export const deviation = {
+  overall_score: 2.64,
+  severity: "moderate",
+  method: "eb_shrinkage_mad",
+  bucket: { hour_of_day: 15, day_of_week: 3, n_samples: 4, shrinkage: 0.44 },
+  features: [
+    { feature: "app_switch_rate", label: "应用切换频率", value: 18.4, expected: 9.1, robust_z: 2.71, weight: 0.45 },
+    { feature: "idle_ratio", label: "空闲占比", value: 0.31, expected: 0.12, robust_z: 1.94, weight: 0.3 },
+    { feature: "entertainment_ratio", label: "娱乐类应用占比", value: 0.22, expected: 0.08, robust_z: 1.12, weight: 0.25 },
+  ],
+};
+
+export const rationale = {
+  procrastination_type: "task_aversion",
+  intervention_type: "task_breakdown",
+  selection: "thompson_sampling",
+  context_bucket: "afternoon|distracted",
+  candidates: [
+    { intervention_type: "task_breakdown", label: "任务拆解", alpha: 7, beta: 3, posterior_mean: 0.7, sample: 9, chosen: true },
+    // `intervention_type` values must stay inside the backend enum
+    // (domain/intervention.py InterventionType); labels match its Chinese map.
+    { intervention_type: "environment_optimization", label: "环境优化", alpha: 4, beta: 5, posterior_mean: 0.44, sample: 8, chosen: false },
+    { intervention_type: "smart_prioritization", label: "优先级建议", alpha: 3, beta: 6, posterior_mean: 0.33, sample: 8, chosen: false },
+  ],
+  evidence: [
+    "任务厌恶型的既往接受率最高的技术是任务拆解。",
+    "当前时段（周四 15 时）历史接受率为 70%。",
+    "深度工作保护未触发，允许主动提醒。",
+  ],
+  note: "后验由干预日志的接受/忽略计数加指数衰减推导，不额外存表。",
+};
+
+export const feedbackRequest = {
+  request_id: "fb-1",
+  window_start: "2026-10-01T06:05:00Z",
+  window_end: "2026-10-01T06:10:00Z",
+  probability: 0.52,
+  reasons: ["模型不确定（概率贴近决策边界）", "规则与模型判断冲突"],
+  prompt: "刚才你在专注吗？",
+};
+
+/**
+ * `setup()` plus every explainability field the mid-term build adds.
+ * The extra routes are registered last, so they win over the defaults.
+ */
+export async function setupExplainable(page: Page) {
+  await setup(page);
+  // Frontend calls differ in whether they append a query string, and a
+  // glob with "?" only matches the querystring form — so register both.
+  const both = async (path: string, handler: (route: Route) => Promise<unknown>) => {
+    for (const pattern of [`**/api/v1/${path}`, `**/api/v1/${path}?**`]) await page.route(pattern, handler);
+  };
+  await both("telemetry/focus-prediction", route =>
+    // `reason` is a required string in the schema (only `focus_probability`
+    // and `explanation` are nullable).
+    route.fulfill({ json: { focus_probability: 0.62, status: "ready", mode: "personal_model", reason: "", explanation } }));
+  const withTmt = (route: Route) => route.fulfill({ json: { ...panel, tmt } });
+  await both("panel", withTmt);
+  await both("panel/today", withTmt);
+  await both("analytics/attribution", route =>
+    route.fulfill({ json: {
+      assessment: {
+        procrastination_types: ["task_aversion", "decisional"],
+        type_confidence: { task_aversion: 0.72, decisional: 0.31, impulsivity: 0.18, perfectionism: 0.07, emotional_regulation: 0.04 },
+        cognitive_distortions: ["灾难化预期", "全或无思维"],
+        cbt_technique: "graded_exposure",
+        response_text: "任务难度与截止时间的组合让启动成本变高。",
+        next_action: "先把「整理图表」拆成一个十分钟的小步骤，只做第一步。",
+      },
+      source: "panel", cached: false, meta: { degraded: false }, deviation, tmt,
+    } }));
+  await both("intervention/history", route =>
+    route.fulfill({ json: { items: [
+      { id: "intervention-2", intervention_type: "task_breakdown", title: "从一个小步骤开始", message: "先整理一个图表，再继续下一步。", created_at: task.created_at, triggered_at: task.created_at, user_response: "accepted", rationale },
+      { id: "intervention-1", intervention_type: "environment_optimization", title: "暂时屏蔽娱乐站点", message: "接下来 25 分钟屏蔽视频站点。", created_at: task.created_at, triggered_at: task.created_at, user_response: null, rationale: { ...rationale, intervention_type: "environment_optimization", selection: "rule", candidates: [] } },
+    ], count: 2 } }));
+}
+
+/** Contract §5 delivery: the pending prompt plus a scripted answer outcome.
+ *
+ *  The wire shapes mirror `FeedbackRequest.to_payload()` and
+ *  `FeedbackAnswerResponse`. `answer` models the three real outcomes:
+ *    - `{ status: "recorded", labeled_windows: n }` — the label was written;
+ *    - `{ status: "expired" }` — answered after the TTL;
+ *    - `{ httpStatus: 404 }` — unknown / already answered id, which the client
+ *      must report as expired rather than as a write.
+ */
+export async function setupFeedbackRequest(
+  page: Page,
+  answer: { status?: "recorded" | "skipped" | "expired"; labeled_windows?: number; httpStatus?: number } = {},
+) {
+  await page.route("**/api/v1/telemetry/feedback-requests/pending", route =>
+    route.fulfill({ json: { items: [feedbackRequest] } }));
+  await page.route(`**/api/v1/telemetry/feedback-requests/${feedbackRequest.request_id}/answer`, route =>
+    route.fulfill(
+      answer.httpStatus
+        ? { status: answer.httpStatus, json: { detail: "反馈请求不存在、已作答或已过期" } }
+        : {
+            json: {
+              request_id: feedbackRequest.request_id,
+              labeled_windows: answer.labeled_windows ?? (answer.status === "recorded" ? 3 : 0),
+              status: answer.status ?? "recorded",
+            },
+          },
+    ));
+}
+
+/** Absent every optional field — the "backend has not shipped §1–§5 yet" case. */
+export async function setupExplainabilityAbsent(page: Page) {
+  await setup(page);
+  await page.route("**/api/v1/analytics/attribution", route =>
+    route.fulfill({ json: {
+      assessment: { procrastination_types: ["task_aversion"], type_confidence: {}, cbt_technique: "graded_exposure", response_text: "证据不足，暂不下结论。" },
+      source: "rule_engine", cached: false, meta: { degraded: false },
+    } }));
+}

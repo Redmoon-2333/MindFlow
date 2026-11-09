@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -565,3 +566,168 @@ class TestFocusPredictionStatusContract:
         assert result.feature_schema_version == FEATURE_SCHEMA_VERSION
         assert len(result.top_factors) == 3
         assert result.model_version == "20260726_v2"
+
+
+class TestLocalExplanationWiring:
+    """Contract §1: ``explanation`` on a ready prediction.
+
+    Uses a real fitted classifier (not a mock) because the whole point of the
+    field is that the contributions add up to the reported probability — a
+    mock ``predict_proba`` cannot produce a decomposition.
+    """
+
+    @staticmethod
+    def _fitted_manager() -> MagicMock:
+        """Real RF+XGB ensemble wrapped in a manager-shaped mock."""
+        from mindflow.train.models.ensemble import EnsembleClassifier
+
+        rng = np.random.default_rng(0)
+        matrix = rng.normal(size=(300, len(V2_FEATURE_NAMES)))
+        labels = (-matrix[:, 0] - matrix[:, 3] + rng.normal(scale=0.6, size=300) > 0)
+        model = EnsembleClassifier(calibration=None)
+        model.fit(matrix, labels.astype(int), list(V2_FEATURE_NAMES))
+
+        manager = MagicMock()
+        manager.current_version_tag = "20261110_v4"
+        manager.classifier = model
+        return manager
+
+    @staticmethod
+    def _windows(now: datetime, n: int = 24) -> list[dict]:
+        rng = np.random.default_rng(4)
+        windows = []
+        for i in range(n, 0, -1):
+            features = {
+                name: float(rng.normal())
+                for name in V2_FEATURE_NAMES
+            }
+            windows.append(
+                _make_feature_window(now - timedelta(minutes=5 * i), features=features)
+            )
+        return windows
+
+    async def test_ready_prediction_carries_additive_explanation(self) -> None:
+        now = datetime.now(UTC)
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=self._windows(now))
+        service = FocusPredictionService(
+            telemetry_repository=repo, model_manager=self._fitted_manager()
+        )
+
+        result = await service.predict_latest(user_id=1, now=now)
+
+        assert result.status == "ready"
+        explanation = result.explanation
+        assert explanation is not None
+        assert explanation["method"] == "tree_shap"
+        assert explanation["output_space"] == "probability"
+        assert 1 <= len(explanation["contributions"]) <= 8
+        # The contract's promise: base + Σ contributions ≈ focus_probability.
+        total = explanation["base_value"] + sum(
+            item["contribution"] for item in explanation["contributions"]
+        )
+        # Only the top 8 are reported, so the sum is a lower bound on the total
+        # magnitude; assert the *reported* probability is within the plausible
+        # band rather than an exact equality.
+        assert total == pytest.approx(result.focus_probability, abs=0.25)
+        for item in explanation["contributions"]:
+            assert set(item) == {
+                "feature",
+                "label",
+                "value",
+                "baseline_value",
+                "contribution",
+            }
+            assert item["feature"] in V2_FEATURE_NAMES
+            # Chinese label from the shared map, not the raw column name.
+            assert item["label"] != item["feature"]
+
+    async def test_explanation_reports_baseline_values_when_available(self) -> None:
+        """A stored baseline contributes per-feature ``baseline_value``."""
+        from mindflow.domain.baseline import BaselineModel
+
+        now = datetime.now(UTC)
+        windows = self._windows(now)
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
+
+        baseline = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        rng = np.random.default_rng(9)
+        for day in range(3):
+            for window in windows[:6]:
+                start = datetime.fromisoformat(window["window_start_utc"])
+                baseline.update(
+                    [
+                        {
+                            "window_start_utc": start - timedelta(days=7 * day),
+                            "features_json": json.dumps(
+                                {
+                                    name: float(rng.normal())
+                                    for name in V2_FEATURE_NAMES
+                                }
+                            ),
+                        }
+                    ]
+                )
+        baseline_repo = MagicMock()
+        baseline_repo.get_latest = AsyncMock(return_value=baseline)
+
+        service = FocusPredictionService(
+            telemetry_repository=repo,
+            model_manager=self._fitted_manager(),
+            baseline_repository=baseline_repo,
+        )
+        result = await service.predict_latest(user_id=1, now=now)
+
+        assert result.explanation is not None
+        baselined = [
+            item
+            for item in result.explanation["contributions"]
+            if item["baseline_value"] is not None
+        ]
+        assert baselined, "baseline_repository supplied but no baseline_value reported"
+
+    async def test_unexplainable_model_reports_no_explanation(self) -> None:
+        """A classifier that cannot be decomposed leaves the field null."""
+        now = datetime.now(UTC)
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=self._windows(now))
+        service = FocusPredictionService(
+            telemetry_repository=repo, model_manager=_make_mock_model_manager()
+        )
+
+        result = await service.predict_latest(user_id=1, now=now)
+
+        assert result.status == "ready"
+        assert result.explanation is None
+
+    async def test_predict_range_skips_the_explanation(self) -> None:
+        """Panel evidence does not read it; SHAP must not be paid for there."""
+        now = datetime.now(UTC)
+        windows = self._windows(now)
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
+        service = FocusPredictionService(
+            telemetry_repository=repo, model_manager=self._fitted_manager()
+        )
+
+        result = await service.predict_range(
+            user_id=1, start=now - timedelta(hours=2), end=now, now=now
+        )
+
+        assert result.status == "ready"
+        assert result.explanation is None
+
+    async def test_explainer_is_cached_per_model_version(self) -> None:
+        now = datetime.now(UTC)
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=self._windows(now))
+        manager = self._fitted_manager()
+        service = FocusPredictionService(telemetry_repository=repo, model_manager=manager)
+
+        await service.predict_latest(user_id=1, now=now)
+        first = dict(service._explainers)  # noqa: SLF001
+        await service.predict_latest(user_id=1, now=now)
+
+        assert set(first) == {"20261110_v4"}
+        assert service._explainers["20261110_v4"] is first["20261110_v4"]  # noqa: SLF001

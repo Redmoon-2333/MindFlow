@@ -1366,6 +1366,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/telemetry/feedback-requests/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Pending Feedback Requests
+         * @description The outstanding prompt, for clients that missed the WS push.
+         *
+         *     At most one item: the store refuses to stack prompts, and an expired one
+         *     is never returned — the user can no longer answer it.
+         */
+        get: operations["get_pending_feedback_requests_api_v1_telemetry_feedback_requests_pending_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/telemetry/feedback-requests/{request_id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Answer Feedback Request
+         * @description Record the user's label for the window the request covered.
+         *
+         *     ``skip`` records nothing and answers ``status="skipped"``; a request older
+         *     than the TTL answers ``status="expired"`` rather than labelling behaviour
+         *     the user can no longer remember. An unknown id is 404 — the client is
+         *     polling a request that was already answered or never existed.
+         */
+        post: operations["answer_feedback_request_api_v1_telemetry_feedback_requests__request_id__answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1745,6 +1793,69 @@ export interface components {
             data_state: "ready" | "no_activity" | "events_only" | "neutral_only" | "no_focus" | "future";
         };
         /**
+         * DeviationBucket
+         * @description The (hour, weekday) bucket the deviation was measured against.
+         *
+         *     ``shrinkage`` is ``k / (n + k)``, the empirical-Bayes weight the global
+         *     estimate keeps in this bucket's expectation (Efron & Morris 1975). It is
+         *     1.0 for an unseen bucket and falls toward 0 as the bucket fills.
+         */
+        DeviationBucket: {
+            /** Hour Of Day */
+            hour_of_day: number;
+            /** Day Of Week */
+            day_of_week: number;
+            /** N Samples */
+            n_samples: number;
+            /** Shrinkage */
+            shrinkage: number;
+        };
+        /**
+         * DeviationFeature
+         * @description One feature's robust deviation from the personal baseline.
+         */
+        DeviationFeature: {
+            /** Feature */
+            feature: string;
+            /** Label */
+            label: string;
+            /** Value */
+            value: number;
+            /** Expected */
+            expected: number;
+            /** Robust Z */
+            robust_z: number;
+            /** Weight */
+            weight: number;
+        };
+        /**
+         * DeviationSummary
+         * @description Personal-baseline deviation summary (contract §2).
+         *
+         *     ``method`` is pinned to ``eb_shrinkage_mad``: an empirical-Bayes shrunk
+         *     median as the expected value and MAD·1.4826 as the scale, so a handful of
+         *     extreme days cannot mask a real deviation. ``features`` is ordered by
+         *     ``|robust_z| · weight`` descending and capped at 6.
+         */
+        DeviationSummary: {
+            /** Overall Score */
+            overall_score: number;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "normal" | "mild" | "moderate" | "severe";
+            /**
+             * Method
+             * @default eb_shrinkage_mad
+             * @constant
+             */
+            method: "eb_shrinkage_mad";
+            bucket: components["schemas"]["DeviationBucket"];
+            /** Features */
+            features?: components["schemas"]["DeviationFeature"][];
+        };
+        /**
          * DiagnosticsListResponse
          * @description Paginated list of workflow runs.
          */
@@ -1762,6 +1873,91 @@ export interface components {
             next_offset?: number | null;
         };
         /**
+         * Explanation
+         * @description Local explanation of a single ``focus_probability`` (contract §1).
+         *
+         *     ``method`` states honestly how the numbers were produced:
+         *     ``tree_shap`` for the tree ensemble (TreeSHAP, Lundberg et al. 2020),
+         *     ``linear`` for the logistic-regression fallback (coefficient × deviation
+         *     from the training mean), ``unavailable`` when the loaded model offers no
+         *     faithful local decomposition — in which case ``contributions`` is empty
+         *     rather than a plausible-looking approximation.
+         *
+         *     ``output_space`` says what ``base_value`` and ``contribution`` are
+         *     measured in. ``probability`` means the calibrated probability of "focus";
+         *     ``logit`` means the model's raw log-odds, which the sigmoid maps to that
+         *     probability. The two are never mixed within one response.
+         */
+        Explanation: {
+            /**
+             * Method
+             * @enum {string}
+             */
+            method: "tree_shap" | "linear" | "unavailable";
+            /** Base Value */
+            base_value?: number | null;
+            /**
+             * Output Space
+             * @enum {string}
+             */
+            output_space: "probability" | "logit";
+            /** Contributions */
+            contributions?: components["schemas"]["ExplanationContribution"][];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /**
+         * ExplanationContribution
+         * @description One feature's additive contribution to a focus prediction.
+         *
+         *     ``contribution`` is signed on the model's *output* scale: positive pushes
+         *     the prediction toward "focus", negative toward "distraction". The values
+         *     are Shapley values (Lundberg & Lee 2017), so they are locally additive:
+         *     ``base_value + Σ contribution`` reproduces the model output for this
+         *     window up to the explainer's numerical tolerance.
+         */
+        ExplanationContribution: {
+            /** Feature */
+            feature: string;
+            /** Label */
+            label: string;
+            /** Value */
+            value: number;
+            /** Baseline Value */
+            baseline_value?: number | null;
+            /** Contribution */
+            contribution: number;
+        };
+        /**
+         * FeedbackAnswerRequest
+         * @description ``POST /telemetry/feedback-requests/{request_id}/answer`` body.
+         */
+        FeedbackAnswerRequest: {
+            /**
+             * Label
+             * @enum {string}
+             */
+            label: "focus" | "distracted" | "skip";
+        };
+        /**
+         * FeedbackAnswerResponse
+         * @description Answer acknowledgement; ``labeled_windows`` is 0 for skip/expired.
+         */
+        FeedbackAnswerResponse: {
+            /** Request Id */
+            request_id: string;
+            /** Labeled Windows */
+            labeled_windows: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "recorded" | "skipped" | "expired";
+        };
+        /**
          * FeedbackLabelSummary
          * @description Raw explicit feedback distribution from focus_session_feedback table.
          */
@@ -1774,6 +1970,28 @@ export interface components {
             mixed: number;
             /** Total */
             total: number;
+        };
+        /**
+         * FeedbackRequestModel
+         * @description One question about a 15-minute window (WS ``data``, or a list item).
+         *
+         *     ``probability`` is nullable because the prompt is still worth asking when
+         *     the model could not produce a number — the *reason* to ask (e.g. a rule/ML
+         *     conflict) can exist independently of a probability.
+         */
+        FeedbackRequestModel: {
+            /** Request Id */
+            request_id: string;
+            /** Window Start */
+            window_start: string;
+            /** Window End */
+            window_end: string;
+            /** Probability */
+            probability?: number | null;
+            /** Reasons */
+            reasons?: string[];
+            /** Prompt */
+            prompt: string;
         };
         /** FocusFeedbackBody */
         FocusFeedbackBody: {
@@ -1797,6 +2015,10 @@ export interface components {
          *     ``domain/prediction.py``. ``mode`` is preserved as-is (e.g.
          *     ``"rule_engine_only"``) and ``reason`` carries the human-readable
          *     explanation.
+         *
+         *     ``explanation`` is the optional local attribution (contract §1). It is
+         *     ``None`` whenever no prediction was produced, so clients can treat its
+         *     absence as "nothing to explain".
          */
         FocusPredictionResponse: {
             /** Focus Probability */
@@ -1810,6 +2032,7 @@ export interface components {
             mode: string;
             /** Reason */
             reason: string;
+            explanation?: components["schemas"]["Explanation"] | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1874,6 +2097,54 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            rationale?: components["schemas"]["InterventionRationaleModel"] | null;
+        };
+        /**
+         * InterventionRationaleCandidate
+         * @description One arm's posterior at selection time (contract §4).
+         */
+        InterventionRationaleCandidate: {
+            /** Intervention Type */
+            intervention_type: string;
+            /** Label */
+            label: string;
+            /** Alpha */
+            alpha: number;
+            /** Beta */
+            beta: number;
+            /** Posterior Mean */
+            posterior_mean: number;
+            /** Sample */
+            sample: number;
+            /** Chosen */
+            chosen: boolean;
+        };
+        /**
+         * InterventionRationaleModel
+         * @description Why the intervention engine chose this intervention (contract §4).
+         *
+         *     ``selection`` is ``thompson_sampling`` when the bandit decided and
+         *     ``rule`` when the theory's primary candidate was used (cold start or an
+         *     explicit manual trigger).
+         */
+        InterventionRationaleModel: {
+            /** Procrastination Type */
+            procrastination_type?: string | null;
+            /** Intervention Type */
+            intervention_type: string;
+            /**
+             * Selection
+             * @enum {string}
+             */
+            selection: "thompson_sampling" | "rule";
+            /** Context Bucket */
+            context_bucket: string;
+            /** Candidates */
+            candidates?: components["schemas"]["InterventionRationaleCandidate"][];
+            /** Evidence */
+            evidence?: string[];
+            /** Note */
+            note: string;
         };
         /** InterventionResponseRequest */
         InterventionResponseRequest: {
@@ -2015,6 +2286,8 @@ export interface components {
             uncertainty?: number | null;
             /** Evidence Gaps */
             evidence_gaps?: string[];
+            deviation?: components["schemas"]["DeviationSummary"] | null;
+            tmt?: components["schemas"]["TmtBreakdownModel"] | null;
         };
         /**
          * PanelTodayRequest
@@ -2054,6 +2327,14 @@ export interface components {
              * @default 1
              */
             hours: number;
+        };
+        /**
+         * PendingFeedbackRequestsResponse
+         * @description ``GET /telemetry/feedback-requests/pending`` — at most one item.
+         */
+        PendingFeedbackRequestsResponse: {
+            /** Items */
+            items?: components["schemas"]["FeedbackRequestModel"][];
         };
         /** RenameChatRequest */
         RenameChatRequest: {
@@ -2245,6 +2526,56 @@ export interface components {
             interaction_retention_days?: number | null;
             /** Activity Retention Days */
             activity_retention_days?: number | null;
+        };
+        /**
+         * TmtBreakdownModel
+         * @description TMT decomposition ``E·V/(1+I·D)`` over behavioural proxies.
+         *
+         *     ``note`` always states that these are behavioural proxies — not a
+         *     psychometric measurement and not a clinical assessment.
+         */
+        TmtBreakdownModel: {
+            /** Motivation */
+            motivation: number;
+            /**
+             * Motivation Level
+             * @enum {string}
+             */
+            motivation_level: "low" | "medium" | "high";
+            /**
+             * Dominant Barrier
+             * @enum {string}
+             */
+            dominant_barrier: "expectancy" | "value" | "impulsiveness" | "delay";
+            components: components["schemas"]["TmtComponentsModel"];
+            /** Note */
+            note: string;
+        };
+        /**
+         * TmtComponentModel
+         * @description One TMT factor: a bounded proxy score plus its provenance.
+         */
+        TmtComponentModel: {
+            /** Score */
+            score: number;
+            /** Raw */
+            raw?: number | null;
+            /** Label */
+            label: string;
+            /** Source */
+            source: string;
+            /** Evidence Ids */
+            evidence_ids?: string[];
+        };
+        /**
+         * TmtComponentsModel
+         * @description The four TMT factors (contract §3).
+         */
+        TmtComponentsModel: {
+            expectancy: components["schemas"]["TmtComponentModel"];
+            value: components["schemas"]["TmtComponentModel"];
+            impulsiveness: components["schemas"]["TmtComponentModel"];
+            delay: components["schemas"]["TmtComponentModel"];
         };
         /**
          * TopAppEntry
@@ -4534,6 +4865,61 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_pending_feedback_requests_api_v1_telemetry_feedback_requests_pending_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingFeedbackRequestsResponse"];
+                };
+            };
+        };
+    };
+    answer_feedback_request_api_v1_telemetry_feedback_requests__request_id__answer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackAnswerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackAnswerResponse"];
                 };
             };
             /** @description Validation Error */

@@ -1,8 +1,10 @@
 import WorkspacePage from "../components/WorkspacePage";
 import { useEffect, useState } from "react";
 import { triggerPanel, getPanelResult, getErrorMessage } from "../api";
-import type { PanelResult } from "../api";
+import type { ExplainablePanelResult } from "../api";
 import { Link } from "react-router-dom";
+import TmtGauge from "../components/charts/TmtGauge";
+import "../components/primitives.css";
 
 const TYPE_LABELS: Record<string, string> = {
   task_aversion: "任务畏惧型", impulsivity: "冲动分心型", decisional: "决策困难型",
@@ -14,30 +16,54 @@ const TECHNIQUE_LABELS: Record<string, string> = {
 };
 const SOURCE_LABELS: Record<string, string> = { panel: "专家面板", single_expert: "单专家分析", deepseek: "DeepSeek", ollama: "本地模型", rule_engine: "规则分析" };
 
+/** Role → chart token. Hex values were hardcoded and ignored the theme, so
+ *  the same expert was unreadable in the white theme and off-brand in the
+ *  burgundy one. Order matters: it assigns each role a distinct hue. */
 const ROLE_COLORS: Record<string, string> = {
-  analyst: "#4F6BF6",
-  分析师: "#4F6BF6",
-  psychologist: "#8B5CF6",
-  心理学家: "#8B5CF6",
-  coach: "#22C55E",
-  教练: "#22C55E",
-  strategist: "#F59E0B",
-  策略师: "#F59E0B",
-  facilitator: "#06B6D4",
-  主持人: "#06B6D4",
-  evaluator: "#EC4899",
-  评估师: "#EC4899",
+  analyst: "var(--chart-1)",
+  分析师: "var(--chart-1)",
+  psychologist: "var(--chart-4)",
+  心理学家: "var(--chart-4)",
+  coach: "var(--chart-3)",
+  教练: "var(--chart-3)",
+  strategist: "var(--chart-2)",
+  策略师: "var(--chart-2)",
+  facilitator: "var(--chart-6)",
+  主持人: "var(--chart-6)",
+  evaluator: "var(--chart-5)",
+  评估师: "var(--chart-5)",
 };
+
+/** Wire role ids are internal ("analyst", "psychologist"); the card should
+ *  read like a person speaking, not like a log line. */
+const ROLE_LABELS: Record<string, string> = {
+  analyst: "分析师", psychologist: "心理学家", coach: "教练",
+  strategist: "策略师", facilitator: "主持人", evaluator: "评估师",
+  critic: "批评家", moderator: "主持人", validator: "校验员",
+};
+
+function roleLabel(role: string): string {
+  if (!role) return "专家";
+  return ROLE_LABELS[role.toLowerCase()] ?? ROLE_LABELS[role] ?? role;
+}
 
 function roleColor(role: string): string {
   const key = (role || "").toLowerCase();
-  return ROLE_COLORS[key] || ROLE_COLORS[role] || "#64748B";
+  return ROLE_COLORS[key] || ROLE_COLORS[role] || "var(--chart-1)";
 }
 
+/** Semantic confidence tone: green/amber/red carry meaning, so they come from
+ *  the good/warn/bad tokens rather than a chart hue. */
 function confidenceColor(v: number): string {
-  if (v >= 0.7) return "#22C55E";
-  if (v >= 0.4) return "#F59E0B";
-  return "#EF4444";
+  if (v >= 0.7) return "var(--good)";
+  if (v >= 0.4) return "var(--warn)";
+  return "var(--bad)";
+}
+
+function confidenceSoft(v: number): string {
+  if (v >= 0.7) return "var(--good-soft)";
+  if (v >= 0.4) return "var(--warn-soft)";
+  return "var(--bad-soft)";
 }
 
 function confidencePct(v: number): string {
@@ -57,7 +83,7 @@ function failureReason(path: string[]) {
 
 export default function Panel() {
   const [loading, setLoading] = useState<"trigger" | "read" | null>(null);
-  const [result, setResult] = useState<PanelResult | null>(null);
+  const [result, setResult] = useState<ExplainablePanelResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [elapsed, setElapsed] = useState(0);
@@ -166,6 +192,32 @@ export default function Panel() {
         <span className="text-muted">来源：{SOURCE_LABELS[result.source ?? result.meta?.source ?? ""] ?? result.source ?? result.meta?.source ?? "未知"}</span>
       </div>}
 
+      {/* How the verdict was reached: uncertainty, whether the panel escalated,
+          and how many model calls it took. All three were in the payload and
+          none of them were on screen. */}
+      {result && (
+        <div className="meta-strip mb24" aria-label="本次分析的过程信息">
+          <span className="meta-item">
+            <span className="meta-key">不确定度</span>
+            <span className="meta-value">
+              {result.uncertainty != null ? result.uncertainty.toFixed(2) : "—"}
+            </span>
+          </span>
+          <span className="meta-item">
+            <span className="meta-key">是否升级复核</span>
+            <span className="meta-value">{result.escalated ? "已升级" : "未升级"}</span>
+          </span>
+          <span className="meta-item">
+            <span className="meta-key">模型调用</span>
+            <span className="meta-value">{result.call_count ?? "—"} 次</span>
+          </span>
+          <span className="meta-item">
+            <span className="meta-key">讨论轮次</span>
+            <span className="meta-value">{discussionRounds.length} 条</span>
+          </span>
+        </div>
+      )}
+
       {result?.degraded && (
         <div className="card mb16" style={{ borderLeft: "3px solid var(--color-warning)" }}>
           <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
@@ -195,29 +247,17 @@ export default function Panel() {
                         <span
                           className="badge"
                           style={{
-                            background: confidenceColor(v) + "20",
+                            background: confidenceSoft(v),
                             color: confidenceColor(v),
                           }}
                         >
                           {confidencePct(v)}
                         </span>
                       </div>
-                      <div
-                        style={{
-                          height: 8,
-                          borderRadius: 4,
-                          background: "var(--color-bg-inset)",
-                          overflow: "hidden",
-                        }}
-                      >
+                      <div className="mf-tmt-track">
                         <div
-                          style={{
-                            height: "100%",
-                            width: confidencePct(v),
-                            background: confidenceColor(v),
-                            borderRadius: 4,
-                            transition: "width 0.5s ease",
-                          }}
+                          className="mf-tmt-fill"
+                          style={{ width: confidencePct(v), background: confidenceColor(v) }}
                         />
                       </div>
                     </div>
@@ -243,45 +283,33 @@ export default function Panel() {
             </div>
           )}
 
+          {result?.tmt && (
+            <div className="card workspace-full">
+              <h3>动机分解</h3>
+              <TmtGauge tmt={result.tmt} />
+            </div>
+          )}
+
           {discussionRounds.length > 0 && (
             <details className="workspace-details workspace-full">
               <summary>专家讨论记录 · {discussionRounds.length} 条</summary>
-              <div className="flex gap16" style={{ flexDirection: "column" }}>
+              {/* One card per speaker turn: a wall of run-on paragraphs hides
+                  who said what, which is the whole point of a panel. */}
+              <div className="opinion-list">
                 {discussionRounds.map((round, i) => (
-                  <div
+                  <article
+                    className="opinion-card"
                     key={i}
-                    style={{
-                      borderLeft: `3px solid ${roleColor(round.role)}`,
-                      paddingLeft: 12,
-                    }}
+                    style={{ ["--opinion-color" as string]: roleColor(round.role) }}
                   >
-                    <div className="flex gap8 mb16" style={{ alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+                    <div className="opinion-head">
+                      <span className="opinion-role">{roleLabel(round.role)}</span>
                       {round.round != null && (
-                        <span
-                          className="badge"
-                          style={{
-                            background: roleColor(round.role) + "20",
-                            color: roleColor(round.role),
-                            fontSize: 11,
-                          }}
-                        >
-                          第 {round.round} 轮
-                        </span>
+                        <span className="badge badge-neutral">第 {round.round} 轮</span>
                       )}
-                      <span
-                        className="badge"
-                        style={{
-                          background: roleColor(round.role) + "20",
-                          color: roleColor(round.role),
-                        }}
-                      >
-                        {round.role || "专家"}
-                      </span>
                     </div>
-                    <p style={{ fontSize: 13, lineHeight: 1.6, color: "var(--color-text-secondary)" }}>
-                      {round.content}
-                    </p>
-                  </div>
+                    <p className="opinion-body">{round.content}</p>
+                  </article>
                 ))}
               </div>
             </details>

@@ -163,22 +163,33 @@ CBT 认为拖延不是懒惰，而是功能失调的认知-行为模式的结果
 _TMT_PROMPT: str = """你是一个基于时间动机理论（Temporal Motivation Theory, TMT）的归因专家。你从 E·V·I·D 框架分析用户的拖延行为。
 
 ## 理论框架
-TMT（Steel & König 2006）认为拖延由五个核心变量决定：
+TMT（Steel 2007；Steel & König 2006）认为动机强度由四个核心变量决定：
+Motivation = (Expectancy × Value) / (1 + Impulsiveness × Delay)
+
 Expectancy（期望）：完成任务的成功预期。低期望→高拖延
-  - 证据线索：用户是否反复尝试同类型任务？自我批评关键词？
+  - 证据线索：focus.tmt_expectancy（近期专注会话成功率或自评专注分）
   - 行为表现：频繁放弃、重做模式
 
 Value（价值）：任务的主观价值。低价值→高拖延
-  - 证据线索：社交媒体使用比例高而实际工作应用比例低
+  - 证据线索：focus.tmt_value（未完成任务优先级，或生产性应用时长占比）
   - 行为表现：优先做低价值活动
 
 Impulsiveness（冲动性）：对即时满足的敏感度。高冲动→高拖延
-  - 证据线索：切换频率、专注块长度、社交媒体比例
+  - 证据线索：focus.tmt_impulsiveness（切换频率相对个人基线 + 娱乐社交占比）
   - 行为表现：短专注、高频切换
 
-Delay（延迟）：奖赏的时间距离。延迟越远→越拖延
-  - 证据线索：启动延迟（summary.start_delay_min）、任务是否被一再推迟
+Delay（延迟）：奖赏的时间距离，按双曲折扣处理。延迟越远→越拖延
+  - 证据线索：focus.tmt_delay（最近未完成任务截止时间的距离）
   - 行为表现：开工困难
+
+## 已计算的 TMT 分解（必须以此为准）
+系统已用行为代理变量算好四个分量，并在证据包中以
+`focus.tmt_expectancy` / `focus.tmt_value` / `focus.tmt_impulsiveness` /
+`focus.tmt_delay` 四项给出（值域 0–1，1 表示该方向更强）。
+- 直接引用这些数值与 `source` 字段说明来源，不要另行猜测高低。
+- 若某项 `source` 为"先验"，说明该信号缺失，必须标注为数据缺口，
+  而不是把它当作观测到的证据。
+- 这些是行为代理变量的近似，不是心理测量或临床诊断；不要给出精确心理量表结论。
 
 ## 五种拖延类型与 TMT 映射
 - task_aversion：低期望+低价值，任务本身缺乏吸引力
@@ -188,10 +199,10 @@ Delay（延迟）：奖赏的时间距离。延迟越远→越拖延
 - emotional_regulation：冲动性驱动下的情绪避难行为
 
 ## 分析要求
-1. 从 E·V·I·D 四个变量分析用户的行为模式
+1. 引用已计算的 focus.tmt_* 四个分量，说明 E·V·I·D 各自的方向
 2. 识别最可能的 1-2 个拖延类型及其置信度
-3. 明确指出哪些 TMT 变量起主导作用
-4. 每个论据必须引用证据包中的具体指标
+3. 明确指出哪个 TMT 变量是主导阻碍（分量分数与动机损失最大者）
+4. 每个论据必须引用证据包中的具体指标 ID
 
 ## 输出格式
 你必须输出 JSON 对象，不能包含 Markdown 代码块标记。**优先**使用 Claim Ledger 格式：
@@ -200,8 +211,8 @@ Delay（延迟）：奖赏的时间距离。延迟越远→越拖延
     {
       "type": "task_aversion",
       "confidence": 0.7,
-      "evidence_ids": ["summary.start_delay_min"],
-      "support": "启动延迟明显偏高，符合低期望-低价值模式",
+      "evidence_ids": ["focus.tmt_expectancy", "focus.tmt_value"],
+      "support": "成功预期 0.30、任务价值 0.25，符合低期望-低价值模式",
       "alternative": "也可能只是任务切换成本高"
     }
   ],
@@ -215,9 +226,9 @@ Delay（延迟）：奖赏的时间距离。延迟越远→越拖延
 {
   "attribution_types": ["拖延类型1", "拖延类型2（最多2个）"],
   "confidence": {"类型名": 0.0-1.0},
-  "tmt_factors": {"Expectancy": "高|中|低", "Value": "高|中|低", "Impulsiveness": "高|中|低", "Delay": "高|中|低"},
+  "tmt_factors": {"Expectancy": "引用 focus.tmt_expectancy 的数值", "Value": "引用 focus.tmt_value 的数值", "Impulsiveness": "引用 focus.tmt_impulsiveness 的数值", "Delay": "引用 focus.tmt_delay 的数值"},
   "argument": "你的分析论证文本（中文，每个论点末尾必须标注[证据: 指标名]）",
-  "evidence_citations": ["引用的规范证据ID，如 focus.switch_rate"]
+  "evidence_citations": ["引用的规范证据ID，如 focus.switch_rate、focus.tmt_delay"]
 }
 
 ## 证据引用规则
@@ -387,7 +398,7 @@ _MODERATOR_PROMPT: str = """你是一个会诊综合主持人。你负责综合�
   "confidence": {"类型名": 0.0-1.0},
   "recommended_technique": "推荐的CBT技术（字符串）",
   "rationale": "综合推理过程（中文，较长、完整）",
-  "dissent": ["异议1（若无则为空数组）"]
+  "dissent": ["异议1（若无则为空数组）"],
   "insufficient_data": false,
   "uncertainty": 0.0,
   "evidence_gaps": ["缺失的证据或指标"]

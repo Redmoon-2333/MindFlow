@@ -106,6 +106,10 @@ def _verdict_to_response(verdict: Any) -> PanelResponse:
         "insufficient_data": insufficient_data,
         "uncertainty": uncertainty,
         "evidence_gaps": evidence_gaps,
+        # Contract §2/§3 — null for cached rows written before these
+        # features existed.
+        "deviation": getattr(verdict, "deviation", None),
+        "tmt": getattr(verdict, "tmt", None),
         "meta": {
             "degraded": is_degraded,
             "source": source,

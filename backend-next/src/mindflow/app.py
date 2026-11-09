@@ -114,6 +114,7 @@ from mindflow.services.chat_service import ChatService
 from mindflow.services.collector_service import CollectorService
 from mindflow.services.effectiveness_service import EffectivenessService
 from mindflow.services.evidence_service import EvidenceBundleBuilder
+from mindflow.services.feedback_request_service import FeedbackRequestStore
 from mindflow.services.input_telemetry_service import InputTelemetryService
 from mindflow.services.intervention_service import InterventionService
 from mindflow.services.intervention_throttle import InterventionThrottle
@@ -389,6 +390,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # ── 7-ext. ML prediction service (unified online inference) ─────────
         prediction_service = FocusPredictionService(
             telemetry_repository=telemetry_repository,
+            baseline_repository=baseline_repository,
         )
 
         telemetry_service = TelemetryService(
@@ -404,6 +406,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         telemetry_service.attach_input_watcher(input_telemetry_service)
         telemetry_preferences = await telemetry_service.get_preferences()
+
+        # Proactive-learning store (contract §5). One instance shared by the
+        # scheduler job and the HTTP routes — the pending slot, cooldown and
+        # daily cap only mean anything if both sides see the same state.
+        feedback_request_store = FeedbackRequestStore(
+            telemetry_repository=telemetry_repository,
+            prediction_service=prediction_service,
+            activity_repository=activity_repository,
+            broadcast_fn=broadcast,
+            # The daily ask cap resets at the user's midnight, not UTC's.
+            timezone=settings.timezone,
+        )
 
         # ── 6. Notifier ───────────────────────────────────────────────────
         notification_host = settings.host
@@ -597,6 +611,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             ollama_model=settings.llm.ollama_model,
             classification_repo=classification_rules_repository,
+            prediction_service=prediction_service,
+            timezone=settings.timezone,
         )
 
         # ── 7d. G003: Panel service ──────────────────────────────────────────
@@ -614,6 +630,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     effectiveness_service=effectiveness_service,
                     baseline_repo=baseline_repository,
                     prediction_service=prediction_service,
+                    telemetry_repo=telemetry_repository,
+                    task_repo=task_repository,
                 )
 
                 # ── Create AnalysisGraph (v2 is the only analysis path) ──
@@ -691,6 +709,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     effectiveness_service=effectiveness_service,
                     baseline_repo=baseline_repository,
                     prediction_service=prediction_service,
+                    telemetry_repo=telemetry_repository,
+                    task_repo=task_repository,
                 )
             chat_service = ChatService(
                 session_factory=session_factory,
@@ -730,6 +750,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             autonomy_service=autonomy_service,
             telemetry_service=telemetry_service,
             training_job_service=training_job_service,
+            feedback_request_store=feedback_request_store,
             scheduled_job_runs_repository=scheduled_job_runs_repository,
             workflow_port=analysis_workflow_port,
             event_retention_days=settings.event_retention_days,
@@ -778,6 +799,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.preferences_repository = preferences_repository
         app.state.telemetry_repository = telemetry_repository
         app.state.telemetry_service = telemetry_service
+        app.state.feedback_request_store = feedback_request_store
         app.state.input_telemetry_service = input_telemetry_service
         app.state.classification_rules_repository = classification_rules_repository
         app.state.collector_service = collector_service

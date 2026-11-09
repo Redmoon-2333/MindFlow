@@ -34,12 +34,38 @@ import { toFocusPredictionView } from "../prediction-state";
 import { realtimeClient } from "../realtime";
 import type { RealtimeStatus } from "../realtime";
 import { getInterventionTypeLabel } from "../lib/intervention-labels";
+import { userTerm } from "../lib/user-terms";
+import BarChart from "../components/charts/BarChart";
+import ContributionBar from "../components/charts/ContributionBar";
+import { METHOD_LABELS } from "../types/explainability";
 import "./dashboard.css";
+import "../components/primitives.css";
 
 const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
+/** Response wording shared with the intervention page. */
+const RESPONSE_LABELS: Record<string, string> = {
+  accept: "已接受",
+  accepted: "已接受",
+  ignore: "已忽略",
+  ignored: "已忽略",
+  dismiss: "已关闭",
+  dismissed: "已关闭",
+};
+
 function formatFloatHeader(date: Date): string {
   return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}  ${WEEKDAY_LABELS[date.getDay()]}`;
+}
+
+/** The machine's real UTC offset, e.g. "UTC+8" or "UTC+5:30". Hardcoding
+ *  "UTC+8" mislabelled every timestamp for anyone outside China. */
+function utcOffsetLabel(date: Date): string {
+  const minutes = -date.getTimezoneOffset();
+  const sign = minutes >= 0 ? "+" : "-";
+  const abs = Math.abs(minutes);
+  const hours = Math.floor(abs / 60);
+  const rest = abs % 60;
+  return `UTC${sign}${hours}${rest ? `:${String(rest).padStart(2, "0")}` : ""}`;
 }
 
 function formatClock(iso: string | undefined): string {
@@ -62,6 +88,51 @@ interface StatisticView {
   content: string;
   unit: string;
   delta: number | null;
+}
+
+/**
+ * "为什么这样判断" — the SHAP/linear attribution behind the probability.
+ *
+ * Collapsed by default: the headline number is what a user reads at a glance,
+ * the evidence is what a judge opens. Absent/malformed explanation renders a
+ * single neutral line rather than an empty chart frame.
+ */
+function PredictionExplanationBlock({
+  explanation,
+}: {
+  explanation?: import("../types/explainability").PredictionExplanation;
+}) {
+  const method = explanation?.method ?? "unavailable";
+  const rows = explanation?.contributions ?? [];
+  if (rows.length === 0) {
+    return (
+      <div className="d-explain-muted">
+        暂无解释数据{method === "unavailable" && explanation ? " · 当前模型不提供归因" : ""}
+      </div>
+    );
+  }
+  return (
+    <details className="proof-details d-explain">
+      <summary>为什么这样判断</summary>
+      <div className="proof-head">
+        <span className="badge badge-neutral">{METHOD_LABELS[method]}</span>
+        <span className="proof-muted">按影响大小排序，最多 8 项</span>
+      </div>
+      <ContributionBar
+        data={rows.map((row) => ({
+          feature: row.feature,
+          label: row.label,
+          contribution: row.contribution,
+          value: row.value,
+          baselineValue: row.baseline_value,
+        }))}
+        ariaLabel="专注预测的特征贡献：右侧推向专注，左侧推向分心"
+        outputSpace={explanation?.output_space}
+        baseValue={explanation?.base_value}
+      />
+      {explanation?.note && <p className="proof-note">{explanation.note}</p>}
+    </details>
+  );
 }
 
 export default function Dashboard() {
@@ -217,12 +288,15 @@ export default function Dashboard() {
 
   // Seven-day bar chart: only a slot that really is today may read 今天.
   const chartbox = daily.map((day) => ({
+    key: day.date,
     week: day.date === todayKey ? "今天" : dayLabel(day.date),
     number: Math.round(day.focus_min ?? 0),
+    distraction: Math.round(day.distraction_min ?? 0),
+    sessions: day.session_count ?? 0,
+    score: day.avg_score ?? null,
     today: day.date === todayKey,
   }));
   const hasTodaySlot = chartbox.some((entry) => entry.today);
-  const maxNumber = Math.max(1, ...chartbox.map((entry) => entry.number));
 
   const statistics: StatisticView[] = [
     {
@@ -413,7 +487,7 @@ export default function Dashboard() {
                 <div className="d-activity-time">
                   <div className="iconfont icon-shizhong" style={{ transform: "translateY(1px)" }} aria-hidden="true" />
                   <div className="d-activity-time-content">
-                    最后更新: {new Date(currentActivity.timestamp).toLocaleString("zh-CN", { hour12: false })} UTC+8
+                    最后更新: {new Date(currentActivity.timestamp).toLocaleString("zh-CN", { hour12: false })} {utcOffsetLabel(new Date(currentActivity.timestamp))}
                   </div>
                 </div>
               </>
@@ -431,40 +505,42 @@ export default function Dashboard() {
 
           <div className="d-chart">
             <div className="d-chart-title">近 7 日专注趋势</div>
-            {chartbox.length > 0 ? (
-              <>
-                <div className="d-chart-box">
-                  {chartbox.map((item, index) => (
-                    <div className="d-chart-box-item" key={`${item.week}-${index}`}>
-                      <div className="d-chart-box-item-week">{item.week}</div>
-                      <div
-                        className={`d-chart-box-item-column${item.today ? " d-chart-box-item-column--today" : ""}`}
-                        style={{ height: `${Math.max(4, (item.number / maxNumber) * 92)}px` }}
-                      >
-                        <div className="d-chart-box-item-number">{item.number}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="d-subline" />
-                <div className="d-chart-demonstration">
-                  <div className="d-chart-demonstration-item">
-                    <div className="d-chart-demonstration-item-dot" />
-                    <div className="d-chart-demonstration-item-text">专注时长 (分钟)</div>
-                  </div>
-                  {hasTodaySlot && (
-                    <div className="d-chart-demonstration-item">
-                      <div className="d-chart-demonstration-item-dot d-chart-demonstration-item-dot--today" />
-                      <div className="d-chart-demonstration-item-text">今天 (进行中)</div>
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="d-empty">
-                {trendStatus === "error" ? "趋势加载失败（数据未更新）" : "暂无近 7 日趋势数据"}
+            <div className="d-chart-plot">
+              <BarChart
+                data={chartbox.map((item) => ({
+                  key: item.key,
+                  label: item.week,
+                  value: item.number,
+                  title: `${item.week} · ${item.key}`,
+                  highlight: item.today,
+                  detail: [
+                    { label: "分心", value: `${item.distraction} min` },
+                    { label: "专注次数", value: `${item.sessions} 次` },
+                    { label: "平均分", value: item.score != null ? item.score.toFixed(1) : "—" },
+                  ],
+                }))}
+                ariaLabel={`近 7 日每日专注分钟数，共 ${chartbox.length} 天`}
+                unit=" min"
+                height={168}
+                yAxisLabel="分钟"
+                htmlXLabelClass="d-chart-box-item-week"
+                emptyMessage={
+                  trendStatus === "error" ? "趋势加载失败（数据未更新）" : "暂无近 7 日趋势数据"
+                }
+              />
+            </div>
+            <div className="d-chart-demonstration">
+              <div className="d-chart-demonstration-item">
+                <div className="d-chart-demonstration-item-dot" />
+                <div className="d-chart-demonstration-item-text">专注时长 (分钟)</div>
               </div>
-            )}
+              {hasTodaySlot && (
+                <div className="d-chart-demonstration-item">
+                  <div className="d-chart-demonstration-item-dot d-chart-demonstration-item-dot--today" />
+                  <div className="d-chart-demonstration-item-text">今天 (进行中)</div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -565,17 +641,23 @@ export default function Dashboard() {
             ) : (
               <div className="d-inference-scroll">
                 {[...interventions].reverse().slice(-10).map((item, index) => {
-                  const warning = !item.user_response;
+                  // "No answer yet" is not a severity — the old "警告" label
+                  // read as "this intervention is dangerous". Report what is
+                  // actually known: whether the user responded, and how.
+                  const answered = Boolean(item.user_response);
+                  const responseLabel = answered
+                    ? RESPONSE_LABELS[(item.user_response || "").toLowerCase()] ?? "已回应"
+                    : "未回应";
                   return (
                     <div className="d-inference-item" key={item.id ?? index}>
-                      <div className={`icon-box${warning ? " icon-box-orange" : ""}`}>
-                        <div className={`iconfont ${warning ? "icon-jinggao" : "icon-tixing"}`} aria-hidden="true" />
+                      <div className={`icon-box${answered ? "" : " icon-box-orange"}`}>
+                        <div className={`iconfont ${answered ? "icon-tixing" : "icon-shizhong"}`} aria-hidden="true" />
                       </div>
                       <div className="d-inference-text">
                         {item.message || item.title || getInterventionTypeLabel(item.intervention_type)}
                       </div>
-                      <div className={`d-inference-tag${warning ? " d-inference-tag-light" : ""}`}>
-                        {warning ? "警告" : "轻提示"}
+                      <div className={`d-inference-tag${answered ? "" : " d-inference-tag-light"}`}>
+                        {responseLabel}
                       </div>
                       <div className="d-inference-time">{formatClock(item.triggered_at || item.created_at)}</div>
                     </div>
@@ -600,9 +682,12 @@ export default function Dashboard() {
                 ? `合成数据演示模型 · 影子模式${predictionView && !predictionView.ready
                   ? ` · ${predictionView.reason || predictionView.statusLabel}` : ""}`
                 : predictionView
-                ? predictionView.reason || `预测模式: ${predictionView.mode}`
+                ? predictionView.reason || `预测模式：${userTerm(predictionView.mode)}`
                 : "需积累数据后由模型中心生成"}
             </div>
+            <PredictionExplanationBlock
+              explanation={focusPrediction?.explanation}
+            />
           </div>
           <div className="d-extra-card">
             <div className="d-extra-title">服务状态</div>

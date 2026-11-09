@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from mindflow.domain.forbidden_words import FORBIDDEN_MEDICAL_TERMS
 from mindflow.domain.procrastination import CBTTechnique, ProcrastinationType
@@ -167,6 +167,11 @@ class PanelVerdict:
     insufficient_data: bool = False
     uncertainty: float | None = None
     evidence_gaps: tuple[str, ...] = ()
+    #: Contract §2/§3 payloads carried alongside the verdict.  Plain dicts so
+    #: the verdict stays a cheap, framework-free value object; ``None`` for
+    #: cached rows written before these features existed.
+    deviation: Mapping[str, Any] | None = None
+    tmt: Mapping[str, Any] | None = None
 
 
 # ── Exception types (degradation chain) ────────────────────────────────────────

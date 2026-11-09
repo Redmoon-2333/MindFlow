@@ -584,6 +584,135 @@ class TestInterventionService:
         )
 
 
+class TestBanditSelection:
+    """Thompson-sampling selection wired through ``maybe_intervene``."""
+
+    @staticmethod
+    def _bandit_service(mock_repo, mock_throttle, mock_notifier, mock_broadcast):
+        return InterventionService(
+            intervention_repo=mock_repo,
+            throttle=mock_throttle,
+            notifier=mock_notifier,
+            broadcast_fn=mock_broadcast,
+        )
+
+    async def test_manual_trigger_bypasses_the_bandit(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        """A manual trigger must not be re-rolled by exploration.
+
+        The user explicitly asked for help now; the engine must use the
+        theory's primary candidate and label the decision ``rule``.
+        """
+        svc = self._bandit_service(
+            mock_repo, mock_throttle, mock_notifier, mock_broadcast
+        )
+        # Give the bandit strong evidence for the *secondary* arm so a
+        # sampled decision would visibly differ from the rule's choice.
+        mock_repo.query_range = AsyncMock(
+            return_value=[
+                {
+                    "intervention_type": "nudge",
+                    "user_response": "accepted",
+                    "feedback_rating": None,
+                    "triggered_at": datetime.now(UTC).isoformat(),
+                    "context_json": None,
+                }
+                for _ in range(20)
+            ]
+        )
+        result = await svc.maybe_intervene(
+            assessment=ProcrastinationAssessment(
+                types=(ProcrastinationType.IMPULSIVITY,),
+                confidence={ProcrastinationType.IMPULSIVITY: 0.8},
+                recommended_technique=CBTTechnique.STIMULUS_CONTROL,
+                rationale="检测到冲动分心模式",
+                source="rule_engine",
+            ),
+            bypass_throttle=True,
+            bypass_deep_work_guard=True,
+        )
+        assert not result.skipped
+        assert result.rationale is not None
+        assert result.rationale["selection"] == "rule"
+        assert result.intervention is not None
+        assert (
+            result.intervention.intervention_type
+            == result.rationale["intervention_type"]
+        )
+        assert result.intervention.intervention_type == "environment_optimization"
+
+    async def test_throttle_still_blocks_with_the_bandit_wired(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        """The bandit decides *what*, never *whether* — the throttle gate wins."""
+        mock_throttle.can_intervene = AsyncMock(
+            return_value=ThrottleDecision(ThrottleReason.COOLDOWN, detail="太频繁")
+        )
+        svc = self._bandit_service(
+            mock_repo, mock_throttle, mock_notifier, mock_broadcast
+        )
+        result = await svc.maybe_intervene(
+            assessment=ProcrastinationAssessment(
+                types=(ProcrastinationType.IMPULSIVITY,),
+                confidence={ProcrastinationType.IMPULSIVITY: 0.8},
+                recommended_technique=CBTTechnique.STIMULUS_CONTROL,
+                rationale="检测到冲动分心模式",
+                source="rule_engine",
+            ),
+            bypass_deep_work_guard=True,
+        )
+        assert result.skipped
+        assert result.intervention is None
+        assert result.rationale is None
+        mock_repo.log_triggered.assert_not_awaited()
+
+    async def test_rationale_is_persisted_in_context_json(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        svc = self._bandit_service(
+            mock_repo, mock_throttle, mock_notifier, mock_broadcast
+        )
+        result = await svc.maybe_intervene(
+            assessment=ProcrastinationAssessment(
+                types=(ProcrastinationType.IMPULSIVITY,),
+                confidence={ProcrastinationType.IMPULSIVITY: 0.8},
+                recommended_technique=CBTTechnique.STIMULUS_CONTROL,
+                rationale="检测到冲动分心模式",
+                source="rule_engine",
+            ),
+            bypass_throttle=True,
+            bypass_deep_work_guard=True,
+        )
+        assert result.rationale is not None
+        context = mock_repo.log_triggered.await_args.kwargs["context"]
+        # Merged alongside the existing keys, not replacing them.
+        assert context["rationale"] == result.rationale
+        assert context["procrastination_types"] == ["impulsivity"]
+        assert context["intensity"] == "standard"
+
+    async def test_rationale_is_broadcast(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        svc = self._bandit_service(
+            mock_repo, mock_throttle, mock_notifier, mock_broadcast
+        )
+        result = await svc.maybe_intervene(
+            assessment=ProcrastinationAssessment(
+                types=(ProcrastinationType.IMPULSIVITY,),
+                confidence={ProcrastinationType.IMPULSIVITY: 0.8},
+                recommended_technique=CBTTechnique.STIMULUS_CONTROL,
+                rationale="检测到冲动分心模式",
+                source="rule_engine",
+            ),
+            bypass_throttle=True,
+            bypass_deep_work_guard=True,
+        )
+        frame = mock_broadcast.await_args.args[0]
+        assert frame["type"] == "intervention"
+        assert frame["payload"]["rationale"] == result.rationale
+
+
 class TestSafetyGuardWiring:
     """evaluate_safety() is wired after message rendering, before persistence.
 
@@ -940,9 +1069,11 @@ class TestInterventionExecution:
             broadcast_fn=mock_broadcast,
             task_repo=task_repo,
         )
+        # Decisional's primary candidate is smart_prioritization; the rule path
+        # used by manual triggers selects that primary deterministically.
         assessment = ProcrastinationAssessment(
-            types=(ProcrastinationType.PERFECTIONISM,),
-            confidence={ProcrastinationType.PERFECTIONISM: 0.8},
+            types=(ProcrastinationType.DECISIONAL,),
+            confidence={ProcrastinationType.DECISIONAL: 0.8},
             recommended_technique=None,
             rationale="多任务并行",
             source="rule_engine",
@@ -952,6 +1083,7 @@ class TestInterventionExecution:
         )
         assert result.skipped is False
         assert result.intervention is not None
+        assert result.intervention.intervention_type == "smart_prioritization"
         assert "写完实验报告" in result.intervention.message
         assert "复习高数" in result.intervention.message
 
@@ -966,8 +1098,8 @@ class TestInterventionExecution:
             broadcast_fn=mock_broadcast,
         )
         assessment = ProcrastinationAssessment(
-            types=(ProcrastinationType.PERFECTIONISM,),
-            confidence={ProcrastinationType.PERFECTIONISM: 0.8},
+            types=(ProcrastinationType.DECISIONAL,),
+            confidence={ProcrastinationType.DECISIONAL: 0.8},
             recommended_technique=None,
             rationale="多任务并行",
             source="rule_engine",
@@ -977,6 +1109,7 @@ class TestInterventionExecution:
         )
         assert result.skipped is False
         assert result.intervention is not None
+        assert result.intervention.intervention_type == "smart_prioritization"
         assert "优先级" in result.intervention.message
 
     async def test_environment_optimization_blocks_top_domain(

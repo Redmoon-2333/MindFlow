@@ -158,6 +158,117 @@ class TestTriggerIntervention:
         assert data["intervention"] is None
 
 
+class TestRationaleExposure:
+    """Contract §4: ``rationale`` rides along on the trigger response."""
+
+    @pytest.fixture
+    def app(self) -> FastAPI:
+        app = FastAPI()
+        register_exception_handlers(app)
+        app.include_router(intervention_router, prefix="/api/v1")
+        now = datetime.now(UTC)
+        recent_event = ActivityEvent(
+            id="recent-001",
+            user_id=1,
+            timestamp_utc=now,
+            duration_s=600.0,
+            event_type="window_snapshot",
+            data=WindowSnapshot(
+                app_name="Visual Studio Code",
+                window_title="MindFlow",
+                process_name="Code.exe",
+                is_idle=False,
+                timestamp_utc=now,
+            ),
+        )
+        activity_repo = MagicMock()
+        activity_repo.query_overlapping_range = AsyncMock(return_value=[recent_event])
+        app.state.activity_repository = activity_repo
+        return app
+
+    _RATIONALE = {
+        "procrastination_type": "impulsivity",
+        "intervention_type": "environment_optimization",
+        "selection": "thompson_sampling",
+        "context_bucket": "afternoon|distracted",
+        "candidates": [
+            {
+                "intervention_type": "environment_optimization",
+                "label": "环境优化",
+                "alpha": 4.0,
+                "beta": 2.0,
+                "posterior_mean": 0.667,
+                "sample": 0.71,
+                "chosen": True,
+            },
+            {
+                "intervention_type": "nudge",
+                "label": "轻提醒",
+                "alpha": 2.0,
+                "beta": 3.0,
+                "posterior_mean": 0.4,
+                "sample": 0.33,
+                "chosen": False,
+            },
+        ],
+        "evidence": ["该时段此类型被接受 3 次", "后验均值最高"],
+        "note": "Thompson 采样在各候选后验上抽样",
+    }
+
+    def test_rationale_is_serialised(self, app) -> None:
+        now = datetime.now(UTC)
+        intervention = Intervention(
+            id="trig-002",
+            user_id=1,
+            intervention_type="environment_optimization",
+            cbt_technique="stimulus_control",
+            title="t",
+            message="m",
+            dismissible=True,
+            created_at=now,
+        )
+        mock_svc = _make_mock_service()
+        mock_svc.maybe_intervene.return_value = InterventionResult(
+            intervention=intervention, rationale=self._RATIONALE
+        )
+        app.state.intervention_service = mock_svc
+
+        data = TestClient(app).post(
+            "/api/v1/intervention/trigger", json={"intensity": "standard"}
+        ).json()
+
+        rationale = data["intervention"]["rationale"]
+        assert rationale["selection"] == "thompson_sampling"
+        assert rationale["context_bucket"] == "afternoon|distracted"
+        assert rationale["candidates"][0]["chosen"] is True
+        assert rationale["candidates"][0]["posterior_mean"] == 0.667
+
+    def test_rationale_is_null_when_absent(self, app) -> None:
+        """Legacy service results carry no rationale; the key stays present."""
+        now = datetime.now(UTC)
+        mock_svc = _make_mock_service()
+        mock_svc.maybe_intervene.return_value = InterventionResult(
+            intervention=Intervention(
+                id="trig-003",
+                user_id=1,
+                intervention_type="nudge",
+                cbt_technique="behavioral_experiment",
+                title="t",
+                message="m",
+                dismissible=True,
+                created_at=now,
+            )
+        )
+        app.state.intervention_service = mock_svc
+
+        data = TestClient(app).post(
+            "/api/v1/intervention/trigger", json={"intensity": "standard"}
+        ).json()
+
+        assert "rationale" in data["intervention"]
+        assert data["intervention"]["rationale"] is None
+
+
 class TestRespondToIntervention:
     """POST /api/v1/intervention/{id}/response."""
 

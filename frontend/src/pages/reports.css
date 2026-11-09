@@ -29,7 +29,7 @@
   padding: 2px 25px;
   padding-left: 30px;
   justify-content: center;
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   font-size: 22px;
   font-weight: 600;
   letter-spacing: 5px;
@@ -69,7 +69,7 @@
   height: 100%;
   background-color: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   position: relative;
 }
 .reports .state-item-text {
@@ -93,29 +93,29 @@
   right: 40px;
   width: 55px;
   height: 55px;
-  background: #caffde28;
+  background: color-mix(in srgb, var(--good) 16%, transparent);
   line-height: 55px;
   text-align: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 .reports .icon-box .iconfont {
   font-size: 35px;
   color: var(--mf-green);
 }
 .reports .state-item:nth-child(2) .icon-box {
-  background: #cdda7628;
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
 }
 .reports .state-item:nth-child(2) .icon-box .icon {
   color: var(--color-warning);
 }
 .reports .state-item:nth-child(3) .icon-box {
-  background: #f69c002a;
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
 }
 .reports .state-item:nth-child(3) .icon-box .icon {
   color: var(--mf-orange);
 }
 .reports .state-item:nth-child(4) .icon-box {
-  background: #06b6d428;
+  background: color-mix(in srgb, var(--info) 16%, transparent);
 }
 .reports .state-item:nth-child(4) .icon-box .icon {
   color: var(--mf-cyan);
@@ -126,18 +126,20 @@
   min-height: 120px;
   background-color: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   margin-top: 30px;
   overflow: hidden;
 }
+/* Indent with padding, not margin: `width: 100%` + `margin-left` made the
+   heading box 30px wider than its card and the shell clipped the overflow. */
 .reports .zhuanzhudongcha-title {
   width: 100%;
   height: 55px;
+  padding-left: var(--space-7);
   color: var(--mf-text);
   font-size: 18px;
   line-height: 60px;
   font-weight: 600;
-  margin-left: 30px;
 }
 .reports .zhuanzhudongcha-text {
   width: 96%;
@@ -152,7 +154,7 @@
 .reports .chart-box {
   background-color: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   width: 100%;
   height: 300px;
   margin-top: 30px;
@@ -164,11 +166,11 @@
   position: absolute;
   width: 100%;
   height: 60px;
+  padding-left: var(--space-7);
   color: var(--mf-text);
   font-size: 18px;
   line-height: 60px;
   font-weight: 600;
-  margin-left: 30px;
 }
 .reports .chart-box-item {
   width: 12%;
@@ -184,7 +186,7 @@
   height: 0;
   background-color: var(--mf-green);
   transform-origin: bottom center;
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   animation: r-growUp 0.8s ease forwards;
   transform: scaleY(0);
   position: relative;
@@ -212,7 +214,7 @@
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
   width: 100%;
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
   margin-top: 30px;
   padding-bottom: 40px;
   position: relative;
@@ -221,11 +223,11 @@
   position: absolute;
   width: 100%;
   height: 60px;
+  padding-left: var(--space-7);
   color: var(--mf-text);
   font-size: 18px;
   line-height: 60px;
   font-weight: 600;
-  margin-left: 30px;
 }
 .reports .simple-table {
   width: 95%;
@@ -290,7 +292,7 @@
 .reports .trend-pill {
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   padding: 8px 18px;
   min-width: 170px;
 }
@@ -333,10 +335,13 @@
   /* Reset the reference's 30px title indents — at 390px they push the
      headings past the viewport where the shell clips them. */
   .reports .zhuanzhudongcha-title,
-  .reports .zhuanzhudongcha-text,
   .reports .chart-box .title,
   .reports .report-detail-title {
-    margin-left: 16px;
+    padding-left: var(--space-4);
+    width: 100%;
+  }
+  .reports .zhuanzhudongcha-text {
+    margin-left: var(--space-4);
     width: calc(100% - 32px);
   }
   .reports .state-item { width: 100%; }

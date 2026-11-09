@@ -701,6 +701,47 @@ class TelemetryRepository:
             for row in rows
         ]
 
+    async def label_feature_windows(
+        self,
+        user_id: int,
+        start: datetime,
+        end: datetime,
+        label: str,
+    ) -> int:
+        """Label unlabelled feature windows overlapping ``[start, end)``.
+
+        Contract §5: an answered feedback request annotates the 5-minute
+        windows it covers, and the V2 pipeline then trains on them at
+        ``WINDOW_LABEL_WEIGHT`` (0.8).
+
+        Two deliberate constraints:
+
+        * ``label IS NULL`` in the WHERE clause, not a read-then-write. A user
+          label is the most valuable supervision the system has; a later
+          prompt about an overlapping window must never overwrite one, and
+          checking first would leave a window for a concurrent rollup to fill.
+        * Overlap, not window-start containment: a request ending at 12:07
+          covers the window that started at 12:05 even though its start is
+          outside the range.
+
+        Returns the number of rows actually labelled.
+        """
+        start_iso = start.astimezone(UTC).isoformat()
+        end_iso = end.astimezone(UTC).isoformat()
+        statement = (
+            sa.update(behavior_feature_windows)
+            .where(
+                behavior_feature_windows.c.user_id == user_id,
+                behavior_feature_windows.c.label.is_(None),
+                behavior_feature_windows.c.window_start_utc < end_iso,
+                behavior_feature_windows.c.window_end_utc > start_iso,
+            )
+            .values(label=label)
+        )
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(statement)
+            return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
     async def delete_feature_windows_below_version(
         self,
         user_id: int,

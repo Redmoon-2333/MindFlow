@@ -40,7 +40,7 @@
   width: 80px;
   background-color: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.2s ease-in-out;
@@ -74,7 +74,7 @@
   height: 100%;
   background-color: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
   position: relative;
 }
 .f-state .state-item-text {
@@ -98,29 +98,29 @@
   right: 40px;
   width: 55px;
   height: 55px;
-  background: #caffde28;
+  background: color-mix(in srgb, var(--good) 16%, transparent);
   line-height: 55px;
   text-align: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 .f-state .icon-box .iconfont {
   font-size: 35px;
   color: var(--mf-green);
 }
 .f-state .state-item:nth-child(2) .icon-box {
-  background: #cdda7628;
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
 }
 .f-state .state-item:nth-child(2) .icon-box .icon {
   color: var(--color-warning);
 }
 .f-state .state-item:nth-child(3) .icon-box {
-  background: #f69c002a;
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
 }
 .f-state .state-item:nth-child(3) .icon-box .icon {
   color: var(--mf-orange);
 }
 .f-state .state-item:nth-child(4) .icon-box {
-  background: #06b6d428;
+  background: color-mix(in srgb, var(--info) 16%, transparent);
 }
 .f-state .state-item:nth-child(4) .icon-box .icon {
   color: var(--mf-cyan);
@@ -143,17 +143,19 @@
   height: 400px;
   background-color: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
 }
+/* Indent with padding, not margin: `width: 100%` + `margin-left` made the
+   title box 30px wider than its card and the shell clipped the overflow. */
 .f-statics-title {
   position: relative;
   width: 100%;
   height: 50px;
+  padding-left: var(--space-7);
   color: var(--mf-text);
   font-size: 18px;
   line-height: 50px;
   font-weight: 600;
-  margin-left: 30px;
 }
 .statics-chart {
   width: 90%;
@@ -191,7 +193,7 @@
   position: relative;
   width: 100%;
   height: 70%;
-  border-radius: 20px;
+  border-radius: var(--radius-sm);
   display: flex;
   flex-direction: row;
   justify-content: space-around;
@@ -204,7 +206,7 @@
   position: absolute;
   bottom: 0;
   left: 5%;
-  background-color: #fbbf24a0;
+  background-color: color-mix(in srgb, var(--warn) 62%, transparent);
   border-top-left-radius: 10px;
   border-top-right-radius: 10px;
   animation: f-growUp 0.8s ease forwards;
@@ -250,8 +252,8 @@
 .bottom-index .zhuanzhubox {
   width: 12px;
   height: 12px;
-  background-color: #fbbf24a0;
-  border-radius: 3px;
+  background-color: color-mix(in srgb, var(--warn) 62%, transparent);
+  border-radius: var(--radius-sm);
   margin-top: 20px;
 }
 .bottom-index .zhuanzhubox {
@@ -275,7 +277,7 @@
   border: 1px solid var(--mf-panel-border);
   background-color: var(--mf-panel);
   padding: 15px 30px 25px 30px;
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
 }
 .f-conversation-title {
   position: relative;
@@ -292,7 +294,7 @@
   display: flex;
   flex-direction: column;
   gap: 15px;
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
 }
 .conversation-item {
   position: relative;
@@ -300,7 +302,7 @@
   min-height: 210px;
   background-color: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
   margin-top: 10px;
   padding: 20px 50px;
 }
@@ -356,7 +358,7 @@
 .right-table .process {
   background-color: color-mix(in srgb, var(--mf-brand) 25%, transparent);
   padding: 5px 10px;
-  border-radius: 15px;
+  border-radius: var(--radius-pill);
   font-size: 15px;
   font-weight: 600;
   color: var(--mf-text);
@@ -366,14 +368,14 @@
   background-color: var(--mf-text-dim);
   color: rgb(218, 51, 51);
   padding: 5px 10px;
-  border-radius: 15px;
+  border-radius: var(--radius-pill);
   font-size: 15px;
   font-weight: 700;
   margin-left: -25px;
 }
 .right-table .green {
-  background: #caffde28;
-  color: var(--mf-green);
+  background: color-mix(in srgb, var(--good) 16%, transparent);
+  color: var(--good);
 }
 
 .self-accession-table {
@@ -401,7 +403,7 @@
   height: 40px;
   font-size: 18px;
   font-weight: 600;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 8px 12px 8px 25px;
   background-color: color-mix(in srgb, var(--mf-brand) 35%, transparent);
   border: 1px solid var(--mf-panel-border);
@@ -425,12 +427,12 @@
   background-color: color-mix(in srgb, var(--mf-brand) 35%, transparent);
   border: 1px solid var(--mf-panel-border);
   padding: 8px 20px;
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   color: var(--mf-text);
   font-weight: 600;
   cursor: pointer;
   margin-left: 100px;
-  box-shadow: 1px 1px 3px #3b6494;
+  box-shadow: var(--shadow-1);
   transition: all 0.2s ease;
   position: absolute;
   right: 0;
@@ -459,7 +461,7 @@
 .f-saved {
   margin-top: 12px;
   padding: 10px 14px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--mf-brand) 10%, transparent);
   border: 1px solid var(--mf-panel-border);
   font-size: 14px;
@@ -503,8 +505,8 @@
   /* Titles are indented by 30px in the reference; that indent overflows a
      390px viewport, so it is reset here along with the chart gutters. */
   .f-statics-title {
-    margin-left: 16px;
-    width: calc(100% - 32px);
+    padding-left: var(--space-4);
+    width: 100%;
   }
   .bottom-index {
     flex-wrap: wrap;

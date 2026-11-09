@@ -17,7 +17,11 @@ import type {
   BehavioralProfile,
   ModelStatus,
 } from "../api";
+import TmtGauge from "../components/charts/TmtGauge";
+import { SEVERITY_LABELS } from "../types/explainability";
+import type { DeviationSummary, TmtBreakdown } from "../types/explainability";
 import "./analytics.css";
+import "../components/primitives.css";
 
 const DAYS_OPTIONS = [7, 14, 30, 90];
 
@@ -60,6 +64,181 @@ function toTriggerAppRows(patterns: AnalyticsPatterns | null): TableRow[] {
     left: a.app || a.app_name || a.name || `应用 ${i + 1}`,
     right: a.count != null ? `${a.count}次` : String(a.percentage ?? "—"),
   }));
+}
+
+const TYPE_KEYS = [
+  "task_aversion",
+  "impulsivity",
+  "decisional",
+  "perfectionism",
+  "emotional_regulation",
+] as const;
+
+const TYPE_LABELS: Record<string, string> = {
+  task_aversion: "任务厌恶",
+  impulsivity: "冲动分心",
+  decisional: "决策拖延",
+  perfectionism: "完美主义",
+  emotional_regulation: "情绪调节",
+};
+
+const SEVERITY_TONE: Record<string, string> = {
+  normal: "badge-success",
+  mild: "badge-info",
+  moderate: "badge-warning",
+  severe: "badge-danger",
+};
+
+/**
+ * 拖延归因的可解释部分.
+ *
+ * Every block here comes from an optional contract addition, so each one
+ * renders independently: a response with `tmt` but no `deviation` shows the
+ * TMT gauge and a neutral line where the deviation table would be.
+ */
+function AttributionEvidence({
+  typeConfidence,
+  distortions,
+  nextAction,
+  tmt,
+  deviation,
+}: {
+  typeConfidence: Record<string, number>;
+  distortions: string[];
+  nextAction?: string;
+  tmt?: TmtBreakdown | null;
+  deviation?: DeviationSummary | null;
+}) {
+  const typeRows = TYPE_KEYS.flatMap((key) => {
+    const value = typeConfidence[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) return [];
+    return [{ key, label: TYPE_LABELS[key], value }];
+  }).sort((a, b) => b.value - a.value);
+  const leading = typeRows[0]?.key;
+
+  return (
+    <div className="attribution-evidence">
+      <section className="proof" aria-label="拖延类型置信度">
+        <div className="proof-head">
+          <span className="proof-title">类型置信度</span>
+          <span className="proof-muted">模型对各类型的判断强度</span>
+        </div>
+        {typeRows.length === 0 ? (
+          <p className="proof-note">暂无类型置信度数据</p>
+        ) : (
+          <div className="type-bars">
+            {typeRows.map((row) => {
+              const percent = Math.max(0, Math.min(1, row.value)) * 100;
+              return (
+                <div className="type-bar-row" key={row.key} data-leading={row.key === leading}>
+                  <span className="type-bar-name">
+                    <span
+                      className="mf-chart-legend-swatch"
+                      style={{ background: `var(--type-${row.key})` }}
+                      aria-hidden="true"
+                    />
+                    {row.label}
+                  </span>
+                  <div
+                    className="type-bar-track"
+                    role="img"
+                    aria-label={`${row.label} 置信度 ${percent.toFixed(0)}%`}
+                  >
+                    <div
+                      className="type-bar-fill"
+                      style={{ width: `${percent}%`, background: `var(--type-${row.key})` }}
+                    />
+                  </div>
+                  <span className="type-bar-value">{(row.value * 100).toFixed(0)}%</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {distortions.length > 0 && (
+        <section className="proof" aria-label="识别到的认知扭曲">
+          <div className="proof-head">
+            <span className="proof-title">认知扭曲</span>
+            <span className="proof-muted">CBT 视角下的思维模式</span>
+          </div>
+          <div className="chip-row">
+            {distortions.map((item) => (
+              <span className="chip" key={item} data-tone="warn">{item}</span>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {nextAction && (
+        <div className="callout" data-tone="good">
+          <span className="callout-title">下一步可以做</span>
+          <span>{nextAction}</span>
+        </div>
+      )}
+
+      <section className="proof" aria-label="动机分解">
+        <div className="proof-head">
+          <span className="proof-title">动机分解（TMT）</span>
+          <span className="proof-muted">期望 × 价值 ÷ (1 + 冲动 × 延迟)</span>
+        </div>
+        <TmtGauge tmt={tmt ?? null} />
+      </section>
+
+      <section className="proof" aria-label="行为偏离">
+        <div className="proof-head">
+          <span className="proof-title">行为偏离</span>
+          {deviation && (
+            <span className={`badge ${SEVERITY_TONE[deviation.severity]}`}>
+              {SEVERITY_LABELS[deviation.severity]}
+            </span>
+          )}
+        </div>
+        {!deviation ? (
+          <p className="proof-note">暂无偏离数据</p>
+        ) : (
+          <>
+            <div className="deviation-meta">
+              <span>综合偏离分 {deviation.overall_score.toFixed(2)}</span>
+              <span>
+                经验贝叶斯收缩 n={deviation.bucket.n_samples}，收缩系数{" "}
+                {deviation.bucket.shrinkage.toFixed(2)}
+              </span>
+              <span>
+                对比时段 {String(deviation.bucket.hour_of_day).padStart(2, "0")}:00 ·
+                周{["日", "一", "二", "三", "四", "五", "六"][deviation.bucket.day_of_week] ?? "—"}
+              </span>
+            </div>
+            {deviation.features.length === 0 ? (
+              <p className="proof-note">当前时段没有显著偏离的特征</p>
+            ) : (
+              <table className="deviation-table">
+                <thead>
+                  <tr>
+                    <th scope="col">特征</th>
+                    <th scope="col" className="num">当前</th>
+                    <th scope="col" className="num">个人期望</th>
+                    <th scope="col" className="num">稳健 z</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deviation.features.map((feature) => (
+                    <tr key={feature.feature}>
+                      <td>{feature.label}</td>
+                      <td className="num">{feature.value.toFixed(2)}</td>
+                      <td className="num">{feature.expected.toFixed(2)}</td>
+                      <td className="num">{feature.robust_z.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </section>
+    </div>
+  );
 }
 
 export default function Analytics() {
@@ -428,6 +607,20 @@ export default function Analytics() {
           <p>用于拖延归因、专家讨论与建议生成；独立于个人模型。已配置仅表示有凭证，调用成功还取决于服务可用性。</p>
         </div>
       </div>
+
+      {/* The evidence blocks live below the reference's two cards rather than
+          inside `.left-box`: that box distributes children with space-between
+          at a fixed 270px height, so extra children would push the reference
+          layout out of shape. */}
+      {attribution && (
+        <AttributionEvidence
+          typeConfidence={attribution.assessment?.type_confidence ?? {}}
+          distortions={attribution.assessment?.cognitive_distortions ?? []}
+          nextAction={attribution.assessment?.next_action}
+          tmt={attribution.tmt}
+          deviation={attribution.deviation}
+        />
+      )}
     </div>
   );
 }

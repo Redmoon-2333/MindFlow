@@ -8,10 +8,22 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel, Field
 
-from mindflow.api.deps import get_blocklist_repo, get_telemetry_service
+from mindflow.api.deps import (
+    get_blocklist_repo,
+    get_feedback_request_store,
+    get_telemetry_service,
+)
 from mindflow.api.errors import ProblemDetail
-from mindflow.api.schemas import FocusPredictionResponse, TelemetryDeleteResponse
+from mindflow.api.schemas import (
+    FeedbackAnswerRequest,
+    FeedbackAnswerResponse,
+    FeedbackRequestModel,
+    FocusPredictionResponse,
+    PendingFeedbackRequestsResponse,
+    TelemetryDeleteResponse,
+)
 from mindflow.infrastructure.repositories.blocklist import SQLAlchemyBlocklistRepository
+from mindflow.services.feedback_request_service import FeedbackRequestStore
 from mindflow.services.telemetry_service import TelemetryClearResult, TelemetryService
 
 router = APIRouter(tags=["telemetry"])
@@ -142,3 +154,56 @@ async def browser_blocklist(
         )
     domains = await repo.list_enabled(user_id=1)
     return {"domains": domains, "version": 1}
+
+
+# ── Proactive-learning feedback requests (contract §5) ───────────────────
+
+
+@router.get(
+    "/telemetry/feedback-requests/pending",
+    response_model=PendingFeedbackRequestsResponse,
+)
+async def get_pending_feedback_requests(
+    store: FeedbackRequestStore = Depends(get_feedback_request_store),  # noqa: B008
+) -> PendingFeedbackRequestsResponse:
+    """The outstanding prompt, for clients that missed the WS push.
+
+    At most one item: the store refuses to stack prompts, and an expired one
+    is never returned — the user can no longer answer it.
+    """
+    items = [
+        FeedbackRequestModel(**request.to_payload())
+        for request in await store.pending()
+    ]
+    return PendingFeedbackRequestsResponse(items=items)
+
+
+@router.post(
+    "/telemetry/feedback-requests/{request_id}/answer",
+    response_model=FeedbackAnswerResponse,
+)
+async def answer_feedback_request(
+    request_id: str,
+    body: FeedbackAnswerRequest,
+    store: FeedbackRequestStore = Depends(get_feedback_request_store),  # noqa: B008
+) -> FeedbackAnswerResponse:
+    """Record the user's label for the window the request covered.
+
+    ``skip`` records nothing and answers ``status="skipped"``; a request older
+    than the TTL answers ``status="expired"`` rather than labelling behaviour
+    the user can no longer remember. An unknown id is 404 — the client is
+    polling a request that was already answered or never existed.
+    """
+    result = await store.answer(request_id, body.label)
+    if result is None:
+        raise ProblemDetail(
+            type_slug="feedback-request-not-found",
+            title="Feedback Request Not Found",
+            status=404,
+            detail="反馈请求不存在、已作答或已过期",
+        )
+    return FeedbackAnswerResponse(
+        request_id=result.request_id,
+        labeled_windows=result.labeled_windows,
+        status=result.status,
+    )

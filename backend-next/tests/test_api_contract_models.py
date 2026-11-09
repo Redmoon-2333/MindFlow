@@ -19,6 +19,7 @@ from mindflow.api.routes.panel import router as panel_router
 from mindflow.api.routes.telemetry import router as telemetry_router
 from mindflow.api.schemas import (
     ChatResponse,
+    Explanation,
     FocusPredictionResponse,
     PanelResponse,
     PanelTranscriptEntry,
@@ -194,6 +195,9 @@ class TestPanelResponseContract:
             "insufficient_data",
             "uncertainty",
             "evidence_gaps",
+            # Contract §2/§3 additions (2026-11 midterm upgrade).
+            "deviation",
+            "tmt",
         }
         assert props["types"]["type"] == "array"
         assert props["confidence"]["type"] == "object"
@@ -282,8 +286,9 @@ class TestFocusPredictionResponseContract:
     """FocusPredictionResponse — canonical GET /telemetry/focus-prediction contract.
 
     The response exposes exactly ``focus_probability`` (present-and-null when
-    unavailable), ``status`` (one of the six domain statuses), ``mode``, and
-    ``reason``. It must never add ``prediction`` or ``source``.
+    unavailable), ``status`` (one of the six domain statuses), ``mode``,
+    ``reason``, and the optional ``explanation`` (contract §1). It must never
+    add ``prediction`` or ``source``.
     """
 
     ALL_STATUSES: tuple[FocusPredictionStatus, ...] = (
@@ -297,11 +302,20 @@ class TestFocusPredictionResponseContract:
 
     def test_focus_prediction_response_field_types(self) -> None:
         fields = FocusPredictionResponse.model_fields
-        assert set(fields) == {"focus_probability", "status", "mode", "reason"}
+        assert set(fields) == {
+            "focus_probability",
+            "status",
+            "mode",
+            "reason",
+            # Contract §1: optional local attribution.
+            "explanation",
+        }
         assert fields["focus_probability"].annotation == float | None
         assert fields["status"].annotation == FocusPredictionStatus
         assert fields["mode"].annotation is str
         assert fields["reason"].annotation is str
+        assert fields["explanation"].annotation == Explanation | None
+        assert not fields["explanation"].is_required()
 
     def test_focus_prediction_response_required_fields(self) -> None:
         fields = FocusPredictionResponse.model_fields
@@ -375,7 +389,13 @@ class TestFocusPredictionResponseContract:
         schema = _app_with_telemetry().openapi()
         component = schema["components"]["schemas"]["FocusPredictionResponse"]
         props = component["properties"]
-        assert set(props) == {"focus_probability", "status", "mode", "reason"}
+        assert set(props) == {
+            "focus_probability",
+            "status",
+            "mode",
+            "reason",
+            "explanation",
+        }
         # focus_probability is a nullable number bounded to [0, 1].
         probability = props["focus_probability"]["anyOf"]
         assert {part["type"] for part in probability} == {"number", "null"}

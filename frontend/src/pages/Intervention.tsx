@@ -10,6 +10,10 @@ import {
 import type { InterventionIntensity, InterventionRating, InterventionResponse } from "../api";
 import { realtimeClient } from "../realtime";
 import { INTERVENTION_TYPE_LABELS, INTERVENTION_TYPE_BADGES } from "../lib/intervention-labels";
+import PosteriorBars from "../components/charts/PosteriorBars";
+import { SELECTION_LABELS } from "../types/explainability";
+import type { InterventionRationale } from "../types/explainability";
+import "../components/primitives.css";
 
 interface InterventionItem {
   id: string;
@@ -22,6 +26,66 @@ interface InterventionItem {
   feedback_comment?: string | null;
   title?: string;
   message?: string;
+  /** Contract §4 — absent until the backend ships it. */
+  rationale?: InterventionRationale | null;
+}
+
+/**
+ * "为什么是这条提醒" — the selection evidence for one intervention.
+ *
+ * Shared by the latest card (always expanded) and each history row
+ * (collapsible), so the wording and the ordering of the argument are identical
+ * wherever a reader meets it.
+ */
+// Context buckets arrive as wire identifiers ("afternoon|distracted"). A judge
+// reading the card should not have to decode a pipe-separated key.
+const BUCKET_LABELS: Record<string, string> = {
+  morning: "上午", afternoon: "下午", evening: "傍晚", night: "夜间",
+  focused: "专注", distracted: "分心", mixed: "混合", idle: "空闲",
+};
+
+function contextLabel(bucket: string): string {
+  return bucket.split("|").map(part => BUCKET_LABELS[part] ?? part).join(" · ");
+}
+
+function RationaleBlock({ rationale }: { rationale?: InterventionRationale | null }) {
+  if (!rationale) {
+    return <p className="proof-note">暂无选择依据</p>;
+  }
+  return (
+    <div className="rationale-block">
+      <div className="proof-head">
+        <span className={`badge ${rationale.selection === "thompson_sampling" ? "badge-info" : "badge-neutral"}`}>
+          {SELECTION_LABELS[rationale.selection]}
+        </span>
+        {rationale.context_bucket && (
+          <span className="proof-muted">情境：{contextLabel(rationale.context_bucket)}</span>
+        )}
+      </div>
+
+      {rationale.evidence.length > 0 ? (
+        <ul className="bullet-list">
+          {rationale.evidence.slice(0, 4).map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="proof-note">本次没有记录具体证据。</p>
+      )}
+
+      {rationale.candidates.length > 0 && (
+        <div className="rationale-candidates">
+          <div className="proof-title">候选提醒的实测表现</div>
+          <PosteriorBars
+            candidates={rationale.candidates}
+            ariaLabel="候选提醒的 Thompson 采样后验均值与 90% 可信区间"
+          />
+        </div>
+      )}
+
+      {rationale.note && <p className="proof-note">{rationale.note}</p>}
+    </div>
+  );
 }
 
 const INTENSITY_OPTIONS = [
@@ -296,6 +360,10 @@ export default function Intervention() {
             </button>
           </div>
           </div>
+          <div className="proof rationale-latest" aria-label="为什么是这条提醒">
+            <div className="proof-title">为什么是这条提醒</div>
+            <RationaleBlock rationale={latest.rationale} />
+          </div>
         </div>
       ) : (<div className="card"><h3>最新干预</h3><div className="workspace-empty">暂时没有提醒。<br />需要时，可以从左侧选择一种强度。</div></div>)}
       </div>
@@ -370,6 +438,13 @@ export default function Intervention() {
                   <div className="intervention-history-message" style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 2 }}>
                     {item.message}
                   </div>
+                )}
+
+                {item.rationale && (
+                  <details className="proof-details rationale-history">
+                    <summary>为什么是这条提醒</summary>
+                    <RationaleBlock rationale={item.rationale} />
+                  </details>
                 )}
 
                 {feedbackId === item.id ? (

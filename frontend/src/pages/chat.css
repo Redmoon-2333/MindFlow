@@ -16,20 +16,20 @@
 .chat-ai h1, .chat-ai h2, .chat-ai h3 { margin: 16px 0 8px; line-height: 1.4; font-size: 1.15em; }
 .chat-ai a { color: var(--mf-brand); text-decoration: underline; }
 .chat-ai blockquote { border-left: 3px solid var(--color-primary); padding-left: 12px; color: var(--color-text-secondary); }
-.chat-ai pre { max-width: 100%; overflow-x: auto; padding: 12px; border-radius: 8px; background: var(--color-bg-inset); white-space: pre; }
-.chat-ai code { font-family: Consolas, monospace; background: var(--color-bg-inset); border-radius: 4px; padding: 2px 4px; }
+.chat-ai pre { max-width: 100%; overflow-x: auto; padding: 12px; border-radius: var(--radius-sm); background: var(--color-bg-inset); white-space: pre; }
+.chat-ai code { font-family: Consolas, monospace; background: var(--color-bg-inset); border-radius: var(--radius-sm); padding: 2px 4px; }
 .chat-ai pre code { padding: 0; background: transparent; }
 .chat-ai img { max-width: 100%; height: auto; }
 .chat-table-scroll { max-width: 100%; overflow-x: auto; margin-bottom: 12px; }
 .chat-ai table { border-collapse: collapse; width: max-content; min-width: 100%; }
 .chat-ai th, .chat-ai td { padding: 8px 12px; border: 1px solid var(--color-border); }
-.chat-session-item { border-radius: 10px; margin-bottom: 8px; padding: 6px; }
+.chat-session-item { border-radius: var(--radius-md); margin-bottom: 8px; padding: 6px; }
 .chat-session-item.is-active { background: var(--color-primary-light); }
 :root .chat-session-select { display: block; width: 100%; text-align: left; background: transparent; border: 0; color: var(--color-text-primary); padding: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .chat-session-row { display: flex; align-items: center; gap: 4px; }
 :root .chat-session-select { flex: 1; width: 0; min-width: 0; }
 .chat-session-actions { display: flex; gap: 2px; flex-shrink: 0; }
-:root .chat-session-icon { display: inline-flex; justify-content: center; align-items: center; width: 30px; height: 30px; padding: 5px; border: 0; border-radius: 6px; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
+:root .chat-session-icon { display: inline-flex; justify-content: center; align-items: center; width: 30px; height: 30px; padding: 5px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-secondary); cursor: pointer; }
 :root .chat-session-icon:hover, :root .chat-session-icon:focus-visible { color: var(--mf-brand); background: var(--color-bg-inset); }
 .chat-session-icon:disabled { opacity: .45; cursor: default; }
 .chat-session-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }

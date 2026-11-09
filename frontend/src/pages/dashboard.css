@@ -36,7 +36,7 @@
   font-size: 16px;
   color: var(--mf-green);
   border: 1px solid var(--mf-green);
-  border-radius: 25px;
+  border-radius: var(--radius-pill);
   position: relative;
   height: 40px;
   width: 100px;
@@ -85,13 +85,13 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   position: relative;
 }
 .d-state-title {
   position: absolute;
   top: 15px;
-  left: 20px;
+  left: var(--space-5);
   font-size: 15px;
   color: var(--mf-text);
   font-weight: 600;
@@ -110,7 +110,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background-color: #18a14a;
+  background-color: var(--good);
   top: 55%;
   left: -17px;
   transform: translateY(-50%);
@@ -185,7 +185,7 @@
   height: 280px;
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -195,7 +195,7 @@
 .d-chart-title {
   position: relative;
   top: 15px;
-  left: 30px;
+  left: var(--space-5);
   font-size: 18px;
   color: var(--mf-text);
   font-weight: 600;
@@ -203,7 +203,7 @@
   margin-bottom: 20px;
 }
 .d-activity-item {
-  margin-left: 30px;
+  margin-left: var(--space-5);
   display: flex;
   gap: 30px;
 }
@@ -231,7 +231,7 @@
   font-weight: 600;
   color: var(--mf-text);
   background: var(--mf-panel);
-  border-radius: 15px;
+  border-radius: var(--radius-pill);
   height: 25px;
   padding: 0 15px;
   margin-top: -1px;
@@ -266,7 +266,7 @@
 .d-activity-time {
   display: flex;
   justify-content: left;
-  margin-left: 30px;
+  margin-left: var(--space-5);
   height: 20px;
   line-height: 20px;
   gap: 10px;
@@ -274,57 +274,18 @@
   font-size: 14px;
   color: var(--mf-text);
 }
-.d-chart-box {
-  width: calc(100% - 60px);
-  height: 145px;
-  margin-left: 30px;
-  display: flex;
-  justify-content: space-between;
-}
-.d-chart-box-item {
-  width: 12%;
-  height: 100%;
-  display: flex;
-  flex-direction: column-reverse;
-  align-items: center;
-  position: relative;
-  gap: 10px;
-}
-.d-chart-box-item-column {
-  width: 40px;
-  height: 0;
-  background-color: var(--mf-green);
-  transform-origin: bottom center;
-  border-radius: 8px 8px 0 0;
-  animation: d-growUp 0.8s ease forwards;
-  transform: scaleY(0);
-  position: relative;
-}
-.d-chart-box-item-column--today {
-  background-color: #ffcc00;
-}
-.d-chart-box-item-number {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 14px;
-  color: var(--mf-text);
-  font-weight: 600;
-  white-space: nowrap;
-}
-@keyframes d-growUp {
-  from { transform: scaleY(0); }
-  to { transform: scaleY(1); }
-}
+/* The 7-day trend is now an SVG <BarChart>; this class is the HTML x tick the
+   chart renders under the plot (e2e specs read these labels). */
 .d-chart-box-item-week {
   font-size: 12px;
   font-weight: 600;
   color: var(--mf-text);
+  line-height: 1.6;
 }
+.d-chart-box-item-week[data-active="true"] { color: var(--mf-brand); }
 .d-chart-demonstration {
   height: 20px;
-  margin-left: 30px;
+  margin-left: var(--space-5);
   width: calc(100% - 60px);
   margin-top: 5px;
   display: flex;
@@ -345,14 +306,14 @@
   position: absolute;
   width: 8px;
   height: 8px;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   background-color: #18a14a;
   top: 55%;
   left: 5px;
   transform: translateY(-50%);
 }
 .d-chart-demonstration-item-dot--today {
-  background-color: #ffcc00;
+  background-color: var(--warn);
 }
 
 /* ── Statistics row ─────────────────────────────────────────────────────── */
@@ -368,11 +329,11 @@
   height: 180px;
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   position: relative;
   flex-direction: column;
   gap: 5px;
-  padding-left: 30px;
+  padding-left: var(--space-5);
   display: flex;
 }
 .d-statistic-title {
@@ -428,12 +389,12 @@
   height: 350px;
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 15px;
-  padding-left: 30px;
+  padding-left: var(--space-5);
 }
 .d-control-title,
 .d-inference-title {
@@ -446,7 +407,7 @@
   position: relative;
   display: flex;
   flex-direction: row;
-  margin-left: 30px;
+  margin-left: var(--space-5);
   margin-top: 30px;
   gap: 15px;
   height: 30px;
@@ -459,7 +420,7 @@
   color: var(--color-success);
   font-size: 14px;
   font-weight: 600;
-  border-radius: 15px;
+  border-radius: var(--radius-pill);
 }
 .d-control-module-statement::after {
   content: "";
@@ -479,7 +440,7 @@
   color: var(--mf-orange);
   font-size: 14px;
   font-weight: 600;
-  border-radius: 15px;
+  border-radius: var(--radius-pill);
 }
 .d-control-module-jingao::after {
   content: "";
@@ -511,7 +472,7 @@
   width: 50px;
   height: 30px;
   padding: 2px 15px 2px 5px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
   outline: 2px solid var(--mf-panel);
@@ -525,7 +486,7 @@
   margin-left: 80px;
   padding: 0 15px;
   height: 36px;
-  border-radius: 15px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
   font-size: 16px;
   font-weight: 600;
@@ -598,7 +559,7 @@
   width: calc(100% - 40px);
   flex: 0 0 auto;
   background-color: #61bdff1a;
-  border-radius: 20px;
+  border-radius: var(--radius-md);
   position: relative;
   height: 75px;
   margin-bottom: 5px;
@@ -607,13 +568,13 @@
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  left: 30px;
+  left: var(--space-5);
   width: 40px;
   height: 40px;
   background: #3fc7df6a;
   line-height: 40px;
   text-align: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 .d-inference-item .icon-box .iconfont {
   font-size: 25px;
@@ -646,7 +607,7 @@
   background-color: #06b5d450;
   padding: 2px 8px;
   font-weight: 600;
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
 }
 .d-inference-tag-light {
   background: #f59f0b38;
@@ -661,7 +622,7 @@
 .d-empty {
   color: var(--mf-text-dim);
   font-size: 14px;
-  margin-left: 30px;
+  margin-left: var(--space-5);
   margin-top: 24px;
 }
 
@@ -675,8 +636,10 @@
 .d-extra-card {
   background: var(--mf-panel);
   border: 1px solid var(--mf-panel-border);
-  border-radius: 14px;
-  padding: 20px 30px;
+  border-radius: var(--radius-lg);
+  /* Card padding is one value everywhere (--space-5); the old 20/30 pair made
+     this card's text sit further in than its neighbours'. */
+  padding: var(--space-5);
   min-height: 120px;
 }
 .d-extra-title {
@@ -695,6 +658,21 @@
   color: var(--mf-text-dim);
   margin-top: 8px;
 }
+/* Explanation disclosure inside the ML card — sits below the headline so the
+   number stays the first thing read. */
+.d-explain { margin-top: 18px; }
+.d-explain > * + * { margin-top: var(--space-3); }
+.d-explain-muted {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+  font-size: 13px;
+  color: var(--mf-text-dim);
+}
+/* The 7-day chart is now a real <svg>; the old absolute-positioned bar column
+   styles below still style the HTML x ticks that e2e specs read. */
+.d-chart-plot { margin: 0 30px; }
+@media (max-width: 767px) { .d-chart-plot { margin: 0 8px; } }
 @media (max-width: 1023px) {
   .d-extra { grid-template-columns: 1fr; }
 }
@@ -729,7 +707,6 @@ input[type="number"]::-webkit-inner-spin-button {
   .d-activity-title,
   .d-chart-title { left: 0; top: 0; margin-bottom: 8px; }
   .d-activity-item,
-  .d-chart-box,
   .d-chart-demonstration,
   .d-activity-time { margin-left: 0; width: calc(100% - 8px); }
   .d-activity-item { flex-wrap: wrap; gap: 8px 16px; }
@@ -739,13 +716,13 @@ input[type="number"]::-webkit-inner-spin-button {
   .d-state-content,
   .d-state-close { left: 32px; }
   .d-icon-box { right: 16px; }
-  .d-statistic-item { padding-left: 20px; }
+  .d-statistic-item { padding-left: var(--space-4); }
   .d-statistic-title,
   .d-statistic-content,
   .d-statistic-stat { margin-left: 0; }
   .d-control,
   .d-inference { padding-left: 16px; }
-  .d-control-module { margin-left: 20px; gap: 8px; flex-wrap: wrap; }
+  .d-control-module { margin-left: var(--space-4); gap: 8px; flex-wrap: wrap; }
   .d-inference-text { left: 74px; right: 16px; }
   .d-inference-tag { left: 74px; }
   .d-inference-item .icon-box { left: 16px; }
@@ -764,5 +741,4 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .d-chart-box-item-column { animation-duration: 0.01ms; transform: scaleY(1); }
 }
