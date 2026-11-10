@@ -153,6 +153,20 @@ uv run python -m mindflow.train --rollback <version-tag>
 
 通过后写入 `ready` 模型并更新 `latest.json`；未通过只产生 `shadow` 制品，不替换当前活跃模型。发布失败也会把训练任务标记为失败，不会伪造 ready 状态。
 
+## 内置基础模型
+
+2026-11-11 起，标准启动在没有可用、当前schema个人模型时，默认加载随包的合成基础模型 `base_v4_20261111_r2`。来源为 `bundled_base`，模型状态 `mode=base`、`inference_available=true`、`ready=false`、`personalized=false`；`ready` 仍保留给通过个人验证的模型。API与模型中心展示来源，基础模型不借用真实反馈条数通过个人质量门。
+
+模型资源位于 `src/mindflow/resources/base-v4/`，依次验证发布清单摘要、制品字节及依赖版本，再写入独立 `models/bundled/<version>/` 并使用本机HMAC签名。个人模型指针仍位于 `models/v2/`，已通过验证的个人模型优先。设置 `MINDFLOW_BASE_MODEL_ENABLED=False` 可关闭基础回退。
+
+复现实验：
+
+```powershell
+uv run --locked python scripts/run_experiments.py --base-model --run-id YOUR_NEW_RUN_ID
+```
+
+145,152窗口全部合成，104实际软件/网站加1未知条目、108模拟身份、30情境，18角色、全天时段。六算法同集比较、困难场景与复现边界见[模型卡](src/mindflow/resources/base-v4/model_card.md)和[基础模型实验说明](../docs/models/base-v4.md)。个人化沿用前述数据库训练与质量门，采取重训和校准。
+
 ## LLM 图与降级
 
 ### AnalysisGraph

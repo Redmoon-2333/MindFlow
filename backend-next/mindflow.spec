@@ -41,9 +41,11 @@ a = Analysis(
         ("alembic/", "alembic/"),
         ("alembic.ini", "."),
         ("../frontend/dist", "frontend"),
+        ("src/mindflow/resources/base-v4", "mindflow/resources/base-v4"),
     ],
     hiddenimports=[
         "sklearn",
+        "xgboost",
         "hmmlearn",
         "aiosqlite",
         "pydantic",

@@ -1,0 +1,67 @@
+{
+  "version": "base_v4_20261111_r2",
+  "source": "synthetic_base",
+  "synthetic_only": true,
+  "feature_schema_version": 4,
+  "feature_names": [
+    "app_switch_count",
+    "domain_switch_count",
+    "longest_segment_ratio",
+    "idle_ratio",
+    "keypress_rate_per_min",
+    "mouse_click_rate_per_min",
+    "scroll_rate_per_min",
+    "mouse_distance_per_min",
+    "input_active_ratio",
+    "interaction_bursts_per_min",
+    "click_key_ratio",
+    "browser_ratio",
+    "audible_browser_ratio",
+    "active_seconds_ratio",
+    "top_app_ratio",
+    "top_domain_ratio",
+    "interaction_interval_mean_s",
+    "interaction_interval_std_s",
+    "interaction_interval_cv",
+    "hour_sin",
+    "hour_cos",
+    "weekday_sin",
+    "weekday_cos",
+    "task_type_code",
+    "task_type_entropy",
+    "task_type_dominant_ratio",
+    "task_context_transition",
+    "task_unknown_ratio"
+  ],
+  "personal_quality_gate_passed": false,
+  "packages": {
+    "scikit-learn": "1.9.0",
+    "numpy": "2.3.5",
+    "scipy": "1.17.1",
+    "joblib": "1.5.3",
+    "xgboost": "3.2.0"
+  },
+  "recipe": {
+    "seed": 20261110,
+    "personas_per_role": 6,
+    "days": 28,
+    "windows_per_day": 48
+  },
+  "files": {
+    "classifier": {
+      "name": "classifier-base_v4_20261111_r2.pkl",
+      "sha256": "68b56ec1c012a1d0f34e13586af1ac4350b2fdf8c7cf5968aba9f63e12476ad1",
+      "bytes": 2164291
+    },
+    "clustering": {
+      "name": "clustering-base_v4_20261111_r2.pkl",
+      "sha256": "b00b689cc142bf946e6a39b5cc673207b45fc419071bbca258f771c09bdbe4d8",
+      "bytes": 29020
+    },
+    "hmm": {
+      "name": "hmm-base_v4_20261111_r2.pkl",
+      "sha256": "30dcf00da4c6bf9b8dba23becbca996e02d3f8e25069c6d3552c8071b05eae40",
+      "bytes": 135
+    }
+  }
+}

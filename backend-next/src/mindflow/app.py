@@ -469,6 +469,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 use_ensemble=False,
             )
             if _v2_model_manager.load_latest():
+                from mindflow.domain.feature_schema import V2_FEATURE_NAMES
+
+                if (
+                    not _v2_model_manager.readiness_status()["ready"]
+                    or _v2_model_manager.classifier.feature_names_ != list(V2_FEATURE_NAMES)
+                ):
+                    raise ValueError("Personal model is not inference-ready for feature schema v4")
                 v2_model_manager = _v2_model_manager
                 prediction_service.attach_model_manager(v2_model_manager)
                 telemetry_service.attach_model_manager(v2_model_manager)
@@ -490,6 +497,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 )
         except Exception as exc:
             logger.warning("Failed to load feature schema v2 model: {}", exc)
+
+        if v2_model_manager is None and settings.base_model_enabled:
+            try:
+                from mindflow.train.base_bundle import load_bundled_base_model
+
+                v2_model_manager = await asyncio.to_thread(
+                    load_bundled_base_model, model_base_dir,
+                )
+                prediction_service.attach_model_manager(v2_model_manager)
+                telemetry_service.attach_model_manager(v2_model_manager)
+                v2_training_mode = "base"
+                logger.info(
+                    "Bundled synthetic base model loaded: {} (not personally validated)",
+                    v2_model_manager.current_version_tag,
+                )
+            except Exception as exc:
+                logger.warning("Bundled base model unavailable; retaining rule fallback: {}", exc)
 
         # ── 7-ext. Training job service (manual V2 model training) ──────────
         # Persisted so the lifecycle survives a restart and an in-flight run is

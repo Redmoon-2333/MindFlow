@@ -364,6 +364,10 @@ export interface ModelStatus {
   loaded: boolean;
   ready: boolean;
   demo_only?: boolean;
+  inference_available?: boolean;
+  model_origin?: "bundled_base" | "personal";
+  synthetic_only?: boolean;
+  personalized?: boolean;
   mode: string;
   v2_mode: string;
   message: string;
@@ -375,7 +379,7 @@ export interface ModelStatus {
   last_updated?: string;
   /** Progressive deployment tier (architecture plan E): full_ready |
    *  low_confidence | shadow. */
-  deployment_tier?: "full_ready" | "low_confidence" | "shadow";
+  deployment_tier?: "full_ready" | "low_confidence" | "shadow" | "base";
 }
 
 export interface AttributionResult {

@@ -337,6 +337,10 @@ class Settings(BaseSettings):
         default_factory=_get_data_dir,
         description="Application data directory; relative paths are anchored to platform data",
     )
+    base_model_enabled: bool = Field(
+        default=True,
+        description="Use the bundled synthetic cold-start model when no personal model loads",
+    )
     models_dir: Path = Field(
         default=Path("models"),
         description="ML model directory; relative paths are anchored to data_dir",

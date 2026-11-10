@@ -65,6 +65,9 @@ ml = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+mindflow = ["resources/base-v4/*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
