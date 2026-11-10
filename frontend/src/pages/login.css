@@ -117,7 +117,10 @@
   margin-top: 16px;
   font-size: var(--fs-base);
   font-weight: 600;
-  color: var(--mf-text);
+  /* Same pairing as .btn-primary: --mf-text is the body colour and fails
+     contrast on the signal fill (dark-on-teal in white, light-on-cyan in
+     the dark themes). */
+  color: var(--on-signal);
   background: var(--signal);
   border: none;
   border-radius: var(--radius-md);
@@ -137,6 +140,8 @@
 }
 
 .login-btn--ghost {
+  /* Not on the signal fill, so it keeps the body text colour. */
+  color: var(--mf-text);
   background: color-mix(in srgb, var(--mf-brand) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--mf-brand) 30%, transparent);
   margin-top: 0;
