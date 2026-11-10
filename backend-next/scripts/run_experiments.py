@@ -281,7 +281,27 @@ def main() -> None:
         default="ml_r1,ml_r2,ml_r3,lg_r1,lg_r2,lg_r3",
         help="Comma-separated round names",
     )
+    parser.add_argument("--base-model", action="store_true", help="Synthetic cold-start training; no personal DB")
+    parser.add_argument("--run-id", default=None, help="Experiment directory name")
+    parser.add_argument("--base-personas", type=int, default=6, help="Simulated personas per role")
+    parser.add_argument("--base-days", type=int, default=28)
+    parser.add_argument("--base-windows", type=int, default=48)
+    parser.add_argument("--seed", type=int, default=20261110)
+    parser.add_argument("--base-bundle-dir", type=Path, default=None)
     args = parser.parse_args()
+    if args.run_id is not None and (Path(args.run_id).name != args.run_id or args.run_id in {".", ".."}):
+        parser.error("--run-id must be a single directory name")
+    if args.base_model:
+        from mindflow.train.base_training import train_base_model
+
+        run_dir = EXPERIMENTS_ROOT / (args.run_id or f"base_{_now_tag()}")
+        report = train_base_model(
+            run_dir, seed=args.seed, personas_per_role=args.base_personas,
+            days=args.base_days, windows_per_day=args.base_windows,
+            bundle_dir=args.base_bundle_dir,
+        )
+        print(f"Completed {report['total_windows']} synthetic windows. See {run_dir / 'report.md'}")
+        return
     rounds = [r.strip() for r in args.runs.split(",") if r.strip()]
 
     run_dir = EXPERIMENTS_ROOT / _now_tag()

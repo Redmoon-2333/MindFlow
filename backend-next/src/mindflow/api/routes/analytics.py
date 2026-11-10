@@ -200,21 +200,31 @@ async def get_model_status(
     if v2_model_manager is not None:
         readiness = v2_model_manager.readiness_status()
         demo_only = getattr(request.app.state, "demo_mode", False) is True
-        is_ready = bool(readiness["ready"]) and not demo_only
+        is_base = getattr(v2_model_manager, "model_origin", "personal") == "bundled_base"
+        is_ready = bool(readiness["ready"]) and not demo_only and not is_base
         return {
             "loaded": True,
             "ready": is_ready,
-            "mode": "shadow" if demo_only else ("ready" if is_ready else "rule_engine_only"),
+            "inference_available": bool(readiness["ready"]),
+            "model_origin": "bundled_base" if is_base else "personal",
+            "synthetic_only": is_base or demo_only,
+            "personalized": is_ready and not is_base,
+            "mode": "shadow" if demo_only else "base" if is_base else (
+                "ready" if is_ready else "rule_engine_only"
+            ),
             "demo_only": demo_only,
-            "deployment_tier": "full_ready" if is_ready else tier,
+            "deployment_tier": "base" if is_base else "full_ready" if is_ready else tier,
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
-            "v2_mode": "ready" if is_ready else v2_training_mode,
+            "v2_mode": "base" if is_base else "ready" if is_ready else v2_training_mode,
             "version": v2_model_manager.current_version_tag,
             "available_versions": v2_model_manager.list_versions(),
-            "reasons": readiness["reasons"],
+            "reasons": readiness["reasons"] + (
+                ["synthetic_base_not_personally_validated"] if is_base else []
+            ),
             "message": (
                 "Synthetic demo model loaded; personal quality gates have not been passed"
-                if demo_only else "Feature schema v2 model loaded and ready for inference"
+                if demo_only else "Bundled base model loaded; personal validation pending"
+                if is_base else "Feature schema v2 model loaded and ready for inference"
                 if is_ready
                 else "Feature schema v2 artifacts failed readiness checks"
             ),

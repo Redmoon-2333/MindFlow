@@ -724,7 +724,7 @@ export default function ModelCenter() {
                   运行模式
                   <HelpTip
                     term="运行模式"
-                    what="就绪：模型已正式启用。影子模式：模型在后台试运行，判断只用于观察，不影响提醒。仅规则引擎：还没有可用模型，用固定规则判断。"
+                    what="基础模型：随软件提供初始预测，等待个人数据校准。就绪：个人模型已通过验证。影子模式：候选模型供观察。仅规则引擎：使用固定规则。"
                   />
                 </h3>
                 <div className="mc-model-mode">
@@ -735,7 +735,8 @@ export default function ModelCenter() {
                     "badge-info"
                   }`}>
                     {modelStatus.mode === "ready" ? "就绪" :
-                     modelStatus.mode === "shadow" ? "影子模式" :
+                     modelStatus.mode === "base" ? "基础模型" :
+                      modelStatus.mode === "shadow" ? "影子模式" :
                      "仅规则引擎"}
                   </span>
                 </div>
@@ -744,7 +745,8 @@ export default function ModelCenter() {
                   <span className={modelStatus.deployment_tier === "full_ready" ? "badge badge-success" :
                     modelStatus.deployment_tier === "low_confidence" ? "badge badge-warning" :
                     "badge badge-info"}>
-                    {modelStatus.deployment_tier === "full_ready" ? "已就绪（全量）" :
+                    {modelStatus.deployment_tier === "base" ? "内置基础模型（待个人验证）" :
+                      modelStatus.deployment_tier === "full_ready" ? "已就绪（全量）" :
                      modelStatus.deployment_tier === "low_confidence" ? "早期模式（低置信度）" :
                      modelStatus.deployment_tier ? "影子模式" :
                      "—"}
@@ -757,7 +759,7 @@ export default function ModelCenter() {
                 <h3>模型版本</h3>
                 <div>
                   <div className="kv-row kv-row--text">
-                    <span>{modelStatus.demo_only ? "演示版本" : "激活版本"}</span>
+                    <span>{modelStatus.demo_only ? "演示版本" : modelStatus.model_origin === "bundled_base" ? "内置版本" : "激活版本"}</span>
                     <span>{modelStatus.version ?? "—"}</span>
                   </div>
                   {modelStatus.feature_schema_version != null && (

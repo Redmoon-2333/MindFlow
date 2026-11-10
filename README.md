@@ -194,6 +194,25 @@ uv run python -m mindflow.train --rollback <version-tag>
 
 新电脑体验请使用上面的独立合成演示入口。`demo_v4` 已在独立 Python 3.12 环境验证实际加载与 API/UI 概率一致，但保持 `shadow/demo_only`，不代替个人模型的质量认证。完整验收边界见 [本轮验收报告](docs/audit/20260930-full/acceptance.md)。
 
+## 内置基础行为模型（2026-11-11）
+
+正式启动在缺少可用个人模型时默认加载 `base_v4_20261111_r2`。模型为本地 RF+XGBoost 行为分类器，采用 v4 的28维特征及独立模拟身份概率校准；前端显示「基础模型」，其推理可用状态与个人质量门认证分开。通过原质量门的个人模型优先；旧特征或未就绪个人制品会回退到基础模型，不覆盖原文件。
+
+本轮实际生成145,152个五分钟窗口，覆盖18类角色、108个模拟身份、104个实际软件/网站与1个未知条目、30种情境。合成未知身份BA86.18%，未来日期BA84.86%；类别规则约70%。这些数字衡量模拟器分布内的留出表现，真实用户与商业竞品同条件表现另行验证。游戏测试及工作软件内目标偏离的困难结果保留在[模型卡](backend-next/src/mindflow/resources/base-v4/model_card.md)。
+
+```powershell
+cd mindflow-app/backend-next
+uv sync --locked --extra dev --extra ml
+# 原有正常启动已包含基础模型回退
+uv run python -m mindflow.main
+# 在新的实验目录完整复现，不读取个人数据库
+uv run python scripts/run_experiments.py --base-model --run-id YOUR_NEW_RUN_ID
+# 积累自己的反馈后，沿用个人训练入口（重训与校准）
+uv run python -m mindflow.train --source db --use-window-labels
+```
+
+基础制品作为包资源随软件分发，在 `models/bundled/<version>/` 生成本机签名缓存；个人 `models/v2/latest.json` 保持独立。可用 `MINDFLOW_BASE_MODEL_ENABLED=False` 关闭基础模型。自动训练仍只保存shadow候选，不激活。六算法对照、场景切片和复现方法见[基础模型实验说明](docs/models/base-v4.md)。完整窗口和预测由上述命令在本机实验目录重新生成。
+
 ## LLM 与干预
 
 ### LLM 降级顺序

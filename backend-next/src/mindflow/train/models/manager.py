@@ -94,6 +94,7 @@ class ModelManager:
         self.hmm = BehaviorHMM()
         self._calibration = calibration
         self._loaded_version_tag: str | None = None
+        self.model_origin: str = "personal"
 
         self._use_ensemble: bool = False
         #: Whether the caller asked for the ensemble. Together with

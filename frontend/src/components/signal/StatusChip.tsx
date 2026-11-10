@@ -125,6 +125,7 @@ export default function StatusChip() {
     : "—";
   const modelText = model?.demo_only
     ? "合成演示模型 · 影子模式"
+    : model?.model_origin === "bundled_base" ? "内置基础模型 · 待个人数据校准"
     : model?.loaded ? "个人模型已加载" : "规则引擎模式";
 
   return (
@@ -180,7 +181,7 @@ export default function StatusChip() {
               <HelpTip
                 term="预测模型"
                 what="根据你的使用习惯，猜你此刻是专注还是分心。"
-                effect="演示模型和影子模式只用来展示，判断不算数；个人模型就绪后才会用来提醒你。"
+                effect="内置基础模型提供初始预测；积累自己的标签后，可以训练并验证个人模型。提醒还受工作态保护和节流控制。"
               />
             </dt>
             <dd><span className="sig-popover-value">{modelText}</span></dd>
