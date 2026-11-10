@@ -20,7 +20,7 @@ html, body, #root { background: var(--color-bg); color: var(--mf-text); }
 /* The login panel sits on top of the particle canvas, so it must stay
    translucent — at full opacity it painted out the particle wordmark behind
    it. It still follows the active theme surface, just at partial alpha. */
-:root .login-box, :root .login-card { background: color-mix(in srgb, var(--color-bg-elevated) 38%, transparent); }
+:root .login-box, :root .login-card { background: color-mix(in srgb, var(--color-bg-elevated) 65%, transparent); }
 :root .mf-skip-link { background: var(--color-bg-elevated); color: var(--mf-text); }
 :root .mf-nav-item--active { background: var(--color-primary-light); }
 .theme-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }

@@ -34,16 +34,18 @@
   z-index: 2;
   width: 100%;
   max-width: 400px;
-  height: 450px;
+  /* Content-driven: a fixed 450px left a dead band under the button in
+     production builds, where the dev-only section is absent. */
+  max-height: calc(100vh - 48px);
   overflow-y: auto;
   padding: 40px;
   /* Translucent so the particle wordmark reads through the panel (the theme
      surface comes from themes.css at the same alpha). The blur is kept low:
      at 4px it smeared the particles into a flat haze, losing the effect it
      was meant to sit on top of. */
-  background: color-mix(in srgb, var(--color-bg-elevated) 38%, transparent);
-  backdrop-filter: blur(1.5px);
-  -webkit-backdrop-filter: blur(1.5px);
+  background: color-mix(in srgb, var(--color-bg-elevated) 65%, transparent);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   border: 1px solid color-mix(in srgb, var(--mf-brand) 12%, transparent);
   border-radius: var(--radius-lg);
   box-shadow:
@@ -148,7 +150,9 @@
 }
 
 .login-note {
-  background: color-mix(in srgb, var(--mf-brand) 10%, transparent);
+  /* Opaque (brand tint over the theme surface): the card is translucent, and
+     body text laid over the particle letters was hard to read. */
+  background: color-mix(in srgb, var(--mf-brand) 10%, var(--color-bg-elevated));
   border: 1px solid color-mix(in srgb, var(--mf-brand) 20%, transparent);
   border-radius: var(--radius-md);
   padding: 10px 12px;
