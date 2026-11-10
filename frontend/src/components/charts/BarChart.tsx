@@ -3,6 +3,15 @@ import "./charts.css";
 import { useElementWidth } from "./useElementWidth";
 import { clamp, formatCompact, niceTicks } from "./scale";
 
+/** Approximate rendered width of a tick label at 12px: CJK glyphs are ~12px,
+ *  Latin/digits ~6.6px. Used only to decide how many labels to skip. */
+function textWidth(value: string): number {
+  let total = 0;
+  for (const ch of value) total += ch.codePointAt(0)! >= 0x2e80 ? 12 : 6.6;
+  return total;
+}
+
+
 export interface BarDatum {
   /** Stable key (date, hour bucket, …). */
   key: string;
@@ -32,6 +41,8 @@ interface BarChartProps {
   showValues?: boolean;
   /** Y-axis title (rotated). */
   yAxisLabel?: string;
+  /** Name of the value row in the tooltip; defaults to `yAxisLabel || "数值"`. */
+  valueName?: string;
   emptyMessage?: string;
   /** Rounded to a nice axis bound instead of the raw max. */
   forceZero?: boolean;
@@ -42,6 +53,13 @@ interface BarChartProps {
    * own label styling (and any selector an e2e spec already relies on).
    */
   htmlXLabelClass?: string;
+  /**
+   * Horizontal dashed reference line (e.g. the 7-day mean). `value` is in the
+   * same unit as the bars; `label` (optional) is drawn just above its right
+   * end. The dashboard omits it and shows the mean in the legend instead, so
+   * it cannot collide with a bar's value label (spec §4.1.4).
+   */
+  referenceLine?: { value: number; label?: string };
 }
 
 /**
@@ -61,9 +79,11 @@ export default function BarChart({
   height = 220,
   showValues = true,
   yAxisLabel,
+  valueName,
   emptyMessage = "暂无数据",
   forceZero = true,
   htmlXLabelClass,
+  referenceLine,
 }: BarChartProps) {
   const [ref, width] = useElementWidth<HTMLDivElement>(560);
   const [active, setActive] = useState<number | null>(null);
@@ -93,7 +113,11 @@ export default function BarChart({
   const barWidth = Math.max(4, Math.min(slot * 0.618, 72));
   const valuesFit = showValues && slot >= 26;
 
-  const labelStride = slot < 26 ? Math.ceil(26 / slot) : 1;
+  // Skip as many labels as needed for the widest one to clear its neighbour
+  // (§8.19): a stride based on a fixed 26px assumed two digits, which broke
+  // as soon as a label carried CJK text such as "0–3点".
+  const maxLabelWidth = data.reduce((widest, datum) => Math.max(widest, textWidth(datum.label)), 0);
+  const labelStride = Math.max(1, Math.ceil((maxLabelWidth + 8) / slot));
 
   const tooltip = active === null ? null : data[active];
   const tooltipLeft = active === null ? 0 : plotLeft + slot * active + slot / 2;
@@ -154,6 +178,29 @@ export default function BarChart({
             </text>
           )}
 
+          {/* Reference line sits under the bars so it never hides a column. */}
+          {referenceLine && (
+            <g>
+              <line
+                className="mf-chart-reference"
+                x1={plotLeft}
+                x2={plotLeft + plotWidth}
+                y1={padTop + scaleY(referenceLine.value)}
+                y2={padTop + scaleY(referenceLine.value)}
+              />
+              {referenceLine.label && (
+                <text
+                  className="mf-chart-reference-label"
+                  x={plotLeft + plotWidth}
+                  y={padTop + scaleY(referenceLine.value) - 6}
+                  textAnchor="end"
+                >
+                  {referenceLine.label}
+                </text>
+              )}
+            </g>
+          )}
+
           {data.map((datum, index) => {
             const value = Number.isFinite(datum.value) ? datum.value : 0;
             const x = plotLeft + slot * index + (slot - barWidth) / 2;
@@ -172,6 +219,7 @@ export default function BarChart({
                     height={barHeight}
                     rx={Math.min(6, barWidth / 3)}
                     fill={fill}
+                    data-value={datum.value}
                   />
                 )}
                 {valuesFit && value > 0 && (
@@ -231,7 +279,7 @@ export default function BarChart({
           >
             <div className="mf-chart-tooltip-title">{tooltip.title || tooltip.label}</div>
             <div className="mf-chart-tooltip-row">
-              <span className="mf-chart-tooltip-key">{yAxisLabel || "数值"}</span>
+              <span className="mf-chart-tooltip-key">{valueName ?? yAxisLabel ?? "数值"}</span>
               <span>
                 {formatCompact(tooltip.value)}
                 {unit}

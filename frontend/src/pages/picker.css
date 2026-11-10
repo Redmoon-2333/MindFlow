@@ -15,7 +15,7 @@
 }
 .mf-picker .MuiFormLabel-root {
   color: var(--mf-text) !important;
-  font-weight: bold;
+  font-weight: 600;
   margin-left: 10px;
 }
 .mf-picker fieldset {
@@ -23,7 +23,7 @@
 }
 .mf-picker .MuiSvgIcon-root {
   color: var(--mf-text);
-  font-size: 28px;
+  font-size: var(--fs-xl);
 }
 .mf-picker .MuiButtonBase-root {
   transform: translateX(-10px);
@@ -31,7 +31,7 @@
 .mf-picker .MuiPickersSectionList-sectionContent,
 .mf-picker .MuiPickersInputBase-sectionAfter {
   color: var(--mf-text) !important;
-  font-size: 20px;
+  font-size: var(--fs-lg);
 }
 .mf-picker input {
   color: var(--mf-text) !important;

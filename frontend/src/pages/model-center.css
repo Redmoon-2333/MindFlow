@@ -1,54 +1,65 @@
-/* Model Center — V2 training readiness, job lifecycle, baseline, model status */
-/* All colors reference theme.css tokens */
-
-.mc-header { margin-bottom: 24px; }
-.mc-header h1 { font-size: 24px; font-weight: 700; }
-.mc-header p { color: var(--color-text-secondary); font-size: 14px; margin-top: 4px; }
+/* Model Center — V2 training readiness, job lifecycle, baseline, model status
+   (spec §8.12). Cards are the only containers; gates, blockers and readiness
+   rows are hairline-separated lines inside one. */
 
 .mc-section { margin-bottom: 24px; }
-.mc-section-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
 
-/* Data readiness summary row — intrinsic grid */
-.mc-kpi-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-/* Gate check list */
-.mc-gates { display: flex; flex-direction: column; gap: 8px; }
+/* Gate check list: a grid row with the badge in the right column, separated by
+   a hairline instead of a bordered box. */
+.mc-gates { display: flex; flex-direction: column; }
 .mc-gate {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-sm);
-  font-size: 13px; background: var(--color-bg-elevated);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-sm);
 }
-.mc-gate .gate-label { font-weight: 500; }
-.mc-gate .gate-detail { font-size: 12px; color: var(--color-text-tertiary); margin-top: 2px; }
+.mc-gate:first-child { border-top: none; }
+.mc-gate .gate-label { font-weight: 500; color: var(--text); }
+.mc-gate .gate-detail { font-size: var(--fs-xs); color: var(--text-dim); margin-top: 2px; }
 
-/* Blockers — reuse .error-box pattern from theme.css (existing debt documented) */
-.mc-blockers { display: flex; flex-direction: column; gap: 6px; }
+/* Blockers share the gate row geometry and add the reason text. */
+.mc-blockers { display: flex; flex-direction: column; }
+.mc-blocker {
+  display: grid;
+  gap: 4px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+.mc-blocker:first-child { border-top: none; }
+.mc-blocker strong { font-size: var(--fs-base); color: var(--text); }
 
 /* Training job status display */
 .mc-job-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .mc-job-status .spinner { margin: 0; width: 18px; height: 18px; border-width: 2px; }
+.mc-job-meta { font-size: var(--fs-sm); color: var(--text-dim); }
 
-/* Baseline empty state */
-.mc-baseline-empty { font-size: 13px; color: var(--color-text-tertiary); }
+/* Readiness rows and training-condition rows reuse `.kv-row`; the threshold
+   note sits under the name in the left column. */
+.mc-readiness-list,
+.mc-conditions { display: block; }
+.mc-readiness-note { display: block; font-size: var(--fs-xs); color: var(--text-dim); margin-top: 2px; }
+
+.mc-baseline-empty { font-size: var(--fs-sm); color: var(--text-dim); }
+.mc-hint { font-size: var(--fs-xs); color: var(--text-dim); line-height: var(--leading-normal); margin: 0; }
+.mc-hint--ok { color: var(--ok); }
+.mc-empty { font-size: var(--fs-sm); color: var(--text-dim); margin: 0; }
+.mc-reasons { font-size: var(--fs-sm); padding-left: 20px; color: var(--text-dim); line-height: var(--leading-normal); }
 
 /* Model mode display */
-.mc-model-mode { display: flex; align-items: center; gap: 8px; }
-.mc-model-mode .mode-label { font-size: 13px; color: var(--color-text-secondary); }
+.mc-model-mode { display: flex; align-items: center; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); }
+.mc-model-mode:first-child { border-top: none; }
+.mc-model-mode .mode-label { font-size: var(--fs-sm); color: var(--text-dim); min-width: 80px; }
 
 /* Training action row */
 .mc-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
 
-/* Focus-visible for all new interactive elements */
-.tabs .tab:focus-visible,
-.mc-section .btn:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
-}
+/* Focus-visible for the interactions this page adds itself. */
+.mc-section .btn:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
 
 /* NotFound page — class-based */
 .not-found-page {
@@ -56,14 +67,14 @@
   padding-top: 80px;
 }
 .not-found-page .nf-title {
-  font-size: 72px;
-  font-weight: 700;
-  color: var(--color-primary);
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  color: var(--signal);
   margin-bottom: 8px;
 }
 .not-found-page .nf-desc {
-  font-size: 18px;
-  color: var(--color-text-secondary);
+  font-size: var(--fs-md);
+  color: var(--text-dim);
   margin-bottom: 32px;
 }
 .not-found-page .nf-link {
@@ -74,5 +85,13 @@
 /* Responsive */
 @media (max-width: 768px) {
   .not-found-page { padding-top: 48px; }
-  .not-found-page .nf-title { font-size: 48px; }
+}
+.mc-error-close { margin-left: 12px; }
+.mc-baseline-note {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  line-height: var(--leading-normal);
 }

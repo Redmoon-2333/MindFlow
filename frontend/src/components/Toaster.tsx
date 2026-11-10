@@ -20,18 +20,22 @@ const TONE_ROLE: Record<string, "status" | "alert"> = {
 /**
  * Global toast host. Mounted once next to the route outlet.
  *
- * Each toast carries its own `role` (`status` for confirmation, `alert` for
- * errors), which already maps to an implicit aria-live politeness — so the
- * container is a plain layout element. Adding `aria-live` here too would make
- * a permanently-present, always-empty live region, which both duplicates the
- * announcement and breaks any spec that locates "the aria-live region" by
- * attribute alone.
+ * `aria-live="polite"` is required by spec §3.11.4. Each toast also carries its
+ * own `role` (`status` for confirmation, `alert` for errors), so a screen
+ * reader announces the inner node's own politeness and the container's live
+ * region adds no second copy of the same text — the container is empty
+ * whenever no toast is showing.
+ *
+ * `aria-atomic="false"` keeps an appended toast from re-reading the whole
+ * stack. Callers that locate "the aria-live region" by attribute alone must
+ * scope their selector (see e2e/test-model-center.spec.ts), because the
+ * ModelCenter polling notice is a second `aria-live="polite"` region.
  */
 export default function Toaster() {
   const toasts = useSyncExternalStore(subscribeToasts, getToasts, getToasts);
 
   return (
-    <div className="toast-region">
+    <div className="toast-region" aria-live="polite" aria-atomic="false">
       {toasts.map((entry) => (
         <div
           key={entry.id}

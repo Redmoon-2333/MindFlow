@@ -1,91 +1,186 @@
+/* Workspace shell for the form-heavy pages (spec §8.0 / §8.13).
+ *
+ * The top bar owns the page title and the frame owns the gutter, so a page
+ * here contributes only its lede and its cards. Every card is the single
+ * container layer: surface fill, one hairline, 8px radius, no shadow.
+ */
+
 .workspace-page {
-  width: 100%; max-width: 1440px; margin: 0 auto;
-  padding: var(--space-6) var(--space-6) var(--space-8); --workspace-gap: var(--space-6);
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  --workspace-gap: var(--space-4);
 }
-.workspace-page .card, .workspace-page .stat-card {
-  background: var(--mf-panel); border: 1px solid var(--mf-panel-border); border-radius: var(--radius-lg);
-  padding: var(--space-5); min-width: 0;
+.workspace-page .card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  min-width: 0;
 }
-.workspace-page .card h3 { font-size: var(--fs-md); font-weight: 600; margin-bottom: var(--space-4); }
-.workspace-page p { line-height: 1.85; overflow-wrap: anywhere; }
+.workspace-page .card h3 { font-size: var(--fs-md); font-weight: 600; color: var(--text); margin: 0 0 16px; }
+.workspace-page p { line-height: var(--leading-normal); overflow-wrap: anywhere; }
 .workspace-page .flex-between { gap: 16px; flex-wrap: wrap; }
 .workspace-page .flex { flex-wrap: wrap; }
-.workspace-page input, .workspace-page select, .workspace-page textarea { min-height: 44px; }
-.workspace-page input[type="checkbox"] { width: 20px; min-height: 20px; height: 20px; flex: 0 0 20px; accent-color: var(--mf-brand); }
-.workspace-page .btn { min-height: 42px; justify-content: center; white-space: nowrap; }
-.workspace-page .btn-sm { min-height: 34px; }
-.workspace-page .tabs { gap: 10px; margin-bottom: 24px; }
-.workspace-page .tab { min-height: 40px; padding: 8px 20px; }
-.workspace-page .tab.active { border-color: var(--mf-brand); background: var(--color-primary-light); }
 .workspace-page .badge { line-height: 1.6; overflow-wrap: anywhere; }
-.workspace-page th, .workspace-page td { border-color: var(--color-border); padding: 16px; line-height: 1.7; }
-.workspace-page th { color: var(--color-text-secondary); font-size: 12px; white-space: nowrap; }
-.workspace-page td { overflow-wrap: anywhere; }
-.workspace-page .btn:focus-visible, .workspace-page summary:focus-visible, .workspace-page .tab:focus-visible {
-  outline: 2px solid var(--mf-brand); outline-offset: 4px;
+.workspace-page .btn:focus-visible,
+.workspace-page summary:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
 }
-.workspace-page .kpi-row { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
-.workspace-page .stat-card { padding: 22px; }
-.workspace-page .stat-card .sub { line-height: 1.7; overflow-wrap: anywhere; }
-.workspace-page .stat-card .value { overflow-wrap: anywhere; }
-.workspace-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--workspace-gap); margin-bottom: 24px; }
-.workspace-stack { display: grid; gap: var(--workspace-gap); }
-.workspace-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.workspace-note { color: var(--color-text-secondary); font-size: 13px; line-height: 1.85; margin-bottom: 20px; }
-.workspace-empty { padding: var(--space-8) var(--space-6); text-align: center; color: var(--color-text-secondary); border: 1px dashed var(--color-border); border-radius: var(--radius-lg); line-height: var(--leading-relaxed); }
-.workspace-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 24px; }
-.workspace-field { display: grid; gap: 8px; font-size: 13px; color: var(--color-text-secondary); min-width: 0; }
+.workspace-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--workspace-gap); margin-bottom: 16px; }
+.workspace-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; }
+.workspace-note { color: var(--text-dim); font-size: var(--fs-sm); line-height: var(--leading-normal); margin: 0 0 16px; }
+.workspace-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
+.workspace-field { display: grid; gap: 6px; font-size: var(--fs-sm); color: var(--text-dim); min-width: 0; }
 .workspace-full { grid-column: 1 / -1; }
 .workspace-table { width: 100%; overflow-x: auto; }
 .workspace-table table { min-width: 620px; }
 .workspace-table .badge { white-space: nowrap; overflow-wrap: normal; }
-.workspace-details { background: var(--color-bg-inset); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 18px 20px; }
-.workspace-details > summary { cursor: pointer; color: var(--mf-text); font-size: 14px; font-weight: 600; line-height: 1.8; }
-.workspace-details > summary + * { margin-top: 20px; }
-.workspace-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 24px; color: var(--color-text-secondary); font-size: 13px; }
-.workspace-record { padding: 22px 0; border-bottom: 1px solid var(--color-border); display: flex; gap: 20px; justify-content: space-between; align-items: flex-start; }
-.workspace-record:last-child { border-bottom: 0; padding-bottom: 0; }
+
+/* Top-level <details> is a first-level container, one step tighter than a card
+   — §8.0 forbids a bordered or filled box inside it. */
+.workspace-details {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 16px 24px;
+}
+.workspace-details > summary { cursor: pointer; color: var(--text); font-size: var(--fs-base); font-weight: 600; line-height: 1.8; }
+.workspace-details > summary + * { margin-top: 16px; }
+.workspace-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 16px; color: var(--text-dim); font-size: var(--fs-sm); }
+
+/* A record row is a hairline-separated block, not a card inside a card. */
+.workspace-record {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.workspace-record:first-child { border-top: none; }
 .workspace-record-body { min-width: 0; flex: 1; overflow-wrap: anywhere; }
-.workspace-record h4 { font-size: 15px; font-weight: 600; line-height: 1.7; margin-bottom: 8px; }
-.workspace-record-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 12px; color: var(--color-text-secondary); margin-top: 10px; }
-.settings-nav { padding: 4px 0; }
-.settings-classification-form { display: grid; grid-template-columns: 1.2fr 1.2fr 1fr 90px auto; gap: 12px; margin-bottom: 24px; align-items: end; }
-.settings-retention { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 24px; }
-.settings-switch { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 20px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
-.settings-switch strong { display: block; margin-bottom: 8px; }
-.settings-switch span { line-height: 1.8; }
-.panel-results { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 24px; }
+.workspace-record h4 { font-size: var(--fs-base); font-weight: 600; line-height: var(--leading-normal); margin: 0 0 8px; }
+
+/* ── Settings (§8.6) ────────────────────────────────────────────────────── */
+.settings-classification-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin-bottom: 12px; align-items: end; }
+/* Optional title condition (§8.16.3): folded away so the visible form stays
+   three controls. No box — the summary is a text row like the others. */
+.settings-rule-more { margin-bottom: 24px; }
+.settings-rule-more > summary {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  list-style-position: inside;
+}
+.settings-rule-more > summary:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 2px; }
+.settings-rule-more-body { display: grid; gap: 6px; margin-top: 8px; }
+.settings-rule-more-hint { font-size: var(--fs-xs); color: var(--text-dim); margin: 0; }
+.settings-retention { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 16px; align-items: flex-end; }
+.settings-retention .form-group { display: grid; gap: 6px; font-size: var(--fs-sm); color: var(--text-dim); }
+.settings-switches { margin-top: 8px; }
+.settings-switch { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); }
+.settings-switch:first-child { border-top: none; }
+.settings-switch-title { display: block; font-size: var(--fs-base); font-weight: 500; color: var(--text); }
+.settings-switch-desc { display: block; margin-top: 2px; font-size: var(--fs-sm); color: var(--text-dim); }
+.settings-hours { width: auto; min-width: 96px; }
+.settings-empty { font-size: var(--fs-sm); color: var(--text-dim); margin: 0; }
+.settings-kv-list { max-width: 560px; }
+.settings-error-close { margin-left: 12px; }
+.settings-error-detail { margin-top: 8px; font-size: var(--fs-sm); color: var(--text-dim); }
+.settings-error-list { margin: 8px 0 12px; padding-left: 20px; font-size: var(--fs-sm); color: var(--text-dim); }
+
+/* Unclassified apps: a hairline-separated group inside the card, never a
+   filled box of its own (§8.6.4). */
+.settings-unknown-apps { margin-bottom: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.settings-unknown-hint { font-size: var(--fs-sm); color: var(--text-dim); margin-bottom: 8px; }
+.settings-unknown-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-unknown-count { color: var(--text-dim); margin-left: 4px; }
+
+/* Export row: labels above the controls, all 32px tall (§8.0). */
+.settings-export { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px; }
+.settings-export-field { display: grid; gap: 6px; font-size: var(--fs-sm); color: var(--text-dim); }
+.settings-export-label { font-size: var(--fs-sm); color: var(--text-dim); }
+
+.telemetry-stats { margin-top: 16px; max-width: 560px; }
+.telemetry-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; justify-content: flex-start; }
+.pairing-code { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.pairing-code-hint { font-size: var(--fs-sm); color: var(--text-dim); }
+.pairing-code-value { font-family: var(--font-num); font-size: var(--fs-xl); font-weight: 400; letter-spacing: 0.12em; margin: 4px 0; font-variant-numeric: tabular-nums; }
+.pairing-code-expiry { font-size: var(--fs-xs); color: var(--text-dim); }
+
+/* ── Panel (§8.10) ──────────────────────────────────────────────────────── */
+.panel-results { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 16px; }
 .panel-results > .workspace-full { grid-column: 1 / -1; }
-.panel-confidence { display: grid; gap: 24px; }
-.panel-confidence-track { height: 6px; background: var(--color-bg-inset); border-radius: var(--radius-pill); overflow: hidden; margin-top: 12px; }
-.panel-transcript { display: grid; gap: 14px; }
-.workspace-page .chat-layout { grid-template-columns: 240px minmax(0, 1fr); gap: 24px; height: calc(100dvh - 255px); min-height: 520px; }
-.workspace-page .chat-bubble { padding: 16px 20px; line-height: 1.9; max-width: 90%; }
+.panel-progress { display: flex; align-items: center; gap: 16px; }
+.panel-progress p { margin: 8px 0 0; color: var(--text-dim); line-height: var(--leading-normal); }
+.panel-page a { color: var(--signal); }
+.panel-meta { margin-bottom: 24px; }
+.panel-error-close { margin-left: 12px; }
+.panel-degraded-text { font-size: var(--fs-sm); color: var(--text-dim); }
+.panel-rationale { font-size: var(--fs-base); color: var(--text); line-height: var(--leading-normal); }
+.panel-type-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+.panel-type-name { font-size: var(--fs-base); font-weight: 500; color: var(--text); }
+
+/* ── Chat (§8.11) ───────────────────────────────────────────────────────── */
+.workspace-page .chat-layout { grid-template-columns: 240px minmax(0, 1fr); gap: 16px; height: calc(100dvh - 255px); min-height: 520px; }
+.workspace-page .chat-bubble { padding: 12px 16px; line-height: 1.7; max-width: 90%; }
 .workspace-page .chat-main { padding: 24px; }
-.workspace-page .chat-starters { display: grid; gap: 12px; width: min(100%, 480px); text-align: center; }
+.workspace-page .chat-starters { display: grid; gap: 8px; width: min(100%, 480px); text-align: center; }
 .workspace-page .chat-starters p { margin-bottom: 8px; }
-.workspace-page .mc-gate { padding: 16px; gap: 16px; background: var(--color-bg-inset); border-radius: var(--radius-md); }
-.workspace-page .mc-gate .gate-detail { line-height: 1.8; }
+
+/* ── Execution (§8.9) ───────────────────────────────────────────────────── */
+.execution-status-filter { margin-bottom: 16px; }
+.execution-empty { font-size: var(--fs-sm); color: var(--text-dim); margin: 0; }
+.execution-meta { font-size: var(--fs-xs); color: var(--text-dim); margin-top: 2px; }
+.execution-task-desc { margin: 8px 0; }
+.task-title { font-size: var(--fs-base); font-weight: 600; color: var(--text); }
+.task-title--done { color: var(--text-dim); text-decoration: line-through; }
+
+/* ── Diagnostics (§8.7) ─────────────────────────────────────────────────── */
+.diagnostics-mono { font-family: var(--font-mono); font-size: var(--fs-sm); }
+.diagnostics-meta { font-size: var(--fs-xs); color: var(--text-dim); }
+.diagnostics-detail { font-size: var(--fs-sm); color: var(--text-dim); }
+.diagnostics-detail-row { margin-bottom: 8px; }
+.diagnostics-detail--dim { color: var(--text-dim); }
+.diagnostics-edges { font-family: var(--font-mono); font-size: var(--fs-xs); margin-top: 8px; line-height: 1.8; }
+.diagnostics-empty { font-size: var(--fs-sm); color: var(--text-dim); }
+.diagnostics-error-retry { margin-left: 12px; }
+.diagnostics-error-pre { margin: 8px 0 0; font-size: var(--fs-xs); white-space: pre-wrap; font-family: var(--font-mono); }
+
 @media (max-width: 1100px) {
-  .workspace-page { padding: var(--space-6); }
   .settings-classification-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .workspace-page .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 700px) {
-  .workspace-page { padding: var(--space-4); }
-  .workspace-heading { margin-bottom: 24px; }
-  .workspace-heading h1 { font-size: 24px; }
-  .workspace-page .card { padding: 22px 18px; }
+  .workspace-page .card { padding: 24px 16px; }
   .workspace-grid, .panel-results, .workspace-form, .settings-retention, .settings-classification-form { grid-template-columns: minmax(0, 1fr); }
-  .workspace-record { flex-direction: column; gap: 14px; }
+  .workspace-record { flex-direction: column; gap: 12px; }
   .workspace-page .chat-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(480px, 1fr); height: auto; }
   .workspace-page .chat-sessions { max-height: 240px; }
   .workspace-page .chat-bubble { max-width: 100%; }
-  .settings-nav { position: static; }
-  .workspace-page .stat-card { padding: 18px; }
-  .workspace-page .stat-card .value { font-size: 24px; }
 }
 
-.panel-progress { display: flex; align-items: center; gap: 16px; }
-.panel-progress p { margin: 8px 0 0; color: var(--color-text-secondary); line-height: 1.7; }
-.panel-page a { color: var(--mf-brand); }
+/* ── Inline spinners (§8.0: no ad-hoc sizing) ────────────────────────────── */
+.spinner--inline { margin: 0; flex-shrink: 0; width: 16px; height: 16px; border-width: 2px; }
+.spinner--xs { width: 12px; height: 12px; }
+
+/* ── Execution extras ───────────────────────────────────────────────────── */
+.execution-record-body { flex: 1; min-width: 0; }
+.execution-row-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.execution-field { min-width: 0; }
+
+/* ── Chat extras ────────────────────────────────────────────────────────── */
+.chat-message-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+/* ── Panel extras ───────────────────────────────────────────────────────── */
+.panel-type-list { display: grid; gap: 16px; }
+.panel-progress-spinner { width: 20px; height: 20px; }
+
+/* ── Model center extras ────────────────────────────────────────────────── */
+.mc-cancel { margin-top: 12px; }
+.mc-version-list { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ── Settings extras ────────────────────────────────────────────────────── */
+.settings-loading { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-dim); }

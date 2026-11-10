@@ -1,80 +1,120 @@
 /* ──────────────────────────────────────────────────────────────────────────
-   MindFlow — design tokens + reusable primitives.
+   MindFlow — design tokens + reusable primitives.  ("Signal", spec §2)
 
    Token layers, in precedence order:
-     1. this file : :root fallbacks (dark navy). Loaded first, so it only ever
+     1. this file : :root fallbacks (navy). Loaded first, so it only ever
         provides a first-paint value.
      2. themes.ts : writes the same custom properties as inline styles on
         <html> for the active theme (white / black / navy / burgundy). Inline
         styles beat every stylesheet, so the theme always wins.
      3. page CSS  : consumes tokens only — never re-declares palette values.
 
-   Naming:
-     --space-*  spacing scale, 4px base
-     --radius-* corner radius
-     --fs-*     type scale
-     --shadow-* elevation
-     --chart-*  data-viz series colours (theme-aware)
-     --type-*   procrastination-type colours (5 categories)
-     --good / --warn / --bad / --info  semantic state (+ -soft fills)
+   Semantics that must not drift (§2.1):
+     --signal  专注 / 实时 / 主操作   (the only accent)
+     --drift   分心 / 需注意
+     --alarm   严重异常 / 破坏性操作
+     --steel   历史与对照数据系列
+   Hierarchy = value difference + a 1px hairline. There are no shadows.
    ────────────────────────────────────────────────────────────────────────── */
 
 :root {
-  /* ── Palette (fallback = navy) ─────────────────────────────────────────── */
-  --color-primary: #3a8fd9;
-  --color-primary-hover: #1a6dd4;
-  --color-primary-light: rgba(100, 160, 255, 0.15);
-  --color-on-primary: #ffffff;
-  --color-bg: #040b14;
-  --color-bg-elevated: #172b46;
-  --color-bg-inset: #0c1a30;
-  --color-border: #38577e;
-  --color-text-primary: #e0e9f4;
-  --color-text-secondary: #a9bdd3;
-  --color-text-tertiary: #8aa4be;
-  --color-success: #2dd4bf;
-  --color-warning: #f5b84b;
-  --color-danger: #f87171;
-  --color-info: #7aa2ff;
+  /* ── §2.1 canonical palette (fallback = navy) ─────────────────────────── */
+  --bg: #0a0e14;
+  --surface: #121a24;
+  --surface-2: #18222e;
+  --line: #1f2a36;
+  --line-strong: #2b3846;
+  --text: #d7dee6;
+  --text-dim: #8e9baa;
+  --signal: #33b5e5;
+  --signal-hover: #5cc6ee;
+  --on-signal: #0a0e14;
+  --drift: #e0a458;
+  --alarm: #ff5d5d;
+  --ok: #5fbf8f;
+  --steel: #5a7a9a;
+  --signal-soft: rgb(51 181 229 / 0.14);
+  --drift-soft: rgb(224 164 88 / 0.14);
+  --alarm-soft: rgb(255 93 93 / 0.14);
+  --signal-glow: 0 0 12px rgb(51 181 229 / 0.35);
+  --focus-ring: 0 0 0 2px var(--signal);
 
-  /* ── Semantic state ("calm instrument panel") ──────────────────────────── */
-  --good: #2dd4bf;   /* focus teal — also the positive contribution pole */
-  --good-soft: rgba(45, 212, 191, 0.14);
-  --warn: #f5b84b;   /* amber — warnings, the dominant TMT barrier */
-  --warn-soft: rgba(245, 184, 75, 0.14);
-  --bad: #f87171;    /* coral — distracted / negative contribution */
-  --bad-soft: rgba(248, 113, 113, 0.14);
-  --info: #7aa2ff;
-  --info-soft: rgba(122, 162, 255, 0.14);
-  --neutral-soft: rgba(140, 165, 195, 0.12);
+  /* ── Legacy hooks (§2.2) — remapped onto the canonical tokens ─────────── */
+  --mf-text: #d7dee6;
+  --mf-text-dim: #8e9baa;
+  --mf-panel: #121a24;
+  --color-bg: #0a0e14;
+  --color-bg-inset: #18222e;
 
-  /* ── Data-viz series ───────────────────────────────────────────────────── */
-  --chart-1: #7aa2ff;
-  --chart-2: #2dd4bf;
-  --chart-3: #f5b84b;
-  --chart-4: #c084fc;
-  --chart-5: #f87171;
-  --chart-6: #94a3b8;
-  /* Signed contributions: one meaning per direction, never per series.
-     Pos/neg are aliases of the semantic pair so a bar and its badge agree. */
-  --chart-pos: var(--good);
-  --chart-pos-soft: rgba(45, 212, 191, 0.22);
-  --chart-neg: var(--bad);
-  --chart-neg-soft: rgba(248, 113, 113, 0.22);
-  --chart-grid: rgba(140, 175, 215, 0.16);
-  --chart-axis: rgba(140, 175, 215, 0.55);
-  --chart-track: rgba(140, 175, 215, 0.12);
-  --chart-tooltip-bg: #12253d;
-  --chart-tooltip-border: rgba(140, 175, 215, 0.34);
+  --mf-bg: var(--bg);
+  --mf-surface: var(--surface);
+  --mf-surface-2: var(--surface-2);
+  --mf-line: var(--line);
+  --mf-line-strong: var(--line-strong);
+  --mf-signal: var(--signal);
+  --mf-drift: var(--drift);
+  --mf-alarm: var(--alarm);
+  --mf-steel: var(--steel);
+  --mf-bg-radial: var(--bg);
+  --mf-login-radial: var(--bg);
+  --mf-text-icon: var(--text-dim);
+  --mf-brand: var(--signal);
+  --mf-accent-line: var(--line);
+  --mf-panel-border: var(--line);
+  --mf-hairline: var(--line);
+  --mf-sidebar-bg: var(--bg);
+  --mf-topbar-bg: var(--bg);
 
-  /* ── Procrastination type colours (5 categories, fixed slot order) ──────── */
-  --type-task_aversion: #f5b84b;
-  --type-impulsivity: #f87171;
-  --type-decisional: #7aa2ff;
-  --type-perfectionism: #c084fc;
-  --type-emotional_regulation: #2dd4bf;
+  --color-bg-elevated: var(--surface);
+  --color-border: var(--line);
+  --color-text-primary: var(--text);
+  --color-text-secondary: var(--text-dim);
+  --color-text-tertiary: var(--text-dim);
+  --color-primary: var(--signal);
+  --color-primary-hover: var(--signal-hover);
+  --color-primary-light: var(--surface-2);
+  --color-on-primary: var(--on-signal);
+  --color-success: var(--ok);
+  --color-warning: var(--drift);
+  --color-danger: var(--alarm);
+  --color-info: var(--signal);
 
-  /* ── Spacing (4px base) ────────────────────────────────────────────────── */
+  /* ── Semantic state ───────────────────────────────────────────────────── */
+  --good: var(--ok);
+  --good-soft: rgb(95 191 143 / 0.14);
+  --warn: var(--drift);
+  --warn-soft: rgb(224 164 88 / 0.14);
+  --bad: var(--alarm);
+  --bad-soft: rgb(255 93 93 / 0.14);
+  --info: var(--signal);
+  --info-soft: rgb(51 181 229 / 0.14);
+  --neutral-soft: rgb(142 155 170 / 0.12);
+
+  /* ── Data-viz series (§2.2) ───────────────────────────────────────────── */
+  --chart-1: var(--signal);
+  --chart-2: var(--drift);
+  --chart-3: var(--steel);
+  --chart-4: #a68bd1;
+  --chart-5: #d9776f;
+  --chart-6: var(--text-dim);
+  --chart-pos: var(--signal);
+  --chart-pos-soft: rgb(51 181 229 / 0.24);
+  --chart-neg: var(--drift);
+  --chart-neg-soft: rgb(224 164 88 / 0.24);
+  --chart-grid: var(--line);
+  --chart-axis: var(--text-dim);
+  --chart-track: var(--line);
+  --chart-tooltip-bg: var(--surface);
+  --chart-tooltip-border: var(--line-strong);
+
+  /* ── Procrastination type colours (5 slots, fixed order) ──────────────── */
+  --type-task_aversion: #c9a15a;
+  --type-impulsivity: #d9776f;
+  --type-decisional: #6f9bd1;
+  --type-perfectionism: #a68bd1;
+  --type-emotional_regulation: #5fb3a3;
+
+  /* ── Spacing (4px base) ───────────────────────────────────────────────── */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -84,90 +124,141 @@
   --space-7: 32px;
   --space-8: 48px;
 
-  /* ── Radius ────────────────────────────────────────────────────────────── */
+  /* ── Radius (§2.5): control 6, container 8, dot/pill 999 ──────────────── */
   --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
+  --radius-md: 8px;
+  --radius-lg: 8px;
   --radius-pill: 999px;
 
-  /* ── Type scale ────────────────────────────────────────────────────────── */
+  /* ── Type scale (§2.4): 12 / 13 / 14 / 16 / 20 / 28 / 44 / 64 ─────────── */
   --fs-xs: 12px;
   --fs-sm: 13px;
   --fs-base: 14px;
   --fs-md: 16px;
   --fs-lg: 20px;
-  --fs-xl: 24px;
-  --fs-2xl: 32px;
+  --fs-xl: 28px;
+  --fs-2xl: 44px;
+  --fs-3xl: 64px;
   --leading-tight: 1.25;
   --leading-normal: 1.5;
   --leading-relaxed: 1.7;
-  --font-ui: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-ui: "Inter", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  /* Readings and numbers: the signature is a condensed technical face. */
+  --font-num: "Bahnschrift", "DIN Alternate", "Roboto Condensed", "Inter", sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
-  /* ── Elevation — no glow, only a 1px top highlight on cards ────────────── */
-  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.25);
-  --shadow-2: 0 8px 24px rgb(0 0 0 / 0.28);
-  --shadow-focus: 0 0 0 2px color-mix(in srgb, var(--mf-brand) 45%, transparent);
-  --card-highlight: inset 0 1px 0 rgb(255 255 255 / 0.05);
+  /* ── Elevation: none. Kept as hooks so any consumer degrades to nothing. ─ */
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-focus: 0 0 0 2px var(--signal);
+  --card-highlight: none;
 
-  /* ── Layout ────────────────────────────────────────────────────────────── */
-  --sidebar-w: 250px;
+  /* ── Layout ───────────────────────────────────────────────────────────── */
+  --sidebar-w: 232px;
 
   font-family: var(--font-ui);
   font-size: 16px;
-  color: var(--color-text-primary);
-  background: var(--color-bg);
+  color: var(--text);
+  background: var(--bg);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body { min-height: 100vh; }
 
+/* Chinese text at 700 renders as a smeared synthesised bold in YaHei; 600 is
+   the heaviest weight the UI uses (§2.4). */
+h1, h2, h3, h4 { font-weight: 600; text-wrap: balance; }
+
 /* Numerals in any data context line up — a judge scanning a KPI row should
    never see 1 wobble against 7. */
 .stat-tile-value,
-.stat-card .value,
 .mf-metric,
 [data-numeric] {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
 }
 
+/* §2.4 label-caps: the small caps-ish label used by hero titles, section
+   kickers and the metric strip's leading column. */
+.label-caps {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 16px;
+  color: var(--text-dim);
+}
+
 /* Layout (sidebar / top bar / scroll container) lives in shell.css.
    Only reusable content primitives remain here. */
 
-.header { margin-bottom: var(--space-6); }
-.header h1 { font-size: var(--fs-xl); font-weight: 600; color: var(--mf-text); line-height: var(--leading-tight); }
-.header p { color: var(--color-text-secondary); font-size: var(--fs-base); margin-top: var(--space-1); }
-
-/* Page panels follow the reference's translucent panel + 20px radius. */
+/* One container layer: surface + hairline, never a shadow (§8.0). */
 .card {
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border);
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  padding: var(--space-5);
-  box-shadow: var(--card-highlight);
+  padding: var(--space-6);
 }
-.card h3 { font-size: var(--fs-md); font-weight: 600; margin-bottom: var(--space-3); color: var(--mf-text); }
+.card h3 { font-size: var(--fs-md); font-weight: 600; margin: 0 0 var(--space-4); color: var(--text); }
+/* A description directly under a card title reads as its subtitle, not as a
+   second paragraph. */
+.card h3 + p.card-desc {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--text-dim);
+  margin: -12px 0 var(--space-4);
+  line-height: var(--leading-normal);
+}
 
-.kpi-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-4);
-  margin-bottom: var(--space-6);
+/* Top-level render-error page (§8.21.3). Centred, one card, recovery first;
+   the raw message lives behind 技术详情 so it never reads as the explanation. */
+.error-boundary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--bg);
+  padding: var(--space-6);
 }
-.stat-card {
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
-  box-shadow: var(--card-highlight);
+.error-boundary-card {
+  width: 440px;
+  max-width: 100%;
+  padding: 40px;
+  text-align: center;
 }
-.stat-card .label { font-size: var(--fs-sm); color: var(--color-text-tertiary); letter-spacing: 0.03em; }
-.stat-card .value { font-size: 30px; font-weight: 600; margin-top: var(--space-1); color: var(--mf-text); }
-.stat-card .sub { font-size: var(--fs-xs); margin-top: var(--space-1); }
-.stat-card .sub.good { color: var(--color-success); }
-.stat-card .sub.bad { color: var(--color-danger); }
+.error-boundary-title {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: var(--signal);
+  margin: 0 0 8px;
+}
+.error-boundary-text {
+  color: var(--text-dim);
+  margin: 0 0 16px;
+}
+.error-boundary-details {
+  text-align: left;
+  margin-bottom: 16px;
+}
+.error-boundary-details > summary {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.error-boundary-details > summary:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.error-boundary-raw {
+  margin: 8px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* `.kpi-row` / `.stat-card` were this change's own orphans: every use site
+   is now a `MetricStrip` (§8.0). */
 
 .badge {
   display: inline-flex;
@@ -176,76 +267,104 @@ body { min-height: 100vh; }
   padding: 2px 10px;
   border-radius: var(--radius-pill);
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.6;
 }
-.badge-primary { background: var(--color-primary-light); color: var(--mf-brand); }
-.badge-success { background: var(--good-soft); color: var(--good); }
-.badge-warning { background: var(--warn-soft); color: var(--warn); }
-.badge-danger { background: var(--bad-soft); color: var(--bad); }
-.badge-info { background: var(--info-soft); color: var(--info); }
-.badge-neutral { background: var(--neutral-soft); color: var(--mf-text-dim); }
+.badge-primary { background: var(--signal-soft); color: var(--signal); }
+.badge-success { background: var(--good-soft); color: var(--ok); }
+.badge-warning { background: var(--warn-soft); color: var(--drift); }
+.badge-danger { background: var(--bad-soft); color: var(--alarm); }
+.badge-info { background: var(--info-soft); color: var(--signal); }
+.badge-neutral { background: var(--neutral-soft); color: var(--text-dim); }
 
+/* ── Buttons (§3.8) ─────────────────────────────────────────────────────── */
+/* `.btn` is the shell only — geometry, type, cursor — exactly as §3.8 writes
+   it: transparent fill, transparent hairline. Fill and colour come from a
+   variant, so a screen cannot end up with two competing primary actions just
+   because it forgot a modifier. Every call site is expected to pair `.btn`
+   with one of the variants below. */
 .btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 18px; border: none; border-radius: var(--radius-lg);
-  font-size: var(--fs-base); font-weight: 600; cursor: pointer;
-  background: var(--color-primary); color: var(--color-on-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  font-weight: 500;
   font-family: inherit;
-  transition: opacity 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text);
+  transition: color 0.15s ease-out, background-color 0.15s ease-out, border-color 0.15s ease-out, opacity 0.15s ease-out;
 }
-.btn:hover { opacity: 0.9; }
-.btn:active { transform: scale(0.98); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-.btn:focus-visible { outline: 2px solid var(--mf-brand); outline-offset: 2px; }
-.btn-ghost {
-  background: var(--color-primary-light);
-  color: var(--mf-text);
-  border: 1px solid var(--color-border);
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+/* Spec §3.8 fallback: a `.btn` with no variant renders exactly like
+   `.btn-secondary`. 23 call sites outside phase-1 scope still use a bare
+   `.btn`; they are swept in phase 2, not here. */
+.btn:not(.btn-primary):not(.btn-secondary):not(.btn-ghost):not(.btn-danger) {
+  border-color: var(--line-strong);
 }
-.btn-ghost:hover { background: color-mix(in srgb, var(--mf-brand) 10%, transparent); opacity: 1; }
-.btn-danger { background: var(--bad-soft); border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent); color: var(--bad); }
-.btn-danger:hover { background: color-mix(in srgb, var(--bad) 22%, transparent); opacity: 1; }
-.btn-sm { padding: 4px 12px; font-size: var(--fs-sm); border-radius: var(--radius-md); }
+.btn:not(.btn-primary):not(.btn-secondary):not(.btn-ghost):not(.btn-danger):hover {
+  background: var(--surface-2);
+}
+.btn-primary { background: var(--signal); color: var(--on-signal); border-color: transparent; }
+.btn-primary:hover { background: var(--signal-hover); }
+.btn-secondary { background: transparent; color: var(--text); border-color: var(--line-strong); }
+.btn-secondary:hover { background: var(--surface-2); }
+.btn-ghost { background: transparent; color: var(--signal); border-color: transparent; padding: 0 8px; }
+.btn-ghost:hover { background: var(--signal-soft); color: var(--signal); }
+.btn-danger { background: transparent; color: var(--alarm); border-color: var(--line-strong); }
+.btn-danger:hover { background: var(--alarm-soft); color: var(--alarm); }
+.btn-sm { height: 28px; padding: 0 10px; font-size: var(--fs-xs); }
 
-input, select, textarea {
-  width: 100%; padding: 8px 12px; border: 1px solid var(--color-border);
-  border-radius: var(--radius-md); font-size: var(--fs-base);
-  background: color-mix(in srgb, var(--mf-brand) 10%, transparent);
-  color: var(--mf-text);
+/* §8.0 native controls. Checkboxes and radios opt out of the 32px box: a
+   square tick should not inherit a text field's padding or width. */
+input:not([type="checkbox"]):not([type="radio"]), select, textarea {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font-size: var(--fs-base);
   font-family: inherit;
+  background-color: var(--surface-2);
+  color: var(--text);
 }
-input::placeholder, textarea::placeholder { color: var(--mf-text-dim); }
+textarea { height: auto; min-height: 72px; padding: 8px 10px; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--signal); width: 16px; height: 16px; }
+b, strong { font-weight: 600; }
+input::placeholder, textarea::placeholder { color: var(--text-dim); }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: color-mix(in srgb, var(--mf-brand) 60%, transparent);
-  box-shadow: var(--shadow-focus);
+  border-color: var(--signal);
 }
-select > option { color: var(--mf-text); background: var(--mf-text); }
+/* Every removed outline is replaced by a visible ring on keyboard focus. */
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
+}
+/* Native <select> needs explicit colours or the OS paints a white popup. */
+select option { background-color: var(--surface); color: var(--text); }
 
+/* Tables (§8.3.7, applied globally): a 12/500 header row, 14px cells, 44px
+   rows separated by one hairline. No zebra fill and no hover wash — a row is
+   a line of data, not a button. */
 table { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 th {
-  text-align: left; padding: var(--space-3) var(--space-4); font-size: var(--fs-base); font-weight: 600;
-  color: var(--mf-text); border-bottom: 1px solid var(--color-border);
+  text-align: left; padding: 8px 12px; font-size: var(--fs-xs); font-weight: 500;
+  line-height: 16px; color: var(--text-dim); border-bottom: 1px solid var(--line);
 }
-td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-border); color: var(--mf-text); }
-tr:hover td { background: color-mix(in srgb, var(--mf-brand) 6%, transparent); }
-
-.tabs { display: flex; gap: var(--space-2); margin-bottom: var(--space-4); flex-wrap: wrap; }
-.tab {
-  padding: 6px 16px; border: 1px solid var(--color-border); border-radius: var(--radius-pill);
-  font-size: var(--fs-base); cursor: pointer;
-  background: var(--color-primary-light); color: var(--mf-text);
-  font-family: inherit;
-  transition: color 0.16s ease, background 0.16s ease;
+td {
+  padding: 12px; height: 44px; font-size: var(--fs-base); line-height: 20px;
+  border-top: 1px solid var(--line); color: var(--text); font-variant-numeric: tabular-nums;
 }
-.tab:hover { color: var(--mf-brand); }
-.tab.active { background: color-mix(in srgb, var(--mf-brand) 35%, transparent); color: var(--mf-text); }
-.tab:focus-visible { outline: 2px solid var(--mf-brand); outline-offset: 2px; }
 
 .spinner {
-  border: 3px solid color-mix(in srgb, var(--mf-brand) 20%, transparent);
-  border-top-color: var(--mf-brand);
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--signal);
   border-radius: 50%;
   width: 24px; height: 24px;
   animation: spin 0.6s linear infinite;
@@ -253,37 +372,29 @@ tr:hover td { background: color-mix(in srgb, var(--mf-brand) 6%, transparent); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.error-box {
-  background: var(--bad-soft);
-  border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
-  color: var(--bad);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  font-size: var(--fs-sm);
-  margin-bottom: var(--space-4);
-}
-.success-box {
-  background: var(--good-soft);
-  border: 1px solid color-mix(in srgb, var(--good) 35%, transparent);
-  color: var(--good);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  font-size: var(--fs-sm);
-  margin-bottom: var(--space-4);
-}
+/* §8.0: the three status boxes used to be three tones of filled pill. They
+   now share the §3.10 `.notice` geometry and differ only by a 2px left rule,
+   so a page cannot look like it has two different alert systems. Class names
+   stay — e2e asserts on them. */
+.error-box,
+.success-box,
 .info-box {
-  background: var(--color-primary-light);
-  border: 1px solid var(--color-border);
-  color: var(--mf-text);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-left-width: 2px;
+  border-radius: var(--radius-sm);
   font-size: var(--fs-sm);
+  background: var(--surface);
+  color: var(--text);
 }
-.text-muted { color: var(--color-text-tertiary); }
+.error-box { border-left-color: var(--alarm); margin-bottom: var(--space-4); }
+.success-box { border-left-color: var(--ok); margin-bottom: var(--space-4); }
+.info-box { border-left-color: var(--signal); }
+.text-muted { color: var(--text-dim); }
 
 .chat-bubble { padding: 10px 14px; border-radius: var(--radius-lg); font-size: var(--fs-base); max-width: 80%; line-height: var(--leading-normal); }
-.chat-user { background: var(--color-primary); color: var(--color-on-primary); margin-left: auto; }
-.chat-ai { background: var(--color-bg-inset); border: 1px solid var(--color-border); color: var(--mf-text); }
+.chat-user { background: var(--signal); color: var(--on-signal); margin-left: auto; }
+.chat-ai { background: var(--surface-2); border: 1px solid var(--line); color: var(--text); }
 .chat-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--space-4); height: calc(100vh - 180px); min-height: 500px; }
 .chat-main { min-width: 0; }
 
@@ -302,6 +413,22 @@ tr:hover td { background: color-mix(in srgb, var(--mf-brand) 6%, transparent); }
 .mt8 { margin-top: 8px; }
 .mt16 { margin-top: 16px; }
 
-@media (max-width: 768px) {
-  .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* ── §8.0: `.tabs` / `.tab` are now built by `Segmented` ──────────────────
+   Every call site moved to the component, so the boxed button group is gone
+   (the `.tabs`/`.tab` rules were this change's own orphans). */
+
+/* ── §3.11 global WIG floor ─────────────────────────────────────────────── */
+/* Every control that suppressed its outline gets a signal ring on keyboard
+   focus, including ones whose own stylesheet predates the redesign. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

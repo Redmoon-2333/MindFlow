@@ -3,6 +3,12 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getErrorMessage, getFocusSessions, getFocusTrend, submitFocusFeedback } from "../api";
 import type { FocusSession, FocusTrendDay, FocusTrendResponse } from "../api";
 import { dayLabel, localDateStr } from "../date-utils";
+import Surface from "../components/signal/Surface";
+import SectionHeader from "../components/signal/SectionHeader";
+import MetricStrip from "../components/signal/MetricStrip";
+import type { MetricItem } from "../components/signal/MetricStrip";
+import StackedBar from "../components/charts/StackedBar";
+import HelpTip from "../components/signal/HelpTip";
 import "./focus.css";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -33,9 +39,7 @@ interface FeedbackDraft {
 
 function formatMinutes(m: number | null | undefined): string {
   if (m == null || isNaN(m)) return "—";
-  const h = Math.floor(m / 60);
-  const min = Math.round(m % 60);
-  return h > 0 ? `${h}h ${min}m` : `${min}m`;
+  return `${Math.round(m)} 分钟`;
 }
 
 function sessionDurationMinutes(session: FocusSession): number {
@@ -55,7 +59,9 @@ function todayStr(): string {
  *  read 今天 — the trend series is sparse, so "last entry" ≠ "today" (audit F1). */
 function chartWeekLabel(date: string, todayKey: string): string {
   if (date === todayKey) return "今天";
-  return dayLabel(date, true);
+  // §8.21.5: "三" alone is unambiguous only next to its date; spell out 周三
+  // so the tick matches the dashboard.
+  return `周${dayLabel(date, true)}`;
 }
 
 export default function Focus() {
@@ -165,15 +171,25 @@ export default function Focus() {
   const todayKey = todayStr();
 
   const trendDays = getTrendDays(trend);
-  const maxFocus = Math.max(1, ...trendDays.map((day) => day.focus_min ?? 0));
-  const maxDistraction = Math.max(1, ...trendDays.map((day) => day.distraction_min ?? 0));
-  const chartMax = Math.max(maxFocus, maxDistraction);
 
-  const stats = [
-    { title: "总专注时长", content: sessionsReady ? formatMinutes(totalFocus) : "—", icon: "icon-shizhong" },
-    { title: "专注次数", content: sessionsReady ? `${sessionCount} 次` : "—", icon: "icon-yanjing" },
-    { title: "平均评分", content: sessionsReady && sessions.length > 0 ? avgScore.toFixed(1) : "—", icon: "icon-fenshuxian" },
-    { title: "最长专注", content: sessionsReady && longestBlock > 0 ? formatMinutes(longestBlock) : "—", icon: "icon-zhuanzhu" },
+  const metricItems: MetricItem[] = [
+    sessionsReady
+      ? { key: "focus", label: "总专注时长", value: String(Math.round(totalFocus)), unit: "分钟" }
+      : { key: "focus", label: "总专注时长", value: "—" },
+    sessionsReady
+      ? { key: "sessions", label: "专注次数", value: String(sessionCount), unit: "次" }
+      : { key: "sessions", label: "专注次数", value: "—" },
+    sessionsReady && sessions.length > 0
+      ? {
+          key: "score",
+          label: "平均评分",
+          value: avgScore.toFixed(1),
+          help: { what: "当天所有会话得分的平均值，满分 100。" },
+        }
+      : { key: "score", label: "平均评分", value: "—" },
+    sessionsReady && longestBlock > 0
+      ? { key: "longest", label: "最长专注", value: String(Math.round(longestBlock)), unit: "分钟" }
+      : { key: "longest", label: "最长专注", value: "—" },
   ];
 
   /** Editable draft for a session, seeded from any feedback already recorded.
@@ -228,84 +244,64 @@ export default function Focus() {
   return (
     <>
       <div className="f-page">
-        <div className="f-first-row">
+        <p className="page-lede">按天查看专注与分心的时长，并校准系统对每段时间的判断。</p>
+
+        <div className="page-toolbar f-first-row">
           <div className="f-datepicker mf-picker">
             <NativeDateField label="选择日期" value={date} onChange={setDate} />
           </div>
-          <button type="button" className="f-reset" onClick={refresh} disabled={loading || trendLoading}>
-            刷 新
+          <button type="button" className="btn btn-secondary f-reset" onClick={refresh} disabled={loading || trendLoading}>
+            刷新
           </button>
         </div>
 
         {sessionsError && <div className="error-box" role="alert">{sessionsError}</div>}
 
         <div className="f-state">
-          {stats.map((item) => (
-            <div className="state-item" key={item.title}>
-              <div className="state-item-text">{item.title}</div>
-              <div className="state-item-number">{item.content}</div>
-              <div className="icon-box">
-                <div className={`icon iconfont ${item.icon}`} aria-hidden="true" />
-              </div>
-            </div>
-          ))}
+          <MetricStrip
+            label="当日"
+            items={metricItems}
+            note="专注评分由系统根据主要应用占比和切换频率自动算出。下方的反馈只用于改进个人模型，可以不填。"
+          />
         </div>
 
-        <div className="f-description">
-          <b>自动分析说明：</b>专注评分由后端根据主要应用使用占比与切换频率自动计算，无需手动反馈。
-          个人 ML 模型另用于预测专注或分心状态。
-          下方的“反馈”功能仅用于收集训练数据以改进模型精度，非必须操作。
-        </div>
-
-        <div className="f-statics">
-          <div className="f-statics-title">7 天专注趋势</div>
+        <Surface as="section" className="f-statics">
+          <SectionHeader title="近 7 天专注与分心" as="h2" />
           {trendLoading && <div className="spinner" />}
-          {!trendLoading && trendError && (
-            <div className="f-empty">趋势加载失败，请重试</div>
+          {!trendLoading && (
+            <StackedBar
+              data={(trendError ? [] : trendDays).map((d) => ({
+                key: d.date,
+                label: chartWeekLabel(d.date, todayKey),
+                title: `${d.date.slice(5)} ${chartWeekLabel(d.date, todayKey)}`,
+                values: {
+                  focus: Math.round(d.focus_min ?? 0),
+                  distraction: Math.round(d.distraction_min ?? 0),
+                },
+                highlight: d.date === todayKey,
+              }))}
+              series={[
+                { key: "focus", label: "专注", color: "var(--signal)" },
+                { key: "distraction", label: "分心", color: "var(--drift)" },
+              ]}
+              ariaLabel={`近 7 天每日专注与分心分钟数，共 ${trendDays.length} 天`}
+              unit=" 分钟"
+              height={220}
+              showLegend
+              emptyMessage={trendError ? "趋势加载失败，请重试" : "暂无趋势数据"}
+            />
           )}
-          {!trendLoading && !trendError && trendDays.length === 0 && (
-            <div className="f-empty">暂无趋势数据</div>
-          )}
-          {!trendLoading && !trendError && trendDays.length > 0 && (
-            <div className="statics-chart">
-              {trendDays.map((item) => {
-                const focusValue = Math.round(item.focus_min ?? 0);
-                const distractValue = Math.round(item.distraction_min ?? 0);
-                return (
-                  <div className="statics-chart-item" key={item.date}>
-                    <div className="date-week">
-                      <div className="date">{item.date.slice(5)}</div>
-                      <div className="week">{chartWeekLabel(item.date, todayKey)}</div>
-                    </div>
-                    <div className="chartbox">
-                      <div
-                        className="chartbox-fenxin"
-                        style={{ height: `${distractValue > 0 ? Math.max(3, (distractValue / chartMax) * 100) : 0}%` }}
-                      >
-                        <div className="fenxin-number">{distractValue}</div>
-                      </div>
-                      <div
-                        className="chartbox-zhuanzhu"
-                        style={{ height: `${focusValue > 0 ? Math.max(3, (focusValue / chartMax) * 100) : 0}%` }}
-                      >
-                        <div className="zhuanzhu-number">{focusValue}</div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          <div className="bottom-index">
-            <div className="fenxinbox" />
-            <div className="bottom-index-fenxin">分心</div>
-            <div className="zhuanzhubox" />
-            <div className="bottom-index-zhuanzhu">专注</div>
-          </div>
-        </div>
+        </Surface>
 
-        <div className="f-conversation">
-          <div className="f-conversation-title">专注会话</div>
+        <Surface as="section" className="f-conversation">
+          <SectionHeader
+            title="专注会话"
+            as="h2"
+            help={{
+              what: "会话是一段连续 5 分钟以上的电脑使用。系统会给每段打分，并判断是专注还是分心。",
+              effect: "你可以在每段下面告诉系统真实情况，帮它学得更准。",
+            }}
+          />
           {loading && <div className="spinner" />}
           {!loading && sessionsReady && sessions.length === 0 && (
             <div className="f-empty">暂无专注会话数据</div>
@@ -331,41 +327,42 @@ export default function Focus() {
                 const feedbackScore =
                   savedDraft?.score ??
                   (typeof session.feedback_score === "number" ? session.feedback_score : undefined);
-                const focusLike = score == null || score >= 60;
+                // §8.17: the backend already classifies the session; a local
+                // score >= 60 guess could disagree with what the server says
+                // the session was.
+                const sessionTone =
+                  session.session_type === "focus"
+                    ? { className: "score score--focus", label: "专注" }
+                    : session.session_type === "distraction"
+                      ? { className: "score score--drift", label: "分心" }
+                      : { className: "score score--neutral", label: "一般" };
                 return (
                   <div className="conversation-item" key={sessionId}>
                     <div className="statement-table">
                       <div className="left-table">
                         <div className="time-table">
-                          {/* Reference order: weekday+date first (regular),
-                              clock second (bold) — see FocusPage.jsx */}
-                          <div className="time">
+                          <div className="metric-label">
                             {sessionDate ? `${dayLabel(sessionDate)} ${sessionDate.slice(5)}` : "—"}
                           </div>
-                          <div className="date">
+                          <div className="metric-value">
                             {startTime
                               ? new Date(startTime).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
-                              : "--:--"}
+                              : "—"}
                           </div>
                         </div>
                         <div className="during-table">
-                          <div className="time-text">会话时长</div>
-                          <div className="time">{formatMinutes(duration)}</div>
+                          <div className="metric-label">会话时长</div>
+                          <div className="metric-value">{formatMinutes(duration)}</div>
                         </div>
                         <div className="change-table">
-                          <div className="change-text">切换次数</div>
-                          <div className="change-time">{switches}</div>
+                          <div className="metric-label">切换次数</div>
+                          <div className="metric-value">{switches} 次</div>
                         </div>
                       </div>
                       <div className="right-table">
                         <div className="process">{app}</div>
-                        {/* Colours and the shared -25px pull come from
-                            focus.css, exactly as in the reference. */}
-                        <div className={focusLike ? "score green" : "score"}>
-                          {score != null ? `${Math.round(score)}分` : "—"}
-                        </div>
-                        <div className={focusLike ? "description green" : "description"}>
-                          {focusLike ? "专注" : "分心"}
+                        <div className={sessionTone.className}>
+                          {score != null ? `${Math.round(score)} 分 · ${sessionTone.label}` : "—"}
                         </div>
                       </div>
                     </div>
@@ -443,16 +440,20 @@ export default function Focus() {
                         </div>
                         <button
                           type="button"
-                          className="save-buttom"
+                          className="btn btn-secondary btn-sm save-buttom"
                           disabled={feedbackSaving.has(sessionId)}
                           onClick={() => saveFeedback(session)}
                         >
-                          {feedbackSaving.has(sessionId) ? "保存中..." : "保存反馈"}
+                          {feedbackSaving.has(sessionId) ? "保存中…" : "保存反馈"}
                         </button>
+                        <HelpTip
+                          term="反馈"
+                          what="把你对这段时间的真实感受告诉系统。"
+                          effect="保存后会用来训练你的个人模型；再次保存会覆盖之前的选择。"
+                        />
                     </div>
 
                     <div className="accession-tip">
-                      <div className="iconfont icon-jinggao1" aria-hidden="true" />
                       <div className="accession-tip-text">
                         1–2 分用于分心标签，4–5 分用于专注标签，3 分或混合只用于不确定性评估。
                       </div>
@@ -462,8 +463,7 @@ export default function Focus() {
               })}
             </div>
           )}
-        </div>
-        <div className="f-bottom" />
+        </Surface>
       </div>
     </>
   );

@@ -63,10 +63,10 @@ test.describe("MindFlow E2E", () => {
     await page.goto(`${FRONTEND}/`);
     await expectPageTitle(page, "仪表盘");
 
-    // Status row renders (系统健康 / 采集器 / 数据库 / LLM层)
-    await expect(page.locator(".d-state-item")).toHaveCount(4, { timeout: 10000 });
-    // Four metric cards below it
-    await expect(page.locator(".d-statistic-item")).toHaveCount(4, { timeout: 10000 });
+    // The status row now lives in the top bar as one capsule; the four
+    // metrics are the 今天 strip. Same two facts, new structure.
+    await expect(page.locator(".sig-chip")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".sig-metric")).toHaveCount(4, { timeout: 10000 });
   });
 
   test("Focus page loads with sessions", async ({ page }) => {
@@ -76,8 +76,8 @@ test.describe("MindFlow E2E", () => {
 
     // Date picker should be visible
     await expect(page.locator(".f-datepicker input").first()).toBeVisible();
-    // Four KPI cards should render
-    await expect(page.locator(".f-state .state-item")).toHaveCount(4, { timeout: 10000 });
+    // Four metric cells should render (one 当日 strip, spec §3.3)
+    await expect(page.locator(".f-state .sig-metric")).toHaveCount(4, { timeout: 10000 });
   });
 
   test("Activities page loads with table", async ({ page }) => {
@@ -99,10 +99,10 @@ test.describe("MindFlow E2E", () => {
     await page.goto(`${FRONTEND}/analytics`);
     await expectPageTitle(page, "行为洞察");
 
-    // Section titles with the decorative rules (reference design)
-    const titles = page.locator(".analytics .title");
+    // Three section titles (the decorative rules are gone, spec §8.4.4)
+    const titles = page.locator(".page-section-title");
     await expect(titles).toHaveCount(3, { timeout: 10000 });
-    await expect(page.locator(".time-box .time")).toBeVisible();
+    await expect(page.getByRole("group", { name: "时间范围" })).toBeVisible();
   });
 
   test("Reports page loads daily and weekly", async ({ page }) => {
@@ -110,9 +110,9 @@ test.describe("MindFlow E2E", () => {
     await page.goto(`${FRONTEND}/reports`);
     await expectPageTitle(page, "报告中心");
 
-    // Daily/weekly capsules
-    await expect(page.locator(".daily-report")).toBeVisible();
-    await expect(page.locator(".weekly-report")).toBeVisible();
+    // Daily/weekly segmented options
+    await expect(page.getByRole("button", { name: "日报", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "周报", exact: true })).toBeVisible();
     // Date picker
     await expect(page.locator(".report-datepicker input").first()).toBeVisible();
   });
@@ -169,8 +169,8 @@ test.describe("MindFlow E2E", () => {
     await page.goto(`${FRONTEND}/diagnostics`);
     await expectPageTitle(page, "AI 诊断");
 
-    // Health cards
-    await expect(page.locator(".stat-card").first()).toBeVisible({ timeout: 10000 });
+    // Health metrics (one strip, four cells)
+    await expect(page.locator(".sig-metric").first()).toBeVisible({ timeout: 10000 });
     // AI runs table
     await expect(page.locator("text=AI 工作流运行记录")).toBeVisible();
   });

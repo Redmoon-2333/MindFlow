@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 /**
  * Measured width of an element, for SVG charts.
@@ -8,14 +8,22 @@ import { useEffect, useRef, useState } from "react";
  * unreadable. Rendering at the measured width keeps type at its real size on
  * phones and lets the layout reflow (labels thin out, bars narrow) instead.
  *
+ * The ref is a callback, not an object ref: a chart that first renders its
+ * empty state ("暂无数据") has no element to attach, and an object ref with
+ * `[]` deps would never re-measure once data arrives — the series would then
+ * be laid out at the fallback width and stretched by CSS (§8.19).
+ *
  * SSR/初始渲染: `fallback` is returned until the first measurement.
  */
-export function useElementWidth<T extends HTMLElement = HTMLDivElement>(fallback = 640): [React.RefObject<T | null>, number] {
-  const ref = useRef<T | null>(null);
+export function useElementWidth<T extends HTMLElement = HTMLDivElement>(
+  fallback = 640,
+): [(el: T | null) => void, number] {
+  const [node, setNode] = useState<T | null>(null);
   const [width, setWidth] = useState(fallback);
 
+  const ref = useCallback((el: T | null) => setNode(el), []);
+
   useEffect(() => {
-    const node = ref.current;
     if (!node) return;
     const read = () => {
       // clientWidth excludes scrollbars; 0 means "not laid out yet".
@@ -30,7 +38,7 @@ export function useElementWidth<T extends HTMLElement = HTMLDivElement>(fallback
     const observer = new ResizeObserver(read);
     observer.observe(node);
     return () => observer.disconnect();
-  }, []);
+  }, [node]);
 
   return [ref, width];
 }

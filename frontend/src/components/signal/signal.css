@@ -1,0 +1,417 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Signal shared components (spec §3): Surface, SectionHeader, MetricStrip,
+   Segmented, StatusChip, Disclosure, LiveDot, Notice.
+
+   One container layer only: a Surface never contains another bordered box —
+   inner grouping is a hairline plus spacing. No shadows, no `transition: all`;
+   only the properties §2.5 allows.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── §3.1 Surface ──────────────────────────────────────────────────────── */
+.sig-surface {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  min-width: 0;
+}
+.sig-surface--lg { padding: 28px 32px; }
+
+/* ── §3.2 SectionHeader ────────────────────────────────────────────────── */
+.sh {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  min-height: 32px;
+}
+.sh-text { min-width: 0; }
+.sh-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--text);
+}
+.sh-summary {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--text-dim);
+  margin-top: 6px;
+}
+.sh-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+@media (max-width: 600px) {
+  .sh { flex-wrap: wrap; }
+  .sh-actions { width: 100%; }
+}
+
+/* ── §3.3 MetricStrip ──────────────────────────────────────────────────── */
+/* One grid: an optional 64px label track, then one track per metric. Cells
+   stretch so the vertical hairlines read as column rules; the label centres
+   itself inside its track. At 600px the label takes a row of its own and the
+   metrics reflow to 2×2. */
+.sig-metrics {
+  display: grid;
+  /* The leading label is a phrase, not always a two-character word ("我的日常
+     习惯"); a fixed 64px track wrapped it into the first divider (§8.20). */
+  grid-template-columns: minmax(64px, max-content) repeat(var(--sig-metric-cols, 4), minmax(0, 1fr));
+  align-items: stretch;
+  padding: 20px 24px;
+}
+.sig-metrics--bare {
+  grid-template-columns: repeat(var(--sig-metric-cols, 4), minmax(0, 1fr));
+}
+/* §7.4: the leading column is a card-title-weight word ("今天"), not a
+   spaced-out kicker. §3.3's label-caps is replaced. */
+.sig-metrics-label {
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--text);
+  /* Keep the phrase on one line and clear of the first vertical rule. */
+  padding-right: 24px;
+  white-space: nowrap;
+}
+.sig-metric {
+  padding: 0 24px;
+  border-left: 1px solid var(--line);
+  min-width: 0;
+}
+.sig-metrics--bare .sig-metric:first-child { border-left: 0; padding-left: 0; }
+.sig-metric-label {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.sig-metric-value {
+  font-family: var(--font-num);
+  font-size: var(--fs-xl);
+  font-weight: 400;
+  line-height: 32px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.sig-metric-unit {
+  font-size: var(--fs-base);
+  color: var(--text-dim);
+  margin-left: 4px;
+}
+.sig-metric-delta {
+  font-size: var(--fs-xs);
+  margin-top: 6px;
+  color: var(--text-dim);
+}
+.sig-metric-delta[data-tone="up"] { color: var(--signal); }
+.sig-metric-delta[data-tone="down"] { color: var(--drift); }
+.sig-meter-note {
+  grid-column: 1 / -1;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  margin-top: 12px;
+}
+
+@media (max-width: 600px) {
+  .sig-metrics,
+  .sig-metrics--bare { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sig-metrics-label {
+    grid-column: 1 / -1;
+    margin-bottom: 12px;
+  }
+  .sig-metric { padding: 0; border-left: 0; }
+  /* Bare strip: metrics are children 1–4. */
+  .sig-metric:nth-child(even) {
+    border-left: 1px solid var(--line);
+    padding-left: 16px;
+  }
+  .sig-metric:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+    margin-top: 16px;
+  }
+  /* With a label the whole set shifts one track right: children 2–5. */
+  .sig-metrics:not(.sig-metrics--bare) .sig-metric:nth-child(even) {
+    border-left: 0;
+    padding-left: 0;
+  }
+  .sig-metrics:not(.sig-metrics--bare) .sig-metric:nth-child(odd) {
+    border-left: 1px solid var(--line);
+    padding-left: 16px;
+  }
+  .sig-metrics:not(.sig-metrics--bare) .sig-metric:nth-child(n + 3) {
+    border-top: 0;
+    padding-top: 0;
+    margin-top: 0;
+  }
+  .sig-metrics:not(.sig-metrics--bare) .sig-metric:nth-child(n + 4) {
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+    margin-top: 16px;
+  }
+}
+
+/* ── §3.4 Segmented ────────────────────────────────────────────────────── */
+.sig-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.sig-seg-item {
+  height: 28px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s ease-out, background-color 0.15s ease-out;
+}
+.sig-seg-item:hover { color: var(--text); }
+.sig-seg-item[aria-pressed="true"] { background: var(--surface-2); color: var(--signal); }
+.sig-seg-item:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+
+/* ── §3.5 StatusChip ───────────────────────────────────────────────────── */
+.sig-status { position: relative; }
+.sig-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.15s ease-out, border-color 0.15s ease-out;
+}
+.sig-chip:hover { background: var(--surface-2); }
+.sig-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  flex: 0 0 auto;
+  background: var(--text-dim);
+}
+.sig-chip-caret { font-size: var(--fs-xs); color: var(--text-dim); margin-left: 6px; }
+
+.sig-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: 320px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+}
+.sig-popover-list { margin: 0; display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; row-gap: 0; }
+.sig-popover-list dt,
+.sig-popover-list dd { min-height: 28px; display: flex; align-items: center; margin: 0; }
+.sig-popover-list dt { font-size: var(--fs-sm); color: var(--text-dim); }
+.sig-popover-list dd { font-size: var(--fs-sm); color: var(--text); gap: 8px; justify-content: space-between; min-width: 0; }
+.sig-popover-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 600px) {
+  .sig-popover { width: calc(100vw - 32px); }
+}
+
+/* ── §3.6 Disclosure ───────────────────────────────────────────────────── */
+.sig-disclosure-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--signal);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+}
+.sig-disclosure-trigger:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 2px; }
+.sig-disclosure-caret {
+  font-size: var(--fs-xs);
+  display: inline-block;
+  transition: transform 0.2s ease-out;
+}
+.sig-disclosure-caret[data-open="true"] { transform: rotate(90deg); }
+.sig-disclosure-body {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+/* ── §3.7 LiveDot ──────────────────────────────────────────────────────── */
+.sig-live { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-dim); }
+.sig-live-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex: 0 0 auto;
+}
+.sig-live-dot[data-status="connected"] {
+  background: var(--signal);
+  box-shadow: var(--signal-glow);
+}
+.sig-live-dot[data-status="connected"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid var(--signal);
+  animation: sig-pulse 1.6s ease-out infinite;
+}
+@keyframes sig-pulse {
+  from { transform: scale(1); opacity: 0.6; }
+  to { transform: scale(2.4); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sig-live-dot[data-status="connected"]::after { animation: none; }
+  .sig-disclosure-caret { transition-duration: 0.01ms; }
+}
+
+/* ── §3.10 Notice ──────────────────────────────────────────────────────── */
+/* Shared so phase-2 pages inherit it; the class name is the spec's. */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--drift);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+.notice-text { flex: 1; min-width: 0; }
+.notice-action { flex-shrink: 0; }
+.notice-close {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: var(--fs-base);
+  cursor: pointer;
+  transition: color 0.15s ease-out, background-color 0.15s ease-out;
+}
+.notice-close:hover { color: var(--text); background: var(--surface-2); }
+
+/* ── §3.9 List row ─────────────────────────────────────────────────────── */
+/* Built now, used in phase 2: pages define their own column tracks, so this
+   carries only the shared geometry. The first row has no top hairline. */
+.list-row {
+  display: grid;
+  align-items: center;
+  min-height: 48px;
+  border-top: 1px solid var(--line);
+  column-gap: 16px;
+}
+.list-row:first-child { border-top: none; }
+
+/* ── §7.3 page skeleton shared classes ─────────────────────────────────── */
+/* Every non-dashboard page opens with a one-line lede, then an optional
+   toolbar of page-level controls, then cards at a 16px rhythm. These live
+   here rather than in a page sheet so a page cannot invent its own spacing. */
+.page-lede { font-size: var(--fs-sm); color: var(--text-dim); max-width: 720px; margin: 0 0 24px; line-height: 1.5; }
+.page-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-bottom: 24px; }
+/* The toolbar aligns to control baselines (flex-end); a "?" is not a control,
+   so left to flex-end it hangs below the button's centre line (§8.22.3). */
+.page-toolbar > .help-tip { align-self: center; }
+.page-section-title { font-size: var(--fs-lg); font-weight: 600; line-height: 28px; color: var(--text); margin: 32px 0 16px; text-align: left; }
+.page-section-title:first-of-type { margin-top: 0; }
+.sub-title { font-size: var(--fs-base); font-weight: 600; line-height: 20px; color: var(--text); margin: 0 0 8px; }
+.page-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) { .page-grid-2 { grid-template-columns: minmax(0, 1fr); } }
+
+/* Label—value list (§8.1). Numeric values take the tabular face so columns
+   line up; `--text` variants hand that back for prose and long CJK strings. */
+.kv-row { display: grid; grid-template-columns: 1fr auto; align-items: center; min-height: 44px; column-gap: 16px; border-top: 1px solid var(--line); font-size: var(--fs-base); }
+.kv-row:first-child { border-top: none; }
+.kv-row > :first-child { color: var(--text-dim); font-size: var(--fs-sm); }
+.kv-row > :last-child { font-family: var(--font-num); color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+.kv-row--text > :last-child { font-family: inherit; }
+.kv-row--strong > :first-child { color: var(--text); font-size: var(--fs-base); }
+
+/* ── §8.17.1 HelpTip ───────────────────────────────────────────────────── */
+/* A 16px "?" that opens the plain-language definition of a jargon term.
+   The popover is portalled to <body> because the trigger is often inside a
+   <label> or a table cell that would clip an absolutely-positioned child. */
+.help-tip { display: inline-flex; vertical-align: middle; margin-left: 4px; }
+.help-tip-trigger {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Hit area 24px: the visible circle stays small, the target does not. */
+.help-tip-trigger::before { content: ""; position: absolute; inset: -4px; }
+.help-tip-trigger:hover,
+.help-tip-trigger[aria-expanded="true"] { color: var(--signal); border-color: var(--signal); }
+.help-tip-trigger:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.help-tip-pop {
+  position: fixed;
+  z-index: 1000;
+  width: min(280px, calc(100vw - 16px));
+  padding: 10px 12px;
+  background: var(--chart-tooltip-bg);
+  border: 1px solid var(--chart-tooltip-border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+}
+.help-tip-what,
+.help-tip-effect { margin: 0; }
+.help-tip-effect { margin-top: 6px; color: var(--text-dim); }
+/* §8.17.1: the "?" sits beside the disclosure button, not inside it. */
+.sig-disclosure-row { display: inline-flex; align-items: center; gap: 2px; }

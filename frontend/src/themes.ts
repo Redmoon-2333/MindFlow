@@ -5,6 +5,11 @@
  * outranks any stylesheet. theme.css therefore only carries navy fallbacks,
  * and page CSS must consume tokens rather than re-declaring colours.
  *
+ * Design language "Signal" (docs/audit/20261110-midterm/ui-redesign-spec.md §2).
+ * Token names follow the spec verbatim (`--surface`, `--line`, `--signal`, …);
+ * the pre-redesign hooks (`--mf-*`, `--color-*`) are aliased onto them so
+ * pages that were not redesigned in phase 1 keep working unchanged.
+ *
  * Contract used by e2e (theme-layout-review.spec.ts): `--mf-text`,
  * `--mf-text-dim`, `--color-bg`, `--mf-panel` and `--color-bg-inset` must be
  * plain hex values so the contrast probe can compute ratios from them.
@@ -17,119 +22,211 @@ export const THEMES = [
 export type ThemeId = typeof THEMES[number]["id"];
 
 interface Palette {
-  bg: string; panel: string; inset: string; text: string; dim: string;
-  brand: string; border: string; primary: string;
-  /** Chart series, ordered by hue distance so adjacent bars stay separable. */
-  chart: [string, string, string, string, string, string];
-  /** Signed contribution poles — one meaning per direction, per theme. */
-  pos: string; neg: string;
-  grid: string; axis: string; track: string; tooltipBg: string; tooltipBorder: string;
-  good: string; warn: string; bad: string; info: string;
+  /** Page backdrop. */
+  bg: string;
+  /** The single container layer (cards, sidebar, popovers). */
+  surface: string;
+  /** Hover / selected / input fill — one step off the surface. */
+  surface2: string;
+  /** Hairlines: container edges and separators. */
+  line: string;
+  /** Control borders: inputs, secondary buttons. */
+  lineStrong: string;
+  text: string;
+  dim: string;
+  /** Focus / realtime / primary action. */
+  signal: string;
+  /** Primary-button hover. */
+  signalHover: string;
+  /** Text drawn on top of a signal-filled button. */
+  onSignal: string;
+  /** Distraction / needs attention. */
+  drift: string;
+  /** Severe fault and destructive actions only. */
+  alarm: string;
+  /** "Everything is fine" — only the status capsule dot. Never focus. */
+  ok: string;
+  /** Historical and comparison series. */
+  steel: string;
+  /** Procrastination type colours, fixed slot order (§2.1). */
   types: [string, string, string, string, string];
-  shadowStrength: number;
-  /** Light surfaces need softer elevation and a darker highlight. */
+  /** Inputs get a native colour scheme so autofill/scrollbars match. */
   light?: boolean;
 }
 
+const TYPES_DARK: [string, string, string, string, string] = [
+  "#C9A15A", "#D9776F", "#6F9BD1", "#A68BD1", "#5FB3A3",
+];
+const TYPES_LIGHT: [string, string, string, string, string] = [
+  "#8A6414", "#A8463E", "#2F64A3", "#6B4FA0", "#2A7A6C",
+];
+
 const palettes: Record<ThemeId, Palette> = {
-  // Light theme: same hue family as navy, darkened until every pair clears
-  // 4.5:1 on white. e2e computes these ratios from the computed values.
-  white: {
-    bg: "#f4f6fa", panel: "#ffffff", inset: "#eaeff7", text: "#101c2b", dim: "#4a5c72",
-    brand: "#1f5fa0", border: "#c2cee0", primary: "#17548f",
-    chart: ["#1f5fa0", "#0f7a63", "#8a5a05", "#6b34a8", "#a8323f", "#4a5a70"],
-    pos: "#0b6b52", neg: "#a8302b",
-    grid: "rgba(16, 28, 43, 0.12)", axis: "rgba(16, 28, 43, 0.48)",
-    track: "rgba(16, 28, 43, 0.08)", tooltipBg: "#ffffff", tooltipBorder: "#c2cee0",
-    good: "#0a6b52", warn: "#7a5200", bad: "#a8302b", info: "#1c4f96",
-    types: ["#7a5200", "#a8302b", "#1c4f96", "#6b34a8", "#0a6b52"],
-    shadowStrength: 0.1, light: true,
-  },
-  black: {
-    bg: "#111111", panel: "#1c1c1c", inset: "#181818", text: "#f2f2f2", dim: "#bdbdbd",
-    brand: "#8fb6ff", border: "#4a4a4a", primary: "#2367a8",
-    chart: ["#8fb6ff", "#4bd3c0", "#f0b64e", "#c3a0ff", "#ff8f8f", "#9aa7b8"],
-    pos: "#4bd3c0", neg: "#ff8f8f",
-    grid: "rgba(242, 242, 242, 0.14)", axis: "rgba(242, 242, 242, 0.5)",
-    track: "rgba(242, 242, 242, 0.1)", tooltipBg: "#1c1c1c", tooltipBorder: "#4a4a4a",
-    good: "#4bd3c0", warn: "#f0b64e", bad: "#ff8f8f", info: "#8fb6ff",
-    types: ["#f0b64e", "#ff8f8f", "#8fb6ff", "#c3a0ff", "#4bd3c0"],
-    shadowStrength: 0.5,
-  },
+  // Deep blue-grey — the design baseline. Surfaces separate by value only.
   navy: {
-    bg: "#040b14", panel: "#172b46", inset: "#0c1a30", text: "#e0e9f4", dim: "#a9bdd3",
-    brand: "#8dc7ff", border: "#38577e", primary: "#1761a8",
-    chart: ["#7aa2ff", "#2dd4bf", "#f5b84b", "#c084fc", "#f87171", "#94a3b8"],
-    pos: "#2dd4bf", neg: "#f87171",
-    grid: "rgba(150, 185, 225, 0.16)", axis: "rgba(150, 185, 225, 0.55)",
-    track: "rgba(150, 185, 225, 0.12)", tooltipBg: "#12253d", tooltipBorder: "rgba(150, 185, 225, 0.34)",
-    good: "#2dd4bf", warn: "#f5b84b", bad: "#f87171", info: "#7aa2ff",
-    types: ["#f5b84b", "#f87171", "#7aa2ff", "#c084fc", "#2dd4bf"],
-    shadowStrength: 0.32,
+    bg: "#0A0E14", surface: "#121A24", surface2: "#18222E",
+    line: "#1F2A36", lineStrong: "#2B3846",
+    text: "#D7DEE6", dim: "#8E9BAA",
+    signal: "#33B5E5", signalHover: "#5CC6EE", onSignal: "#0A0E14",
+    drift: "#E0A458", alarm: "#FF5D5D", ok: "#5FBF8F", steel: "#5A7A9A",
+    types: TYPES_DARK,
   },
+  // Holo's original black: the surface ladder is value-only, the signal is cyan.
+  black: {
+    bg: "#000000", surface: "#0C0F10", surface2: "#171B1C",
+    line: "#22282A", lineStrong: "#30383A",
+    text: "#E8F7FA", dim: "#8A9A9D",
+    signal: "#33B5E5", signalHover: "#5CC6EE", onSignal: "#0A0E14",
+    drift: "#E8A951", alarm: "#FF5D5D", ok: "#5FBF8F", steel: "#5E7C86",
+    types: TYPES_DARK,
+  },
+  // Light: every text pair clears 4.5:1 against bg / surface / surface-2
+  // (the e2e contrast probe measures exactly those three).
+  white: {
+    bg: "#F5F7FA", surface: "#FFFFFF", surface2: "#EEF2F6",
+    line: "#DDE3EA", lineStrong: "#C5CFDA",
+    text: "#0F1A26", dim: "#56657A",
+    signal: "#066A94", signalHover: "#055A7E", onSignal: "#FFFFFF",
+    drift: "#94580A", alarm: "#C2312B", ok: "#1A7A50", steel: "#6A7F95",
+    types: TYPES_LIGHT,
+    light: true,
+  },
+  // Burgundy: same ladder as navy, warm hue. Signal stays cyan so "focus"
+  // never changes meaning between themes.
   burgundy: {
-    bg: "#180c12", panel: "#2b1a23", inset: "#241520", text: "#f7eaf0", dim: "#cfb5c1",
-    brand: "#ffb1c8", border: "#6d4a59", primary: "#9d2c4e",
-    chart: ["#9fb6ff", "#4bd3c0", "#f5b84b", "#c9a8ff", "#ff9d94", "#b3a5ae"],
-    pos: "#4bd3c0", neg: "#ff9d94",
-    grid: "rgba(230, 200, 212, 0.16)", axis: "rgba(230, 200, 212, 0.52)",
-    track: "rgba(230, 200, 212, 0.12)", tooltipBg: "#2b1a23", tooltipBorder: "rgba(230, 200, 212, 0.32)",
-    good: "#4bd3c0", warn: "#f5b84b", bad: "#ff9d94", info: "#9fb6ff",
-    types: ["#f5b84b", "#ff9d94", "#9fb6ff", "#c9a8ff", "#4bd3c0"],
-    shadowStrength: 0.4,
+    bg: "#140A0F", surface: "#1E1218", surface2: "#27171F",
+    line: "#33212A", lineStrong: "#452E39",
+    text: "#EEDFE5", dim: "#A9919B",
+    signal: "#33B5E5", signalHover: "#5CC6EE", onSignal: "#0A0E14",
+    drift: "#E0A458", alarm: "#FF6B6B", ok: "#6CC28F", steel: "#8A6A78",
+    types: TYPES_DARK,
   },
 };
 
+/** `<meta name="theme-color">` follows the active backdrop so mobile chrome
+ *  does not stay navy after switching to the white theme. */
+function syncThemeColor(bg: string) {
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (!meta) {
+    meta = document.createElement("meta");
+    meta.name = "theme-color";
+    document.head.appendChild(meta);
+  }
+  meta.content = bg;
+}
+
 export function applyTheme(theme: ThemeId) {
-  const p = palettes[theme]; const light = theme === "white";
-  const s = p.shadowStrength;
+  const p = palettes[theme]; const light = p.light === true;
+  /** `color-mix` so a derived fill always tracks its base colour. */
+  const mix = (color: string, percent: number) =>
+    `color-mix(in srgb, ${color} ${percent}%, transparent)`;
   const variables: Record<string, string> = {
-    // Flat surfaces only: the "calm instrument panel" direction bans ambient
-    // gradients and glow, so both hooks collapse to the theme background.
+    /* ── §2.1 canonical tokens ─────────────────────────────────────────── */
+    "bg": p.bg,
+    "surface": p.surface,
+    "surface-2": p.surface2,
+    "line": p.line,
+    "line-strong": p.lineStrong,
+    "text": p.text,
+    "text-dim": p.dim,
+    "signal": p.signal,
+    "signal-hover": p.signalHover,
+    "on-signal": p.onSignal,
+    "drift": p.drift,
+    "alarm": p.alarm,
+    "ok": p.ok,
+    "steel": p.steel,
+
+    /* ── Derived fills (§2.1) ──────────────────────────────────────────── */
+    "signal-soft": mix(p.signal, 14),
+    "drift-soft": mix(p.drift, 14),
+    "alarm-soft": mix(p.alarm, 14),
+    // The glow is the signature of the hero reading and the realtime dot: a
+    // dark theme casts light, the light theme rings instead (a shadow would
+    // read as a smudge on white).
+    "signal-glow": light
+      ? `0 0 0 3px color-mix(in srgb, ${p.signal} 16%, transparent)`
+      : `0 0 12px color-mix(in srgb, ${p.signal} 35%, transparent)`,
+    "focus-ring": `0 0 0 2px ${p.signal}`,
+
+    /* ── Legacy hooks (§2.2): every existing page keeps working ─────────── */
+    // Hex, not var(): the e2e contrast probe parses these five directly.
+    "mf-text": p.text,
+    "mf-text-dim": p.dim,
+    "color-bg": p.bg,
+    "mf-panel": p.surface,
+    "color-bg-inset": p.surface2,
+
+    "mf-bg": p.bg,
+    "mf-surface": p.surface,
+    "mf-surface-2": p.surface2,
+    "mf-line": p.line,
+    "mf-line-strong": p.lineStrong,
+    "mf-signal": p.signal,
+    "mf-drift": p.drift,
+    "mf-alarm": p.alarm,
+    "mf-steel": p.steel,
     "mf-bg-radial": p.bg,
     "mf-login-radial": p.bg,
-    "mf-panel": p.panel, "mf-panel-border": p.border, "mf-hairline": p.border,
-    "mf-sidebar-bg": p.bg, "mf-topbar-bg": p.bg, "mf-text": p.text, "mf-text-dim": p.dim,
-    "mf-text-icon": p.dim, "mf-brand": p.brand, "mf-accent-line": p.border,
-    "color-bg": p.bg, "color-bg-elevated": p.panel, "color-bg-inset": p.inset, "color-border": p.border,
-    "color-text-primary": p.text, "color-text-secondary": p.dim, "color-text-tertiary": p.dim,
-    "color-primary": p.primary, "color-primary-hover": p.primary, "color-primary-light": p.inset,
-    "color-on-primary": "#ffffff",
-    "color-success": p.good, "color-warning": p.warn, "color-danger": p.bad, "color-info": p.info,
+    "mf-text-icon": p.dim,
+    "mf-brand": p.signal,
+    "mf-accent-line": p.line,
+    "mf-panel-border": p.line,
+    "mf-hairline": p.line,
+    "mf-sidebar-bg": p.bg,
+    "mf-topbar-bg": p.bg,
+
+    "color-bg-elevated": p.surface,
+    "color-border": p.line,
+    "color-text-primary": p.text,
+    "color-text-secondary": p.dim,
+    "color-text-tertiary": p.dim,
+    "color-primary": p.signal,
+    "color-primary-hover": p.signalHover,
+    "color-primary-light": p.surface2,
+    "color-on-primary": p.onSignal,
+    "color-success": p.ok,
+    "color-warning": p.drift,
+    "color-danger": p.alarm,
+    "color-info": p.signal,
 
     // Semantic state + soft fills
-    "good": p.good, "good-soft": `color-mix(in srgb, ${p.good} 14%, transparent)`,
-    "warn": p.warn, "warn-soft": `color-mix(in srgb, ${p.warn} 14%, transparent)`,
-    "bad": p.bad, "bad-soft": `color-mix(in srgb, ${p.bad} 14%, transparent)`,
-    "info": p.info, "info-soft": `color-mix(in srgb, ${p.info} 14%, transparent)`,
-    "neutral-soft": `color-mix(in srgb, ${p.dim} 12%, transparent)`,
+    "good": p.ok, "good-soft": mix(p.ok, 14),
+    "warn": p.drift, "warn-soft": mix(p.drift, 14),
+    "bad": p.alarm, "bad-soft": mix(p.alarm, 14),
+    "info": p.signal, "info-soft": mix(p.signal, 14),
+    "neutral-soft": mix(p.dim, 12),
 
-    // Data-viz
-    "chart-1": p.chart[0], "chart-2": p.chart[1], "chart-3": p.chart[2],
-    "chart-4": p.chart[3], "chart-5": p.chart[4], "chart-6": p.chart[5],
-    "chart-pos": p.pos, "chart-pos-soft": `color-mix(in srgb, ${p.pos} 24%, transparent)`,
-    "chart-neg": p.neg, "chart-neg-soft": `color-mix(in srgb, ${p.neg} 24%, transparent)`,
-    "chart-grid": p.grid, "chart-axis": p.axis, "chart-track": p.track,
-    "chart-tooltip-bg": p.tooltipBg, "chart-tooltip-border": p.tooltipBorder,
+    // Data-viz — 专注 = signal, 历史/对照 = steel, 分心 = drift (§2.2)
+    "chart-1": p.signal,
+    "chart-2": p.drift,
+    "chart-3": p.steel,
+    "chart-4": p.types[3],
+    "chart-5": p.types[1],
+    "chart-6": p.dim,
+    "chart-pos": p.signal, "chart-pos-soft": mix(p.signal, 24),
+    "chart-neg": p.drift, "chart-neg-soft": mix(p.drift, 24),
+    "chart-grid": p.line, "chart-axis": p.dim, "chart-track": p.line,
+    "chart-tooltip-bg": p.surface, "chart-tooltip-border": p.lineStrong,
 
-    // Procrastination types — fixed slot order across every surface
+    // Procrastination types — fixed slot order.
     "type-task_aversion": p.types[0], "type-impulsivity": p.types[1],
     "type-decisional": p.types[2], "type-perfectionism": p.types[3],
     "type-emotional_regulation": p.types[4],
 
-    // Elevation tuned per theme (a 0.42 black shadow is invisible on #040b14)
-    "shadow-1": `0 1px 2px rgb(0 0 0 / ${(s * 0.5).toFixed(2)})`,
-    "shadow-2": `0 8px 24px rgb(0 0 0 / ${(s * 0.85).toFixed(2)})`,
-    "shadow-focus": `0 0 0 2px color-mix(in srgb, ${p.brand} 45%, transparent)`,
-    // The one permitted flourish: a 1px top highlight, not a glow.
-    "card-highlight": `inset 0 1px 0 rgb(255 255 255 / ${light ? 0.7 : 0.06})`,
+    // No shadows anywhere (§2.5): hierarchy is value + hairline.
+    "shadow-1": "none",
+    "shadow-2": "none",
+    "shadow-focus": `0 0 0 2px ${p.signal}`,
+    "card-highlight": "none",
 
     "mf-select-arrow": `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='${p.text}' stroke-width='1.6'/></svg>`)}")`,
   };
-  Object.assign(variables, { "mf-green": variables["color-success"], "mf-yellow": variables["color-warning"], "mf-orange": variables["color-warning"], "mf-cyan": variables["color-info"], "mf-red": variables["color-danger"] });
+  Object.assign(variables, { "mf-green": p.ok, "mf-yellow": p.drift, "mf-orange": p.drift, "mf-cyan": p.signal, "mf-red": p.alarm });
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = light ? "light" : "dark";
   Object.entries(variables).forEach(([key, value]) => document.documentElement.style.setProperty(`--${key}`, value));
+  syncThemeColor(p.bg);
 }
 
 export function readTheme(): ThemeId {

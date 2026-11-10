@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { setupExplainable } from "./fixtures/theme-api";
+import { setupExplainable, setupReviewShotsRealistic } from "./fixtures/theme-api";
 
 /**
  * Review captures for the mid-term aesthetic sign-off.
@@ -75,12 +75,12 @@ async function fullPageShot(page: Page, name: string) {
   await restoreScrollContainer(page);
 }
 
-/** Prepare each page so its evidence is rendered before we photograph it. */
+/** The dashboard is photographed with the evidence COLLAPSED (F8) — that is the
+ *  state a user lands on — so this only waits for the hero reading. */
 async function prepareDashboard(page: Page) {
-  const card = page.locator(".d-extra-card", { hasText: "ML 专注预测" });
-  await expect(card).toBeVisible();
-  await card.getByText("为什么这样判断", { exact: true }).click();
-  await expect(card.locator("figure.mf-chart")).toBeVisible();
+  await expect(page.locator(".dash-hero")).toBeVisible();
+  await expect(page.locator(".dash-hero .hero-num")).toBeVisible();
+  await expect(page.locator(".dash-hero .sig-disclosure-trigger")).toHaveAttribute("aria-expanded", "false");
 }
 
 async function prepareAnalytics(page: Page) {
@@ -100,16 +100,23 @@ async function prepareIntervention(page: Page) {
 }
 
 const PAGES = [
-  { key: "dashboard", path: "/", prepare: prepareDashboard },
-  { key: "analytics", path: "/analytics", prepare: prepareAnalytics },
-  { key: "panel", path: "/panel", prepare: preparePanel },
-  { key: "intervention", path: "/intervention", prepare: prepareIntervention },
+  { key: "dashboard", path: "/", prepare: prepareDashboard, fixture: "realistic" },
+  { key: "analytics", path: "/analytics", prepare: prepareAnalytics, fixture: "explainable" },
+  { key: "panel", path: "/panel", prepare: preparePanel, fixture: "explainable" },
+  { key: "intervention", path: "/intervention", prepare: prepareIntervention, fixture: "explainable" },
 ] as const;
+
+/** The dashboard gets the realistic series (F7); every other page keeps the
+ *  fixture it was reviewed against (F8: regenerate, do not re-stage). */
+async function installFixture(page: Page, fixture: "realistic" | "explainable") {
+  if (fixture === "realistic") await setupReviewShotsRealistic(page);
+  else await setupExplainable(page);
+}
 
 for (const theme of ["navy", "white"] as const) {
   for (const target of PAGES) {
     test(`${target.key} full page at 1440 in the ${theme} theme`, async ({ page }) => {
-      await setupExplainable(page);
+      await installFixture(page, target.fixture);
       await page.setViewportSize(WIDE);
       await open(page, target.path, theme);
       await target.prepare(page);
@@ -125,7 +132,7 @@ for (const theme of ["navy", "white"] as const) {
 
 for (const target of PAGES.filter(p => p.key === "dashboard" || p.key === "intervention")) {
   test(`${target.key} full page at 375 in the navy theme`, async ({ page }) => {
-    await setupExplainable(page);
+    await installFixture(page, target.fixture);
     await page.setViewportSize(NARROW);
     await open(page, target.path, "navy");
     await target.prepare(page);
@@ -141,13 +148,57 @@ for (const target of PAGES.filter(p => p.key === "dashboard" || p.key === "inter
   });
 }
 
-test("contribution bar close-up", async ({ page }) => {
-  await setupExplainable(page);
+/** The signature block: reading, band word, activity line and signal track,
+ *  with the evidence collapsed — the state a user sees on arrival. */
+test("hero close-up", async ({ page }) => {
+  await setupReviewShotsRealistic(page);
   await page.setViewportSize(WIDE);
   await open(page, "/", "navy");
-  await prepareDashboard(page);
+  const hero = page.locator(".dash-hero");
+  await expect(hero.locator(".hero-num")).toBeVisible();
+  await expect(page.locator(".dash-hero .sig-disclosure-trigger")).toHaveAttribute("aria-expanded", "false");
+  await hero.screenshot({ path: `${SHOTS}/dashboard-hero-navy.png` });
+});
 
-  const block = page.locator(".d-extra-card", { hasText: "ML 专注预测" }).locator("details.d-explain");
+/** Row 1 with the evidence open (F8): shows how 此刻 grows and 下一步 stops
+ *  stretching, cropped to the two-column grid rather than the whole viewport. */
+test("dashboard row 1 with evidence open", async ({ page }) => {
+  await setupReviewShotsRealistic(page);
+  await page.setViewportSize(WIDE);
+  await open(page, "/", "navy");
+  await expect(page.locator(".dash-hero")).toBeVisible();
+
+  const trigger = page.locator(".dash-hero .sig-disclosure-trigger");
+  await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".dash--evidence-open")).toHaveCount(1);
+  await expect(page.locator(".dash-hero figure.mf-chart")).toBeVisible();
+
+  // Crop to the first grid row: from the hero's top to the top of the strip,
+  // which is the first full-width element below the two columns.
+  const clip = await page.evaluate(() => {
+    const hero = document.querySelector(".dash-hero")!.getBoundingClientRect();
+    const strip = document.querySelector(".dash > .sig-metrics")!.getBoundingClientRect();
+    const left = Math.min(hero.left, document.querySelector(".dash-next")!.getBoundingClientRect().left);
+    const right = Math.max(hero.right, document.querySelector(".dash-next")!.getBoundingClientRect().right);
+    return {
+      x: Math.floor(left),
+      y: Math.floor(hero.top),
+      width: Math.ceil(right - left),
+      height: Math.ceil(strip.top - hero.top),
+    };
+  });
+  await page.screenshot({ path: `${SHOTS}/dashboard-evidence-open-1440-navy.png`, clip });
+});
+
+test("contribution bar close-up", async ({ page }) => {
+  await setupReviewShotsRealistic(page);
+  await page.setViewportSize(WIDE);
+  await open(page, "/", "navy");
+  await page.locator(".dash-hero .sig-disclosure-trigger").click();
+  await expect(page.locator(".dash-hero figure.mf-chart")).toBeVisible();
+
+  const block = page.locator(".dash-hero").locator("figure.mf-chart");
   await block.scrollIntoViewIfNeeded();
   await block.screenshot({ path: `${SHOTS}/closeup-contribution-bar-navy.png` });
 });

@@ -1,0 +1,85 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Intervention centre (spec §8.8).
+
+   Geometry for the two-column cards and the history row's column tracks lives
+   in layout-refinements.css; this sheet owns the type and the hairlines. No
+   box inside a card: history rows are separated by `border-top` alone.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.intervention-page .intervention-skip-reason {
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.intervention-page .intervention-latest-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.intervention-page .intervention-latest-message {
+  font-size: var(--fs-base);
+  color: var(--text);
+  line-height: var(--leading-normal);
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+
+.intervention-page .intervention-latest-time {
+  margin-left: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+/* History rows: a hairline separator, an 8px status dot, two columns of data. */
+.intervention-page .intervention-history-row {
+  display: flex;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.intervention-page .intervention-history-row:first-of-type { border-top: none; }
+.intervention-page .intervention-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex: 0 0 8px;
+}
+.intervention-page .intervention-dot--ok { background: var(--ok); }
+.intervention-page .intervention-dot--warn { background: var(--drift); }
+
+.intervention-page .intervention-history-title {
+  margin-top: 6px;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--text);
+}
+.intervention-page .intervention-history-message {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+.intervention-page .intervention-history-meta,
+.intervention-page .intervention-history-time {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.intervention-page .intervention-history-time { white-space: nowrap; }
+.intervention-page .intervention-empty {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  margin: 0;
+}
+
+/* Feedback editor: a hairline group inside the row, never a filled box. */
+.intervention-page .intervention-feedback-editor {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.intervention-page .intervention-feedback-select { margin-bottom: 8px; }
+.intervention-page .intervention-feedback-comment { margin-bottom: 8px; }

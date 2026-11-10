@@ -200,7 +200,7 @@ test.describe("Model Center", () => {
     await page.goto("/model-center");
     await expect(page.locator(".model-demo-notice")).toContainText("合成数据演示模型");
     await expect(page.locator(".model-demo-notice")).toContainText("未通过个人模型质量门");
-    await page.getByRole("tab", { name: "模型状态", exact: true }).click();
+    await page.getByRole("button", { name: "模型状态", exact: true }).click();
     await expect(page.getByText("演示版本", { exact: true })).toBeVisible();
     await expect(page.getByText("demo_v4", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("激活版本", { exact: true })).toHaveCount(0);
@@ -213,7 +213,9 @@ test.describe("Model Center", () => {
     await page.goto("/model-center", { waitUntil: "networkidle" });
     await expect(page.locator(".mf-header-name")).toContainText("模型中心");
 
-    const tabs = page.locator('[role="tab"]');
+    // Spec §8.12: the section switcher is a Segmented group of toggle
+    // buttons, so each tab is a button with aria-pressed, not a tab role.
+    const tabs = page.locator(".sig-seg-item");
     await expect(tabs).toHaveCount(4);
     await expect(tabs.nth(0)).toContainText("数据准备");
     await expect(tabs.nth(1)).toContainText("个人基线");
@@ -272,7 +274,7 @@ test.describe("Model Center", () => {
     await expect(page.locator("text=阻塞项（2）")).toBeVisible({ timeout: 10_000 });
 
     // Switch to training tab
-    await page.locator('[role="tab"]').nth(2).click();
+    await page.locator(".sig-seg-item").nth(2).click();
     // Wait for training tab content to render
     await expect(page.locator("button").filter({ hasText: "开始训练" })).toBeVisible({ timeout: 5000 });
 
@@ -293,7 +295,7 @@ test.describe("Model Center", () => {
     await page.goto("/model-center", { waitUntil: "networkidle" });
 
     // Switch to training tab
-    await page.locator('[role="tab"]').nth(2).click();
+    await page.locator(".sig-seg-item").nth(2).click();
     await expect(page.locator("button").filter({ hasText: "开始训练" })).toBeVisible({ timeout: 5000 });
 
     const startBtn = page.locator("button").filter({ hasText: "开始训练" });
@@ -337,7 +339,7 @@ test.describe("Model Center", () => {
     await page.goto("/model-center", { waitUntil: "networkidle" });
 
     // Switch to training tab
-    await page.locator('[role="tab"]').nth(2).click();
+    await page.locator(".sig-seg-item").nth(2).click();
     await expect(page.locator("button").filter({ hasText: "开始训练" })).toBeVisible({ timeout: 5000 });
 
     // The job id from readiness should appear without clicking start
@@ -363,7 +365,7 @@ test.describe("Model Center", () => {
     await page.goto("/model-center", { waitUntil: "networkidle" });
 
     // Switch to training tab and start job
-    await page.locator('[role="tab"]').nth(2).click();
+    await page.locator(".sig-seg-item").nth(2).click();
     await expect(page.locator("button").filter({ hasText: "开始训练" })).toBeVisible({ timeout: 5000 });
 
     await page.locator("button").filter({ hasText: "开始训练" }).click();
@@ -390,14 +392,18 @@ test.describe("Model Center", () => {
     await page.goto("/model-center", { waitUntil: "networkidle" });
 
     // Switch to training tab, start job
-    await page.locator('[role="tab"]').nth(2).click();
+    await page.locator(".sig-seg-item").nth(2).click();
     await expect(page.locator("button").filter({ hasText: "开始训练" })).toBeVisible({ timeout: 5000 });
 
     await page.locator("button").filter({ hasText: "开始训练" }).click();
 
-    // aria-live region should appear
-    await expect(page.locator('[aria-live="polite"]')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('[aria-live="polite"]')).toContainText("正在监控训练进度");
+    // The polling notice appears inside a polite live region. Scoped to the
+    // notice itself: spec §3.11.4 also puts aria-live="polite" on the global
+    // Toaster host, so an unscoped `[aria-live="polite"]` would match two
+    // elements and trip strict mode. Same assertion, same text.
+    const pollingNotice = page.locator('[aria-live="polite"]', { hasText: "正在监控训练进度" });
+    await expect(pollingNotice).toBeVisible({ timeout: 5000 });
+    await expect(pollingNotice).toContainText("正在监控训练进度");
   });
 
   test("invalid URL renders not-found page", async ({ page }) => {
@@ -414,7 +420,7 @@ test.describe("Model Center", () => {
     await setupPage(page);
     await page.goto("/model-center", { waitUntil: "networkidle" });
 
-    const firstTab = page.locator('[role="tab"]').first();
+    const firstTab = page.locator(".sig-seg-item").first();
     await firstTab.focus();
 
     // After focus via script, the computed outline style should be non-none

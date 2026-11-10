@@ -5,34 +5,28 @@ import type { DailyReport, WeeklyReport } from "../report-state";
 import { toDailyReportView, toWeeklyReportView, formatMinutes, dayLabel } from "../report-view";
 import { toThreeHourBuckets } from "../report-buckets";
 import { localDateStr, mondayOf } from "../date-utils";
+import Surface from "../components/signal/Surface";
+import SectionHeader from "../components/signal/SectionHeader";
+import MetricStrip from "../components/signal/MetricStrip";
+import type { MetricItem } from "../components/signal/MetricStrip";
+import Segmented from "../components/signal/Segmented";
+import BarChart from "../components/charts/BarChart";
 import "./reports.css";
 
 type Tab = "daily" | "weekly";
-
-const DAILY_STATE_ICONS = ["icon-shizhong", "icon-yanjing", "icon-zhuanzhu", "icon-fenshuxian"];
 
 function todayStr(): string {
   return localDateStr();
 }
 
-interface ReportStat {
-  title: string;
-  content: string;
-  icon: string;
-}
-
-/** Reference always draws four metric cards; when the report is not ready we
+/** Reference always draws four metric cells; when the report is not ready we
  *  keep the row (so the layout matches) but show `—` instead of inventing
  *  numbers, and the state card text below explains why. */
-function placeholderStats(tab: Tab): ReportStat[] {
-  const titles = tab === "daily"
-    ? ["总专注时长", "专注次数", "分心次数", "专注评分"]
-    : ["总专注时长", "总专注次数", "总分心次数", "日均评分"];
-  return DAILY_STATE_ICONS.map((icon, index) => ({
-    title: titles[index],
-    content: "—",
-    icon,
-  }));
+function placeholderStats(tab: Tab): MetricItem[] {
+  const labels = tab === "daily"
+    ? ["总专注时长", "会话次数", "分心次数", "专注评分"]
+    : ["日均专注时长", "有记录天数", "总分心次数", "日均评分"];
+  return labels.map((label, index) => ({ key: `metric-${index}`, label, value: "—" }));
 }
 
 export default function Reports() {
@@ -109,29 +103,55 @@ export default function Reports() {
   const buckets = dailyView?.hourlyChart
     ? toThreeHourBuckets(Object.fromEntries(dailyView.hourlyChart.bars.map((b) => [String(b.hour), b.minutes])))
     : [];
-  const maxBucket = Math.max(1, ...buckets.map((b) => b.minutes));
 
-  const dailyStats: ReportStat[] | null = dailyView?.kpis
-    ? [
-        { title: "总专注时长", content: dailyView.kpis.totalFocusMinutes, icon: DAILY_STATE_ICONS[0] },
-        { title: "专注次数", content: `${dailyView.kpis.totalSessions} 次`, icon: DAILY_STATE_ICONS[1] },
-        { title: "分心次数", content: dailyView.kpis.totalDistractions, icon: DAILY_STATE_ICONS[2] },
-        { title: "专注评分", content: dailyView.kpis.focusScore, icon: DAILY_STATE_ICONS[3] },
-      ]
-    : null;
-
-  const weeklyStats: ReportStat[] | null = weeklyView?.kpis
-    ? [
-        { title: "总专注时长", content: weeklyView.kpis.totalFocusMinutes, icon: DAILY_STATE_ICONS[0] },
-        { title: "总专注次数", content: `${weeklyView.kpis.totalSessions} 次`, icon: DAILY_STATE_ICONS[1] },
-        { title: "总分心次数", content: weeklyView.kpis.totalDistractions, icon: DAILY_STATE_ICONS[2] },
-        { title: "日均评分", content: weeklyView.kpis.avgFocusScore, icon: DAILY_STATE_ICONS[3] },
-      ]
-    : null;
-
-  const stats = tab === "daily"
-    ? (dailyStats ?? placeholderStats(tab))
-    : (weeklyStats ?? placeholderStats(tab));
+  let stats: MetricItem[];
+  if (tab === "daily") {
+    stats = daily?.data_state === "ready" && dailyView?.kpis
+      ? [
+          { key: "focus", label: "总专注时长", value: String(Math.round(daily.total_focus_minutes)), unit: "分钟" },
+          {
+            key: "sessions",
+            label: "会话次数",
+            value: dailyView.kpis.totalSessions,
+            unit: "次",
+            help: { what: "一段连续使用电脑 5 分钟以上的时间叫一次会话，不管专注还是分心都算。" },
+          },
+          { key: "distractions", label: "分心次数", value: dailyView.kpis.totalDistractions, unit: "次" },
+          {
+            key: "score",
+            label: "专注评分",
+            value: dailyView.kpis.focusScore,
+            help: { what: "根据这一天所有使用记录打的分，满分 100：主要软件占比越高、来回切换越少，分越高。" },
+          },
+        ]
+      : placeholderStats("daily");
+  } else {
+    stats = weekly?.data_state === "ready" && weeklyView?.kpis
+      ? [
+          {
+            key: "focus",
+            label: "日均专注时长",
+            // Backend already sends the per-active-day average here
+            // (report_service.py: total_focus_minutes = avg_focus).
+            value: String(Math.round(weekly.total_focus_minutes)),
+            unit: "分钟",
+          },
+          {
+            key: "sessions",
+            label: "有记录天数",
+            value: String(weekly.daily_summary.length),
+            unit: "天",
+          },
+          { key: "distractions", label: "总分心次数", value: weeklyView.kpis.totalDistractions, unit: "次" },
+          {
+            key: "score",
+            label: "日均评分",
+            value: weeklyView.kpis.avgFocusScore,
+            help: { what: "根据这一周所有使用记录打的分，满分 100：主要软件占比越高、来回切换越少，分越高。" },
+          },
+        ]
+      : placeholderStats("weekly");
+  }
 
   // Weekly reuses the daily layout: the reference has no weekly variant, so
   // the seven-day totals feed the same distribution block (plan: same layout
@@ -140,17 +160,17 @@ export default function Reports() {
     ? weeklyView.chart.bars.map((bar) => ({ hour: bar.dayLabel, minutes: Math.round(bar.focusMinutes) }))
     : [];
   const shownBuckets = tab === "daily" ? buckets : weeklyBuckets;
-  const shownMax = tab === "daily" ? maxBucket : Math.max(1, ...weeklyBuckets.map((b) => b.minutes));
 
   const loading = tab === "daily" ? dailyLoading : weeklyLoading;
   const error = tab === "daily" ? dailyErr : weeklyErr;
 
   const chartTitle = tab === "daily" ? "专注时段分布" : "每日专注时长";
   const detailTitle = tab === "daily" ? "应用使用" : "每日详情";
+  const insightTitle = tab === "daily" ? "今日洞察" : "本周洞察";
 
   // Non-ready states (no_activity / future / partial …) still owe the user an
-  // explanation; the contract's state card carries it into the reference's
-  // "今日洞察" block instead of being dropped with the KPIs.
+  // explanation; the contract's state card carries it into the "今日洞察"
+  // block instead of being dropped with the KPIs.
   const stateCard = tab === "daily" ? dailyView?.stateCard : weeklyView?.stateCard;
   const insight =
     tab === "daily"
@@ -164,35 +184,25 @@ export default function Reports() {
   return (
     <>
       <div className="reports">
-        <div className="top-buttom">
-          <button
-            type="button"
-            className={`daily-report${tab === "daily" ? " be-chose" : ""}`}
-            aria-pressed={tab === "daily"}
-            onClick={() => setTab("daily")}
-          >
-            日报
-          </button>
-          <button
-            type="button"
-            className={`weekly-report${tab === "weekly" ? " be-chose" : ""}`}
-            aria-pressed={tab === "weekly"}
-            onClick={() => setTab("weekly")}
-          >
-            周报
-          </button>
-        </div>
+        <p className="page-lede">按日或按周汇总你的专注表现。</p>
 
-        <div className="report-datepicker mf-picker">
-          <NativeDateField label="选择日期" value={tab === "daily" ? dailyDate : weekStart} onChange={value => { if (tab === "daily") setDailyDate(value); else setWeekStart(mondayOf(new Date(`${value}T12:00:00`))); }} />
+        <div className="page-toolbar top-buttom">
+          <Segmented
+            ariaLabel="报告类型"
+            options={[{ value: "daily", label: "日报" }, { value: "weekly", label: "周报" }]}
+            value={tab}
+            onChange={(value) => setTab(value as Tab)}
+          />
+          <div className="report-datepicker mf-picker">
+            <NativeDateField label="选择日期" value={tab === "daily" ? dailyDate : weekStart} onChange={value => { if (tab === "daily") setDailyDate(value); else setWeekStart(mondayOf(new Date(`${value}T12:00:00`))); }} />
+          </div>
         </div>
 
         {error && (
           <div className="error-box report-error" role="alert">
             {error}
             <button
-              className="btn btn-sm"
-              style={{ marginLeft: 12 }}
+              className="btn btn-secondary btn-sm report-retry"
               onClick={() => (tab === "daily" ? loadDaily(dailyDate) : loadWeekly(weekStart))}
             >
               重试
@@ -200,56 +210,46 @@ export default function Reports() {
           </div>
         )}
 
-        {stats ? (
-          <div className="t-state">
-            {stats.map((item) => (
-              <div className="state-item" key={item.title}>
-                <div className="state-item-text">{item.title}</div>
-                <div className="state-item-number">{item.content}</div>
-                <div className="icon-box">
-                  <div className={`icon iconfont ${item.icon}`} aria-hidden="true" />
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="t-state" />
-        )}
+        <div className="t-state">
+          <MetricStrip label={tab === "daily" ? "当日" : "本周"} items={stats} />
+        </div>
 
-        <div className="zhuanzhudongcha">
-          <div className="zhuanzhudongcha-title">今日洞察</div>
+        <Surface as="section" className="zhuanzhudongcha">
+          <SectionHeader
+            title={insightTitle}
+            help={{ what: "根据固定规则自动写出的小结，不调用 AI。" }}
+          />
           {loading ? (
             <div className="spinner" />
           ) : (
             <div className="zhuanzhudongcha-text">
-              {insight ?? (loading ? "" : "暂无洞察：等待足够的专注数据后由规则引擎生成。")}
+              {insight ?? "暂无洞察：等待足够的专注数据后由规则引擎生成。"}
             </div>
           )}
-        </div>
+        </Surface>
 
-        <div className="chart-box">
-          <div className="title">{chartTitle}</div>
-          {shownBuckets.length === 0 && !loading ? (
-            <div className="report-empty" style={{ margin: "auto" }}>
-              暂无数据
-            </div>
-          ) : (
-            shownBuckets.map((item, index) => (
-              <div className="chart-box-item" key={`${item.hour}-${index}`}>
-                <div className="chart-box-item-during">{item.hour}</div>
-                <div
-                  className="chart-box-item-column"
-                  style={{ height: `${item.minutes > 0 ? Math.max(4, (item.minutes / shownMax) * 150) : 0}px` }}
-                >
-                  <div className="chart-box-item-number">{item.minutes}m</div>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+        <Surface as="section" className="chart-box">
+          <SectionHeader title={chartTitle} />
+          <BarChart
+            data={shownBuckets.map((bucket, index) => ({
+              key: `${bucket.hour}-${index}`,
+              // §8.19: `18:00~21:00` is too wide for a tick; the axis uses the
+              // short form and the tooltip keeps the exact range.
+              label: `${bucket.hour.replace(/:00/g, "").replace("~", "–")}点`,
+              value: bucket.minutes,
+              title: bucket.hour,
+            }))}
+            ariaLabel={chartTitle}
+            unit=" 分钟"
+            valueName="专注时长"
+            height={220}
+            colorFor={() => "var(--signal)"}
+            emptyMessage="暂无数据"
+          />
+        </Surface>
 
-        <div className="report-detail-list">
-          <div className="report-detail-title">{detailTitle}</div>
+        <Surface as="section" className="report-detail-list">
+          <SectionHeader title={detailTitle} />
           {tab === "daily" ? (
             dailyView && dailyView.topApps.length > 0 ? (
               <table className="simple-table">
@@ -269,7 +269,7 @@ export default function Reports() {
                 </tbody>
               </table>
             ) : (
-              <div className="report-empty">{loading ? "加载中..." : "暂无应用使用数据"}</div>
+              <div className="report-empty">{loading ? "加载中…" : "暂无应用使用数据"}</div>
             )
           ) : weeklyView && weeklyView.summary.length > 0 ? (
             <table className="weekly-detail-table">
@@ -297,21 +297,22 @@ export default function Reports() {
               </tbody>
             </table>
           ) : (
-            <div className="report-empty">{loading ? "加载中..." : "暂无每日详情"}</div>
+            <div className="report-empty">{loading ? "加载中…" : "暂无每日详情"}</div>
           )}
 
           {tab === "weekly" && weeklyView?.trend && weeklyView.trend.metrics.length > 0 && (
             <div className="trend-row">
               {weeklyView.trend.metrics.map((m) => (
-                <div className="trend-pill" key={m.label}>
-                  <div className="label">{m.label}</div>
-                  <div className={`value ${m.good ? "good" : "bad"}`}>{m.display}</div>
-                  <div className="sub">{m.sub}</div>
+                <div className="kv-row kv-row--text" key={m.label}>
+                  <span>{m.label}</span>
+                  <span className={m.good ? "trend-value--good" : "trend-value--bad"}>
+                    {m.display} · {m.sub}
+                  </span>
                 </div>
               ))}
             </div>
           )}
-        </div>
+        </Surface>
       </div>
     </>
   );

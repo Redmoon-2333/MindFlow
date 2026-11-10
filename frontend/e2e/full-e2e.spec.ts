@@ -14,7 +14,8 @@ async function devLogin(page: Page) {
   // `locator.isVisible()` does not wait, so right after navigation it reports
   // false while React is still mounting and the login card never gets
   // clicked — every later assertion then runs against the login screen.
-  const devBtn = page.locator("button", { hasText: "Dev 登录" });
+  // §8.17.3: the Dev login block renders only when import.meta.env.DEV.
+  const devBtn = page.getByRole("button", { name: /Dev 登录/ });
   const onLoginPage = await devBtn
     .waitFor({ state: "visible", timeout: 10000 })
     .then(() => true)
@@ -77,7 +78,8 @@ test.describe("MindFlow Full E2E", () => {
     await expect(title).toBeVisible();
 
     // Click dev login
-    const devBtn = page.locator("button", { hasText: "Dev 登录" });
+    // §8.17.3: the Dev login block renders only when import.meta.env.DEV.
+  const devBtn = page.getByRole("button", { name: /Dev 登录/ });
     await expect(devBtn).toBeVisible();
     await devBtn.click();
 
@@ -142,8 +144,8 @@ test.describe("MindFlow Full E2E", () => {
       await page.waitForTimeout(2000);
     }
 
-    // ── Verify KPI cards (reference layout: four metric cards) ──
-    const kpiCards = page.locator(".d-statistic-item");
+    // ── Verify KPI cells (spec §4.1.3: one 今天 strip, four cells) ──
+    const kpiCards = page.locator(".sig-metric");
     const kpiCount = await kpiCards.count();
     expect(kpiCount).toBeGreaterThanOrEqual(4);
   });
@@ -289,54 +291,42 @@ test.describe("MindFlow Full E2E", () => {
     await waitForLoad(page);
     await screenshot(page, "05-analytics-full");
 
-    // ── Tab: 模式分析 (default) ──
-    const patternTab = page.locator("button.tab", { hasText: "模式分析" });
-    if (await patternTab.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await patternTab.click();
-      await page.waitForTimeout(1500);
-    }
+    // ── Section: 模式分析 (first on the page) ──
+    await expect(page.getByRole("heading", { name: "模式分析", exact: true })).toBeVisible();
+    await page.waitForTimeout(1500);
 
-    // ── Day range selector (reference control: right-hand 时间范围) ──
-    const daySelect = page.locator(".time-box .time");
-    if (await daySelect.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await daySelect.selectOption({ label: "近30天" });
+    // ── Day range selector (spec §8.4.2: a Segmented group) ──
+    const dayRange = page.getByRole("group", { name: "时间范围" });
+    if (await dayRange.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await dayRange.getByRole("button", { name: "近 30 天", exact: true }).click();
       await page.waitForTimeout(2000);
       await screenshot(page, "05b-analytics-30days");
 
-      await daySelect.selectOption({ label: "近7天" });
+      await dayRange.getByRole("button", { name: "近 7 天", exact: true }).click();
       await page.waitForTimeout(1500);
     }
 
-    // ── Tab: 个人画像 ──
-    const profileTab = page.locator("button.tab", { hasText: "个人画像" });
-    if (await profileTab.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await profileTab.click();
-      await page.waitForTimeout(2000);
-      await screenshot(page, "05c-analytics-profile");
+    // ── Section: 个人画像 ──
+    await page.getByRole("heading", { name: "个人画像", exact: true }).scrollIntoViewIfNeeded();
+    await page.waitForTimeout(2000);
+    await screenshot(page, "05c-analytics-profile");
+
+    // ── Section: 拖延归因 ──
+    await page.getByRole("heading", { name: "拖延归因", exact: true }).scrollIntoViewIfNeeded();
+    await page.waitForTimeout(1500);
+
+    // Run attribution analysis
+    const runBtn = page.locator("button", { hasText: "运行归因分析" });
+    if (await runBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await runBtn.click();
+      await page.waitForTimeout(5000); // AI analysis takes time
+      await screenshot(page, "05d-analytics-attribution-result");
     }
 
-    // ── Tab: 拖延归因 ──
-    const attributionTab = page.locator("button.tab", { hasText: "拖延归因" });
-    if (await attributionTab.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await attributionTab.click();
-      await page.waitForTimeout(1500);
-
-      // Run attribution analysis
-      const runBtn = page.locator("button", { hasText: "运行归因分析" });
-      if (await runBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await runBtn.click();
-        await page.waitForTimeout(5000); // AI analysis takes time
-        await screenshot(page, "05d-analytics-attribution-result");
-      }
-    }
-
-    // ── Tab: 模型状态 ──
-    const modelTab = page.locator("button.tab", { hasText: "模型状态" });
-    if (await modelTab.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await modelTab.click();
-      await page.waitForTimeout(2000);
-      await screenshot(page, "05e-analytics-model-status");
-    }
+    // ── Section: 模型状态 (right card of 拖延归因) ──
+    await page.getByText("个人模型与云端 AI", { exact: true }).scrollIntoViewIfNeeded();
+    await page.waitForTimeout(2000);
+    await screenshot(page, "05e-analytics-model-status");
 
     // ── Error close ──
     const errorClose = page.locator(".error-box button", { hasText: "关闭" }).first();
@@ -411,7 +401,7 @@ test.describe("MindFlow Full E2E", () => {
     await screenshot(page, "07-reports-full");
 
     // ── Daily tab (default) ──
-    const dailyTab = page.locator("button.tab", { hasText: "日报" });
+    const dailyTab = page.getByRole("button", { name: "日报", exact: true });
     if (await dailyTab.isVisible({ timeout: 2000 }).catch(() => false)) {
       await dailyTab.click();
       await page.waitForTimeout(1500);
@@ -428,7 +418,7 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── Switch to weekly tab ──
-    const weeklyTab = page.locator("button.tab", { hasText: "周报" });
+    const weeklyTab = page.getByRole("button", { name: "周报", exact: true });
     if (await weeklyTab.isVisible({ timeout: 2000 }).catch(() => false)) {
       await weeklyTab.click();
       await page.waitForTimeout(2000);
@@ -501,9 +491,11 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── 8e. Autonomy control ──
-    const autonomyInput = page.locator("input[type='number']").first();
+    // §8.22.5c: the pause duration is a fixed <select>, not a free number —
+    // the reader should never have to invent a valid value.
+    const autonomyInput = page.getByLabel("暂停自主干预小时数");
     if (await autonomyInput.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await autonomyInput.fill("2");
+      await autonomyInput.selectOption("2");
       await page.waitForTimeout(500);
     }
     const pauseBtn = page.locator("button", { hasText: /暂停|恢复自主/ }).first();
@@ -533,9 +525,10 @@ test.describe("MindFlow Full E2E", () => {
     const processInput = page.locator("input[placeholder='进程名']");
     if (await processInput.isVisible({ timeout: 2000 }).catch(() => false)) {
       await processInput.fill("test_process_e2e");
-      const titleInput = page.locator("input[placeholder='窗口标题模式']");
+      await page.getByText("更多条件（可选）", { exact: true }).click();
+      const titleInput = page.getByLabel("窗口标题包含", { exact: true });
       if (await titleInput.isVisible({ timeout: 1000 }).catch(() => false)) {
-        await titleInput.fill("Test Window*");
+        await titleInput.fill("Test Window");
       }
       const categorySelect = page.getByLabel("分类", { exact: true });
       if (await categorySelect.isVisible({ timeout: 1000 }).catch(() => false)) {
@@ -552,16 +545,17 @@ test.describe("MindFlow Full E2E", () => {
     // ── 8h. Delete the rule we just added ──
     const deleteBtn = page.locator("button", { hasText: "删除" }).first();
     if (await deleteBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      page.once("dialog", (dialog) => dialog.accept());
       await deleteBtn.click();
       await page.waitForTimeout(2000);
       await screenshot(page, "08g-settings-rule-deleted");
     }
 
     // ── 8i. Data export ──
-    await page.getByRole("button", { name: "数据与偏好", exact: true }).click();
+    await page.getByRole("button", { name: "数据导出", exact: true }).click();
     const exportSelect = page.locator("select").first();
     // Find the export format select
-    const exportFmtSelect = page.locator("select").filter({ hasText: "CSV" });
+    const exportFmtSelect = page.locator("select").filter({ hasText: "CSV（可用 Excel 打开）" });
     if (await exportFmtSelect.isVisible({ timeout: 2000 }).catch(() => false)) {
       await exportFmtSelect.selectOption("json");
       await page.waitForTimeout(500);
@@ -574,25 +568,9 @@ test.describe("MindFlow Full E2E", () => {
       await page.waitForTimeout(3000);
       await screenshot(page, "08h-settings-export");
     }
-
-    // ── 8j. Preferences PUT ──
-    await page.getByText("高级偏好设置 · JSON 编辑", { exact: true }).click();
-    const prefTextarea = page.locator("textarea").last();
-    if (await prefTextarea.isVisible({ timeout: 2000 }).catch(() => false)) {
-      const putBtn = page.locator("button", { hasText: /完整保存/ });
-      if (await putBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-        await putBtn.click();
-        await page.waitForTimeout(2000);
-        await screenshot(page, "08i-settings-prefs-put");
-      }
-
-      // PATCH
-      const patchBtn = page.locator("button", { hasText: /局部更新/ });
-      if (await patchBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-        await patchBtn.click();
-        await page.waitForTimeout(2000);
-      }
-    }
+    // ── 8j. No hand-written JSON for end users (§8.16.1) ──
+    await expect(page.getByText("高级偏好设置")).toHaveCount(0);
+    await expect(page.getByLabel("偏好设置 JSON")).toHaveCount(0);
 
     // ── 8k. Clear telemetry buttons ──
     await page.getByRole("button", { name: "采集与隐私", exact: true }).click();
@@ -618,7 +596,7 @@ test.describe("MindFlow Full E2E", () => {
     await screenshot(page, "09-model-center-full");
 
     // ── Tab: 数据准备 (default) ──
-    const dataTab = page.locator("button.tab", { hasText: "数据准备" });
+    const dataTab = page.getByRole("button", { name: "数据准备", exact: true });
     if (await dataTab.isVisible({ timeout: 2000 }).catch(() => false)) {
       await dataTab.click();
       await page.waitForTimeout(2000);
@@ -630,7 +608,7 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── Tab: 个人基线 ──
-    const baselineTab = page.locator("button.tab", { hasText: "个人基线" });
+    const baselineTab = page.getByRole("button", { name: "个人基线", exact: true });
     if (await baselineTab.isVisible({ timeout: 2000 }).catch(() => false)) {
       await baselineTab.click();
       await page.waitForTimeout(2000);
@@ -638,7 +616,7 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── Tab: 模型训练 ──
-    const trainTab = page.locator("button.tab", { hasText: "模型训练" });
+    const trainTab = page.getByRole("button", { name: "模型训练", exact: true });
     if (await trainTab.isVisible({ timeout: 2000 }).catch(() => false)) {
       await trainTab.click();
       await page.waitForTimeout(2000);
@@ -664,7 +642,7 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── Tab: 模型状态 ──
-    const statusTab = page.locator("button.tab", { hasText: "模型状态" });
+    const statusTab = page.getByRole("button", { name: "模型状态", exact: true });
     if (await statusTab.isVisible({ timeout: 2000 }).catch(() => false)) {
       await statusTab.click();
       await page.waitForTimeout(2000);
@@ -684,8 +662,8 @@ test.describe("MindFlow Full E2E", () => {
     await waitForLoad(page);
     await screenshot(page, "10-diagnostics-full");
 
-    // ── Verify KPI cards ──
-    const kpiCards = page.locator(".stat-card");
+    // ── Verify the metric strip (one surface, four cells) ──
+    const kpiCards = page.locator(".sig-metric");
     const kpiCount = await kpiCards.count();
     expect(kpiCount).toBeGreaterThanOrEqual(4);
 
@@ -770,8 +748,8 @@ test.describe("MindFlow Full E2E", () => {
     await screenshot(page, "11d-intervention-all-triggered");
 
     // ── History tabs ──
-    for (const days of ["14天", "30天", "7天"]) {
-      const tab = page.locator("button.tab", { hasText: days });
+    for (const days of ["14 天", "30 天", "7 天"]) {
+      const tab = page.getByRole("button", { name: days, exact: true });
       if (await tab.isVisible({ timeout: 1500 }).catch(() => false)) {
         await tab.click();
         await page.waitForTimeout(1500);

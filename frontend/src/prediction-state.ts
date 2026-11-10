@@ -39,6 +39,37 @@ export const FOCUS_PREDICTION_STATUS_LABELS: Readonly<Record<FocusPredictionStat
 
 export const FOCUS_PREDICTION_UNKNOWN_LABEL = "未知状态";
 
+/* ── Focus band (spec §4.1.1) ──────────────────────────────────────────────
+ * The hero answers "how am I right now?" with a word, not only a number. The
+ * boundaries follow the backend's uncertainty sampling band: the feedback
+ * store asks the user to label a window when |p − 0.5| ≤ 0.15, i.e. inside
+ * [0.35, 0.65]. Inside that band the honest answer is "we are not sure", so
+ * that is exactly the band that reads `状态摇摆`.
+ */
+export type FocusBand = "focus" | "uncertain" | "drift";
+export const FOCUS_BAND_UPPER = 0.65;
+export const FOCUS_BAND_LOWER = 0.35;
+
+export function focusBand(probability: number): FocusBand {
+  if (probability >= FOCUS_BAND_UPPER) return "focus";
+  if (probability <= FOCUS_BAND_LOWER) return "drift";
+  return "uncertain";
+}
+
+export const FOCUS_BAND_LABELS: Readonly<Record<FocusBand, string>> = {
+  focus: "专注中",
+  uncertain: "状态摇摆",
+  drift: "分心中",
+};
+
+/** CSS colour token per band: the accent means focus and `drift` means drift;
+ *  the uncertain band stays neutral text rather than borrowing either. */
+export const FOCUS_BAND_COLORS: Readonly<Record<FocusBand, string>> = {
+  focus: "var(--signal)",
+  uncertain: "var(--text)",
+  drift: "var(--drift)",
+};
+
 export interface FocusPredictionReadyState {
   readonly status: "ready";
   /** Finite probability in [0, 1] — guaranteed by the boundary parser. */
@@ -114,6 +145,10 @@ export interface FocusPredictionView {
   /** "73.1%" for finite ready probability, otherwise "--". */
   readonly display: string;
   readonly statusLabel: string;
+  /** Canonical status, so a caller can pick copy per state instead of
+   *  printing the backend's internal `reason` (spec §8.21.4). `unknown`
+   *  covers an unrecognised or missing wire status. */
+  readonly status: FocusPredictionStatus | "unknown";
   readonly reason: string;
   readonly mode: string;
 }
@@ -130,6 +165,7 @@ export function toFocusPredictionView(state: FocusPredictionResponse): FocusPred
         ready: true,
         display: formatProbability(state.focus_probability),
         statusLabel: FOCUS_PREDICTION_STATUS_LABELS.ready,
+        status: "ready",
         reason: state.reason,
         mode: state.mode,
       };
@@ -143,6 +179,7 @@ export function toFocusPredictionView(state: FocusPredictionResponse): FocusPred
         ready: false,
         display: "--",
         statusLabel: FOCUS_PREDICTION_STATUS_LABELS[state.status],
+        status: state.status,
         reason: state.reason,
         mode: state.mode,
       };
@@ -152,6 +189,7 @@ export function toFocusPredictionView(state: FocusPredictionResponse): FocusPred
         ready: false,
         display: "--",
         statusLabel: FOCUS_PREDICTION_UNKNOWN_LABEL,
+        status: "unknown",
         reason: state.reason || `未知状态: ${state.raw_status}`,
         mode: state.mode,
       };

@@ -152,7 +152,7 @@ test("interrupted training is terminal and does not keep polling or offer cancel
     });
   });
   await page.goto("/model-center");
-  await page.getByRole("tab", { name: "模型训练", exact: true }).click();
+  await page.getByRole("button", { name: "模型训练", exact: true }).click();
   await expect(page.getByText("训练中", { exact: true })).toBeVisible();
   await page.clock.fastForward(3_001);
   await expect(page.getByText("已中断", { exact: true })).toBeVisible();

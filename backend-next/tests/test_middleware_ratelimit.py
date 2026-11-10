@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -163,6 +164,43 @@ def test_rate_limit_global_exhaustion():
     data = resp.json()
     assert data["type"] == "https://mindflow.app/errors/rate-limited"
     assert data["status"] == 429
+
+
+def test_rate_limit_default_global_capacity_is_300() -> None:
+    """The default global bucket must allow normal page-to-page navigation.
+
+    At the old 100/min default, the dashboard's polling plus a page's 5–15
+    requests on each navigation could exhaust the bucket, so the analytics
+    page showed "请求过于频繁" four times over (audit §8.21.1). Per-endpoint
+    buckets are unchanged and still protect the paid LLM routes.
+    """
+    app = FastAPI()
+
+    @app.get("/api/v1/bulk")
+    async def bulk():
+        return {"ok": True}
+
+    # Constructed with no rate-limit arguments: the defaults are under test.
+    app.add_middleware(RateLimitMiddleware)
+    client = TestClient(app)
+
+    # Build the stack, then read the bucket the middleware actually created.
+    client.get("/api/v1/bulk")
+    middleware: RateLimitMiddleware | None = None
+    node: Any = app.middleware_stack
+    while node is not None and middleware is None:
+        if isinstance(node, RateLimitMiddleware):
+            middleware = node
+        node = getattr(node, "app", None)
+    assert middleware is not None, "RateLimitMiddleware missing from the stack"
+    assert middleware._global_bucket._capacity == pytest.approx(300.0)
+    assert middleware._global_bucket._refill_rate == pytest.approx(300.0 / 60.0)
+
+    # 150 consecutive requests on a route with no per-endpoint bucket must all
+    # pass: the old default (100) would have rejected the last 50.
+    for index in range(150):
+        resp = client.get("/api/v1/bulk")
+        assert resp.status_code == 200, f"request {index + 1} was rate limited"
 
 
 class TestAuthBeforeRateLimit:

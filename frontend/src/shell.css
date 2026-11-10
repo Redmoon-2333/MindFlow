@@ -1,66 +1,27 @@
 /* ──────────────────────────────────────────────────────────────────────────
-   MindFlow shell — 1:1 migration of the reference design language
-   (yigu9181/MindFlow @ ae248cf: pages/DashBoard/DB.scss + index.css).
+   MindFlow shell (spec §4.0).
 
-   Scope is limited to the app frame: page background, sidebar, top bar,
-   logout dialog and the ambient glow. Page-level rules live in each page's
-   own stylesheet so nothing here leaks into them.
+   The frame is deliberately quiet: a flat `--bg` sidebar separated from the
+   content by one hairline, and a 56px top bar that carries the page title, the
+   date and the single system-status capsule. There is no glass, no shadow and
+   no gradient — hierarchy comes from value difference and 1px rules.
+
+   Page-level rules live in each page's own stylesheet so nothing here leaks
+   into them.
    ────────────────────────────────────────────────────────────────────────── */
 
 :root {
-  /* Reference palette (source-verified, not re-picked) */
-  --mf-bg-radial: #040b14;
-  --mf-login-radial: #040b14;
-  --mf-panel: rgba(100, 160, 255, 0.15);
-  --mf-panel-border: rgba(100, 160, 255, 0.3);
-  --mf-hairline: rgba(100, 160, 255, 0.08);
-  --mf-sidebar-bg: rgba(8, 18, 35, 0.85);
-  --mf-topbar-bg: rgba(8, 18, 35, 0.6);
-  --mf-text: #c8d6e5;
-  --mf-text-dim: #8aa4be;
-  --mf-text-icon: #6a89ad;
-  --mf-brand: #7dbcf8;
-  --mf-accent-line: rgba(100, 160, 255, 0.15);
-  --mf-green: #67d790;
-  --mf-yellow: #fbbf24;
-  --mf-orange: #f59e0b;
-  --mf-cyan: #06b6d4;
-  --mf-red: #ef4444;
-  --mf-sidebar-w: 250px;
-  --mf-topbar-h: 65px;
-  --mf-ease-slide: cubic-bezier(0.4, 0, 0.2, 1);
-
-  /* Shared primitives (buttons, tables, badges) keep the reference palette.
-     The old light-theme values are deliberately gone: mixing them with the
-     reference shell produced the "two themes in one page" artefact. */
-  --color-primary: #3a8fd9;
-  --color-primary-hover: #1a6dd4;
-  --color-primary-light: rgba(100, 160, 255, 0.15);
-  --color-bg: #040b14;
-  --color-bg-elevated: rgba(100, 160, 255, 0.15);
-  --color-bg-inset: rgba(100, 160, 255, 0.04);
-  --color-border: rgba(100, 160, 255, 0.3);
-  --color-text-primary: #c8d6e5;
-  --color-text-secondary: #8aa4be;
-  --color-text-tertiary: #6a89ad;
-  --color-success: #67d790;
-  --color-warning: #f59e0b;
-  --color-danger: #f78181;
-  --color-info: #06b6d4;
-  --sidebar-w: var(--mf-sidebar-w);
-  /* One stack for the whole app (see --font-ui in theme.css). */
-  font-family: var(--font-ui);
-  font-size: 16px;
-  color: var(--mf-text);
-  background: #040b14;
+  /* Top bar height. Pages that size themselves against the frame read this
+     instead of hardcoding the old 65px. */
+  --mf-topbar-h: 56px;
 }
 
 /* ── Page frame ─────────────────────────────────────────────────────────── */
 .mf-body {
   width: 100%;
   height: 100vh;
-  background: var(--mf-bg-radial);
-  color: var(--mf-text);
+  background: var(--bg);
+  color: var(--text);
   font-family: var(--font-ui);
   overflow: hidden;
   position: relative;
@@ -73,7 +34,7 @@
   width: 60vw;
   height: 60vh;
   /* Ambient glow removed with the "calm instrument panel" direction: the
-     backdrop stays a single flat surface, hierarchy comes from spacing. */
+     backdrop stays a single flat surface. */
   background: none;
   pointer-events: none;
   z-index: 0;
@@ -84,66 +45,44 @@
   position: absolute;
   top: 0;
   left: 0;
-  width: var(--mf-sidebar-w);
+  width: var(--sidebar-w);
   height: 100vh;
-  background: var(--mf-sidebar-bg);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  border-right: 1px solid color-mix(in srgb, var(--mf-brand) 10%, transparent);
-  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
-  transition: transform 0.5s var(--mf-ease-slide);
+  padding: 20px 12px;
+  background: var(--bg);
+  border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
+  transition: transform 200ms ease-out;
   z-index: 10;
 }
 .mf-navbar.mf-navbar--collapsed {
-  transform: translateX(-250px);
+  transform: translateX(calc(-1 * var(--sidebar-w)));
 }
 .mf-navbar--blur {
   filter: blur(2px);
 }
 
 .mf-logo {
-  width: var(--mf-sidebar-w);
-  height: 90px;
   display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 8px;
+  margin-bottom: 24px;
   flex-shrink: 0;
-  position: relative;
-}
-.mf-logo-img {
-  position: absolute;
-  width: 40px;
-  height: 40px;
-  margin: 20px 0 0 20px;
-  text-align: center;
-  border-radius: 25%;
-  border: #3a8fd9 solid 1.4px;
-  box-shadow: 0 0 8px rgba(58, 143, 217, 0.3);
-}
-.mf-logo-title {
-  position: absolute;
-  left: 80px;
-  width: 140px;
-  height: 40px;
-  text-align: left;
-  padding-left: 15px;
-  border-left: 1px solid var(--mf-accent-line);
-  color: var(--mf-brand);
-  font-size: 22px;
-  font-weight: 700;
-  margin-top: 20px;
-  line-height: 40px;
-  letter-spacing: 1px;
-  transition: all 0.2s ease;
   text-decoration: none;
 }
-.mf-logo-line {
-  position: absolute;
-  background: color-mix(in srgb, var(--mf-brand) 22%, transparent);
-  left: 20px;
-  top: 80px;
-  width: 210px;
-  height: 1px;
+.mf-logo-img {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: var(--radius-sm);
+}
+.mf-logo-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--text);
 }
 
 .mf-nav-items {
@@ -151,102 +90,96 @@
   width: 100%;
   display: flex;
   flex-direction: column;
-  padding-top: 10px;
+  gap: 2px;
   overflow-y: auto;
   overflow-x: hidden;
 }
 
 .mf-nav-item {
   position: relative;
-  width: 90%;
-  height: 48px;
-  margin-top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  line-height: 48px;
-  text-align: left;
-  padding-left: 28px;
-  color: var(--mf-text-dim);
-  font-size: 15px;
-  font-weight: 500;
-  cursor: pointer;
   display: flex;
   align-items: center;
-  border-radius: var(--radius-md);
-  border: 1px solid transparent;
-  transition: all 0.2s ease;
+  gap: 12px;
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-base);
+  font-weight: 400;
+  text-align: left;
   text-decoration: none;
   white-space: nowrap;
   background: transparent;
+  border: none;
   font-family: inherit;
+  cursor: pointer;
+  transition: color 150ms ease-out, background-color 150ms ease-out;
 }
-.mf-nav-item .iconfont {
-  font-size: 20px;
-  margin-right: 14px;
-  color: var(--mf-text-icon);
-  transition: color 0.2s;
+.mf-nav-item svg { flex: 0 0 18px; }
+/* The wrapper is the colour carrier (nav / hover / active), the SVG the
+   glyph; inline-flex keeps an 18px icon from adding baseline leading. */
+.mf-nav-icon { display: inline-flex; align-items: center; flex: 0 0 auto; }
+.mf-nav-item .mf-nav-icon {
+  color: var(--text-dim);
+  transition: color 150ms ease-out;
 }
 .mf-nav-item:not(.mf-nav-item--active):hover {
-  color: var(--mf-text);
-  background: color-mix(in srgb, var(--mf-brand) 6%, transparent);
-  border-color: color-mix(in srgb, var(--mf-brand) 10%, transparent);
-  transform: translateX(-50%) translateY(-1px);
+  color: var(--text);
+  background: var(--surface-2);
 }
-.mf-nav-item:not(.mf-nav-item--active):hover .iconfont {
-  color: var(--mf-brand);
+.mf-nav-item:not(.mf-nav-item--active):hover .mf-nav-icon {
+  color: var(--text);
 }
 .mf-nav-item--active {
-  background: color-mix(in srgb, var(--mf-brand) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--mf-brand) 22%, transparent);
-  color: var(--mf-brand);
-  box-shadow: var(--shadow-1);
+  color: var(--text);
+  font-weight: 500;
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--signal);
 }
-.mf-nav-item--active .iconfont {
-  color: var(--mf-brand);
-}
-.mf-nav-item:not(.mf-nav-item--active):active {
-  transform: translateX(-50%) translateY(-1px) scale(0.98);
+.mf-nav-item--active .mf-nav-icon {
+  color: var(--signal);
 }
 
 /* Advanced entry — appended after the nine original items, collapsed by
    default and auto-expanded while an advanced route is active. */
 .mf-nav-group {
-  width: 90%;
-  margin: 14px auto 0;
-  border-top: 1px solid var(--mf-hairline);
-  padding-top: 10px;
+  margin-top: 16px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
 .mf-nav-group-toggle {
   width: 100%;
-  height: 40px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 14px;
+  padding: 0 12px;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  color: var(--mf-text-dim);
-  font-size: 14px;
-  font-weight: 600;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 16px;
   font-family: inherit;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 150ms ease-out, background-color 150ms ease-out;
 }
 .mf-nav-group-toggle:hover {
-  color: var(--mf-brand);
-  background: color-mix(in srgb, var(--mf-brand) 6%, transparent);
+  color: var(--text);
+  background: var(--surface-2);
 }
 .mf-nav-group-toggle:focus-visible,
 .mf-nav-item:focus-visible,
 .mf-icon-button:focus-visible,
 .mf-user:focus-visible {
-  outline: 2px solid var(--mf-brand);
+  outline: 2px solid var(--signal);
   outline-offset: -2px;
 }
 .mf-nav-group-chevron {
-  font-size: 12px;
-  transition: transform 0.2s ease;
+  font-size: var(--fs-xs);
+  transition: transform 200ms ease-out;
 }
 .mf-nav-group-chevron--open {
   transform: rotate(180deg);
@@ -254,64 +187,55 @@
 .mf-nav-group-list {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   margin-top: 4px;
 }
 
 .mf-user {
-  width: 90%;
-  position: relative;
-  left: 50%;
-  transform: translateX(-50%);
   flex-shrink: 0;
   margin-top: auto;
-  margin-bottom: 16px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  height: 48px;
-  color: var(--mf-text-dim);
-  font-size: 15px;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
   font-family: inherit;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
-  transition: all 0.2s ease;
-  border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--mf-brand) 8%, transparent);
-  background: color-mix(in srgb, var(--mf-brand) 4%, transparent);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition: color 150ms ease-out, background-color 150ms ease-out;
 }
 .mf-user-name {
-  width: 65%;
-  position: absolute;
-  left: 10%;
-  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .mf-user-icon {
-  position: absolute;
-  right: 10%;
-  font-size: 20px;
-  color: var(--mf-text-icon);
-  transition: color 0.2s;
+  color: var(--text-dim);
+  transition: color 150ms ease-out;
 }
 .mf-user:hover {
-  background: color-mix(in srgb, var(--mf-brand) 10%, transparent);
-  border-color: color-mix(in srgb, var(--mf-brand) 15%, transparent);
-  transform: translateX(-50%) translateY(-1px);
+  background: var(--surface-2);
+  color: var(--text);
 }
 .mf-user:hover .mf-user-icon {
-  color: var(--color-danger);
+  color: var(--text);
 }
 
 /* ── Content column ─────────────────────────────────────────────────────── */
 .mf-content {
   position: relative;
   top: 0;
-  left: var(--mf-sidebar-w);
+  left: var(--sidebar-w);
   height: 100vh;
-  width: calc(100vw - var(--mf-sidebar-w));
+  width: calc(100vw - var(--sidebar-w));
   background: transparent;
-  transition: left 0.5s var(--mf-ease-slide), width 0.5s var(--mf-ease-slide);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -323,50 +247,52 @@
 }
 
 .mf-header {
-  background: var(--mf-topbar-bg);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   height: var(--mf-topbar-h);
   width: 100%;
-  border-bottom: 1px solid var(--mf-hairline);
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  position: relative;
+  gap: 12px;
+  padding: 0 32px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
 }
 .mf-header-toggle {
-  position: absolute;
-  left: 22px;
-  font-size: 24px;
-  color: var(--mf-text-icon);
-  width: 38px;
-  height: 38px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
   display: flex;
   justify-content: center;
   align-items: center;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: all 0.2s;
-  margin-top: 2px;
+  padding: 0;
   background: transparent;
   border: none;
-  padding: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 150ms ease-out, background-color 150ms ease-out;
 }
 .mf-header-toggle:hover {
-  background: color-mix(in srgb, var(--mf-brand) 8%, transparent);
-  color: var(--mf-brand);
-}
-.mf-header-toggle .iconfont {
-  font-size: 24px;
+  background: var(--surface-2);
+  color: var(--text);
 }
 .mf-header-name {
-  position: absolute;
-  font-size: 20px;
+  font-size: var(--fs-md);
   font-weight: 600;
-  letter-spacing: 2px;
-  color: var(--mf-text);
-  left: 80px;
+  line-height: 24px;
+  color: var(--text);
+}
+.mf-header-date {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  margin-left: 4px;
+  white-space: nowrap;
+}
+.mf-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* Per-page scroll region: height 100vh − topbar, independent of the body. */
@@ -375,149 +301,134 @@
   overflow-y: auto;
   overflow-x: hidden;
   flex: 1;
+  padding: 32px 32px 48px;
 }
+/* One content column for every page: the frame owns the gutter, the page owns
+   its own composition. */
+.mf-main > * {
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
+}
+/* The skip link focuses <main> programmatically; keyboard users still need a
+   visible ring, so the suppression is paired with a :focus-visible rule
+   (spec §3.11). */
 .mf-main:focus {
   outline: none;
+}
+.mf-main:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
 }
 
 /* ── Logout dialog ──────────────────────────────────────────────────────── */
 .mf-modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  inset: 0;
+  background: color-mix(in srgb, #000 55%, transparent);
   display: flex;
   justify-content: center;
   align-items: center;
   z-index: 999;
 }
 .mf-dialog {
-  position: absolute;
-  background: rgba(12, 25, 45, 0.92);
-  border: 1px solid color-mix(in srgb, var(--mf-brand) 15%, transparent);
-  border-radius: var(--radius-lg);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   width: 400px;
-  height: 200px;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+  max-width: calc(100vw - 32px);
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
 }
 .mf-dialog-close {
   position: absolute;
-  top: 5%;
-  right: 3%;
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--mf-text-icon);
+  top: 12px;
+  right: 12px;
+  font-size: var(--fs-base);
+  color: var(--text-dim);
   cursor: pointer;
   height: 28px;
   width: 28px;
   display: flex;
   justify-content: center;
   align-items: center;
-  border-radius: 50%;
-  transition: all 0.2s;
+  padding: 0;
   background: transparent;
   border: none;
-  padding: 0;
+  border-radius: var(--radius-sm);
+  transition: color 150ms ease-out, background-color 150ms ease-out;
 }
-.mf-dialog-close .iconfont {
-  font-size: 14px;
-  line-height: 1;
-}
+.mf-dialog-close svg { width: 14px; height: 14px; }
 .mf-dialog-close:hover {
-  background: rgba(247, 129, 129, 0.15);
-  color: var(--color-danger);
+  background: var(--surface-2);
+  color: var(--text);
 }
 .mf-dialog-title {
-  position: absolute;
-  width: 80%;
-  height: 40%;
-  justify-content: center;
-  top: 20%;
-  font-size: 18px;
-  left: 50%;
-  text-align: center;
-  align-items: center;
-  transform: translateX(-50%);
-  color: var(--mf-text);
-  font-weight: 500;
-  margin: 0;
-  display: flex;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--text);
+  margin: 0 28px 0 0;
 }
 .mf-dialog-desc {
-  position: absolute;
-  left: 50%;
-  top: 55%;
-  transform: translateX(-50%);
-  width: 80%;
-  text-align: center;
-  font-size: 13px;
-  color: var(--mf-text-dim);
+  font-size: var(--fs-sm);
+  line-height: 20px;
+  color: var(--text-dim);
   margin: 0;
 }
 .mf-dialog-error {
-  position: absolute;
-  left: 10%;
-  right: 10%;
-  top: 70%;
-  font-size: 12px;
-  color: var(--color-danger);
-  background: rgba(247, 129, 129, 0.12);
-  border: 1px solid rgba(247, 129, 129, 0.35);
+  font-size: var(--fs-xs);
+  color: var(--alarm);
+  background: var(--alarm-soft);
+  border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  text-align: center;
+  padding: 6px 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.mf-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
 .mf-dialog-yes,
 .mf-dialog-no {
-  transition: all 0.2s ease;
-  position: absolute;
-  display: flex;
+  height: 32px;
+  padding: 0 14px;
+  display: inline-flex;
   justify-content: center;
   align-items: center;
-  width: 37%;
-  height: 22%;
-  bottom: 12%;
-  font-size: 16px;
-  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
   font-family: inherit;
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition: color 150ms ease-out, background-color 150ms ease-out, border-color 150ms ease-out;
 }
 .mf-dialog-yes {
-  left: 10%;
-  background: var(--color-primary);
-  color: var(--color-on-primary);
-  font-weight: 600;
-  border: none;
+  background: var(--signal);
+  color: var(--on-signal);
+  font-weight: 500;
+  border: 1px solid transparent;
 }
 .mf-dialog-yes:hover:not(:disabled) {
-  opacity: 0.88;
-  box-shadow: 0 2px 12px rgba(58, 143, 217, 0.35);
+  background: var(--signal-hover);
 }
 .mf-dialog-no {
-  right: 10%;
-  border: 1px solid color-mix(in srgb, var(--mf-brand) 20%, transparent);
-  font-weight: 500;
-  color: var(--mf-text-dim);
-  background: color-mix(in srgb, var(--mf-brand) 4%, transparent);
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
 }
 .mf-dialog-no:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--mf-brand) 10%, transparent);
-  border-color: color-mix(in srgb, var(--mf-brand) 30%, transparent);
-  color: var(--mf-text-dim);
+  background: var(--surface-2);
 }
 .mf-dialog-yes:disabled,
 .mf-dialog-no:disabled {
-  opacity: 0.6;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -527,12 +438,12 @@
   left: -9999px;
   top: 8px;
   z-index: 1000;
-  background: rgba(12, 25, 45, 0.95);
-  color: var(--mf-brand);
-  border: 1px solid var(--mf-panel-border);
+  background: var(--surface);
+  color: var(--signal);
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   padding: 8px 14px;
-  font-size: 14px;
+  font-size: var(--fs-sm);
 }
 .mf-skip-link:focus {
   left: 8px;
@@ -542,24 +453,14 @@
   display: none;
 }
 
-/* ── Responsive: preserve the reference proportions down to 1440, then
-      convert fixed heights to min-heights, then collapse to a drawer. ──── */
-@media (max-width: 1439px) {
-  .mf-header-name {
-    left: 72px;
-    font-size: 18px;
-    letter-spacing: 1px;
-  }
-}
-
+/* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 1023px) {
   .mf-content {
     left: 0;
     width: 100vw;
   }
   .mf-navbar {
-    transform: translateX(-250px);
-    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.55);
+    transform: translateX(calc(-1 * var(--sidebar-w)));
   }
   .mf-navbar.mf-navbar--open {
     transform: translateX(0);
@@ -568,7 +469,7 @@
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.45);
+    background: color-mix(in srgb, #000 45%, transparent);
     border: none;
     padding: 0;
     margin: 0;
@@ -576,22 +477,20 @@
   }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 600px) {
+  .mf-header {
+    padding: 0 16px;
+  }
+  .mf-header-date {
+    display: none;
+  }
   .mf-main {
-    height: calc(100vh - var(--mf-topbar-h));
-  }
-  .mf-header-name {
-    left: 64px;
-    font-size: 16px;
-  }
-  .mf-dialog {
-    width: min(400px, calc(100vw - 32px));
+    padding: 16px 16px 32px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .mf-navbar,
-  .mf-content,
   .mf-nav-item,
   .mf-user {
     transition-duration: 0.01ms !important;

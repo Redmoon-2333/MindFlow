@@ -8,7 +8,17 @@ import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { chatRuntime, useChatState, type ChatMessage } from "../lib/chat-runtime";
+import HelpTip from "../components/signal/HelpTip";
 import "./chat.css";
+
+/** §8.17.2: tool identifiers are internal names; the reader gets the action. */
+const TOOL_LABELS: Record<string, string> = {
+  query_evidence: "查看行为记录",
+  get_latest_analysis: "读取最近的分析",
+  run_panel: "运行专家面板",
+  query_interventions: "查看提醒记录",
+  other: "其他工具",
+};
 
 export default function Chat() {
   const location = useLocation();
@@ -275,7 +285,7 @@ export default function Chat() {
       {error && (
         <div className="error-box mb16">
           {error}
-          <button className="btn btn-sm mt8" style={{ marginLeft: 12 }} onClick={() => setError(null)}>
+          <button className="btn btn-secondary btn-sm chat-error-close" onClick={() => setError(null)}>
             关闭
           </button>
         </div>
@@ -283,28 +293,19 @@ export default function Chat() {
 
       <div className="chat-layout">
         {/* Session Sidebar */}
-        <div
-          className="card chat-sessions"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-          }}
-        >
-          <button className="btn btn-sm mb16" style={{ width: "100%" }} onClick={() => handleNewChat()}>
+        <div className="card chat-sessions">
+          <button className="btn btn-secondary btn-sm chat-new" onClick={() => handleNewChat()}>
             新对话
           </button>
 
           {sessionsLoading && <div className="spinner" />}
 
           {!sessionsLoading && sessions.length === 0 && (
-            <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", textAlign: "center", padding: 16 }}>
-              暂无对话记录
-            </div>
+            <p className="chat-sessions-empty">暂无对话记录</p>
           )}
 
           {!sessionsLoading && sessions.length > 0 && (
-            <div style={{ flex: 1, overflowY: "auto" }}>
+            <div className="chat-session-list">
               {sessions.map((s) => (
                 <div key={s.session_id} className={`chat-session-item ${activeSessionId === s.session_id ? "is-active" : ""}`}>
                   <div className="chat-session-row">
@@ -345,29 +346,20 @@ export default function Chat() {
         </div>
 
         {/* Chat Main Area */}
-        <div className="card chat-main" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div className="card chat-main">
           {/* Message List */}
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 0" }} aria-live="polite">
+          <div className="chat-message-list" aria-live="polite">
             {messagesLoading && <div className="spinner" />}
 
             {!messagesLoading && messages.length === 0 && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  height: "100%",
-                  color: "var(--color-text-tertiary)",
-                  fontSize: 14,
-                }}
-              >
-                <div className="chat-starters"><p>{activeSessionId && !draftsRef.current.has(activeSessionId) ? "这个会话还没有消息" : "今天，想从哪里开始？"}</p>{(!activeSessionId || draftsRef.current.has(activeSessionId)) && ["帮我把当前任务拆成容易开始的小步骤", "如何减少工作时的分心？", "帮我回顾今天的专注情况"].map(question => <button key={question} type="button" className="btn btn-ghost" onClick={() => { setInput(question); textareaRef.current?.focus(); }}>{question}</button>)}</div>
+              <div className="chat-welcome">
+                <div className="chat-starters"><p>{activeSessionId && !draftsRef.current.has(activeSessionId) ? "这个会话还没有消息" : "今天，想从哪里开始？"}</p>{(!activeSessionId || draftsRef.current.has(activeSessionId)) && ["帮我把当前任务拆成容易开始的小步骤", "如何减少工作时的分心？", "帮我回顾今天的专注情况"].map(question => <button key={question} type="button" className="btn btn-secondary btn-sm" onClick={() => { setInput(question); textareaRef.current?.focus(); }}>{question}</button>)}</div>
               </div>
             )}
 
             {!messagesLoading &&
               messages.map((msg, idx) => (
-                <div key={msg.id ?? idx} style={{ marginBottom: 16 }}>
+                <div key={msg.id ?? idx} className="chat-message">
                   <div
                     className={`chat-bubble ${msg.role === "user" ? "chat-user" : "chat-ai"}`}
                   >
@@ -378,14 +370,20 @@ export default function Chat() {
                   </div>
 
                   {msg.role === "assistant" && (
-                    <div className="flex gap8" style={{ marginTop: 6, flexWrap: "wrap" }}>
+                    <div className="chat-message-meta">
                       {msg.degraded && (
-                        <span className="badge badge-warning">降级模式</span>
+                        <span className="badge badge-warning">
+                          降级模式
+                          <HelpTip
+                            term="降级模式"
+                            what="云端 AI 暂时不可用，这条回复由本机的简单规则生成。"
+                          />
+                        </span>
                       )}
                       {msg.tools_used && msg.tools_used.length > 0 &&
                         msg.tools_used.map((tool) => (
                           <span key={tool} className="badge badge-info">
-                            工具: {tool}
+                            AI 做了这些事：{TOOL_LABELS[tool] ?? TOOL_LABELS.other}
                           </span>
                         ))}
                       {Array.isArray(msg.evidence_cited) && msg.evidence_cited.map((ev, i) => (
@@ -398,7 +396,7 @@ export default function Chat() {
               ))}
 
             {loading && (
-              <div style={{ marginBottom: 16 }}>
+              <div className="chat-message">
                 <div className="chat-bubble chat-ai">
                   <span role="status">正在整理回复，请稍候…</span>
                 </div>
@@ -410,13 +408,7 @@ export default function Chat() {
 
           {typing && <div className="chat-typing-status"><span role="status">正在显示回复…</span><button className="btn btn-ghost btn-sm" onClick={() => revealAllRef.current?.()}>立即显示全文</button></div>}
           {/* Input Area */}
-          <div
-            className="flex gap8"
-            style={{
-              padding: "12px 0 0",
-              borderTop: "1px solid var(--color-border)",
-            }}
-          >
+          <div className="chat-composer">
             <textarea
               ref={textareaRef}
               aria-label="消息输入"
@@ -429,23 +421,17 @@ export default function Chat() {
               placeholder="输入消息，Enter 发送，Shift+Enter 换行"
               rows={1}
               disabled={loading || typing}
-              style={{
-                flex: 1,
-                resize: "none",
-                minHeight: 42,
-                maxHeight: 200,
-                lineHeight: 1.5,
-              }}
+              className="chat-input"
             />
             <button
-              className="btn"
+              className="btn btn-primary"
               onClick={handleSend}
               disabled={loading || typing || !input.trim()}
-              style={{ alignSelf: "flex-end", height: 42 }}
             >
               发送
             </button>
           </div>
+          <p className="chat-composer-hint">消息会发送给云端 AI 处理。</p>
         </div>
       </div>
       {sessionAction && createPortal(<div className="mf-modal-overlay">
@@ -453,8 +439,8 @@ export default function Chat() {
           <h2 id="chat-action-title">删除会话</h2>
           <p id="chat-delete-description">确定删除“{sessionAction.session.title || "这个会话"}”及全部聊天记录？删除后无法恢复。</p>
           {actionError && <p role="alert" className="error-box">{actionError}</p>}
-          <div className="chat-dialog-actions"><button className="btn btn-ghost" disabled={actionBusy} onClick={() => setSessionAction(null)}>取消</button>
-            <button className="btn" disabled={actionBusy} onClick={async () => {
+          <div className="chat-dialog-actions"><button className="btn btn-secondary" disabled={actionBusy} onClick={() => setSessionAction(null)}>取消</button>
+            <button className="btn btn-danger" disabled={actionBusy} onClick={async () => {
               setActionBusy(true); setActionError("");
               try {
                 const id = sessionAction.session.session_id;

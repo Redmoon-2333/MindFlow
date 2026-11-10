@@ -84,17 +84,21 @@ test.describe("Dashboard", () => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/`, { waitUntil: "networkidle" });
     await expect(page.locator(".mf-header-name")).toHaveText("仪表盘");
-    // Four status items + four metric cards (reference layout)
-    await expect(page.locator(".d-state-item")).toHaveCount(4, { timeout: 10000 });
-    await expect(page.locator(".d-statistic-item")).toHaveCount(4, { timeout: 10000 });
+    // Status is one capsule in the top bar; the four metrics are the strip.
+    await expect(page.locator(".sig-chip")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".sig-metric")).toHaveCount(4, { timeout: 10000 });
   });
 
   test("collector toggle button works", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/`, { waitUntil: "networkidle" });
-    await expect(page.locator(".d-state-item", { hasText: "采集器" })).toBeVisible({ timeout: 10000 });
+    // The collector moved into the status capsule's popover (§3.5).
+    await page.locator(".sig-chip").click();
+    const row = page.locator("#status-popover dd").filter({ hasText: "运行中" }).or(
+      page.locator("#status-popover dd").filter({ hasText: "已停止" }));
+    await expect(row).toBeVisible({ timeout: 10000 });
 
-    const toggleBtn = page.locator(".d-switch");
+    const toggleBtn = page.locator("#status-popover .btn");
     await expect(toggleBtn).toBeVisible({ timeout: 10000 });
     const originalText = await toggleBtn.textContent();
 
@@ -112,39 +116,36 @@ test.describe("Dashboard", () => {
 
     // Refresh and verify state persisted
     await page.reload({ waitUntil: "networkidle" });
-    await expect(page.locator(".d-state-item", { hasText: "采集器" })).toBeVisible({ timeout: 10000 });
-    const finalBtn = page.locator(".d-switch");
-    await expect(finalBtn).toBeVisible();
+    await page.locator(".sig-chip").click();
+    await expect(page.locator("#status-popover .btn")).toBeVisible({ timeout: 10000 });
   });
 
   test("autonomy pause and resume", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/`, { waitUntil: "networkidle" });
-    await expect(page.locator(".d-control-title")).toBeVisible({ timeout: 10000 });
+    // 自动提醒 lives in 下一步 (§4.1.2).
+    await expect(page.locator(".dash-next")).toBeVisible({ timeout: 10000 });
 
     // Check current state - handle already paused
-    const resumeBtn = page.locator(".d-control-restore");
-    const pauseBtn = page.locator(".d-control-submit");
+    const resumeBtn = page.getByRole("button", { name: "恢复提醒" });
+    const pauseBtn = page.getByRole("button", { name: "暂停 30 分钟" });
 
     // If already paused, resume first then pause again
-    if (await resumeBtn.isEnabled()) {
+    if (await resumeBtn.isVisible() && await resumeBtn.isEnabled()) {
       await resumeBtn.click();
       await page.waitForTimeout(2000);
     }
 
     // Now click pause
-    if (await pauseBtn.isEnabled()) {
+    if (await pauseBtn.isVisible() && await pauseBtn.isEnabled()) {
       await pauseBtn.click();
       await page.waitForTimeout(2000);
-      // Check for autonomy indicator (may be badge or text)
-      const paused = await page.locator("text=暂停中").or(page.locator(".d-control-module-jingao")).first().isVisible().catch(() => false);
-      // If paused indicator not found, that's ok - the button toggled
-      void paused;
+      await expect(page.getByText(/已暂停至/)).toBeVisible({ timeout: 10000 });
     }
 
     // Resume to restore state
-    const resumeBtn2 = page.locator(".d-control-restore");
-    if (await resumeBtn2.isEnabled()) {
+    const resumeBtn2 = page.getByRole("button", { name: "恢复提醒" });
+    if (await resumeBtn2.isVisible() && await resumeBtn2.isEnabled()) {
       await resumeBtn2.click();
       await page.waitForTimeout(2000);
     }
@@ -180,7 +181,7 @@ test.describe("Focus", () => {
     await page.waitForTimeout(2000);
 
     // Verify sessions loaded (should have multiple sessions)
-    await expect(page.locator(".f-conversation-title")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "专注会话", exact: true })).toBeVisible({ timeout: 10000 });
 
     // Click refresh button
     const refreshBtn = page.locator(".f-reset");
@@ -304,7 +305,7 @@ test.describe("Activities", () => {
     await page.goto(`${FRONTEND}/activities`, { waitUntil: "networkidle" });
     await page.waitForTimeout(2000);
 
-    const debugCheckbox = page.locator("input[type='checkbox']").filter({ hasText: "显示保留期内原始字段" });
+    const debugCheckbox = page.locator("#act-raw-toggle");
     if (await debugCheckbox.isVisible()) {
       await debugCheckbox.check();
       await page.waitForTimeout(500);
@@ -325,11 +326,10 @@ test.describe("Analytics", () => {
     await page.goto(`${FRONTEND}/analytics`, { waitUntil: "networkidle" });
     await expect(page.locator(".mf-header-name")).toHaveText("行为洞察");
 
-    // The reference page is one scrolling document with three section titles
-    // (the old four-tab layout is gone), plus a fixed progress rail.
-    await expect(page.locator(".analytics .title")).toHaveCount(3, { timeout: 10000 });
-    await expect(page.locator(".position")).toBeVisible();
-    await expect(page.locator(".time-box .time")).toBeVisible();
+    // The page is one scrolling document with three section titles (the old
+    // four-tab layout is gone); in-page controls are toolbar Segmented groups.
+    await expect(page.locator(".page-section-title")).toHaveCount(3, { timeout: 10000 });
+    await expect(page.getByRole("group", { name: "时间范围" })).toBeVisible();
   });
 
   test("time range selector works", async ({ page }) => {
@@ -337,8 +337,7 @@ test.describe("Analytics", () => {
     await page.goto(`${FRONTEND}/analytics`, { waitUntil: "networkidle" });
 
     // Change to 30 days
-    const select = page.locator(".time-box .time");
-    await select.selectOption({ label: "近30天" });
+    await page.getByRole("group", { name: "时间范围" }).getByRole("button", { name: "近 30 天", exact: true }).click();
     await page.waitForTimeout(2000);
 
     // Should show data or empty state
@@ -392,8 +391,8 @@ test.describe("Reports", () => {
     await page.goto(`${FRONTEND}/reports`, { waitUntil: "networkidle" });
     await expect(page.locator(".mf-header-name")).toHaveText("报告中心");
 
-    // Daily capsule should be selected by default
-    await expect(page.locator(".daily-report.be-chose")).toBeVisible();
+    // Daily is selected by default (Segmented reports its state via aria-pressed)
+    await expect(page.getByRole("button", { name: "日报", exact: true })).toHaveAttribute("aria-pressed", "true");
     // Date picker visible
     await expect(page.locator(".report-datepicker input").first()).toBeVisible();
     await page.waitForTimeout(2000);
@@ -403,21 +402,21 @@ test.describe("Reports", () => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/reports`, { waitUntil: "networkidle" });
 
-    // Switch to weekly capsule
-    await page.locator(".weekly-report").click();
+    // Switch to weekly
+    await page.getByRole("button", { name: "周报", exact: true }).click();
     await page.waitForTimeout(2000);
 
     // Weekly data should load
-    await expect(page.locator(".weekly-report.be-chose")).toBeVisible();
+    await expect(page.getByRole("button", { name: "周报", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator(".report-datepicker input").first()).toBeVisible();
     // Same layout language: four metrics + distribution block
-    await expect(page.locator(".t-state .state-item")).toHaveCount(4);
+    await expect(page.locator(".t-state .sig-metric")).toHaveCount(4);
     await expect(page.locator(".chart-box")).toBeVisible();
 
     // Back to daily
-    await page.locator(".daily-report").click();
+    await page.getByRole("button", { name: "日报", exact: true }).click();
     await page.waitForTimeout(1500);
-    await expect(page.locator(".daily-report.be-chose")).toBeVisible();
+    await expect(page.getByRole("button", { name: "日报", exact: true })).toHaveAttribute("aria-pressed", "true");
   });
 
   test("date picker changes daily report", async ({ page }) => {
@@ -481,8 +480,8 @@ test.describe("Intervention", () => {
     await page.waitForTimeout(2000);
 
     // Switch history periods
-    for (const days of ["14天", "30天", "7天"]) {
-      const tab = page.locator(".tab").filter({ hasText: days });
+    for (const days of ["14 天", "30 天", "7 天"]) {
+      const tab = page.getByRole("button", { name: days, exact: true });
       if (await tab.isVisible()) {
         await tab.click();
         await page.waitForTimeout(1000);
@@ -591,7 +590,7 @@ test.describe("Settings", () => {
     await page.goto(`${FRONTEND}/settings`, { waitUntil: "networkidle" });
     await expect(page.locator(".mf-header-name")).toHaveText("系统设置");
 
-    for (const [tab, sections] of [["采集与隐私", ["隐私行为采集", "数据采集", "自主控制"]], ["应用分类", ["应用分类"]], ["数据与偏好", ["数据导出"]], ["系统状态", ["系统信息"]]] as const) {
+    for (const [tab, sections] of [["采集与隐私", ["隐私行为采集", "数据采集", "自主控制"]], ["应用分类", ["应用分类"]], ["数据导出", ["数据导出"]], ["系统状态", ["系统信息"]]] as const) {
       await page.getByRole("button", { name: tab, exact: true }).click();
       for (const section of sections) await expect(page.getByRole("heading", { name: section, exact: true })).toBeVisible({ timeout: 10000 });
     }
@@ -718,24 +717,17 @@ test.describe("Settings", () => {
     }
   });
 
-  test("preferences save works", async ({ page }) => {
+  test("no hand-written JSON editor for end users", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/settings`, { waitUntil: "networkidle" });
     await page.waitForTimeout(2000);
 
-    await page.getByRole("button", { name: "数据与偏好", exact: true }).click();
-    await page.getByText("高级偏好设置 · JSON 编辑", { exact: true }).click();
-    const textarea = page.locator("textarea").last();
-    if (await textarea.isVisible()) {
-      // Read current value
-      const current = await textarea.inputValue();
-      // PUT save
-      const putBtn = page.locator("button").filter({ hasText: "完整保存" });
-      if (await putBtn.isVisible()) {
-        await putBtn.click();
-        await page.waitForTimeout(2000);
-      }
-    }
+    await page.getByRole("button", { name: "数据导出", exact: true }).click();
+    await expect(page.getByRole("button", { name: "导出", exact: true })).toBeVisible();
+    // §8.16.1: the preferences endpoint stays in the client, but the UI no
+    // longer asks a normal user to type JSON.
+    await expect(page.getByText("高级偏好设置")).toHaveCount(0);
+    await expect(page.getByLabel("偏好设置 JSON")).toHaveCount(0);
   });
 
   test("export data works", async ({ page }) => {
@@ -743,7 +735,7 @@ test.describe("Settings", () => {
     await page.goto(`${FRONTEND}/settings`, { waitUntil: "networkidle" });
     await page.waitForTimeout(2000);
 
-    await page.getByRole("button", { name: "数据与偏好", exact: true }).click();
+    await page.getByRole("button", { name: "数据导出", exact: true }).click();
     const exportBtn = page.locator("button").filter({ hasText: "导出" });
     if (await exportBtn.isVisible()) {
       // Just click it - download will be triggered
@@ -765,8 +757,8 @@ test.describe("Diagnostics", () => {
     await page.goto(`${FRONTEND}/diagnostics`, { waitUntil: "networkidle" });
     await expect(page.locator(".mf-header-name")).toHaveText("AI 诊断");
 
-    // KPI cards should appear
-    await expect(page.locator(".stat-card").first()).toBeVisible({ timeout: 10000 });
+    // The metric strip should appear (one surface, one cell per figure)
+    await expect(page.locator(".sig-metric").first()).toBeVisible({ timeout: 10000 });
     // AI runs table
     await expect(page.locator("text=AI 工作流运行记录")).toBeVisible();
   });

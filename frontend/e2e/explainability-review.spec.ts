@@ -34,32 +34,40 @@ test("dashboard explains the prediction with signed contributions", async ({ pag
   await open(page, "/");
   const assertClean = failOnPageError(page);
 
-  const card = page.locator(".d-extra-card", { hasText: "ML 专注预测" });
-  await expect(card).toBeVisible();
-  await card.getByText("为什么这样判断", { exact: true }).click();
+  // The evidence now lives in the hero, behind "查看完整依据" (spec §4.1.1).
+  const hero = page.locator(".dash-hero");
+  await expect(hero).toBeVisible();
+  await hero.locator(".sig-disclosure-trigger").click();
 
-  const chart = card.locator("figure.mf-chart");
+  const chart = hero.locator("figure.mf-chart");
   await expect(chart).toBeVisible();
   await expect(chart.locator("svg[role=img]")).toHaveAttribute("aria-label", /特征贡献/);
   // Five fixture contributions ⇒ five bars, and the pole labels prove the
   // chart encodes direction, not just magnitude.
   await expect(chart.locator("rect.mf-chart-bar")).toHaveCount(5);
   await expect(chart.getByText("推向专注 →")).toBeVisible();
-  await expect(card.getByText("TreeSHAP", { exact: true })).toBeVisible();
-  await card.scrollIntoViewIfNeeded();
+  await expect(hero.getByText("TreeSHAP", { exact: false })).toBeVisible();
+  await hero.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/dashboard-1440-navy.png` });
   assertClean();
 });
 
 test("dashboard without an explanation shows neutral copy and no frame", async ({ page }) => {
   await setupExplainabilityAbsent(page);
+  // A ready prediction with no attribution: the number is real, the evidence
+  // is simply not shipped yet. (The absent fixture's default is "no model",
+  // which is the *other* hero fallback, asserted in repair-20260930.)
+  await page.route("**/api/v1/telemetry/focus-prediction", route =>
+    route.fulfill({ json: { focus_probability: 0.62, status: "ready", mode: "personal_model", reason: "" } }));
   await page.setViewportSize(WIDE);
   await open(page, "/");
 
-  const card = page.locator(".d-extra-card", { hasText: "ML 专注预测" });
-  await expect(card.locator(".d-explain-muted")).toContainText("暂无解释数据");
-  await expect(card.locator("figure.mf-chart")).toHaveCount(0);
-  await expect(page.locator(".d-explain")).toHaveCount(0);
+  const hero = page.locator(".dash-hero");
+  await expect(hero.locator(".hero-num")).toHaveText("62%");
+  // No explanation ⇒ one neutral line, no chart, no empty disclosure trigger.
+  await expect(hero.locator(".hero-reason-empty")).toHaveText("当前模型不提供逐项依据");
+  await expect(hero.locator("figure.mf-chart")).toHaveCount(0);
+  await expect(hero.getByRole("button", { name: "查看完整依据" })).toHaveCount(0);
 });
 
 test("analytics renders type confidence, TMT and the shrunk baseline", async ({ page }) => {
@@ -83,8 +91,11 @@ test("analytics renders type confidence, TMT and the shrunk baseline", async ({ 
   await expect(evidence.getByText("下一步可以做")).toBeVisible();
 
   // §3 TMT — the formula must be on screen, and the dominant term outlined.
+  // §8.20.3 removed the English formula line; the card head carries the same
+  // statement in Chinese, so the intent is asserted there.
   const tmt = evidence.getByRole("region", { name: "动机分解" });
-  await expect(tmt.getByText("Motivation = E · V / (1 + I · D)")).toBeVisible();
+  await expect(tmt.getByText("期望 × 价值 ÷ (1 + 冲动 × 延迟)")).toBeVisible();
+  await expect(tmt.getByText("Motivation = E · V / (1 + I · D)")).toHaveCount(0);
   await expect(tmt.locator('.mf-tmt-component[data-dominant="true"]')).toContainText("D 延迟");
   await expect(tmt.getByText("主要瓶颈：D 延迟")).toBeVisible();
 
@@ -125,12 +136,11 @@ test("panel exposes how the verdict was reached", async ({ page }) => {
   const meta = page.getByLabel("本次分析的过程信息");
   await expect(meta).toBeVisible();
   await expect(meta).toContainText("不确定度");
-  await expect(meta).toContainText("是否升级复核");
+  await expect(meta).toContainText("升级复核");
   await expect(meta).toContainText("模型调用");
-  await expect(meta).toContainText("6 次");
+  await expect(meta).toContainText("6次");
 
   await expect(page.getByRole("heading", { name: "动机分解" })).toBeVisible();
-  await expect(page.getByText("Motivation = E · V / (1 + I · D)")).toBeVisible();
 
   // The transcript is cards, and it says who spoke.
   await page.getByText(/专家讨论记录/).click();
@@ -151,7 +161,8 @@ test("intervention says why this reminder was chosen", async ({ page }) => {
 
   const latest = page.getByLabel("为什么是这条提醒").first();
   await expect(latest).toBeVisible();
-  await expect(latest.getByText("Thompson 采样", { exact: true })).toBeVisible();
+  // §8.17.2 renames the method to plain Chinese.
+  await expect(latest.getByText("按效果挑选", { exact: true })).toBeVisible();
   await expect(latest).toContainText("情境：下午 · 分心");
   // Posterior bars: the chosen arm is marked, the rest stay muted.
   const chosen = latest.locator('.mf-posterior-row[data-chosen="true"]');
@@ -165,9 +176,9 @@ test("intervention says why this reminder was chosen", async ({ page }) => {
   const historyDetails = page.locator("details.rationale-history");
   await expect(historyDetails).toHaveCount(2);
   await historyDetails.first().locator("summary").click();
-  await expect(historyDetails.first()).toContainText("Thompson 采样");
+  await expect(historyDetails.first()).toContainText("按效果挑选");
   await historyDetails.nth(1).locator("summary").click();
-  await expect(historyDetails.nth(1)).toContainText("规则选择");
+  await expect(historyDetails.nth(1)).toContainText("按规则挑选");
 
   await latest.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/intervention-1440-navy.png` });
@@ -230,9 +241,10 @@ test("narrow screens keep the explainability cards inside the viewport", async (
   await setupExplainable(page);
   await page.setViewportSize(NARROW);
   await open(page, "/");
-  await expect(page.locator(".d-extra-card", { hasText: "ML 专注预测" })).toBeVisible();
-  await page.locator(".d-extra-card", { hasText: "ML 专注预测" }).getByText("为什么这样判断").click();
-  await page.locator(".d-extra-card", { hasText: "ML 专注预测" }).scrollIntoViewIfNeeded();
+  const hero = page.locator(".dash-hero");
+  await expect(hero).toBeVisible();
+  await hero.locator(".sig-disclosure-trigger").click();
+  await hero.locator("figure.mf-chart").scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/dashboard-375-navy.png` });
   expect(await page.locator(".mf-main").evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
 

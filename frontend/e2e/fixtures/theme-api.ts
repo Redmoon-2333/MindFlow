@@ -26,8 +26,8 @@ export async function setup(page: Page) {
     else if (path === "/chat/sessions") json = [];
     else if (path === "/intervention/history") json = {items:[{id:"intervention-1", intervention_type:"task_breakdown", title:"从一个小步骤开始", message:"先整理一个图表，再继续下一步。", created_at:task.created_at, triggered_at:task.created_at, user_response:null}], count:1};
     else if (path === "/health") json = {status:"ok", version:"2.0", database:{status:"ok"}, migration:{applied:true}};
-    else if (path === "/health/live") json = {status:"ok"};
-    else if (path === "/health/ready") json = {status:"ok", checks:{database:true}};
+    else if (path === "/health/live") json = {status:"alive", version:"2.0", timestamp:"2026-10-08T09:00:00Z"};
+    else if (path === "/health/ready") json = {status:"ready", version:"2.0", timestamp:"2026-10-08T09:00:00Z", database:{status:"ok", connected:true, integrity_ok:true}, migration:{applied:true}, checkpoint_store:"available", run_store:"available"};
     else if (path === "/collector") json = {status:"stopped", running:false};
     else if (path === "/autonomy") json = {enabled:true, paused:false, paused_until:null};
     else if (path === "/app-classifications") json = [{id:"rule-1", process_name:"code.exe", window_title_pattern:"", category:"code", priority:10}];
@@ -38,7 +38,7 @@ export async function setup(page: Page) {
     else if (path === "/analytics/model-status") json = {loaded:false, ready:false, mode:"rule_engine_only", v2_mode:"rule_engine_only", reasons:[]};
     else if (path === "/analytics/baseline" || path === "/analytics/training-readiness") return route.fulfill({status:404, json:{detail:"暂无数据"}});
     else if (path === "/ai/graph") json = {available:true, nodes:["start","panel"], edges:[{from:"start",to:"panel"}]};
-    else if (path === "/ai/runs") { const offset=Number(url.searchParams.get("offset") ?? 0); json = {items:Array.from({length:Math.min(20,45-offset)},(_,i) => ({run_id:`run-${offset+i}`,status:"completed",source:"panel",started_at:task.created_at,completed_at:task.created_at,duration_ms:1000})),total:45,limit:20,offset}; }
+    else if (path === "/ai/runs") { const offset=Number(url.searchParams.get("offset") ?? 0); json = {items:Array.from({length:Math.min(20,45-offset)},(_,i) => ({run_id:`run-${offset+i}`,status:"completed",source:"panel",started_at:task.created_at,completed_at:task.created_at,duration_ms:1000})),count:45,has_more:offset+Math.min(20,45-offset)<45,next_offset:offset+Math.min(20,45-offset)<45?offset+Math.min(20,45-offset):null}; }
     else if (path.startsWith("/ai/runs/")) json = {run_id:path.split("/").at(-1), status:"completed",source:"panel",started_at:task.created_at,completed_at:task.created_at,duration_ms:1000,node_events:[],error:null};
     await route.fulfill({status:200,json});
   });
@@ -192,4 +192,104 @@ export async function setupExplainabilityAbsent(page: Page) {
       assessment: { procrastination_types: ["task_aversion"], type_confidence: {}, cbt_technique: "graded_exposure", response_text: "证据不足，暂不下结论。" },
       source: "rule_engine", cached: false, meta: { degraded: false },
     } }));
+}
+
+/**
+ * Review-only realistic data (Phase 1.1 F7).
+ *
+ * Used exclusively by `midterm-review-shots.spec.ts` so the screenshots a human
+ * reviews look like a real Tuesday instead of the zero-value stress fixture.
+ * Everything is computed from `Date.now()` in local time, so the shots stay
+ * correct whenever they are regenerated.
+ *
+ * Deliberately NOT merged into `setup()`: the layout and density specs assert
+ * geometry against the sparse/zero fixture, and giving them seven days of data
+ * would change what those tests measure.
+ */
+export async function setupReviewShotsRealistic(page: Page) {
+  await setup(page);
+
+  const now = Date.now();
+  const twoMinAgo = new Date(now - 2 * 60_000).toISOString();
+  const localDay = (offsetDays: number) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() + offsetDays);
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${mm}-${dd}`;
+  };
+  const todayAt = (hour: number, minute: number) => {
+    const d = new Date(now);
+    d.setHours(hour, minute, 0, 0);
+    return d.toISOString();
+  };
+
+  const both = async (path: string, handler: (route: Route) => Promise<unknown>) => {
+    for (const pattern of [`**/api/v1/${path}`, `**/api/v1/${path}?**`]) await page.route(pattern, handler);
+  };
+
+  await both("activities/current", route =>
+    route.fulfill({ json: {
+      id: "activity-review-1",
+      timestamp: twoMinAgo,
+      duration_s: 120,
+      event_type: "app_switch",
+      data: {
+        app_name: "POWERPNT.EXE",
+        process_name: "POWERPNT.EXE",
+        window_title: "MindFlow 中期答辩.pptx - PowerPoint",
+        is_idle: false,
+      },
+    } }));
+
+  // Seven days ending today, oldest → newest (F7's fixed series).
+  const focusMin = [142, 168, 95, 210, 176, 188, 183];
+  const distractionMin = [38, 30, 52, 22, 35, 29, 31];
+  const sessionCount = [4, 5, 3, 6, 5, 5, 4];
+  const avgScore = [76.2, 79.5, 68.4, 84.1, 80.3, 82.7, 83.0];
+  await both("focus/trend", route =>
+    route.fulfill({ json: {
+      days: 7,
+      start_date: localDay(-6),
+      end_date: localDay(0),
+      daily: focusMin.map((minutes, index) => ({
+        date: localDay(index - 6),
+        focus_min: minutes,
+        distraction_min: distractionMin[index],
+        session_count: sessionCount[index],
+        avg_score: avgScore[index],
+      })),
+      total_sessions: sessionCount.reduce((sum, n) => sum + n, 0),
+    } }));
+
+  await both("telemetry/focus-prediction", route =>
+    route.fulfill({ json: {
+      focus_probability: 0.75,
+      status: "ready",
+      mode: "personal_model",
+      reason: "",
+      explanation,
+    } }));
+
+  await both("analytics/model-status", route =>
+    route.fulfill({ json: {
+      loaded: true,
+      ready: true,
+      mode: "personal_model",
+      v2_mode: "personal_model",
+      reasons: [],
+      demo_only: true,
+    } }));
+
+  await both("collector", route => route.fulfill({ json: { status: "running", running: true } }));
+  await both("health", route =>
+    route.fulfill({ json: { status: "ok", version: "2.0", database: { status: "ok" }, migration: { applied: true } } }));
+
+  await both("intervention/history", route =>
+    route.fulfill({ json: { items: [
+      { id: "intervention-review-2", intervention_type: "environment_optimization", title: "暂时屏蔽娱乐站点", message: "接下来 25 分钟屏蔽视频站点，先把答辩稿的结构定下来。", created_at: todayAt(14, 5), triggered_at: todayAt(14, 5), user_response: null },
+      { id: "intervention-review-1", intervention_type: "task_breakdown", title: "从一个小步骤开始", message: "先整理一个图表，再继续下一步。", created_at: todayAt(10, 20), triggered_at: todayAt(10, 20), user_response: "accepted" },
+    ], count: 2 } }));
+
+  await both("autonomy", route => route.fulfill({ json: { enabled: true, paused: false, paused_until: null } }));
 }

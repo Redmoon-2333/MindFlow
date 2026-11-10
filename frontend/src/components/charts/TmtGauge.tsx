@@ -50,8 +50,6 @@ export default function TmtGauge({ tmt, showNote = true }: TmtGaugeProps) {
 
   return (
     <div className="mf-tmt">
-      <div className="mf-tmt-formula" aria-hidden="true">Motivation = E · V / (1 + I · D)</div>
-
       <div className="mf-tmt-headline">
         <span className="mf-tmt-value" style={{ color: LEVEL_COLOR[level] }} data-numeric>
           {motivation.toFixed(2)}

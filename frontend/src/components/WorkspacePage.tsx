@@ -1,14 +1,13 @@
 import type { ReactNode } from "react";
-import PageHeader from "./PageHeader";
 import "./workspace.css";
 
 /**
  * Workspace shell for the form-heavy pages.
  *
- * Renders the page's real <h1> through PageHeader. The old `.workspace-heading`
- * block is deliberately NOT reintroduced: `e2e/density-review.spec.ts` asserts
- * it stays absent (the dense reference layout measures from the first card),
- * so the header here is `.page-header`, a different, single-line block.
+ * The page title already lives in the top bar (§7.3), so this renders only the
+ * one-line lede plus the page body. The old `.workspace-heading` block stays
+ * absent (`e2e/density-review.spec.ts` asserts that), and so does the
+ * `.page-header` H1 block the redesign deleted.
  */
 export default function WorkspacePage({ title, description, children, className = "" }: {
   title: string;
@@ -18,7 +17,7 @@ export default function WorkspacePage({ title, description, children, className 
 }) {
   return (
     <div className={`workspace-page ${className}`} aria-label={title}>
-      <PageHeader title={title} description={description} />
+      <p className="page-lede">{description}</p>
       {children}
     </div>
   );

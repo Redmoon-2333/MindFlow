@@ -20,6 +20,12 @@ import type {
 import TmtGauge from "../components/charts/TmtGauge";
 import { SEVERITY_LABELS } from "../types/explainability";
 import type { DeviationSummary, TmtBreakdown } from "../types/explainability";
+import Surface from "../components/signal/Surface";
+import SectionHeader from "../components/signal/SectionHeader";
+import MetricStrip from "../components/signal/MetricStrip";
+import type { MetricItem } from "../components/signal/MetricStrip";
+import Segmented from "../components/signal/Segmented";
+import HelpTip from "../components/signal/HelpTip";
 import "./analytics.css";
 import "../components/primitives.css";
 
@@ -33,7 +39,7 @@ function profileDetailValue(value: unknown): string | number {
   const detailValue = isRecord(value) ? value.value : value;
   if (typeof detailValue === "string" || typeof detailValue === "number") return detailValue;
   if (typeof detailValue === "boolean") return String(detailValue);
-  return "N/A";
+  return "—";
 }
 
 function profileDetailTrend(value: unknown): string {
@@ -55,15 +61,25 @@ function toHighSwitchRows(patterns: AnalyticsPatterns | null): TableRow[] {
       (p.hour != null
         ? `${String(p.hour).padStart(2, "0")}:00 - ${String(p.hour + 1).padStart(2, "0")}:00`
         : `时段 ${i + 1}`),
-    right: p.switch_count != null ? `${p.switch_count}次切换` : p.intensity || p.level || "—",
+    right: p.switch_count != null ? `${p.switch_count} 次切换` : p.intensity || p.level || "—",
   }));
 }
 
 function toTriggerAppRows(patterns: AnalyticsPatterns | null): TableRow[] {
   return (patterns?.trigger_apps ?? []).map((a, i) => ({
     left: a.app || a.app_name || a.name || `应用 ${i + 1}`,
-    right: a.count != null ? `${a.count}次` : String(a.percentage ?? "—"),
+    right: a.count != null ? `${a.count} 次` : String(a.percentage ?? "—"),
   }));
+}
+
+/** `"8:00 (avg 52)"` → period `8:00`, average `52`. A trailing parenthetical
+ *  without an `avg N` inside is still dropped from the period (§8.4.7). */
+function splitPeakFocus(peakFocus: string | undefined): { period: string; average: string | null } {
+  if (!peakFocus) return { period: "—", average: null };
+  const split = peakFocus.search(/\s*\(|（/);
+  const period = (split === -1 ? peakFocus : peakFocus.slice(0, split)).trim();
+  const average = /avg\s+([\d.]+)/i.exec(peakFocus)?.[1] ?? null;
+  return { period: period || peakFocus.trim(), average };
 }
 
 const TYPE_KEYS = [
@@ -117,10 +133,13 @@ function AttributionEvidence({
   const leading = typeRows[0]?.key;
 
   return (
-    <div className="attribution-evidence">
+    <div className="attribution-evidence sig-surface">
       <section className="proof" aria-label="拖延类型置信度">
         <div className="proof-head">
-          <span className="proof-title">类型置信度</span>
+          <span className="proof-title">
+            类型置信度
+            <HelpTip term="类型置信度" what="每种拖延类型的可能性，条越长越可能。" />
+          </span>
           <span className="proof-muted">模型对各类型的判断强度</span>
         </div>
         {typeRows.length === 0 ? (
@@ -160,14 +179,13 @@ function AttributionEvidence({
       {distortions.length > 0 && (
         <section className="proof" aria-label="识别到的认知扭曲">
           <div className="proof-head">
-            <span className="proof-title">认知扭曲</span>
+            <span className="proof-title">
+              认知扭曲
+              <HelpTip term="认知扭曲" what="一些让人更想拖延的想法，比如“必须做到完美才开始”。" />
+            </span>
             <span className="proof-muted">CBT 视角下的思维模式</span>
           </div>
-          <div className="chip-row">
-            {distortions.map((item) => (
-              <span className="chip" key={item} data-tone="warn">{item}</span>
-            ))}
-          </div>
+          <p className="distortion-line">{distortions.join("、")}</p>
         </section>
       )}
 
@@ -180,7 +198,14 @@ function AttributionEvidence({
 
       <section className="proof" aria-label="动机分解">
         <div className="proof-head">
-          <span className="proof-title">动机分解（TMT）</span>
+          <span className="proof-title">
+            动机分解（TMT）
+            <HelpTip
+              term="动机分解"
+              what="用一个心理学公式估计你现在有多想做这件事：觉得能做成（期望）、觉得值得（价值）会提高动力；容易被别的东西吸引（冲动）、截止日期还远（延迟）会降低动力。"
+              effect="这是根据使用行为估算的，不是心理测试。"
+            />
+          </span>
           <span className="proof-muted">期望 × 价值 ÷ (1 + 冲动 × 延迟)</span>
         </div>
         <TmtGauge tmt={tmt ?? null} />
@@ -188,7 +213,10 @@ function AttributionEvidence({
 
       <section className="proof" aria-label="行为偏离">
         <div className="proof-head">
-          <span className="proof-title">行为偏离</span>
+          <span className="proof-title">
+            行为偏离
+            <HelpTip term="行为偏离" what="把今天这个时段和你平时同一时段相比，看看有没有明显不一样。" />
+          </span>
           {deviation && (
             <span className={`badge ${SEVERITY_TONE[deviation.severity]}`}>
               {SEVERITY_LABELS[deviation.severity]}
@@ -200,7 +228,13 @@ function AttributionEvidence({
         ) : (
           <>
             <div className="deviation-meta">
-              <span>综合偏离分 {deviation.overall_score.toFixed(2)}</span>
+              <span>
+                综合偏离分 {deviation.overall_score.toFixed(2)}
+                <HelpTip
+                  term="综合偏离分"
+                  what="数字越大，说明和平时越不一样。数据少的时候，系统会更多参考一般人的水平，避免误判。"
+                />
+              </span>
               <span>
                 经验贝叶斯收缩 n={deviation.bucket.n_samples}，收缩系数{" "}
                 {deviation.bucket.shrinkage.toFixed(2)}
@@ -219,7 +253,13 @@ function AttributionEvidence({
                     <th scope="col">特征</th>
                     <th scope="col" className="num">当前</th>
                     <th scope="col" className="num">个人期望</th>
-                    <th scope="col" className="num">稳健 z</th>
+                    <th scope="col" className="num">
+                      稳健 z
+                      <HelpTip
+                        term="偏离程度"
+                        what="这一项和你平时差了多少：正数是比平时高，负数是比平时低，超过 2 就算明显不同。"
+                      />
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -253,7 +293,9 @@ export default function Analytics() {
 
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string | null>>({});
-  const error = Object.values(errors).filter(Boolean).join("；");
+  // Four sections can fail with the same reason (e.g. a 429 storm); the banner
+  // should say it once (§8.21.2).
+  const error = Array.from(new Set(Object.values(errors).filter(Boolean))).join("；");
   const setSectionError = useCallback((section: string, message: string | null) => {
     setErrors((current) => ({ ...current, [section]: message }));
   }, []);
@@ -263,7 +305,7 @@ export default function Analytics() {
   // bottom block enters the viewport.
   const pageRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const titleRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const titleRefs = useRef<Array<HTMLHeadingElement | null>>([]);
 
 
   /** Latest-request guards (audit F3): each series owns its own sequence so a
@@ -392,41 +434,127 @@ export default function Analytics() {
   const profileDetails = profile?.details ? Object.entries(profile.details) : [];
 
   const renderTitle = (text: string, index: number) => (
-    <div
-      className="title"
+    <h2
+      className="page-section-title"
       ref={(el) => {
         titleRefs.current[index] = el;
       }}
     >
       {text}
-    </div>
+    </h2>
   );
+
+  const percentItem = (key: string, label: string, value: number | null | undefined): MetricItem =>
+    value != null
+      ? { key, label, value: (value * 100).toFixed(1), unit: "%" }
+      : { key, label, value: "—" };
+
+  const baselineItems: MetricItem[] = [
+    baseline?.mean_app_switch_count != null
+      ? {
+          key: "switch",
+          label: "平均切换次数",
+          value: String(baseline.mean_app_switch_count),
+          unit: "次",
+        }
+      : { key: "switch", label: "平均切换次数", value: "—" },
+    percentItem("active", "活跃时间占比", baseline?.mean_active_seconds_ratio),
+    percentItem("idle", "空闲时间占比", baseline?.mean_idle_ratio),
+  ];
+
+  const peak = splitPeakFocus(profile?.peak_focus);
+  const profileItems: MetricItem[] = profile
+    ? [
+        {
+          key: "peak",
+          label: "专注高峰",
+          value: peak.period,
+          delta: {
+            text: peak.average ? `平均分 ${peak.average}` : "平均评分最高的时段",
+            tone: "none",
+          },
+        },
+        {
+          key: "productivity",
+          label: "常用应用",
+          value: String(profile.productivity_apps?.length ?? 0),
+          unit: "个",
+          delta: {
+            text: profile.productivity_apps?.length
+              ? profile.productivity_apps.slice(0, 3).join("、")
+              : "—",
+            tone: "none",
+          },
+        },
+        profile.avg_focus_block_min != null
+          ? {
+              key: "block",
+              label: "平均专注块",
+              value: String(profile.avg_focus_block_min),
+              unit: "分钟",
+              delta: { text: "每次连续专注的平均时长", tone: "none" },
+              help: { what: "每次连续专注平均能坚持多久。" },
+            }
+          : {
+              key: "block",
+              label: "平均专注块",
+              value: "—",
+              delta: { text: "每次连续专注的平均时长", tone: "none" },
+              help: { what: "每次连续专注平均能坚持多久。" },
+            },
+        {
+          key: "trigger",
+          label: "触发应用",
+          value: String(profile.trigger_apps?.length ?? 0),
+          unit: "个",
+          delta: {
+            text: profile.trigger_apps?.length ? profile.trigger_apps.slice(0, 3).join("、") : "—",
+            tone: "none",
+          },
+        },
+      ]
+    : [
+        { key: "peak", label: "专注高峰", value: "—" },
+        { key: "productivity", label: "常用应用", value: "—" },
+        { key: "block", label: "平均专注块", value: "—" },
+        { key: "trigger", label: "触发应用", value: "—" },
+      ];
+
+  const modelBadge = !modelStatus
+    ? { className: "badge-neutral", text: "状态未知" }
+    : modelStatus.ready
+      ? { className: "badge-success", text: "已就绪" }
+      : modelStatus.loaded
+        ? { className: "badge-warning", text: "已加载，未就绪" }
+        : { className: "badge-neutral", text: "未加载" };
+  const providerBadge = !providerStatus
+    ? { className: "badge-neutral", text: "状态未知" }
+    : providerStatus.configured
+      ? { className: "badge-success", text: "已配置" }
+      : { className: "badge-neutral", text: "未配置" };
+
+  const attributionType = userTerm(attribution?.procrastination_type ?? attribution?.results?.[0]?.procrastination_type);
+  const attributionConfidence = attribution?.confidence ?? attribution?.results?.[0]?.confidence ?? null;
+  const attributionCbt = userTerm(attribution?.cbt_technique ?? attribution?.results?.[0]?.cbt_technique);
+  const attributionEvidence = attribution?.evidence ?? attribution?.results?.[0]?.evidence;
 
   return (
     <div className="analytics" ref={pageRef}>
-<div className="time-box">
-        <div className="time-text">时间范围</div>
-        <select
-          className="time"
-          value={`近${days}天`}
-          aria-label="时间范围"
-          onChange={(e) => {
-            const parsed = Number(String(e.target.value).replace(/\D/g, ""));
-            if (Number.isFinite(parsed) && parsed > 0) setDays(parsed);
-          }}
-        >
-          {DAYS_OPTIONS.map((d) => (
-            <option key={d} value={`近${d}天`}>
-              近{d}天
-            </option>
-          ))}
-        </select>
+      <p className="page-lede">从最近一段时间的切换和应用使用中，找出你容易分心的时段与原因。</p>
+
+      <div className="page-toolbar time-box">
+        <Segmented
+          ariaLabel="时间范围"
+          options={DAYS_OPTIONS.map((d) => ({ value: String(d), label: `近 ${d} 天` }))}
+          value={String(days)}
+          onChange={(value) => setDays(Number(value))}
+        />
       </div>
 
       {error && (
         <div className="error-box error-slot" role="alert">
           {error}
-          <button className="btn btn-sm" style={{ marginLeft: 12 }} onClick={() => setErrors({})}>
+          <button className="btn btn-secondary btn-sm error-dismiss" onClick={() => setErrors({})}>
             关闭
           </button>
         </div>
@@ -434,117 +562,80 @@ export default function Analytics() {
 
       {renderTitle("模式分析", 0)}
 
-      <div className="top-box">
-        <div className="high-change">
-          <div className="high-change-title">高切换时段</div>
+      <div className="page-grid-2 top-box">
+        <Surface as="section" className="high-change">
+          <SectionHeader
+            title="高切换时段"
+            help={{
+              what: "一天中你最常在不同软件之间来回切换的时段。切换多通常说明注意力容易被打断。",
+            }}
+          />
           <div className="f-box">
             {loading.patterns ? (
               <div className="spinner" />
             ) : highSwitchRows.length > 0 ? (
-              <table className="simple-table">
-                <tbody>
-                  {highSwitchRows.map((row, i) => (
-                    <tr key={i}>
-                      {/* The reference pills BOTH cells (table.scss sty=0) */}
-                      <td>
-                        <div className="full-box1">{row.left}</div>
-                      </td>
-                      <td>
-                        <div className="full-box1">{row.right}</div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              highSwitchRows.map((row, i) => (
+                <div className="kv-row kv-row--strong" key={i}>
+                  <span>{row.left}</span>
+                  <span>{row.right}</span>
+                </div>
+              ))
             ) : (
               <div className="f-empty">暂无数据</div>
             )}
           </div>
-        </div>
+        </Surface>
 
-        <div className="toggle-app">
-          <div className="toggle-app-title">触发应用 Top</div>
+        <Surface as="section" className="toggle-app">
+          <SectionHeader
+            title="触发应用 Top"
+            help={{
+              what: "在被判为分心的时间里，你主要在用的软件。它们不一定是分心的原因，只是经常一起出现。",
+            }}
+          />
           <div className="f-box">
             {loading.patterns ? (
               <div className="spinner" />
             ) : triggerAppRows.length > 0 ? (
-              <table className="simple-table">
-                <tbody>
-                  {triggerAppRows.map((row, i) => (
-                    <tr key={i}>
-                      {/* The reference pills BOTH cells (table.scss sty=1) */}
-                      <td>
-                        <div className="full-box2">{row.left}</div>
-                      </td>
-                      <td>
-                        <div className="full-box2">{row.right}</div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              triggerAppRows.map((row, i) => (
+                <div className="kv-row kv-row--strong" key={i}>
+                  <span>{row.left}</span>
+                  <span>{row.right}</span>
+                </div>
+              ))
             ) : (
               <div className="f-empty">暂无数据</div>
             )}
           </div>
-        </div>
+        </Surface>
       </div>
 
       <div className="second-box">
-        <div className="box-title">基线对比</div>
-        <div className="second-content">
-          <div className="second-content-item">
-            平均切换次数：
-            <b>{baseline?.mean_app_switch_count ?? "N/A"}</b>
-          </div>
-          <div className="second-content-item">
-            活跃时间占比：
-            <b>
-              {baseline?.mean_active_seconds_ratio != null
-                ? `${(baseline.mean_active_seconds_ratio * 100).toFixed(1)}%`
-                : "N/A"}
-            </b>
-          </div>
-          <div className="second-content-item">
-            空闲时间占比：
-            <b>
-              {baseline?.mean_idle_ratio != null ? `${(baseline.mean_idle_ratio * 100).toFixed(1)}%` : "N/A"}
-            </b>
-          </div>
-        </div>
+        <MetricStrip
+          label="我的日常习惯"
+          items={baselineItems.map((item, index) =>
+            index === 0
+              ? { ...item, help: { what: "你过去所有记录的平均水平，可以用来对比某一天是否反常。" } }
+              : item,
+          )}
+          // No baseline yet is a normal early state, not an error: say what is
+          // happening instead of leaving three em-dashes unexplained (§8.22.7).
+          note={
+            baseline === null && !loading.baseline && !errors.baseline
+              ? "还在积累记录：使用几天后，这里会显示你平时的平均水平。"
+              : undefined
+          }
+        />
       </div>
 
       {renderTitle("个人画像", 1)}
 
       <div className="third-box">
-        <div className="third-box-item">
-          <div className="third-item-title">专注高峰</div>
-          <div className="third-item-content">{profile?.peak_focus?.replace(/\(avg\s+([\d.]+)\)/i, "（平均分 $1）") || "—"}</div><div className="detail">平均专注评分最高的时段</div>
-        </div>
-        <div className="third-box-item">
-          <div className="third-item-title">效率应用</div>
-          <div className="third-item-content">{profile ? profile.productivity_apps?.length ?? 0 : "—"}</div>
-          <div className="detail">
-            {Array.isArray(profile?.productivity_apps) ? profile.productivity_apps.slice(0, 3).join(", ") : "N/A"}
-          </div>
-        </div>
-        <div className="third-box-item">
-          <div className="third-item-title">平均专注块</div>
-          <div className="third-item-content">
-            {profile?.avg_focus_block_min != null ? `${profile.avg_focus_block_min} 分钟` : "N/A"}
-          </div><div className="detail">每次连续专注的平均时长</div>
-        </div>
-        <div className="third-box-item">
-          <div className="third-item-title">触发应用</div>
-          <div className="third-item-content">{profile ? profile.trigger_apps?.length ?? 0 : "—"}</div>
-          <div className="detail">
-            {Array.isArray(profile?.trigger_apps) ? profile.trigger_apps.slice(0, 3).join(", ") : "N/A"}
-          </div>
-        </div>
+        <MetricStrip label="画像概览" items={profileItems} />
       </div>
 
-      <div className="fourth-box">
-        <div className="fourth-box-title">详细画像</div>
+      <Surface as="section" className="fourth-box">
+        <SectionHeader title="详细画像" />
         <div className="table-box">
           {loading.profile ? (
             <div className="spinner" />
@@ -564,11 +655,19 @@ export default function Analytics() {
                   const trend = profileDetailTrend(value);
                   return (
                     <tr key={key}>
-                      <td>{userTerm(key)}</td>
+                      <td>
+                        {userTerm(key)}
+                        {key === "distraction_ratio" && (
+                          <HelpTip
+                            term="分心占比"
+                            what="分心触发的次数 ÷ 全部活动次数，是次数比例，不是时间比例。"
+                          />
+                        )}
+                      </td>
                       <td>{profileDetailValue(value)}</td>
                       <td>
                         <span
-                          className={`badge ${trend === "up" ? "badge-success" : trend === "down" ? "badge-danger" : "badge-info"}`}
+                          className={`badge ${trend === "up" ? "badge-success" : trend === "down" ? "badge-warning" : "badge-neutral"}`}
                         >
                           {userTerm(trend)}
                         </span>
@@ -580,38 +679,96 @@ export default function Analytics() {
             </table>
           )}
         </div>
-      </div>
+      </Surface>
 
       {renderTitle("拖延归因", 2)}
 
-      <div className="fifth-box" ref={bottomRef}>
-        <div className="left-box">
-          <div className="attribution-header"><div className="left-box-title1">归因结果</div>
-            <button type="button" className="btn attribution-action" onClick={handleAttribution} disabled={loading.attribution}>{loading.attribution ? "分析中..." : "运行归因分析"}</button>
+      <div className="page-grid-2 fifth-box" ref={bottomRef}>
+        <Surface as="section" className="left-box">
+          <SectionHeader
+            title="归因结果"
+            actions={
+              <>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm attribution-action"
+                  onClick={handleAttribution}
+                  disabled={loading.attribution}
+                >
+                  {loading.attribution ? "分析中…" : "运行归因分析"}
+                </button>
+                <HelpTip
+                  term="归因分析"
+                  what="让 AI 根据今天的使用记录，分析你可能为什么拖延，并给出一个具体的小方法。"
+                  effect="会把今天的行为汇总（不含窗口标题）发给云端 AI，可能需要几分钟、产生少量费用；同一天再点会直接显示已有结果。"
+                />
+              </>
+            }
+          />
+          <div className="kv-row kv-row--text">
+            <span>
+              拖延类型
+              <HelpTip
+                term="拖延类型"
+                what="AI 判断你今天的拖延最可能属于哪一种，比如“任务厌恶”就是因为不喜欢这件事而一直拖着。"
+              />
+            </span>
+            <span>{attributionType}</span>
           </div>
-          <div className="attribution-summary">
-            <div><b>拖延类型：</b>{userTerm(attribution?.procrastination_type ?? attribution?.results?.[0]?.procrastination_type)}</div>
-            <span className="badge badge-info">置信度：{attribution?.confidence ?? attribution?.results?.[0]?.confidence ?? "—"}</span>
+          <div className="kv-row kv-row--text">
+            <span>
+              置信度
+              <HelpTip
+                term="置信度"
+                what="AI 对这个判断有多大把握，0 到 1，越接近 1 越有把握。"
+              />
+            </span>
+            <span>{attributionConfidence != null ? String(attributionConfidence) : "—"}</span>
           </div>
-          <div className="attribution-details">
-            <div><div className="left-box-title2">认知行为技术（CBT）</div><div>{userTerm(attribution?.cbt_technique ?? attribution?.results?.[0]?.cbt_technique)}</div></div>
-            <div><div className="left-box-title2">证据</div><div className="text-muted">{attribution?.evidence ?? attribution?.results?.[0]?.evidence ?? "尚未运行归因分析"}</div></div>
+          <div className="kv-row kv-row--text">
+            <span>
+              认知行为技术（CBT）
+              <HelpTip
+                term="认知行为技术"
+                what="心理学里常用的改变习惯的方法。这里推荐一个最适合你当前情况的小技巧。"
+              />
+            </span>
+            <span>{attributionCbt}</span>
           </div>
-        </div>
-        <div className="right-box analysis-capabilities">
-          <div className="right-box-title1">个人模型与云端 AI</div>
-          <div><b>个人专注模型（ML）</b><span className={`model-pill ${modelStatus?.loaded ? "model-pill--on" : "model-pill--off"}`}>{!modelStatus ? "状态未知" : !modelStatus.loaded ? "未加载" : modelStatus.ready ? "已就绪" : "已加载，未就绪"}</span></div>
-          <p>根据你的行为与反馈预测专注或分心。未就绪时，系统仍可用规则引擎分析。</p>
-          <div className="model-meta">{modelStatus?.version ? `版本 ${modelStatus.version} · ${userTerm(modelStatus.mode)}` : "暂无个人模型版本"}</div>
-          <div><b>云端 AI（LLM）</b>：{!providerStatus ? "状态未知" : providerStatus.configured ? `已配置 · ${providerStatus.model}` : "未配置"}</div>
-          <p>用于拖延归因、专家讨论与建议生成；独立于个人模型。已配置仅表示有凭证，调用成功还取决于服务可用性。</p>
-        </div>
+          <div className="kv-row kv-row--text evidence-row">
+            <span>证据</span>
+            <span>{attributionEvidence ?? "尚未运行归因分析"}</span>
+          </div>
+        </Surface>
+
+        <Surface as="section" className="right-box analysis-capabilities">
+          <SectionHeader
+            title="个人模型与云端 AI"
+            help={{
+              what: "个人模型在你的电脑上学习你的习惯；云端 AI 负责写分析文字。这里显示它们现在能不能用。",
+            }}
+          />
+          <div className="capability-group">
+            <div className="capability-head">
+              <h3 className="sub-title">个人专注模型（ML）</h3>
+              <span className={`badge ${modelBadge.className}`}>{modelBadge.text}</span>
+            </div>
+            <p className="capability-text">根据你的行为与反馈预测专注或分心。未就绪时，系统仍可用规则引擎分析。</p>
+            <div className="model-meta">
+              {modelStatus?.version ? `版本 ${modelStatus.version} · ${userTerm(modelStatus.mode)}` : "暂无个人模型版本"}
+            </div>
+          </div>
+          <div className="capability-group capability-group--divided">
+            <div className="capability-head">
+              <h3 className="sub-title">云端 AI（LLM）</h3>
+              <span className={`badge ${providerBadge.className}`}>{providerBadge.text}</span>
+              {providerStatus?.configured && <span className="model-name">{providerStatus.model}</span>}
+            </div>
+            <p className="capability-text">用于拖延归因、专家讨论与建议生成；独立于个人模型。已配置仅表示有凭证，调用成功还取决于服务可用性。</p>
+          </div>
+        </Surface>
       </div>
 
-      {/* The evidence blocks live below the reference's two cards rather than
-          inside `.left-box`: that box distributes children with space-between
-          at a fixed 270px height, so extra children would push the reference
-          layout out of shape. */}
       {attribution && (
         <AttributionEvidence
           typeConfidence={attribution.assessment?.type_confidence ?? {}}

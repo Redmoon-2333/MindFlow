@@ -29,9 +29,7 @@ import type { DailyDataState, StateCardModel, WeeklyDataState } from "./report-c
 
 export function formatMinutes(m: number | null | undefined): string {
   if (m == null || Number.isNaN(m)) return "—";
-  const h = Math.floor(m / 60);
-  const min = Math.round(m % 60);
-  return h > 0 ? `${h}h ${min}m` : `${min}m`;
+  return `${Math.round(m)} 分钟`;
 }
 
 const WEEKDAY_NAMES = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"] as const;
@@ -97,7 +95,7 @@ export function buildHourlyChart(distribution: Readonly<Record<string, number>>)
     hour,
     minutes,
     pct: Math.round((minutes / maxMinutes) * 100),
-    label: minutes > 0 ? `${Math.round(minutes)}m` : "",
+    label: minutes > 0 ? `${Math.round(minutes)} 分钟` : "",
     axisLabel: hour % 3 === 0 ? `${hour}h` : "",
   }));
   return { bars, maxMinutes };

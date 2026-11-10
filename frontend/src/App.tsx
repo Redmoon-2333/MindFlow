@@ -18,6 +18,8 @@ import { realtimeClient, requestNotificationPermission } from "./realtime";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Toaster from "./components/Toaster";
 import FeedbackPrompt from "./components/FeedbackPrompt";
+import StatusChip from "./components/signal/StatusChip";
+import NavIcon, { type NavIconName } from "./components/signal/NavIcon";
 
 // Route-level code splitting (architecture review 💡 19): heavy pages
 // (ModelCenter, Diagnostics, Reports) load on demand to shrink the initial
@@ -38,27 +40,34 @@ const ModelCenter = lazy(() => import("./pages/ModelCenter"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 /** The nine navigation entries of the reference build, in its original order. */
-const NAV = [
-  { to: "/", label: "仪表盘", icon: "icon-yibiaopan", end: true },
-  { to: "/focus", label: "专注分析", icon: "icon-yanjing" },
-  { to: "/activities", label: "活动日志", icon: "icon-huodong" },
-  { to: "/analytics", label: "行为洞察", icon: "icon-shoushidongzuo_dianji_click-tap-two" },
-  { to: "/reports", label: "报告中心", icon: "icon-dubanbaogao" },
-  { to: "/intervention", label: "干预中心", icon: "icon-ganyufangan" },
-  { to: "/panel", label: "专家面板", icon: "icon-zhuanjia" },
-  { to: "/chat", label: "AI 对话", icon: "icon-wuguan" },
-  { to: "/settings", label: "系统设置", icon: "icon-shezhi" },
+const NAV: Array<{ to: string; label: string; icon: NavIconName; end?: boolean }> = [
+  { to: "/", label: "仪表盘", icon: "dashboard", end: true },
+  { to: "/focus", label: "专注分析", icon: "focus" },
+  { to: "/activities", label: "活动日志", icon: "activities" },
+  { to: "/analytics", label: "行为洞察", icon: "analytics" },
+  { to: "/reports", label: "报告中心", icon: "reports" },
+  { to: "/intervention", label: "干预中心", icon: "intervention" },
+  { to: "/panel", label: "专家面板", icon: "panel" },
+  { to: "/chat", label: "AI 对话", icon: "chat" },
+  { to: "/settings", label: "系统设置", icon: "settings" },
 ];
 
 /** Local-only capabilities the reference does not ship; parked behind the
  *  advanced entry so the nine reference items stay untouched. */
-const ADVANCED_NAV = [
-  { to: "/model-center", label: "模型中心", icon: "icon-shujuku" },
-  { to: "/execution", label: "干预执行", icon: "icon-tixing" },
-  { to: "/diagnostics", label: "AI 诊断", icon: "icon-bodong" },
+const ADVANCED_NAV: Array<{ to: string; label: string; icon: NavIconName }> = [
+  { to: "/model-center", label: "模型中心", icon: "model" },
+  { to: "/execution", label: "干预执行", icon: "execution" },
+  { to: "/diagnostics", label: "AI 诊断", icon: "diagnostics" },
 ];
 
 const ADVANCED_PATHS = new Set(ADVANCED_NAV.map((item) => item.to));
+
+/** `11月10日周二` — spec §4.0 fixes both the pattern and the locale. */
+const DATE_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  month: "long",
+  day: "numeric",
+  weekday: "short",
+});
 
 function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -77,6 +86,14 @@ function Layout({ children }: { children: React.ReactNode }) {
   /** Element focus returns to when the dialog closes (WCAG 2.4.3). */
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const navToggleRef = useRef<HTMLButtonElement | null>(null);
+  /** Top-bar date (spec §4.0): one minute is the finest granularity the
+   *  format carries, so it is refreshed on that interval, not per second. */
+  const [today, setToday] = useState(() => new Date());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setToday(new Date()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const title = useMemo(() => {
     const all = [...NAV, ...ADVANCED_NAV];
@@ -195,10 +212,9 @@ function Layout({ children }: { children: React.ReactNode }) {
         inert={!navVisible}
       >
         <NavLink to="/" className="mf-logo" aria-label="MindFlow 首页">
-          <img className="mf-logo-img" src={logo} alt="" width={40} height={40} />
+          <img className="mf-logo-img" src={logo} alt="" width={28} height={28} />
           <span className="mf-logo-title">MindFlow</span>
         </NavLink>
-        <div className="mf-logo-line" aria-hidden="true" />
 
         <nav className="mf-nav-items" aria-label="主导航">
           {NAV.map((n) => (
@@ -208,7 +224,9 @@ function Layout({ children }: { children: React.ReactNode }) {
               end={n.end ?? false}
               className={({ isActive }) => `mf-nav-item${isActive ? " mf-nav-item--active" : ""}`}
             >
-              <span className={`iconfont ${n.icon}`} aria-hidden="true" />
+              <span className="mf-nav-icon">
+                <NavIcon name={n.icon} />
+              </span>
               {n.label}
             </NavLink>
           ))}
@@ -222,10 +240,9 @@ function Layout({ children }: { children: React.ReactNode }) {
               onClick={() => setGroupOpen((open) => !open)}
             >
               <span>高级功能</span>
-              <span
-                className={`iconfont icon-double-arrow-left-full mf-nav-group-chevron${groupOpen ? " mf-nav-group-chevron--open" : ""}`}
-                aria-hidden="true"
-              />
+              <span className={`mf-nav-icon mf-nav-group-chevron${groupOpen ? " mf-nav-group-chevron--open" : ""}`}>
+                <NavIcon name="chevrons" />
+              </span>
             </button>
             {groupOpen && (
               <div className="mf-nav-group-list" id="advanced-nav">
@@ -235,7 +252,9 @@ function Layout({ children }: { children: React.ReactNode }) {
                     to={n.to}
                     className={({ isActive }) => `mf-nav-item${isActive ? " mf-nav-item--active" : ""}`}
                   >
-                    <span className={`iconfont ${n.icon}`} aria-hidden="true" />
+                    <span className="mf-nav-icon">
+                      <NavIcon name={n.icon} />
+                    </span>
                     {n.label}
                   </NavLink>
                 ))}
@@ -246,7 +265,9 @@ function Layout({ children }: { children: React.ReactNode }) {
 
         <button type="button" className="mf-user" onClick={openLogout} aria-haspopup="dialog">
           <span className="mf-user-name">本地会话</span>
-          <span className="iconfont icon-tuichu mf-user-icon" aria-hidden="true" />
+          <span className="mf-nav-icon mf-user-icon">
+            <NavIcon name="logout" />
+          </span>
           <span className="mf-skip-link">退出登录</span>
         </button>
       </aside>
@@ -266,9 +287,17 @@ function Layout({ children }: { children: React.ReactNode }) {
               else setCollapsed((value) => !value);
             }}
           >
-            <span className="iconfont icon-icon_cebianlan" aria-hidden="true" />
+            <span className="mf-nav-icon">
+              <NavIcon name="sidebar" />
+            </span>
           </button>
           <span className="mf-header-name">{title}</span>
+          <time className="mf-header-date" dateTime={today.toISOString()}>
+            {DATE_FORMAT.format(today)}
+          </time>
+          <div className="mf-header-actions">
+            <StatusChip />
+          </div>
         </header>
 
         <main className="mf-main" id="main-content" tabIndex={-1} key={location.pathname}>
@@ -299,7 +328,9 @@ function Layout({ children }: { children: React.ReactNode }) {
               onClick={closeLogout}
               disabled={loggingOut}
             >
-              <span className="iconfont icon-chacha" aria-hidden="true" />
+              <span className="mf-nav-icon">
+                <NavIcon name="close" />
+              </span>
             </button>
             <h2 className="mf-dialog-title" id="logout-title">
               确认退出当前账号吗？
@@ -312,23 +343,25 @@ function Layout({ children }: { children: React.ReactNode }) {
                 {logoutError}
               </div>
             )}
-            <button
-              type="button"
-              className="mf-dialog-yes"
-              onClick={handleLogout}
-              disabled={loggingOut}
-            >
-              {loggingOut ? "退出中..." : "确认退出"}
-            </button>
-            <button
-              type="button"
-              className="mf-dialog-no"
-              ref={closeRef}
-              onClick={closeLogout}
-              disabled={loggingOut}
-            >
-              取消
-            </button>
+            <div className="mf-dialog-actions">
+              <button
+                type="button"
+                className="mf-dialog-no"
+                ref={closeRef}
+                onClick={closeLogout}
+                disabled={loggingOut}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="mf-dialog-yes"
+                onClick={handleLogout}
+                disabled={loggingOut}
+              >
+                {loggingOut ? "退出中…" : "确认退出"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -424,7 +457,7 @@ export default function App() {
       <div className="mf-login-page">
         <div className="login-card">
           <h1 className="login-title">MindFlow</h1>
-          <p className="login-subtitle">认证中...</p>
+          <p className="login-subtitle">认证中…</p>
           <div className="spinner" />
         </div>
       </div>

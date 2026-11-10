@@ -4,9 +4,11 @@ Uses a simple in-memory token bucket algorithm (no Redis dependency) since
 this is a local-only desktop application §4.4.
 
 Rate limits:
-  - Global: 100 requests/minute, single shared bucket (local single-user app;
-    per-IP separation is meaningless on localhost). Single-process only —
-    buckets are in-memory and NOT shared across workers.
+  - Global: 300 requests/minute, single shared bucket (local single-user app;
+    per-IP separation is meaningless on localhost). 100/min was too tight for
+    ordinary navigation — the dashboard poll plus a page's 5–15 requests per
+    view could exhaust it and surface "请求过于频繁" on a normal click. Single-
+    process only — buckets are in-memory and NOT shared across workers.
   - Per-endpoint: configurable via ``endpoint_limits`` dict keyed by path
 
 The middleware adds the following response headers:
@@ -101,7 +103,7 @@ class TokenBucket:
 # These protect paid LLM endpoints (chat/panel/attribution) from a local
 # process hammering the API. Previously the defaults were ~9999/s effectively
 # disabling the limiter (audit report — rate limit default values); the values
-# below match the documented policy (global 100/min; chat 20/min, 200/day;
+# below match the documented policy (global 300/min; chat 20/min, 200/day;
 # panel 10/min, 60/day; attribution 10/min, 50/day).
 _DEFAULT_ENDPOINT_LIMITS: dict[str, TokenBucket] = {
     "/api/v1/chat": TokenBucket(
@@ -161,12 +163,12 @@ def _build_429_response(
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware that enforces token bucket rate limits.
 
-    Applies a global rate limit (100 req/min) and per-endpoint limits where
+    Applies a global rate limit (300 req/min) and per-endpoint limits where
     configured. Missing tokens result in a 429 RFC 9457 error.
 
     Args:
         app: The ASGI application.
-        global_capacity: Global bucket capacity (default 100).
+        global_capacity: Global bucket capacity (default 300).
         global_refill_rate: Global refill rate in tokens/second.
         endpoint_limits: Optional dict of path -> TokenBucket for per-endpoint limits.
     """
@@ -174,8 +176,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app: Any,
-        global_capacity: float = 100.0,
-        global_refill_rate: float = 100.0 / 60.0,
+        global_capacity: float = 300.0,
+        global_refill_rate: float = 300.0 / 60.0,
         endpoint_limits: dict[str, TokenBucket] | None = None,
     ) -> None:
         super().__init__(app)

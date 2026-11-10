@@ -1,31 +1,34 @@
-:root { color-scheme: dark; }
+:root { color-scheme: dark; } /* fallback for first paint; themes.ts sets
+   the live value on <html> (light for the white theme), which wins. */
 html, body, #root { background: var(--color-bg); color: var(--mf-text); }
 :root input, :root select, :root textarea { color: var(--mf-text); background: var(--color-bg-inset); }
 :root input::placeholder, :root textarea::placeholder { color: var(--mf-text-dim); opacity: 1; }
 :root select { appearance: none; padding-right: 40px !important; background-image: var(--mf-select-arrow) !important; background-repeat: no-repeat; background-size: 12px 8px; background-position: right 14px center; color-scheme: inherit; }
 :root select > option { color: var(--mf-text) !important; background: var(--color-bg-elevated) !important; }
-:root .btn { background: var(--color-primary); color: var(--color-on-primary); }
-:root .btn-ghost { background: var(--color-primary-light); color: var(--mf-text); }
-:root .btn-danger { background: var(--color-bg-inset); color: var(--color-danger); border-color: var(--color-danger); }
+/* Button appearance is owned by theme.css §3.8. The old `:root .btn*` block
+   lived here and, being more specific, silently overrode the spec's neutral
+   base with a filled primary. Variants now win on their own. */
 :root .badge-success { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 12%, var(--color-bg-elevated)); }
 :root .badge-warning { color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 12%, var(--color-bg-elevated)); }
 :root .badge-danger { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 12%, var(--color-bg-elevated)); }
 :root .badge-info { color: var(--color-info); background: color-mix(in srgb, var(--color-info) 12%, var(--color-bg-elevated)); }
-:root .stat-card .value { color: var(--mf-text); }
 :root .chat-user { background: var(--color-primary); color: var(--color-on-primary); }
 :root .mf-dialog { background: var(--color-bg-elevated); }
 :root .mf-dialog-yes { background: var(--color-primary); color: var(--color-on-primary); }
 :root .mf-dialog-no { color: var(--mf-text); }
 :root .mf-login-page { background: var(--mf-login-radial); }
-:root .login-box, :root .login-card { background: var(--color-bg-elevated); }
+/* The login panel sits on top of the particle canvas, so it must stay
+   translucent — at full opacity it painted out the particle wordmark behind
+   it. It still follows the active theme surface, just at partial alpha. */
+:root .login-box, :root .login-card { background: color-mix(in srgb, var(--color-bg-elevated) 38%, transparent); }
 :root .mf-skip-link { background: var(--color-bg-elevated); color: var(--mf-text); }
 :root .mf-nav-item--active { background: var(--color-primary-light); }
 .theme-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .theme-option { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-inset); color: var(--mf-text); font: inherit; cursor: pointer; }
 .theme-option[aria-pressed="true"] { outline: 2px solid var(--mf-brand); outline-offset: 2px; }
 .theme-swatch { width: 24px; height: 24px; flex-shrink: 0; border: 1px solid var(--color-border); border-radius: 50%; }
-.theme-white .theme-swatch { background: #fff; }
-.theme-black .theme-swatch { background: #111; }
-.theme-navy .theme-swatch { background: #172b46; }
-.theme-burgundy .theme-swatch { background: #35212b; }
+.theme-white .theme-swatch { background: #f5f7fa; }
+.theme-black .theme-swatch { background: #0c0f10; }
+.theme-navy .theme-swatch { background: #121a24; }
+.theme-burgundy .theme-swatch { background: #1e1218; }
 @media (max-width: 700px) { .theme-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

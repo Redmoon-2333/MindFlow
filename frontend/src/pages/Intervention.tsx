@@ -13,7 +13,11 @@ import { INTERVENTION_TYPE_LABELS, INTERVENTION_TYPE_BADGES } from "../lib/inter
 import PosteriorBars from "../components/charts/PosteriorBars";
 import { SELECTION_LABELS } from "../types/explainability";
 import type { InterventionRationale } from "../types/explainability";
+import Segmented from "../components/signal/Segmented";
+import SectionHeader from "../components/signal/SectionHeader";
+import HelpTip from "../components/signal/HelpTip";
 import "../components/primitives.css";
+import "./intervention.css";
 
 interface InterventionItem {
   id: string;
@@ -75,7 +79,13 @@ function RationaleBlock({ rationale }: { rationale?: InterventionRationale | nul
 
       {rationale.candidates.length > 0 && (
         <div className="rationale-candidates">
-          <div className="proof-title">候选提醒的实测表现</div>
+          <div className="proof-title">
+            候选提醒的实测表现
+            <HelpTip
+              term="实测表现"
+              what="每种提醒过去对你有效的比例。横线越长表示越不确定，系统会偶尔试一试这些提醒。"
+            />
+          </div>
           <PosteriorBars
             candidates={rationale.candidates}
             ariaLabel="候选提醒的 Thompson 采样后验均值与 90% 可信区间"
@@ -93,6 +103,16 @@ const INTENSITY_OPTIONS = [
   { key: "standard", label: "标准干预" },
   { key: "strict", label: "严格干预" },
 ];
+
+/** §8.8: the middle step is the page's one primary action; the loudest is
+ *  destructive, the mildest is secondary. */
+/** §8.17.2 overrides §8.8: red is reserved for destructive actions, and
+ *  "strict" only changes the wording of a reminder — it deletes nothing. */
+const INTENSITY_CLASS: Record<(typeof INTENSITY_OPTIONS)[number]["key"], string> = {
+  gentle: "btn-secondary",
+  standard: "btn-primary",
+  strict: "btn-secondary",
+};
 
 const DAYS_OPTIONS = [7, 14, 30, 90] as const;
 
@@ -273,20 +293,21 @@ export default function Intervention() {
       {error && <div className="error-box mb16">{error}</div>}
 
       {skipNotice && (
-        <div
-          className="card mb16"
-          style={{ borderLeft: "3px solid var(--color-warning, #d97706)", fontSize: 13 }}
-          role="status"
-        >
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>本次提醒已跳过</div>
-          <div style={{ color: "var(--color-text-secondary)" }}>{skipNotice}</div>
+        <div className="notice mb16" role="status">
+          <div className="notice-text">
+            <strong>本次提醒已跳过</strong>
+            <div className="intervention-skip-reason">{skipNotice}</div>
+          </div>
         </div>
       )}
 
       <div className="workspace-grid">
       <div className="card intervention-trigger">
-        <h3>手动触发干预</h3>
-        <p style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+        <h3>
+          手动触发干预
+          <HelpTip term="手动触发" what="不用等系统发现，现在就让它给你一条提醒。" />
+        </h3>
+        <p className="card-desc">
           选择一个强度级别，手动触发一次专注干预
         </p>
         <div className="workspace-actions">
@@ -294,51 +315,56 @@ export default function Intervention() {
             <button
               type="button"
               key={opt.key}
-              className={`btn ${opt.key === "strict" ? "btn-danger" : ""}`}
+              className={`btn btn-sm ${INTENSITY_CLASS[opt.key]}`}
               disabled={triggering}
               onClick={() => handleTrigger(opt.key as InterventionIntensity)}
             >
               {triggering && (
-                <span className="spinner" style={{ width: 16, height: 16, margin: 0, borderWidth: 2 }} />
+                <span className="spinner spinner--inline" />
               )}
               {opt.label}
             </button>
           ))}
+          <HelpTip
+            term="提醒强度"
+            what="温和、标准、严格只改变提醒的语气和弹窗的醒目程度。"
+            effect="会读取最近 45 分钟的记录，并占用今天自动提醒的次数；如果提醒类型是“环境优化”，系统可能会自动把最让你分心的网站加入拦截名单。"
+          />
         </div>
       </div>
 
       {latest ? (
         <div className="card">
           <div className="flex-between mb16">
-            <h3 style={{ margin: 0 }}>最新干预</h3>
+            <h3>最新干预</h3>
             {getInterventionTypeBadge(latest.intervention_type)}
           </div>
           {latest.title && (
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>
+            <div className="intervention-latest-title">
               {latest.title}
             </div>
           )}
           {latest.message && (
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 10 }}>
+            <p className="intervention-latest-message">
               {latest.message}
-            </div>
+            </p>
           )}
           <div className="intervention-response-row">
           <div className="workspace-actions">
             {getStatusBadge(latest)}
-            <span style={{ marginLeft: 8 }}>
+            <span className="intervention-latest-time">
               {formatTime(latest.triggered_at || latest.created_at || "")}
             </span>
           </div>
           <div className="workspace-actions">
             <button
               type="button"
-              className="btn btn-sm"
+              className="btn btn-secondary btn-sm"
               disabled={respondingId !== null}
               onClick={() => handleRespond(latest.id, "accepted")}
             >
               {respondingId === latest.id && (
-                <span className="spinner" style={{ width: 12, height: 12, margin: 0, borderWidth: 2 }} />
+                <span className="spinner spinner--inline spinner--xs" />
               )}
               接受
             </button>
@@ -358,84 +384,78 @@ export default function Intervention() {
             >
               关闭
             </button>
+            <HelpTip
+              term="怎么回应"
+              what="接受：这条提醒有用，你会照做。忽略：先不理它。关闭：不想看到这类提醒。"
+              effect="你的选择会让系统学习，以后多给有用的提醒、少给没用的。"
+            />
           </div>
           </div>
           <div className="proof rationale-latest" aria-label="为什么是这条提醒">
-            <div className="proof-title">为什么是这条提醒</div>
+            <div className="proof-title">
+              为什么是这条提醒
+              <HelpTip term="为什么是这条" what="系统会记录每种提醒对你有没有用，再挑一条最可能帮到你的。" />
+            </div>
             <RationaleBlock rationale={latest.rationale} />
           </div>
         </div>
-      ) : (<div className="card"><h3>最新干预</h3><div className="workspace-empty">暂时没有提醒。<br />需要时，可以从左侧选择一种强度。</div></div>)}
+      ) : (
+        <div className="card">
+          <h3>最新干预</h3>
+          <div className="empty-state">暂时没有提醒。<br />需要时，可以从左侧选择一种强度。</div>
+        </div>
+      )}
       </div>
 
       <div className="card">
-        <div className="flex-between mb16">
-          <h3 style={{ margin: 0 }}>干预历史</h3>
-          <div className="tabs">
-            {DAYS_OPTIONS.map((d) => (
-              <button
-                type="button"
-                key={d}
-                className={`tab ${days === d ? "active" : ""}`}
-                onClick={() => setDays(d)}
-              >
-                {d}天
-              </button>
-            ))}
-          </div>
-        </div>
+        <SectionHeader
+          title="干预历史"
+          actions={
+            <Segmented
+              ariaLabel="历史范围"
+              options={DAYS_OPTIONS.map((d) => ({ value: String(d), label: `${d} 天` }))}
+              value={String(days)}
+              onChange={(value) => setDays(Number(value))}
+            />
+          }
+        />
 
         {loading && <div className="spinner" />}
 
         {!loading && history.length === 0 && (
-          <p style={{ color: "var(--color-text-tertiary)", fontSize: 14 }}>暂无干预记录</p>
+          <p className="intervention-empty">暂无干预记录</p>
         )}
 
         {!loading &&
           history.map((item) => (
-            <div
-              key={item.id}
-              className="flex gap16"
-              style={{
-                padding: "14px 0",
-                borderBottom: "1px solid var(--color-border)",
-              }}
-            >
-              <div
-                style={{
-                  width: 10,
-                  height: 10,
-                  borderRadius: "50%",
-                  background: hasResponded(item)
-                    ? "var(--color-success)"
-                    : "var(--color-warning)",
-                  marginTop: 4,
-                  flexShrink: 0,
-                }}
+            <div key={item.id} className="intervention-history-row">
+              <span
+                className={`intervention-dot ${hasResponded(item) ? "intervention-dot--ok" : "intervention-dot--warn"}`}
+                aria-hidden="true"
               />
               <div className="workspace-record-body intervention-history-body">
                 <div className="flex-between">
-                  <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
+                  <div className="workspace-actions">
                     {getInterventionTypeBadge(item.intervention_type)}
                     {getStatusBadge(item)}
                     {item.response_latency_s != null && (
-                      <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
+                      <span className="intervention-history-meta">
                         响应耗时 {item.response_latency_s.toFixed(1)} 秒
                       </span>
                     )}
                   </div>
-                  <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
+                  <span className="intervention-history-time">
                     {formatTime(item.triggered_at || item.created_at || "")}
                   </span>
                 </div>
 
                 {item.title && (
-                  <div className="intervention-history-title" style={{ fontSize: 14, fontWeight: 600, marginTop: 6 }}>
+                  <div className="intervention-history-title">
                     {item.title}
                   </div>
                 )}
                 {item.message && (
-                  <div className="intervention-history-message" style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 2 }}>
+                  <div className="intervention-history-message">
                     {item.message}
                   </div>
                 )}
@@ -448,12 +468,12 @@ export default function Intervention() {
                 )}
 
                 {feedbackId === item.id ? (
-                  <div className="mt8 intervention-feedback-editor" style={{ background: "var(--color-bg-inset)", padding: 12, borderRadius: 8 }}>
+                  <div className="intervention-feedback-editor">
                     <select
                       aria-label="干预评分"
                       value={feedbackRating}
                       onChange={(e) => setFeedbackRating(e.target.value as InterventionRating | "")}
-                      style={{ marginBottom: 8 }}
+                      className="intervention-feedback-select"
                     >
                       <option value="">选择评分</option>
                       <option value="helpful">有用</option>
@@ -465,23 +485,23 @@ export default function Intervention() {
                       value={feedbackComment}
                       onChange={(e) => setFeedbackComment(e.target.value)}
                       rows={2}
-                      style={{ marginBottom: 8 }}
+                      className="intervention-feedback-comment"
                     />
-                    <div className="flex gap8">
+                    <div className="workspace-actions">
                       <button
                         type="button"
-                        className="btn btn-sm"
+                        className="btn btn-primary btn-sm"
                         disabled={submittingFeedback || !feedbackRating}
                         onClick={() => handleFeedback(item.id)}
                       >
                         {submittingFeedback && (
-                          <span className="spinner" style={{ width: 12, height: 12, margin: 0, borderWidth: 2 }} />
+                          <span className="spinner spinner--inline spinner--xs" />
                         )}
                         提交
                       </button>
                       <button
                         type="button"
-                        className="btn btn-sm btn-ghost"
+                        className="btn btn-ghost btn-sm"
                         onClick={() => {
                           setFeedbackId(null);
                           setFeedbackRating("");
@@ -494,19 +514,26 @@ export default function Intervention() {
                   </div>
                 ) : (
                   canFeedback(item) && (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-ghost intervention-history-evaluate"
-                      onClick={() => {
-                        // Opening the editor for one record must not inherit
-                        // another record's half-written draft.
-                        setFeedbackRating("");
-                        setFeedbackComment("");
-                        setFeedbackId(item.id);
-                      }}
-                    >
-                      评价
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost intervention-history-evaluate"
+                        onClick={() => {
+                          // Opening the editor for one record must not inherit
+                          // another record's half-written draft.
+                          setFeedbackRating("");
+                          setFeedbackComment("");
+                          setFeedbackId(item.id);
+                        }}
+                      >
+                        评价
+                      </button>
+                      <HelpTip
+                        term="评价"
+                        what="告诉系统这条提醒是有用、一般还是打扰。"
+                        effect="评价比“接受/忽略”更重要，会直接决定以后多不多用这类提醒；每条只能评价一次。"
+                      />
+                    </>
                   )
                 )}
               </div>

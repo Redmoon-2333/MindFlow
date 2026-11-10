@@ -431,6 +431,6 @@ export const MOTIVATION_LEVEL_LABELS: Readonly<Record<TmtBreakdown["motivation_l
 };
 
 export const SELECTION_LABELS: Readonly<Record<InterventionSelection, string>> = {
-  thompson_sampling: "Thompson 采样",
-  rule: "规则选择",
+  thompson_sampling: "按效果挑选",
+  rule: "按规则挑选",
 };

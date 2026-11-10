@@ -8,12 +8,28 @@ for (const theme of ["white", "black", "navy", "burgundy"]) for (const width of 
     await page.route("**/api/v1/focus?**",route => route.fulfill({json:{date:"2026-10-08",session_count:1,sessions:[{id:"d",session_type:"distraction",duration_minutes:30,focus_score:28,start_time:"2026-10-08T09:00:00",end_time:"2026-10-08T09:30:00",dominant_app:"ChatGPT.exe",switch_count:12}]}}));
     await page.route("**/api/v1/intervention/history?**",route => route.fulfill({json:{items:[{id:"i",intervention_type:"task_breakdown",title:"小提示：先完成一步",message:"先整理一个图表，再继续下一步。",created_at:"2026-10-08T09:00:00Z",user_response:"dismissed",response_latency_s:3.438}],count:1}}));
     await page.route("**/api/v1/analytics/attribution",route => route.fulfill({json:{procrastination_type:"task_aversion",cbt_technique:"graded_exposure",evidence:"任务较大，可以从小步骤开始。"}}));
-    await page.goto("/"); await expect(page.locator(".d-extra-card").first()).toBeVisible();
-    const rows=await page.evaluate(() => [".d-state",".d-activity-chart",".d-statistic",".d-control-inference",".d-extra"].map(s=>{const r=document.querySelector(s)!.getBoundingClientRect();return {x:r.x,width:r.width};}));
-    for(const row of rows){expect(Math.abs(row.x-rows[0].x)).toBeLessThan(1);expect(Math.abs(row.width-rows[0].width)).toBeLessThan(1);}
-    if(width===1440) { const heights=await page.locator(".d-control, .d-inference").evaluateAll(els=>els.map(el=>el.getBoundingClientRect().height)); expect(Math.abs(heights[0]-heights[1])).toBeLessThan(1); }
+    await page.goto("/"); await expect(page.locator(".dash-hero")).toBeVisible();
+    // Same "no ragged rows" property the old five-row check measured, now on
+    // the single grid: the full-width blocks share one left edge and one
+    // width, and the 2fr/1fr pair fills exactly that width.
+    const box=async (s:string)=>page.locator(s).evaluate(el=>{const r=el.getBoundingClientRect();return {x:r.x,width:r.width,height:r.height};});
+    const hero=await box(".dash-hero"), next=await box(".dash-next"), strip=await box(".sig-metrics"), trend=await box(".dash-trend");
+    // 今天 and 最近 7 天 span the grid: same left edge, same width.
+    expect(Math.abs(strip.x-hero.x)).toBeLessThan(1);
+    expect(Math.abs(trend.x-strip.x)).toBeLessThan(1);
+    expect(Math.abs(trend.width-strip.width)).toBeLessThan(1);
+    if(width===1440) {
+      expect(Math.abs(hero.x+hero.width+16-next.x), "hero and 下一步 are adjacent columns").toBeLessThan(1);
+      expect(Math.abs(next.x+next.width-strip.x-strip.width), "the pair ends where the strip ends").toBeLessThan(1);
+      expect(Math.abs(hero.height-next.height), "hero and 下一步 are equal-height peers").toBeLessThan(1);
+    } else {
+      expect(Math.abs(next.x-hero.x)).toBeLessThan(1);
+      expect(Math.abs(next.width-hero.width)).toBeLessThan(1);
+    }
     await page.goto("/focus"); await expect(page.locator(".conversation-item")).toHaveCount(1);
-    expect(await page.locator(".state-item").first().evaluate(el=>el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(145);
+    // The 当日 strip is one surface with four cells (spec §3.3); the old
+    // "state card is at least 145px tall" check measured the removed cards.
+    await expect(page.locator(".f-state .sig-metric")).toHaveCount(4);
     const selects=page.locator(".conversation-item select");
     expect(await selects.first().evaluate(el=>{const select=getComputedStyle(el), option=getComputedStyle(el.querySelector("option")!);return select.backgroundPosition.includes("14px")&&option.color!==option.backgroundColor&&select.backgroundImage.includes("svg");})).toBe(true);
     await expect.poll(()=>page.locator(".mf-main").evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
@@ -30,19 +46,28 @@ for (const theme of ["white", "black", "navy", "burgundy"]) for (const width of 
     await page.goto("/settings"); await expect(page.locator(".settings-control-card")).toHaveCount(2);
     if(width===1440){const cards=await page.locator(".settings-control-card").evaluateAll(els=>els.map(el=>el.getBoundingClientRect().top));expect(Math.abs(cards[0]-cards[1])).toBeLessThan(1);}
     if(width===1440) {
-      const stats=await page.locator(".telemetry-stats > div").evaluateAll(els=>els.map(el=>({x:el.getBoundingClientRect().x,y:el.getBoundingClientRect().y,width:el.getBoundingClientRect().width})));
-      const buttons=await page.locator(".telemetry-actions > button").evaluateAll(els=>els.map(el=>({x:el.getBoundingClientRect().x,y:el.getBoundingClientRect().y,width:el.getBoundingClientRect().width})));
-      expect(stats).toHaveLength(5); expect(buttons).toHaveLength(5);
-      stats.forEach((stat,i)=>{ expect(Math.abs(stat.y-stats[0].y)).toBeLessThan(1); expect(Math.abs(stat.x-buttons[i].x)).toBeLessThan(1); expect(Math.abs(stat.width-buttons[i].width)).toBeLessThan(1); });
+      // The telemetry readout is now five label—value rows (spec §8.6), so the
+      // cells no longer have to line up column-for-column with the buttons;
+      // what must still hold is one row per action and one shared button height.
+      await expect(page.locator(".telemetry-stats > .kv-row")).toHaveCount(5);
+      await expect(page.locator(".telemetry-actions > button")).toHaveCount(5);
+      const buttons=await page.locator(".telemetry-actions > button").evaluateAll(els=>els.map(el=>({y:el.getBoundingClientRect().y,height:el.getBoundingClientRect().height})));
+      const first=buttons[0];
+      buttons.forEach(button=>{ expect(Math.abs(button.y-first.y)).toBeLessThan(1); expect(Math.abs(button.height-first.height)).toBeLessThan(1); });
     }
     await page.locator(".settings-control-grid").scrollIntoViewIfNeeded();
     await page.screenshot({path:`screenshots/20261008/density-${theme}-${width}-settings.png`});
     await page.route("**/api/v1/analytics/profile?**",route=>route.fulfill({json:{peak_focus_hours:[{hour:8,avg_score:52}],peak_focus:"8:00 (avg 52)",productivity_apps:["code.exe"],trigger_apps:[],avg_focus_block_min:30,details:{avg_focus_block_min:30,total_events:524,distraction_ratio:0.006}}}));
     await page.goto("/analytics"); await page.getByRole("button",{name:"运行归因分析"}).click();
-    await expect(page.getByText("任务厌恶（task_aversion）",{exact:false})).toBeVisible();
-    await expect(page.getByText("分级面对任务（graded_exposure）",{exact:true})).toBeVisible();
-    await expect(page.getByText("活动事件总数（total_events）",{exact:true})).toBeVisible();
-    expect(await page.locator("select.time").evaluate(el=>el.getBoundingClientRect().width)).toBeGreaterThanOrEqual(140);
+    await expect(page.getByText("任务厌恶",{exact:true})).toBeVisible();
+    await expect(page.getByText("分级面对任务",{exact:true})).toBeVisible();
+    await expect(page.getByText("活动事件总数",{exact:true})).toBeVisible();
+    // The range control is a Segmented group now (spec §8.4.2); the old
+    // native <select> it replaced is gone, so assert the group is present and
+    // that its options are reachable buttons.
+    const rangeGroup = page.getByRole("group", { name: "时间范围" });
+    await expect(rangeGroup).toBeVisible();
+    await expect(rangeGroup.locator(".sig-seg-item")).toHaveCount(4);
     await page.locator(".fifth-box").scrollIntoViewIfNeeded();
     await page.screenshot({path:`screenshots/20261008/density-${theme}-${width}-attribution.png`});
   });

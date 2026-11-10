@@ -32,21 +32,17 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
   render(): ReactNode {
     if (this.state.hasError) {
       return (
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "center",
-          minHeight: "100vh", background: "var(--color-bg)",
-        }}>
-          <div className="card" style={{ width: 440, padding: 40, textAlign: "center" }}>
-            <h1 style={{ fontSize: 24, color: "var(--color-primary)", marginBottom: 8 }}>
-              MindFlow
-            </h1>
-            <p style={{ color: "var(--color-text-secondary)", marginBottom: 16 }}>
-              页面渲染出现问题，请刷新重试
-            </p>
-            <div className="error-box" style={{ textAlign: "left", marginBottom: 16 }}>
-              {this.state.message}
-            </div>
-            <button className="btn btn-primary" onClick={this.handleReload}>
+        <div className="error-boundary">
+          <div className="card error-boundary-card">
+            <h1 className="error-boundary-title">MindFlow</h1>
+            <p className="error-boundary-text">页面渲染出现问题，请刷新重试</p>
+            {/* The raw message is for diagnosis, not for the reader: it is
+                collapsed by default and never in the primary copy (§8.21.3). */}
+            <details className="error-boundary-details">
+              <summary>技术详情</summary>
+              <p className="error-boundary-raw">{this.state.message}</p>
+            </details>
+            <button className="btn btn-primary error-boundary-action" onClick={this.handleReload}>
               刷新页面
             </button>
           </div>

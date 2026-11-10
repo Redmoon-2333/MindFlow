@@ -103,7 +103,7 @@ export default function Login({ bootstrapError = null, onClearBootstrapError }: 
           )}
 
           <button className="login-btn" type="submit" disabled={devLoading || devSuccess}>
-            {devLoading ? "认证中..." : devSuccess ? "认证成功，正在进入..." : "进入 MindFlow"}
+            {devLoading ? "认证中…" : devSuccess ? "认证成功，正在进入…" : "进入 MindFlow"}
           </button>
         </form>
 
@@ -116,17 +116,21 @@ export default function Login({ bootstrapError = null, onClearBootstrapError }: 
           </div>
         )}
 
-        <div className="login-divider">
-          <div className="login-divider-label">开发模式</div>
-          <button
-            type="button"
-            className="login-btn login-btn--ghost"
-            onClick={handleDevLogin}
-            disabled={devLoading || devSuccess}
-          >
-            {devLoading ? "认证中..." : devSuccess ? "认证成功" : "Dev 登录（本地调试）"}
-          </button>
-        </div>
+        {/* §8.17.3: the dev shortcut shares its handler with "进入 MindFlow" and
+            only confuses a real user, so it exists in a dev build only. */}
+        {import.meta.env.DEV && (
+          <div className="login-divider">
+            <div className="login-divider-label">开发模式</div>
+            <button
+              type="button"
+              className="login-btn login-btn--ghost"
+              onClick={handleDevLogin}
+              disabled={devLoading || devSuccess}
+            >
+              {devLoading ? "认证中…" : devSuccess ? "认证成功" : "Dev 登录（本地调试）"}
+            </button>
+          </div>
+        )}
 
         <div className="login-footer">
           没有账号体系：本地票据即凭证，退出后需重新认证。

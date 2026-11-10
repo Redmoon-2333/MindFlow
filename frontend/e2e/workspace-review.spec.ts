@@ -16,8 +16,8 @@ async function setup(page: Page) {
     else if (path === "/chat/sessions") json = [];
     else if (path === "/intervention/history") json = {items:[{id:"intervention-1", intervention_type:"task_breakdown", title:"从一个小步骤开始", message:"先整理一个图表，再继续下一步。", created_at:task.created_at, triggered_at:task.created_at, user_response:null}], count:1};
     else if (path === "/health") json = {status:"ok", version:"2.0", database:{status:"ok"}, migration:{applied:true}};
-    else if (path === "/health/live") json = {status:"ok"};
-    else if (path === "/health/ready") json = {status:"ok", checks:{database:true}};
+    else if (path === "/health/live") json = {status:"alive", version:"2.0", timestamp:"2026-10-08T09:00:00Z"};
+    else if (path === "/health/ready") json = {status:"ready", version:"2.0", timestamp:"2026-10-08T09:00:00Z", database:{status:"ok", connected:true, integrity_ok:true}, migration:{applied:true}, checkpoint_store:"available", run_store:"available"};
     else if (path === "/collector") json = {status:"stopped", running:false};
     else if (path === "/autonomy") json = {enabled:true, paused:false, paused_until:null};
     else if (path === "/app-classifications") json = [{id:"rule-1", process_name:"code.exe", window_title_pattern:"", category:"code", priority:10}];
@@ -28,7 +28,7 @@ async function setup(page: Page) {
     else if (path === "/analytics/model-status") json = {loaded:false, ready:false, mode:"rule_engine_only", v2_mode:"rule_engine_only", reasons:[]};
     else if (path === "/analytics/baseline" || path === "/analytics/training-readiness") return route.fulfill({status:404, json:{detail:"暂无数据"}});
     else if (path === "/ai/graph") json = {available:true, nodes:["start","panel"], edges:[{from:"start",to:"panel"}]};
-    else if (path === "/ai/runs") { const offset=Number(url.searchParams.get("offset") ?? 0); json = {items:Array.from({length:Math.min(20,45-offset)},(_,i) => ({run_id:`run-${offset+i}`,status:"completed",source:"panel",started_at:task.created_at,completed_at:task.created_at,duration_ms:1000})),total:45,limit:20,offset}; }
+    else if (path === "/ai/runs") { const offset=Number(url.searchParams.get("offset") ?? 0); json = {items:Array.from({length:Math.min(20,45-offset)},(_,i) => ({run_id:`run-${offset+i}`,status:"completed",source:"panel",started_at:task.created_at,completed_at:task.created_at,duration_ms:1000})),count:45,has_more:offset+Math.min(20,45-offset)<45,next_offset:offset+Math.min(20,45-offset)<45?offset+Math.min(20,45-offset):null}; }
     else if (path.startsWith("/ai/runs/")) json = {run_id:path.split("/").at(-1), status:"completed",source:"panel",started_at:task.created_at,completed_at:task.created_at,duration_ms:1000,node_events:[],error:null};
     await route.fulfill({status:200,json});
   });
@@ -69,14 +69,17 @@ test("task editing submits description and explicit clears",async ({page}) => {
 test("settings groups expose real usage and classification",async ({page}) => {
   await setup(page); await page.goto("/settings");
   await page.getByRole("button",{name:"系统状态",exact:true}).click();
-  await expect(page.getByText("估算费用：0.1234 USD")).toBeVisible();
+  // The readout is a label—value row now (spec §8.6.5), not one colon string.
+  await expect(page.locator(".kv-row").filter({hasText:"估算费用"})).toContainText("0.1234 USD");
   await page.getByRole("button",{name:"应用分类",exact:true}).click();
   await page.getByRole("button",{name:"获取未知应用",exact:true}).click();
   await page.getByRole("button",{name:/editor.exe/}).click();
   await expect(page.getByLabel("进程名",{exact:true})).toHaveValue("editor.exe");
-  await page.getByRole("button",{name:"数据与偏好",exact:true}).click();
-  await page.getByText("高级偏好设置 · JSON 编辑",{exact:true}).click();
-  await expect(page.getByRole("button",{name:"完整保存",exact:false})).toBeVisible();
+  await page.getByRole("button",{name:"数据导出",exact:true}).click();
+  await expect(page.getByRole("button",{name:"导出",exact:true})).toBeVisible();
+  // §8.16.1: end users never hand-edit JSON, so the editor must be gone.
+  await expect(page.getByText("高级偏好设置")).toHaveCount(0);
+  await expect(page.getByLabel("偏好设置 JSON")).toHaveCount(0);
 });
 
 test("diagnostics next page uses backend offset",async ({page}) => {
@@ -102,4 +105,80 @@ test("panel preserves insufficient evidence and dissent", async ({page}) => {
   await page.getByRole("button",{name:"查看上次结果"}).click();
   await page.getByText("不同意见 · 1 条",{exact:true}).click();
   await expect(page.getByText(panel.dissent[0],{exact:true})).toBeVisible();
+});
+
+
+/** §8.17.4: the jargon "?" opens on focus, closes on Escape, and never leaves
+ *  the viewport — including at 375px, where a popover anchored to a trigger
+ *  near the right edge would otherwise be clipped. */
+for (const width of [1440, 375]) {
+  test(`${width}px help tip opens on focus, closes on Escape, stays in the viewport`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await setup(page);
+    await page.goto("/");
+    const trigger = page.locator(".help-tip-trigger").first();
+    await expect(trigger).toBeVisible({ timeout: 10000 });
+    await trigger.focus();
+
+    const tip = page.getByRole("tooltip");
+    await expect(tip).toBeVisible();
+    expect((await tip.textContent())?.trim().length ?? 0).toBeGreaterThan(0);
+
+    const box = await tip.boundingBox();
+    expect(box, "the tooltip must be laid out before it can be measured").not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(900);
+
+    await page.keyboard.press("Escape");
+    await expect(tip).toHaveCount(0);
+  });
+}
+
+/** §8.22.1: the page gutter belongs to `.mf-main` alone. Four page wrappers
+ *  (`.f-page`, `.activities`, `.analytics`, `.reports`) once re-added a padding
+ *  of their own, which pushed their content 24px further in than the dashboard
+ *  for no reason the reader could name. The acceptance criterion is positional:
+ *  on every page shape, the lede starts exactly at the `.mf-main` content edge. */
+test("1440px: every page shape starts at the .mf-main content edge", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await setup(page);
+  // `/focus` needs a well-formed envelope; the shared fixture answers with `{}`.
+  await page.route("**/api/v1/focus?**", route =>
+    route.fulfill({ json: { date: "2026-10-08", session_count: 0, sessions: [] } }));
+  for (const path of ["/focus", "/activities", "/analytics", "/reports", "/settings"]) {
+    await page.goto(path);
+    await expect(page.locator(".page-lede")).toBeVisible({ timeout: 10000 });
+    const edges = await page.evaluate(() => {
+      const main = document.querySelector(".mf-main")!;
+      const mainRect = main.getBoundingClientRect();
+      const lede = document.querySelector(".page-lede")!;
+      return {
+        content: mainRect.left + parseFloat(getComputedStyle(main).paddingLeft),
+        lede: lede.getBoundingClientRect().left,
+      };
+    });
+    expect(Math.abs(edges.lede - edges.content), `${path} must not add a gutter of its own`).toBeLessThan(1);
+  }
+});
+
+/** §8.15: no page may scroll horizontally at 375px — the narrowest phone the
+ *  shell supports. Checked on every routed page in one sweep so a single-page
+ *  regression cannot hide behind the pages that happen to be tested already. */
+test("375px: no page scrolls horizontally", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await setup(page);
+  for (const path of ["/", "/focus", "/activities", "/analytics", "/reports", "/intervention", "/panel", "/chat", "/settings", "/model-center", "/execution", "/diagnostics"]) {
+    await page.goto(path);
+    await expect(page.locator(".mf-header-name")).toBeVisible();
+    await expect.poll(
+      () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+      { message: `${path} must not overflow at 375px` },
+    ).toBe(true);
+    await expect.poll(
+      () => page.locator(".mf-main").evaluate(el => el.scrollWidth <= el.clientWidth + 1),
+      { message: `${path} .mf-main must not scroll horizontally` },
+    ).toBe(true);
+  }
 });

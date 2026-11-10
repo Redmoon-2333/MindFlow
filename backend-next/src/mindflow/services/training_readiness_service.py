@@ -259,7 +259,7 @@ class TrainingReadinessService:
         )
         if not calibration_available:
             if "calibration_available" not in checks:
-                reason = "训练报告缺少校准可用性门控结果（calibration_available）"
+                reason = "训练报告里没有校准结果，需要重新训练一次"
             elif not calibration:
                 reason = "训练报告缺少校准状态"
             else:

@@ -3,6 +3,15 @@ import "./charts.css";
 import { useElementWidth } from "./useElementWidth";
 import { clamp, formatCompact, niceTicks } from "./scale";
 
+/** Approximate rendered width of a tick label at 12px: CJK glyphs are ~12px,
+ *  Latin/digits ~6.6px. Used only to decide how many labels to skip. */
+function textWidth(value: string): number {
+  let total = 0;
+  for (const ch of value) total += ch.codePointAt(0)! >= 0x2e80 ? 12 : 6.6;
+  return total;
+}
+
+
 export interface StackedSeries {
   key: string;
   label: string;
@@ -73,7 +82,9 @@ export default function StackedBar({
 
   const slot = plotWidth / data.length;
   const barWidth = Math.max(4, Math.min(slot * 0.618, 64));
-  const labelStride = slot < 26 ? Math.ceil(26 / slot) : 1;
+  // Same width-aware stride as BarChart (§8.19).
+  const maxLabelWidth = data.reduce((widest, datum) => Math.max(widest, textWidth(datum.label)), 0);
+  const labelStride = Math.max(1, Math.ceil((maxLabelWidth + 8) / slot));
 
   return (
     <figure className="mf-chart" ref={ref}>
@@ -158,6 +169,8 @@ export default function StackedBar({
                       height={segmentHeight}
                       rx={isTop ? Math.min(5, barWidth / 3) : 0}
                       fill={entry.color}
+                      data-series={entry.key}
+                      data-value={value}
                     />
                   );
                 })}

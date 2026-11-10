@@ -3,6 +3,7 @@ import { answerFeedbackRequest, getPendingFeedbackRequests } from "../api";
 import { realtimeClient } from "../realtime";
 import { toast } from "./toast-store";
 import type { FeedbackLabel, FeedbackRequest } from "../types/explainability";
+import HelpTip from "./signal/HelpTip";
 import "./primitives.css";
 
 const POLL_INTERVAL_MS = 60_000;
@@ -97,7 +98,14 @@ export default function FeedbackPrompt() {
   return (
     <section className="feedback-prompt" aria-labelledby="feedback-prompt-title" role="group">
       <div className="feedback-prompt-head">
-        <span className="feedback-prompt-kicker">模型校准</span>
+        <span className="feedback-prompt-kicker">
+          模型校准
+          <HelpTip
+            term="模型校准"
+            what="系统不确定你刚才在不在专注，所以来问问你。"
+            effect="选“专注”或“分心”会教它更了解你；选“跳过”什么都不会记录。"
+          />
+        </span>
         {remaining > 0 && <span className="feedback-prompt-queue">还有 {remaining} 条</span>}
       </div>
       <p className="feedback-prompt-title" id="feedback-prompt-title">

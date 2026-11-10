@@ -13,7 +13,7 @@
 
 .mf-chart figcaption {
   font-size: var(--fs-sm);
-  color: var(--mf-text-dim);
+  color: var(--text-dim);
   line-height: var(--leading-normal);
 }
 
@@ -34,16 +34,28 @@
 .mf-chart-grid { stroke: var(--chart-grid); stroke-width: 1; shape-rendering: crispEdges; }
 .mf-chart-baseline { stroke: var(--chart-axis); stroke-width: 1; shape-rendering: crispEdges; }
 .mf-chart-tick {
-  fill: var(--mf-text-dim);
-  font-size: 11px;
+  fill: var(--text-dim);
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 .mf-chart-tick--x { text-anchor: middle; }
 .mf-chart-tick--y { text-anchor: end; }
 .mf-chart-axis-title {
-  fill: var(--mf-text-dim);
-  font-size: 11px;
-  letter-spacing: 0.04em;
+  fill: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+/* Reference line (7-day mean) — 1px dashed, never a filled band. */
+.mf-chart-reference {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  shape-rendering: crispEdges;
+}
+.mf-chart-reference-label {
+  fill: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Bars ──────────────────────────────────────────────────────────────── */
@@ -53,12 +65,18 @@
 .mf-chart-bar--dim { opacity: 0.42; }
 .mf-chart-bar--active { filter: brightness(1.12); }
 .mf-chart-value-label {
-  fill: var(--mf-text);
-  font-size: 11px;
+  fill: var(--text);
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-anchor: middle;
   pointer-events: none;
+  /* The mean line runs behind the bars; without a halo its dashes cut through
+     the digits sitting just above a bar top (spec §4.1.4). */
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
 }
 .mf-chart-hit { fill: transparent; cursor: default; }
 
@@ -91,15 +109,14 @@
   border-radius: var(--radius-md);
   background: var(--chart-tooltip-bg);
   border: 1px solid var(--chart-tooltip-border);
-  box-shadow: var(--shadow-2);
-  color: var(--mf-text);
+  color: var(--text);
   font-size: var(--fs-xs);
   line-height: var(--leading-normal);
 }
 .mf-chart-tooltip-title {
-  font-weight: 650;
+  font-weight: 600;
   margin-bottom: var(--space-1);
-  color: var(--mf-text);
+  color: var(--text);
 }
 .mf-chart-tooltip-row {
   display: flex;
@@ -107,12 +124,12 @@
   gap: var(--space-3);
   font-variant-numeric: tabular-nums;
 }
-.mf-chart-tooltip-key { color: var(--mf-text-dim); }
+.mf-chart-tooltip-key { color: var(--text-dim); }
 .mf-chart-tooltip-note {
   margin-top: var(--space-1);
   padding-top: var(--space-1);
   border-top: 1px solid var(--chart-tooltip-border);
-  color: var(--mf-text-dim);
+  color: var(--text-dim);
 }
 
 /* ── Legend ────────────────────────────────────────────────────────────── */
@@ -121,7 +138,7 @@
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-4);
   font-size: var(--fs-xs);
-  color: var(--mf-text-dim);
+  color: var(--text-dim);
 }
 .mf-chart-legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .mf-chart-legend-swatch {
@@ -134,47 +151,40 @@
 /* ── Horizontal / signed variants ──────────────────────────────────────── */
 .mf-chart-zero { stroke: var(--chart-axis); stroke-width: 1.5; shape-rendering: crispEdges; }
 .mf-chart-row-label {
-  fill: var(--mf-text);
-  font-size: 12px;
+  fill: var(--text);
+  font-size: var(--fs-xs);
   dominant-baseline: middle;
 }
 .mf-chart-row-value {
-  fill: var(--mf-text);
-  font-size: 11px;
+  fill: var(--text);
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   dominant-baseline: middle;
   font-weight: 600;
 }
 .mf-chart-row-note {
-  fill: var(--mf-text-dim);
-  font-size: 10px;
+  fill: var(--text-dim);
+  font-size: var(--fs-xs);
   dominant-baseline: middle;
   font-variant-numeric: tabular-nums;
 }
 .mf-chart-pole {
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  fill: var(--mf-text-dim);
+  font-size: var(--fs-xs);
+  fill: var(--text-dim);
 }
 
+/* An empty chart is one quiet line, not a dashed placeholder box: the box drew
+   more attention than the data ever would. */
 .mf-chart-empty {
   padding: var(--space-6) var(--space-4);
   text-align: center;
-  color: var(--mf-text-dim);
+  color: var(--text-dim);
   font-size: var(--fs-sm);
   line-height: var(--leading-relaxed);
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-lg);
 }
 
 /* ── TMT gauge ─────────────────────────────────────────────────────────── */
 .mf-tmt { display: grid; gap: var(--space-4); }
-.mf-tmt-formula {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--mf-text-dim);
-  letter-spacing: 0.02em;
-}
 .mf-tmt-headline {
   display: flex;
   align-items: baseline;
@@ -183,10 +193,10 @@
 }
 .mf-tmt-value {
   font-size: var(--fs-2xl);
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  color: var(--mf-text);
+  color: var(--text);
 }
 /* The components share the card's full measure. Capping them left a wide dead
    margin on the right of a full-row card, which read as a broken column. */
@@ -198,9 +208,9 @@
   gap: var(--space-3);
   font-size: var(--fs-sm);
 }
-.mf-tmt-component[data-dominant="true"] .mf-tmt-component-label { color: var(--mf-text); font-weight: 650; }
-.mf-tmt-component-label { color: var(--mf-text-dim); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.mf-tmt-component-value { text-align: right; font-variant-numeric: tabular-nums; color: var(--mf-text); }
+.mf-tmt-component[data-dominant="true"] .mf-tmt-component-label { color: var(--text); font-weight: 600; }
+.mf-tmt-component-label { color: var(--text-dim); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.mf-tmt-component-value { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
 .mf-tmt-track {
   height: 8px;
   border-radius: var(--radius-pill);
@@ -209,11 +219,11 @@
 }
 /* Dominant barrier: outlined, never recoloured. */
 .mf-tmt-component[data-dominant="true"] .mf-tmt-track {
-  box-shadow: 0 0 0 2px var(--warn);
+  box-shadow: 0 0 0 2px var(--drift);
   margin: 2px 0;
 }
 .mf-tmt-fill { height: 100%; border-radius: var(--radius-pill); transition: width 0.4s ease; }
-.mf-tmt-note { font-size: var(--fs-xs); color: var(--mf-text-dim); line-height: var(--leading-relaxed); }
+.mf-tmt-note { font-size: var(--fs-xs); color: var(--text-dim); line-height: var(--leading-relaxed); }
 
 /* ── Posterior (Beta) bars ─────────────────────────────────────────────── */
 .mf-posterior { display: grid; gap: var(--space-3); }
@@ -225,14 +235,14 @@
   font-size: var(--fs-sm);
 }
 .mf-posterior-label {
-  color: var(--mf-text-dim);
+  color: var(--text-dim);
   display: inline-flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.mf-posterior-row[data-chosen="true"] .mf-posterior-label { color: var(--mf-text); font-weight: 650; }
+.mf-posterior-row[data-chosen="true"] .mf-posterior-label { color: var(--text); font-weight: 600; }
 .mf-posterior-track {
   position: relative;
   height: 16px;
@@ -245,10 +255,10 @@
   height: 3px;
   transform: translateY(-50%);
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--mf-text-dim) 55%, transparent);
+  background: color-mix(in srgb, var(--text-dim) 55%, transparent);
 }
 .mf-posterior-row[data-chosen="true"] .mf-posterior-ci {
-  background: color-mix(in srgb, var(--good) 55%, transparent);
+  background: color-mix(in srgb, var(--ok) 55%, transparent);
 }
 .mf-posterior-mean {
   position: absolute;
@@ -257,23 +267,23 @@
   height: 9px;
   border-radius: 50%;
   transform: translate(-50%, -50%);
-  background: var(--mf-text-dim);
-  box-shadow: 0 0 0 2px var(--color-bg-elevated);
+  background: var(--text-dim);
+  box-shadow: 0 0 0 2px var(--surface);
 }
 .mf-posterior-row:not([data-chosen="true"]) .mf-posterior-mean,
 .mf-posterior-row:not([data-chosen="true"]) .mf-posterior-ci { opacity: 0.4; }
-.mf-posterior-row[data-chosen="true"] .mf-posterior-mean { background: var(--good); }
+.mf-posterior-row[data-chosen="true"] .mf-posterior-mean { background: var(--ok); }
 .mf-posterior-value {
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: var(--mf-text);
+  color: var(--text);
 }
 .mf-posterior-legend {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-4);
   font-size: var(--fs-xs);
-  color: var(--mf-text-dim);
+  color: var(--text-dim);
 }
 
 @media (max-width: 700px) {

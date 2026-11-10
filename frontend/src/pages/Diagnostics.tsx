@@ -4,6 +4,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getAIRuns, getAIRunDetail, getFocusPrediction, getHealthLive, getHealthReady, getErrorMessage, getAnalysisGraph } from "../api";
 import type { AIRunItem, AIRunDetail, AnalysisGraphTopology, FocusPredictionResponse, HealthLiveResponse, HealthReadyResponse } from "../api";
 import { toFocusPredictionView } from "../prediction-state";
+import MetricStrip from "../components/signal/MetricStrip";
+import type { MetricItem } from "../components/signal/MetricStrip";
+import { userTerm } from "../lib/user-terms";
 
 function statusBadgeClass(status: string): string {
   const s = status.toLowerCase();
@@ -14,18 +17,26 @@ function statusBadgeClass(status: string): string {
 }
 
 function formatDuration(ms: number | null): string {
-  if (ms === null || ms === undefined) return "--";
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60000).toFixed(1)}m`;
+  if (ms === null || ms === undefined) return "—";
+  if (ms < 1000) return `${ms} 毫秒`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)} 秒`;
+  return `${(ms / 60000).toFixed(1)} 分钟`;
 }
 
 function formatTimestamp(ts: string | null): string {
-  if (!ts) return "--";
+  if (!ts) return "—";
   return new Date(ts).toLocaleString("zh-CN", {
     month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
   });
 }
+
+/** The four readiness probes, in the order the popover and this strip list them. */
+const READY_CHECKS = [
+  { key: "database", label: "数据库" },
+  { key: "migration", label: "迁移" },
+  { key: "checkpoint", label: "检查点" },
+  { key: "run_store", label: "运行记录" },
+] as const;
 
 export default function Diagnostics() {
   const [loading, setLoading] = useState(true);
@@ -44,6 +55,12 @@ export default function Diagnostics() {
   const [prediction, setPrediction] = useState<FocusPredictionResponse | null>(null);
   const [live, setLive] = useState<HealthLiveResponse | null>(null);
   const [ready, setReady] = useState<HealthReadyResponse | null>(null);
+  // A probe that fails must say so. These three used to disappear into an
+  // empty `.catch(() => {})`, which rendered "—" — indistinguishable from a
+  // backend that was never asked.
+  const [liveFailed, setLiveFailed] = useState(false);
+  const [readyFailed, setReadyFailed] = useState(false);
+  const [predictionFailed, setPredictionFailed] = useState(false);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [graphTopology, setGraphTopology] = useState<AnalysisGraphTopology | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -56,7 +73,9 @@ export default function Diagnostics() {
       const res = await getAIRuns(pageSize, page * pageSize);
       if (seq !== requestSeq.current) return;
       setRuns(res.items);
-      setTotalRuns(res.total);
+      // The backend returns `count`; `total` never existed on this response,
+      // which made the pager think there were always 0 rows.
+      setTotalRuns(res.count);
     } catch (e: unknown) {
       if (seq !== requestSeq.current) return;
       setRuns([]);
@@ -72,6 +91,8 @@ export default function Diagnostics() {
       const data = await getAnalysisGraph();
       setGraphTopology(data);
     } catch {
+      // The topology is optional detail inside a collapsed <details>; an
+      // unavailable graph is a normal state and renders its own empty line.
       setGraphTopology(null);
     } finally {
       setGraphLoading(false);
@@ -105,9 +126,11 @@ export default function Diagnostics() {
 
   useEffect(() => {
     fetchGraphTopology();
-    getFocusPrediction().then(setPrediction).catch(() => {});
-    getHealthLive().then(setLive).catch(() => {});
-    getHealthReady().then(setReady).catch(() => {});
+    getFocusPrediction().then(setPrediction).catch(() => setPredictionFailed(true));
+    getHealthLive().then(setLive).catch(() => setLiveFailed(true));
+    // Ready answers 503 when not ready, so the request rejects on a degraded
+    // backend — that is `readyFailed`, not a transport failure.
+    getHealthReady().then(setReady).catch(() => setReadyFailed(true));
   }, [fetchGraphTopology]);
 
   const predictionView = prediction ? toFocusPredictionView(prediction) : null;
@@ -123,72 +146,97 @@ export default function Diagnostics() {
     }
   };
 
+  /** Count of the four readiness probes that actually passed.
+   *
+   *  `/health/ready` is only trustworthy when it answered with the contract's
+   *  full body; an older or partial payload must not crash the page (it once
+   *  read `database.status` off `undefined`), so each probe is read defensively.
+   */
+  const passedChecks = ready
+    ? [
+        Boolean(ready.database && ready.database.status === "ok" && ready.database.integrity_ok),
+        Boolean(ready.migration && ready.migration.applied),
+        ready.checkpoint_store === "available",
+        ready.run_store === "available",
+      ]
+    : [];
+  const passedCount = passedChecks.filter(Boolean).length;
+  const failedCheckLabels = READY_CHECKS.filter((_, index) => ready && !passedChecks[index]).map((check) => check.label);
+
+  const metrics: MetricItem[] = [
+    {
+      key: "live",
+      label: "服务存活",
+      value: live ? "正常" : liveFailed ? "无响应" : "—",
+      delta: live ? { text: `版本 ${live.version}`, tone: "none" } : undefined,
+    },
+    {
+      key: "ready",
+      label: "就绪检查",
+      ...(ready
+        ? { value: String(passedCount), unit: "/4 项" }
+        : readyFailed
+          ? { value: "未就绪" }
+          : { value: "—" }),
+      delta: ready
+        ? passedCount === READY_CHECKS.length
+          ? { text: "数据库、迁移、检查点、运行记录", tone: "none" }
+          : { text: `未通过：${failedCheckLabels.join("、")}`, tone: "down" }
+        : undefined,
+    },
+    {
+      key: "prediction",
+      label: "专注预测分数",
+      // §8.22.6: `display` still carries the view's legacy "--" placeholder;
+      // the site uses the single em-dash for an unknown number. Normalised
+      // here so `prediction-state.ts` (and its 19 assertions) stays untouched.
+      value: predictionView
+        ? (predictionView.display === "--" ? "—" : predictionView.display)
+        : (predictionFailed ? "不可用" : "—"),
+      delta: predictionView
+        ? {
+            text: predictionView.reason
+              ? `${predictionView.statusLabel} · ${predictionView.reason}`
+              : `预测模式：${predictionView.mode}`,
+            tone: "none",
+          }
+        : undefined,
+    },
+    {
+      key: "mode",
+      label: "预测模式",
+      value: prediction
+        ? ({ ready: "已就绪", shadow: "影子模式", rule_engine_only: "规则分析" }[prediction.mode] ?? prediction.mode)
+        : "—",
+      delta: { text: `运行记录 ${totalRuns} 条`, tone: "none" },
+    },
+  ];
+
   return (
     <WorkspacePage title="AI 诊断" description="分析没有结果时，在这里查看服务状态和运行记录。展开一条记录可查看失败原因。" className="diagnostics-page">
-
 
       {error && (
         <div className="error-box mb16">
           {error}
-          <button type="button" className="btn btn-sm mt8" onClick={fetchRuns} style={{ marginLeft: 12 }}>
+          <button type="button" className="btn btn-secondary btn-sm diagnostics-error-retry" onClick={fetchRuns}>
             重试
           </button>
         </div>
       )}
 
-      {/* Health & Prediction Quick Cards */}
-      <div className="kpi-row">
-        <div className="stat-card">
-          <div className="label">健康状态</div>
-          <div className="value" style={{ fontSize: 22 }}>
-            {live?.status === "ok" ? "正常" : ready?.status === "ok" ? "就绪" : "--"}
-          </div>
-          {/* Colour must follow the probe result: a failed liveness check used to
-              render green because the class was hardcoded. */}
-          <div className={`sub ${live ? (live.status === "ok" ? "good" : "bad") : ""}`}>
-            live: {live?.status ?? "--"}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="label">就绪探测</div>
-          <div className="value" style={{ fontSize: 22 }}>
-            {ready?.status === "ok" ? "正常" : "--"}
-          </div>
-          <div className="sub">
-            {ready?.checks ? `${Object.keys(ready.checks).length} 项检查` : ""}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="label">专注预测分数</div>
-          <div className="value">
-            {predictionView ? predictionView.display : "--"}
-          </div>
-          <div className="sub">
-            {predictionView
-              ? predictionView.reason
-                ? `${predictionView.statusLabel} · ${predictionView.reason}`
-                : `预测模式: ${predictionView.mode}`
-              : ""}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="label">预测模式</div>
-          <div className="value" style={{ fontSize: 22 }}>
-            {prediction ? ({ ready: "已就绪", shadow: "影子模式", rule_engine_only: "规则分析" }[prediction.mode] ?? prediction.mode) : "--"}
-          </div>
-          <div className="sub">运行记录: {totalRuns} 条</div>
-        </div>
-      </div>
+      <MetricStrip items={metrics} />
 
       {/* AI Runs Table */}
-      <div className="card mb24">
-        <div className="flex-between mb16"><h3 style={{margin: 0}}>AI 工作流运行记录</h3><button type="button" className="btn btn-ghost btn-sm" disabled={loading} onClick={fetchRuns}>刷新记录</button></div>
+      <div className="card mt16 mb24">
+        <div className="flex-between mb16">
+          <h3>AI 工作流运行记录</h3>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={loading} onClick={fetchRuns}>刷新记录</button>
+        </div>
         {loading && <div className="spinner" role="status" aria-label="加载运行记录" />}
         {!loading && (runs.length === 0 ? (
           <EmptyState
             title="暂无运行记录"
             description="分析运行后会在这里留下一条记录；触发一次专家面板分析即可生成第一条。"
-            icon="icon-fenzhixing"
           />
         ) : (
           <div className="workspace-table">
@@ -208,18 +256,18 @@ export default function Diagnostics() {
                   <tr
                     key={run.run_id}
                   >
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                    <td className="diagnostics-mono">
                       <button type="button" className="btn btn-ghost btn-sm" aria-expanded={openRunId === run.run_id} onClick={() => handleRowClick(run.run_id)}>{run.run_id.slice(0, 12)}…</button>
                     </td>
                     <td>
                       <span className={`badge ${statusBadgeClass(run.status)}`}>
-                        {run.status}
+                        {userTerm(run.status)}
                       </span>
                     </td>
                     <td>{run.source}</td>
-                    <td style={{ fontSize: 12 }}>{formatTimestamp(run.started_at)}</td>
-                    <td style={{ fontSize: 12 }}>{formatTimestamp(run.completed_at)}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                    <td className="diagnostics-meta">{formatTimestamp(run.started_at)}</td>
+                    <td className="diagnostics-meta">{formatTimestamp(run.completed_at)}</td>
+                    <td className="diagnostics-mono">
                       {formatDuration(run.duration_ms)}
                     </td>
                   </tr>
@@ -228,7 +276,7 @@ export default function Diagnostics() {
             </table>
           </div>
         ))}
-        <div className="workspace-pagination"><span>共 {totalRuns} 条 · 第 {page + 1} 页</span><div className="workspace-actions"><button type="button" className="btn btn-ghost btn-sm" disabled={loading || page === 0} onClick={() => setPage(p => p - 1)}>上一页</button><button type="button" className="btn btn-ghost btn-sm" disabled={loading || (page + 1) * pageSize >= totalRuns} onClick={() => setPage(p => p + 1)}>下一页</button></div></div>
+        <div className="workspace-pagination"><span>共 {totalRuns} 条 · 第 {page + 1} 页</span><div className="workspace-actions"><button type="button" className="btn btn-secondary btn-sm" disabled={loading || page === 0} onClick={() => setPage(p => p - 1)}>上一页</button><button type="button" className="btn btn-secondary btn-sm" disabled={loading || (page + 1) * pageSize >= totalRuns} onClick={() => setPage(p => p + 1)}>下一页</button></div></div>
       </div>
 
       {/* Analysis graph topology (architecture plan G/1.2) — shows how the
@@ -236,14 +284,14 @@ export default function Diagnostics() {
       <details className="workspace-details mb24">
         <summary>分析图拓扑 · 高级信息</summary>
         {graphTopology?.available ? (
-          <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-            <div style={{ marginBottom: 8 }}>
+          <div className="diagnostics-detail">
+            <div className="diagnostics-detail-row">
               节点（{graphTopology.nodes.length}）：{graphTopology.nodes.join(" → ") || "—"}
             </div>
             <div>
               边（{graphTopology.edges.length}）：
               {graphTopology.edges.length > 0 ? (
-                <div style={{ fontFamily: "monospace", fontSize: 12, marginTop: 4, lineHeight: 1.8 }}>
+                <div className="diagnostics-edges">
                   {graphTopology.edges.map((e, i) => (
                     <div key={i}>
                       {e.from} → {e.to}
@@ -256,8 +304,8 @@ export default function Diagnostics() {
             </div>
           </div>
         ) : (
-          <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>
-            {graphLoading ? "加载中..." : "分析图当前不可用（未启用 LLM 分析工作流）"}
+          <div className="diagnostics-detail diagnostics-detail--dim">
+            {graphLoading ? "加载中…" : "分析图当前不可用（未启用 LLM 分析工作流）"}
           </div>
         )}
       </details>
@@ -266,12 +314,12 @@ export default function Diagnostics() {
       {openRunId && (
         <div className="card mb24">
           <div className="flex-between mb16">
-            <h3 style={{ marginBottom: 0, fontFamily: "monospace", fontSize: 14 }}>
+            <h3 className="diagnostics-mono">
               运行详情: {openRunId}
             </h3>
             <button
               type="button"
-              className="btn btn-sm btn-ghost"
+              className="btn btn-ghost btn-sm"
               onClick={() => { setOpenRunId(null); setSelectedRun(null); }}
             >
               关闭
@@ -289,7 +337,7 @@ export default function Diagnostics() {
               {selectedRun.error && (
                 <div className="error-box mb16">
                   <strong>错误：</strong>
-                  <pre style={{ margin: "8px 0 0", fontSize: 12, whiteSpace: "pre-wrap" }}>
+                  <pre className="diagnostics-error-pre">
                     {selectedRun.error}
                   </pre>
                 </div>
@@ -311,22 +359,22 @@ export default function Diagnostics() {
                     <tbody>
                       {selectedRun.node_events.map((evt, idx) => (
                         <tr key={`${evt.name ?? "node"}-${evt.type ?? "event"}-${evt.started_at ?? ""}`}>
-                          <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                          <td className="diagnostics-mono">
                             {evt.name ?? `node-${idx}`}
                           </td>
-                          <td>{evt.type ?? "--"}</td>
+                          <td>{evt.type ?? "—"}</td>
                           <td>
                             <span className={`badge ${statusBadgeClass(evt.status ?? "")}`}>
-                              {evt.status ?? "--"}
+                              {evt.status ? userTerm(evt.status) : "—"}
                             </span>
                           </td>
-                          <td style={{ fontSize: 12 }}>
+                          <td className="diagnostics-meta">
                             {formatTimestamp(evt.started_at ?? null)}
                           </td>
-                          <td style={{ fontSize: 12 }}>
+                          <td className="diagnostics-meta">
                             {formatTimestamp(evt.completed_at ?? null)}
                           </td>
-                          <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                          <td className="diagnostics-mono">
                             {formatDuration(evt.duration_ms ?? null)}
                           </td>
                         </tr>
@@ -335,9 +383,7 @@ export default function Diagnostics() {
                   </table>
                 </div>
               ) : (
-                <div style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>
-                  无节点事件记录
-                </div>
+                <p className="diagnostics-empty">无节点事件记录</p>
               )}
             </div>
           )}

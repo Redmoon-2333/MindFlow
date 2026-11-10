@@ -1025,11 +1025,16 @@ export interface AIRunItem {
   duration_ms: number | null;
 }
 
+/** `GET /ai/runs` — the backend's real envelope. There is no `total`: the
+ *  route fills `count` with the total row count and `has_more` / `next_offset`
+ *  carry the rest of the paging state. Kept hand-written because
+ *  `components["schemas"]["DiagnosticsListResponse"]["items"]` (RunSummary)
+ *  is not assignable to the `AIRunItem` this table renders. */
 export interface AIRunsResponse {
   items: AIRunItem[];
-  total: number;
-  limit: number;
-  offset: number;
+  count: number;
+  has_more: boolean;
+  next_offset?: number | null;
 }
 
 export interface NodeEvent {
@@ -1052,13 +1057,23 @@ export type { FocusPredictionResponse, FocusPredictionStatus } from "./predictio
 export type { DailyReport, WeeklyReport } from "./report-state";
 export type { BaselineSummary, BaselineSummaryState } from "./baseline-state";
 
+/** `GET /health/live` (backend `api/routes/health.py`) — liveness only. */
 export interface HealthLiveResponse {
-  status: "ok";
+  status: "alive";
+  version: string;
+  timestamp: string;
 }
 
+/** `GET /health/ready` — returns 503 when not ready, so a non-ready backend
+ *  surfaces as a rejected request rather than as a 200 with a sad payload. */
 export interface HealthReadyResponse {
-  status: "ok";
-  checks: Record<string, unknown>;
+  status: "ready" | "not_ready";
+  version: string;
+  timestamp: string;
+  database: { status: "ok" | "error"; connected: boolean; integrity_ok: boolean };
+  migration: { applied: boolean };
+  checkpoint_store: "available" | "unavailable";
+  run_store: "available" | "unavailable";
 }
 
 export const getAIRuns = (limit?: number, offset?: number) =>

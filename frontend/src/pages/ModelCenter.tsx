@@ -19,6 +19,10 @@ import type {
 } from "../api";
 import { EMPTY_BASELINE_VIEW, reduceBaselineState } from "../baseline-state";
 import type { BaselineViewState } from "../baseline-state";
+import MetricStrip from "../components/signal/MetricStrip";
+import type { MetricItem } from "../components/signal/MetricStrip";
+import Segmented from "../components/signal/Segmented";
+import HelpTip from "../components/signal/HelpTip";
 import "./model-center.css";
 
 const TABS = ["数据准备", "个人基线", "模型训练", "模型状态"] as const;
@@ -323,36 +327,73 @@ export default function ModelCenter() {
   const currentJobId = activeJob?.job_id ?? rd?.current_training_job?.job_id ?? null;
   const polling = activeJobId !== null;
 
+  // §8.12: the four data-volume facts, with the coverage detail as each
+  // metric's delta line so it stays visible without a second row of boxes.
+  const readinessMetrics: MetricItem[] = rd
+    ? [
+        {
+          key: "events",
+          label: "原始事件",
+          value: rd.raw_events.total_events.toLocaleString(),
+          delta: { text: `${rd.raw_events.coverage_days} 天覆盖`, tone: "none" },
+        },
+        {
+          key: "windows",
+          label: "行为特征窗口",
+          value: String(rd.v2_windows.total),
+          unit: "个",
+          delta: { text: `${rd.v2_windows.date_range_days} 天 · v${rd.v2_windows.schema_version}`, tone: "none" },
+        },
+        {
+          key: "eligible",
+          label: "匹配合格窗口",
+          value: String(rd.v2_windows.eligible_count),
+          unit: "个",
+          delta: {
+            text: `专注 ${rd.v2_windows.matched_focus_count} · 干扰 ${rd.v2_windows.matched_distract_count}`,
+            tone: "none",
+          },
+        },
+        {
+          key: "labels",
+          label: "人工标注",
+          value: String(rd.feedback_labels.total),
+          unit: "条",
+          delta: {
+            text: `专注 ${rd.feedback_labels.focus} · 干扰 ${rd.feedback_labels.distract} · 混合 ${rd.feedback_labels.mixed}`,
+            tone: "none",
+          },
+        },
+      ]
+    : [];
+
   const renderLoading = (key: string) => {
     if (loading[key]) return <div className="spinner" />;
     return null;
   };
 
   return (
-    <WorkspacePage title="模型中心" description={modelStatus?.demo_only ? "合成数据演示模型 · 影子模式 · 未通过个人模型质量门" : "先在专注分析中校准记录，再查看数据是否足够训练属于自己的行为模型。"} className="model-page">
-      {modelStatus?.demo_only && <div className="info-box mb24 model-demo-notice" role="status">合成数据演示模型 · 影子模式 · 未通过个人模型质量门</div>}
+    <WorkspacePage title="模型中心" description="先在专注分析中校准记录，再查看数据是否足够训练属于自己的行为模型。" className="model-page">
+      {modelStatus?.demo_only && (
+        <div className="notice model-demo-notice mb24" role="status">
+          <span className="notice-text">合成数据演示模型 · 影子模式 · 未通过个人模型质量门</span>
+        </div>
+      )}
 
-      {/* Tabs */}
-      <div className="tabs" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === t}
-            className={`tab${activeTab === t ? " active" : ""}`}
-            onClick={() => setActiveTab(t)}
-          >
-            {t}
-          </button>
-        ))}
+      <div className="page-toolbar">
+        <Segmented
+          ariaLabel="模型中心分区"
+          options={TABS.map((tab) => ({ value: tab, label: tab }))}
+          value={activeTab}
+          onChange={(value) => setActiveTab(value as Tab)}
+        />
       </div>
 
       {/* Global error */}
       {error && (
         <div className="error-box mb16" role="alert">
           {error}
-          <button type="button" className="btn btn-sm" style={{ marginLeft: 12 }} onClick={() => setError(null)}>
+          <button type="button" className="btn btn-secondary btn-sm mc-error-close" onClick={() => setError(null)}>
             关闭
           </button>
         </div>
@@ -366,75 +407,58 @@ export default function ModelCenter() {
           {rd && !loading.readiness && (
             <>
               {/* Event / window summary */}
-              <div className="mc-kpi-row">
-                <div className="stat-card">
-                  <div className="label">原始事件</div>
-                  <div className="value">{rd.raw_events.total_events.toLocaleString()}</div>
-                  <div className="sub" style={{ color: "var(--color-text-tertiary)" }}>
-                    {rd.raw_events.coverage_days} 天覆盖
-                  </div>
-                </div>
-                <div className="stat-card">
-                  <div className="label">行为特征窗口</div>
-                  <div className="value">{rd.v2_windows.total}</div>
-                  <div className="sub" style={{ color: "var(--color-text-tertiary)" }}>
-                    {rd.v2_windows.date_range_days} 天 · v{rd.v2_windows.schema_version}
-                  </div>
-                </div>
-                <div className="stat-card">
-                  <div className="label">匹配合格窗口</div>
-                  <div className="value">{rd.v2_windows.eligible_count}</div>
-                  <div className="sub" style={{ color: "var(--color-text-tertiary)" }}>
-                    专注 {rd.v2_windows.matched_focus_count} · 干扰 {rd.v2_windows.matched_distract_count}
-                  </div>
-                </div>
-                <div className="stat-card">
-                  <div className="label">人工标注</div>
-                  <div className="value">{rd.feedback_labels.total}</div>
-                  <div className="sub" style={{ color: "var(--color-text-tertiary)" }}>
-                    专注 {rd.feedback_labels.focus} · 干扰 {rd.feedback_labels.distract} · 混合 {rd.feedback_labels.mixed}
-                  </div>
-                </div>
+              <div className="mc-section">
+                <MetricStrip items={readinessMetrics} />
               </div>
 
               {/* Trainability & Evaluability */}
-              <div className="mc-section">
-                <div className="mc-kpi-row">
-                  <div className="stat-card">
-                    <div className="label">可训练性</div>
-                    <div className="value" style={{ fontSize: 22 }}>
+              <div className="card mc-section">
+                <h3>就绪情况</h3>
+                <div className="mc-readiness-list">
+                  <div className="kv-row kv-row--text">
+                    <span>
+                      可训练性
+                      <span className="mc-readiness-note">
+                        {rd.trainable_window_count} 合格窗口 · {rd.trainable_class_count} 种标签
+                      </span>
+                    </span>
+                    <span className={`badge ${rd.trainable ? "badge-success" : "badge-warning"}`}>
                       {rd.trainable ? "可训练" : "数据不足"}
-                    </div>
-                    <div className={`sub ${rd.trainable ? "good" : "bad"}`}>
-                      {rd.trainable_window_count} 合格窗口 · {rd.trainable_class_count} 种标签
-                    </div>
+                    </span>
                   </div>
-                  <div className="stat-card">
-                    <div className="label">可评估性</div>
-                    <div className="value" style={{ fontSize: 22 }}>
+                  <div className="kv-row kv-row--text">
+                    <span>
+                      可评估性
+                      <span className="mc-readiness-note">
+                        {rd.evaluable_explicit_count} 显式样本 · {rd.evaluable_date_count} 天（需 ≥3 天）
+                      </span>
+                    </span>
+                    <span className={`badge ${rd.evaluable ? "badge-success" : "badge-warning"}`}>
                       {rd.evaluable ? "可评估" : "数据不足"}
-                    </div>
-                    <div className={`sub ${rd.evaluable ? "good" : "bad"}`}>
-                      {rd.evaluable_explicit_count} 显式样本 · {rd.evaluable_date_count} 天（需 ≥3 天）
-                    </div>
+                    </span>
                   </div>
-                  <div className="stat-card">
-                    <div className="label">基线就绪</div>
-                    <div className="value" style={{ fontSize: 22 }}>
+                  <div className="kv-row kv-row--text">
+                    <span>
+                      基线就绪
+                      <span className="mc-readiness-note">
+                        当前模式: {rd.current_mode === "ready" ? "就绪" : rd.current_mode === "shadow" ? "影子模式" : "仅规则引擎"}
+                      </span>
+                    </span>
+                    <span className={`badge ${rd.baseline_ready ? "badge-success" : "badge-warning"}`}>
                       {rd.baseline_ready ? "就绪" : "未就绪"}
-                    </div>
-                    <div className="sub" style={{ color: "var(--color-text-tertiary)" }}>
-                      当前模式: {rd.current_mode === "ready" ? "就绪" : rd.current_mode === "shadow" ? "影子模式" : "仅规则引擎"}
-                    </div>
+                    </span>
                   </div>
                 </div>
               </div>
 
               {/* Quality Gates — display all 7 from backend */}
               <div className="card mc-section">
-                <h3>质量门禁（7 项检查）</h3>
-                <p style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
-                  未评估（not_evaluated）的指标在训练后出现；未实现（not_implemented）的检查不代表通过。
+                <h3>
+                  质量门禁（7 项检查）
+                  <HelpTip term="质量检查" what="新模型必须通过的 7 项检查，确保它比简单规则更准，才会被启用。" />
+                </h3>
+                <p className="card-desc">
+                  未评估：训练之后才会有结果；未通过：数据或效果还不够，模型不会被启用。
                 </p>
                 <div className="mc-gates">
                   {rd.gates.map((gate) => (
@@ -470,9 +494,7 @@ export default function ModelCenter() {
           )}
 
           {!rd && !loading.readiness && (
-            <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
-              暂无数据
-            </p>
+            <p className="mc-empty">暂无数据</p>
           )}
         </div>
       )}
@@ -484,26 +506,29 @@ export default function ModelCenter() {
 
           {baselineView.summary && !loading.baseline && (
             <div className="card mc-section">
-              <h3>个人行为基线</h3>
-              <div className="flex gap16" style={{ fontSize: 13, flexWrap: "wrap" }}>
-                <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>数据天数：</span>
-                  {baselineView.summary.total_days}
+              <h3>
+                个人行为基线
+                <HelpTip term="个人基线" what="你平时习惯的平均水平，用来判断某一天是否反常，会随着使用自动更新。" />
+              </h3>
+              <div>
+                <div className="kv-row">
+                  <span>数据天数</span>
+                  <span>{baselineView.summary.total_days}</span>
                 </div>
-                <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>样本数：</span>
-                  {baselineView.summary.total_samples}
+                <div className="kv-row">
+                  <span>样本数</span>
+                  <span>{baselineView.summary.total_samples}</span>
                 </div>
-                <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>特征：</span>
-                  {baselineView.summary.features?.length ?? 0} 维
+                <div className="kv-row">
+                  <span>特征</span>
+                  <span>{baselineView.summary.features?.length ?? 0} 维</span>
                 </div>
-                <div>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>建立时间：</span>
-                  {baselineView.summary.created_at ? new Date(baselineView.summary.created_at).toLocaleDateString("zh-CN") : "N/A"}
+                <div className="kv-row kv-row--text">
+                  <span>建立时间</span>
+                  <span>{baselineView.summary.created_at ? new Date(baselineView.summary.created_at).toLocaleDateString("zh-CN") : "—"}</span>
                 </div>
               </div>
-              <div className="mt16" style={{ fontSize: 12, color: "var(--color-text-tertiary)", borderTop: "1px solid var(--color-border)", paddingTop: 12 }}>
+              <div className="mc-baseline-note">
                 基线是基于日常行为数据的在线统计指标，与 ML 批量训练不同。基线就绪状态反映是否有足够的历史数据建立对比基准。
               </div>
             </div>
@@ -511,20 +536,21 @@ export default function ModelCenter() {
 
           {baselineView.empty && !loading.baseline && (
             <div className="card mc-section">
-              <h3>个人行为基线</h3>
+              <h3>
+                个人行为基线
+                <HelpTip term="个人基线" what="你平时习惯的平均水平，用来判断某一天是否反常，会随着使用自动更新。" />
+              </h3>
               <div className="mc-baseline-empty">
                 暂无基线数据。基线在收集足够的行为数据后自动建立，用于对比日常行为变化。
               </div>
-              <div className="mt16" style={{ fontSize: 12, color: "var(--color-text-tertiary)", borderTop: "1px solid var(--color-border)", paddingTop: 12 }}>
+              <div className="mc-baseline-note">
                 基线是基于日常行为数据的在线统计指标，与 ML 批量训练不同。基线就绪状态反映是否有足够的历史数据建立对比基准。
               </div>
             </div>
           )}
 
           {!baselineView.summary && !baselineView.empty && !loading.baseline && (
-            <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
-              暂无数据
-            </p>
+            <p className="mc-empty">暂无数据</p>
           )}
         </div>
       )}
@@ -548,16 +574,16 @@ export default function ModelCenter() {
                 }`}>
                   {activeJobStatus ? jobStatusLabel(activeJobStatus) : "未知"}
                 </span>
-                <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+                <span className="mc-job-meta">
                   任务 ID: {currentJobId}
                 </span>
                 {activeJob?.started_at && (
-                  <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+                  <span className="mc-job-meta">
                     开始: {new Date(activeJob.started_at).toLocaleString("zh-CN")}
                   </span>
                 )}
                 {activeJob?.completed_at && (
-                  <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+                  <span className="mc-job-meta">
                     完成: {new Date(activeJob.completed_at).toLocaleString("zh-CN")}
                   </span>
                 )}
@@ -567,20 +593,19 @@ export default function ModelCenter() {
               {cancelAllowed && (
                 <button
                   type="button"
-                  className="btn btn-danger btn-sm"
+                  className="btn btn-danger btn-sm mc-cancel"
                   onClick={handleCancelTraining}
                   disabled={cancelLoading}
-                  style={{ marginTop: 12 }}
                 >
-                  {cancelLoading ? "取消中..." : "取消任务"}
+                  {cancelLoading ? "取消中…" : "取消任务"}
                 </button>
               )}
 
               {/* Training started explanation */}
               {activeJobStatus === "training" && (
-                <div className="mt8" style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
+                <p className="mc-hint mt8">
                   训练已经开始，无法安全取消。请等待完成。
-                </div>
+                </p>
               )}
 
               {/* Error display */}
@@ -597,14 +622,14 @@ export default function ModelCenter() {
 
               {/* Post-training info */}
               {activeJob?.activated && (
-                <div className="mt8" style={{ fontSize: 13, color: "var(--color-success)" }}>
-                  模型已激活（版本: {activeJob.version_tag ?? "N/A"}）
-                </div>
+                <p className="mc-hint mc-hint--ok mt8">
+                  模型已激活（版本: {activeJob.version_tag ?? "—"}）
+                </p>
               )}
               {activeJob?.status === "succeeded" && !activeJob?.activated && (
-                <div className="mt8" style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>
+                <p className="mc-hint mt8">
                   训练以影子模式完成（未激活）。激活前可以进行评估。
-                </div>
+                </p>
               )}
             </div>
           )}
@@ -612,24 +637,29 @@ export default function ModelCenter() {
           {/* Start training */}
           <div className="card mc-section">
             <h3>启动训练</h3>
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+            <p className="mc-hint">
               {rd?.trainable
                 ? rd?.trainable_window_count != null
                   ? `数据充足（${rd.trainable_window_count} 合格窗口，${rd.trainable_class_count} 种标签）`
                   : "数据充足，可以启动训练"
                 : "数据不足，无法启动训练"}
-            </div>
+            </p>
             <div className="mc-actions">
               <button
                 type="button"
-                className="btn"
+                className="btn btn-primary btn-sm"
                 onClick={handleStartTraining}
                 disabled={!canStartTraining || trainingLoading}
               >
-                {trainingLoading ? "启动中..." : "开始训练"}
+                {trainingLoading ? "启动中…" : "开始训练"}
               </button>
+              <HelpTip
+                term="训练"
+                what="用你给过的反馈，在这台电脑上训练一个更懂你的个人模型。"
+                effect="训练只在本机进行，会占用一些电脑性能；如果新模型通过全部检查，会自动替换当前模型，之后的判断和提醒都会用它。"
+              />
               {!rd?.trainable && (
-                <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
+                <span className="mc-hint">
                   需要的合格窗口数 ≥10，标签种类 ≥2
                 </span>
               )}
@@ -638,12 +668,11 @@ export default function ModelCenter() {
             {/* Polling indicator */}
             {polling && (
               <div
-                className="mt8"
-                style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}
+                className="mc-hint mt8"
                 role="status"
                 aria-live="polite"
               >
-                正在监控训练进度...
+                正在监控训练进度…
               </div>
             )}
           </div>
@@ -652,28 +681,28 @@ export default function ModelCenter() {
           {rd && (
             <div className="card mc-section">
               <h3>训练条件</h3>
-              <div style={{ fontSize: 13, display: "flex", flexDirection: "column", gap: 8 }}>
-                <div className="flex flex-between">
-                  <span style={{ color: "var(--color-text-secondary)" }}>合格窗口数（需 ≥10）</span>
-                  <span className={`badge ${rd.trainable_window_count >= 10 ? "badge-success" : "badge-danger"}`}>
+              <div className="mc-conditions">
+                <div className="kv-row kv-row--text">
+                  <span>合格窗口数（需 ≥10）</span>
+                  <span className={`badge ${rd.trainable_window_count >= 10 ? "badge-success" : "badge-warning"}`}>
                     {rd.trainable_window_count}
                   </span>
                 </div>
-                <div className="flex flex-between">
-                  <span style={{ color: "var(--color-text-secondary)" }}>标签种类（需 ≥2）</span>
-                  <span className={`badge ${rd.trainable_class_count >= 2 ? "badge-success" : "badge-danger"}`}>
+                <div className="kv-row kv-row--text">
+                  <span>标签种类（需 ≥2）</span>
+                  <span className={`badge ${rd.trainable_class_count >= 2 ? "badge-success" : "badge-warning"}`}>
                     {rd.trainable_class_count}
                   </span>
                 </div>
-                <div className="flex flex-between">
-                  <span style={{ color: "var(--color-text-secondary)" }}>显式评估样本（需 ≥10）</span>
-                  <span className={`badge ${rd.evaluable_explicit_count >= 10 ? "badge-success" : "badge-danger"}`}>
+                <div className="kv-row kv-row--text">
+                  <span>显式评估样本（需 ≥10）</span>
+                  <span className={`badge ${rd.evaluable_explicit_count >= 10 ? "badge-success" : "badge-warning"}`}>
                     {rd.evaluable_explicit_count}
                   </span>
                 </div>
-                <div className="flex flex-between">
-                  <span style={{ color: "var(--color-text-secondary)" }}>评估天数（需 ≥3）</span>
-                  <span className={`badge ${rd.evaluable_date_count >= 3 ? "badge-success" : "badge-danger"}`}>
+                <div className="kv-row kv-row--text">
+                  <span>评估天数（需 ≥3）</span>
+                  <span className={`badge ${rd.evaluable_date_count >= 3 ? "badge-success" : "badge-warning"}`}>
                     {rd.evaluable_date_count}
                   </span>
                 </div>
@@ -691,7 +720,13 @@ export default function ModelCenter() {
           {modelStatus && !loading.modelStatus && (
             <>
               <div className="card mc-section">
-                <h3>运行模式</h3>
+                <h3>
+                  运行模式
+                  <HelpTip
+                    term="运行模式"
+                    what="就绪：模型已正式启用。影子模式：模型在后台试运行，判断只用于观察，不影响提醒。仅规则引擎：还没有可用模型，用固定规则判断。"
+                  />
+                </h3>
                 <div className="mc-model-mode">
                   <span className="mode-label">当前模式</span>
                   <span className={`badge ${
@@ -715,37 +750,31 @@ export default function ModelCenter() {
                      "—"}
                   </span>
                 </div>
-                {modelStatus.message && (
-                  <div className="mt8" style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-                    {modelStatus.message}
-                  </div>
-                )}
+
               </div>
 
               <div className="card mc-section">
                 <h3>模型版本</h3>
-                <div className="flex gap16" style={{ fontSize: 13, flexDirection: "column" }}>
-                  <div className="flex flex-between">
-                    <span style={{ color: "var(--color-text-secondary)" }}>
-                      {modelStatus.demo_only ? "演示版本" : "激活版本"}
-                    </span>
-                    <span>{modelStatus.version ?? "N/A"}</span>
+                <div>
+                  <div className="kv-row kv-row--text">
+                    <span>{modelStatus.demo_only ? "演示版本" : "激活版本"}</span>
+                    <span>{modelStatus.version ?? "—"}</span>
                   </div>
                   {modelStatus.feature_schema_version != null && (
-                    <div className="flex flex-between">
-                      <span style={{ color: "var(--color-text-secondary)" }}>特征版本</span>
+                    <div className="kv-row">
+                      <span>特征版本</span>
                       <span>v{modelStatus.feature_schema_version}</span>
                     </div>
                   )}
                   {modelStatus.model_name && (
-                    <div className="flex flex-between">
-                      <span style={{ color: "var(--color-text-secondary)" }}>模型名称</span>
+                    <div className="kv-row kv-row--text">
+                      <span>模型名称</span>
                       <span>{modelStatus.model_name}</span>
                     </div>
                   )}
                   {modelStatus.last_updated && (
-                    <div className="flex flex-between">
-                      <span style={{ color: "var(--color-text-secondary)" }}>最后更新</span>
+                    <div className="kv-row">
+                      <span>最后更新</span>
                       <span>{new Date(modelStatus.last_updated).toLocaleString("zh-CN")}</span>
                     </div>
                   )}
@@ -755,7 +784,7 @@ export default function ModelCenter() {
               {modelStatus.reasons && modelStatus.reasons.length > 0 && (
                 <div className="card mc-section">
                   <h3>就绪原因</h3>
-                  <ul style={{ fontSize: 13, paddingLeft: 20, color: "var(--color-text-secondary)" }}>
+                  <ul className="mc-reasons">
                     {modelStatus.reasons.map((r) => (
                       <li key={r}>{userTerm(r)}</li>
                     ))}
@@ -766,7 +795,7 @@ export default function ModelCenter() {
               {modelStatus.available_versions && modelStatus.available_versions.length > 0 && (
                 <div className="card mc-section">
                   <h3>可用版本</h3>
-                  <div className="flex gap8" style={{ flexWrap: "wrap" }}>
+                  <div className="mc-version-list">
                     {modelStatus.available_versions.map((v) => (
                       <span className="badge badge-primary" key={v}>{v}</span>
                     ))}
@@ -777,9 +806,7 @@ export default function ModelCenter() {
           )}
 
           {!modelStatus && !loading.modelStatus && (
-            <p style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
-              暂无数据
-            </p>
+            <p className="mc-empty">暂无数据</p>
           )}
         </div>
       )}

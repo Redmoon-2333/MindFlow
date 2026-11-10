@@ -8,6 +8,6 @@ export default defineConfig({
   retries: 0,
   workers: 2,
   outputDir: "./test-results/ui-review",
-  use: { baseURL: "http://127.0.0.1:4184", channel: "chrome", headless: true, screenshot: "only-on-failure" },
-  webServer: { command: "npm run dev -- --host 127.0.0.1 --port 4184", url: "http://127.0.0.1:4184", reuseExistingServer: false, timeout: 30000 },
+  use: { baseURL: "http://127.0.0.1:4300", channel: "chrome", headless: true, screenshot: "only-on-failure" },
+  webServer: { command: "npm run dev -- --host 127.0.0.1 --port 4300", url: "http://127.0.0.1:4300", reuseExistingServer: false, timeout: 30000 },
 });

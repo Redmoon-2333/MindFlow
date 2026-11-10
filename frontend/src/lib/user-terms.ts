@@ -12,11 +12,15 @@ const terms: Record<string, string> = {
   v2_models_not_loaded: "尚未加载个人模型", rule_engine_only: "仅规则引擎",
   running: "运行中", stopped: "已停止", disabled: "已关闭", ready: "就绪", shadow: "影子模式",
   personal_model: "个人模型", demo_v4: "演示模型",
+  calibration_better_than_rule: "校准不如规则引擎",
+  unavailable: "不可用", completed: "已完成", failed: "失败", pending: "等待中",
+  ok: "正常", healthy: "正常",
 };
 
-/** Keep unknown/free-form values intact; labels only affect presentation. */
+/** Translate a backend identifier to its Chinese name; keep unknown values
+ *  intact. §8.17.3 drops the appended `（raw value）` — an end user reading a
+ *  status should never be shown the wire token as well. */
 export function userTerm(value?: string | null): string {
   if (!value) return "—";
-  const label = terms[value.toLowerCase()];
-  return label ? `${label}（${value}）` : value;
+  return terms[value.toLowerCase()] ?? value;
 }

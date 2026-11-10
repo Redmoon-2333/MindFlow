@@ -4,6 +4,9 @@ import { triggerPanel, getPanelResult, getErrorMessage } from "../api";
 import type { ExplainablePanelResult } from "../api";
 import { Link } from "react-router-dom";
 import TmtGauge from "../components/charts/TmtGauge";
+import MetricStrip from "../components/signal/MetricStrip";
+import type { MetricItem } from "../components/signal/MetricStrip";
+import HelpTip from "../components/signal/HelpTip";
 import "../components/primitives.css";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -55,15 +58,16 @@ function roleColor(role: string): string {
 /** Semantic confidence tone: green/amber/red carry meaning, so they come from
  *  the good/warn/bad tokens rather than a chart hue. */
 function confidenceColor(v: number): string {
-  if (v >= 0.7) return "var(--good)";
-  if (v >= 0.4) return "var(--warn)";
-  return "var(--bad)";
+  if (v >= 0.7) return "var(--ok)";
+  if (v >= 0.4) return "var(--drift)";
+  return "var(--alarm)";
 }
 
-function confidenceSoft(v: number): string {
-  if (v >= 0.7) return "var(--good-soft)";
-  if (v >= 0.4) return "var(--warn-soft)";
-  return "var(--bad-soft)";
+/** The badge variant for the same three confidence bands (§8.10). */
+function confidenceBadge(v: number): string {
+  if (v >= 0.7) return "badge-success";
+  if (v >= 0.4) return "badge-warning";
+  return "badge-danger";
 }
 
 function confidencePct(v: number): string {
@@ -141,6 +145,35 @@ export default function Panel() {
     confidence: result.confidence[name] ?? 0,
   })) ?? [];
   const discussionRounds = result?.transcript ?? [];
+  // §8.10: the process facts the verdict rests on, as one strip of four.
+  const metaMetrics: MetricItem[] = [
+    {
+      key: "uncertainty",
+      label: "不确定度",
+      value: result?.uncertainty != null ? result.uncertainty.toFixed(2) : "—",
+      help: { what: "专家们对结论有多不确定，0 到 1，越接近 0 越有把握。" },
+    },
+    {
+      key: "escalated",
+      label: "升级复核",
+      value: result?.escalated ? "是" : "否",
+      help: { what: "专家意见分歧大时，会多加一轮复查。“是”表示这次复查过。" },
+    },
+    {
+      key: "calls",
+      label: "模型调用",
+      value: result?.call_count != null ? String(result.call_count) : "—",
+      unit: "次",
+      help: { what: "这次分析一共请求了几次 AI，次数越多花费越多。" },
+    },
+    {
+      key: "rounds",
+      label: "发言条数",
+      value: String(discussionRounds.length),
+      unit: "条",
+      help: { what: "专家们在讨论中一共说了多少段话。" },
+    },
+  ];
   const hasContent = Boolean(result && (types.length > 0 || result.technique || result.rationale || discussionRounds.length > 0));
 
   return (
@@ -150,29 +183,34 @@ export default function Panel() {
       {error && (
         <div className="error-box mb16" role="alert">
           {error}
-          <button className="btn btn-sm" style={{ marginLeft: 12 }} onClick={() => setError(null)}>
+          <button className="btn btn-secondary btn-sm panel-error-close" onClick={() => setError(null)}>
             关闭
           </button>
         </div>
       )}
 
-      <div className="workspace-actions mb24">
-        <button className="btn" onClick={() => handleTrigger()} disabled={loading !== null}>
+      <div className="page-toolbar">
+        <button className="btn btn-primary" onClick={() => handleTrigger()} disabled={loading !== null}>
           {loading === "trigger" && (
-            <span className="spinner" style={{ width: 16, height: 16, margin: 0, borderWidth: 2 }} />
+            <span className="spinner spinner--inline" />
           )}
           {loading === "trigger" ? "分析中…" : "运行专家面板"}
         </button>
-        <button className="btn btn-ghost" onClick={handleRead} disabled={loading !== null}>
+        <HelpTip
+          term="专家面板"
+          what="几位 AI“专家”分别分析你今天的情况，互相讨论后给出结论。"
+          effect="需要联网调用云端 AI 多次，可能要几分钟并产生费用；今天已经有结果时会直接显示，不会重新运行。"
+        />
+        <button className="btn btn-secondary" onClick={handleRead} disabled={loading !== null}>
           {loading === "read" && (
-            <span className="spinner" style={{ width: 16, height: 16, margin: 0, borderWidth: 2 }} />
+            <span className="spinner spinner--inline" />
           )}
           {loading === "read" ? "读取中…" : "查看上次结果"}
         </button>
       </div>
 
       {loading === "trigger" && <div className="card mb24 panel-progress" role="status" aria-live="polite">
-        <span className="spinner" style={{width:20,height:20,margin:0,flexShrink:0}} />
+        <span className="spinner spinner--inline panel-progress-spinner" />
         <div><strong>正在运行 AI 专家分析 · 已等待 {elapsed} 秒</strong>
           <p>专家分析需要多轮模型调用，可能等待数分钟。完成后会显示本次结果或失败原因。{result ? "下方暂时展示上次结果。" : ""}</p></div>
       </div>}
@@ -196,38 +234,32 @@ export default function Panel() {
           and how many model calls it took. All three were in the payload and
           none of them were on screen. */}
       {result && (
-        <div className="meta-strip mb24" aria-label="本次分析的过程信息">
-          <span className="meta-item">
-            <span className="meta-key">不确定度</span>
-            <span className="meta-value">
-              {result.uncertainty != null ? result.uncertainty.toFixed(2) : "—"}
-            </span>
-          </span>
-          <span className="meta-item">
-            <span className="meta-key">是否升级复核</span>
-            <span className="meta-value">{result.escalated ? "已升级" : "未升级"}</span>
-          </span>
-          <span className="meta-item">
-            <span className="meta-key">模型调用</span>
-            <span className="meta-value">{result.call_count ?? "—"} 次</span>
-          </span>
-          <span className="meta-item">
-            <span className="meta-key">讨论轮次</span>
-            <span className="meta-value">{discussionRounds.length} 条</span>
-          </span>
+        <div className="panel-meta" role="group" aria-label="本次分析的过程信息">
+          <MetricStrip items={metaMetrics} />
         </div>
       )}
 
       {result?.degraded && (
-        <div className="card mb16" style={{ borderLeft: "3px solid var(--color-warning)" }}>
-          <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
+        <div className="notice mb16">
+          <div className="notice-text">
             <span className="badge badge-warning">降级模式</span>
-            <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+            <HelpTip
+              term="降级模式"
+              what="完整的专家讨论没能完成，系统改用更简单的方法给出结果，参考价值会低一些。"
+            />
+            <span className="panel-degraded-text">
               来源：{SOURCE_LABELS[result.source ?? result.meta?.source ?? ""] ?? "其他分析"}；专家讨论未完成，重试将使用当前配置的 AI 服务
             </span>
-            <button className="btn btn-sm" onClick={() => handleTrigger(true)} disabled={loading !== null} style={{ marginLeft: "auto" }}>
+          </div>
+          <div className="notice-action">
+            <button className="btn btn-secondary btn-sm" onClick={() => handleTrigger(true)} disabled={loading !== null}>
               {loading === "trigger" ? "重试中…" : "重试 AI 分析"}
             </button>
+            <HelpTip
+              term="重试"
+              what="重新运行一次专家讨论。"
+              effect="只有上次是降级结果时才会重新运行，会再次产生 AI 费用；如果又失败，会保留原来的结果。"
+            />
           </div>
         </div>
       )}
@@ -237,20 +269,14 @@ export default function Panel() {
           {types.length > 0 && (
             <div className="card">
               <h3>拖延类型分析</h3>
-              <div className="flex gap16" style={{ flexDirection: "column" }}>
+              <div className="panel-type-list">
                 {types.map((t, i) => {
                   const v = typeof t.confidence === "number" ? t.confidence : 0;
                   return (
                     <div key={i}>
-                      <div className="flex flex-between mb16" style={{ marginBottom: 6 }}>
-                        <span style={{ fontSize: 14, fontWeight: 500 }}>{TYPE_LABELS[t.name] ? `${TYPE_LABELS[t.name]}（${t.name}）` : (t.name || `类型 ${i + 1}`)}</span>
-                        <span
-                          className="badge"
-                          style={{
-                            background: confidenceSoft(v),
-                            color: confidenceColor(v),
-                          }}
-                        >
+                      <div className="panel-type-head">
+                        <span className="panel-type-name">{TYPE_LABELS[t.name] ? `${TYPE_LABELS[t.name]}（${t.name}）` : (t.name || `类型 ${i + 1}`)}</span>
+                        <span className={`badge ${confidenceBadge(v)}`}>
                           {confidencePct(v)}
                         </span>
                       </div>
@@ -270,16 +296,14 @@ export default function Panel() {
           {result?.technique && (
             <div className="card">
               <h3>推荐认知行为技术（CBT）</h3>
-              <p style={{ fontSize: 14, lineHeight: 1.6 }}>{TECHNIQUE_LABELS[result.technique] ? `${TECHNIQUE_LABELS[result.technique]}（${result.technique}）` : result.technique}</p>
+              <p>{TECHNIQUE_LABELS[result.technique] ? `${TECHNIQUE_LABELS[result.technique]}（${result.technique}）` : result.technique}</p>
             </div>
           )}
 
           {result?.rationale && (
             <div className="card workspace-full">
               <h3>分析依据</h3>
-              <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--color-text-secondary)" }}>
-                {result.rationale}
-              </p>
+              <p className="panel-rationale">{result.rationale}</p>
             </div>
           )}
 
@@ -319,7 +343,7 @@ export default function Panel() {
       )}
 
       {!loading && !hasContent && !error && !result?.insufficient_data && (
-        <div className="workspace-empty">今天的分析尚未显示。<br />点击“运行专家面板”获取分析，或“查看上次结果”读取已保存的结论。</div>
+        <div className="empty-state">今天的分析尚未显示。<br />点击“运行专家面板”获取分析，或“查看上次结果”读取已保存的结论。</div>
       )}
     </WorkspacePage>
   );

@@ -386,23 +386,26 @@ test.describe("Frontend Pages", () => {
     });
   }
 
-  test("Dashboard shows status and metric rows", async ({ page }) => {
+  test("Dashboard shows the hero and the four-metric row", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/`, { waitUntil: "networkidle" });
-    await expect(page.locator(".d-state-item")).toHaveCount(4, { timeout: 10000 });
-    await expect(page.locator(".d-statistic-item")).toHaveCount(4, { timeout: 10000 });
+    // The status row moved to the top-bar StatusChip; the page keeps the hero
+    // (此刻), the next-step block and the four today metrics.
+    await expect(page.locator(".dash-hero")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".dash-next")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".sig-metric")).toHaveCount(4, { timeout: 10000 });
   });
 
   test("Analytics shows its three sections", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/analytics`, { waitUntil: "networkidle" });
-    await expect(page.locator(".analytics .title")).toHaveCount(3, { timeout: 10000 });
+    await expect(page.locator(".analytics .page-section-title")).toHaveCount(3, { timeout: 10000 });
   });
 
   test("Settings shows all sections", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/settings`, { waitUntil: "networkidle" });
-    for (const section of ["系统信息", "数据采集", "自主控制", "应用分类", "数据导出", "偏好设置"]) {
+    for (const section of ["系统信息", "数据采集", "自主控制", "应用分类", "数据导出"]) {
       await expect(page.locator(`text=${section}`)).toBeVisible({ timeout: 10000 });
     }
   });
@@ -448,19 +451,20 @@ test.describe("Frontend Pages", () => {
     await expect(page.locator(".mf-header-name")).toHaveText("AI 诊断", { timeout: 5000 });
   });
 
-  test("Collector toggle from Dashboard", async ({ page }) => {
+  test("Collector toggle from the status capsule", async ({ page }) => {
     await setupBrowserAuth(page);
     await page.goto(`${FRONTEND}/`, { waitUntil: "networkidle" });
-    await expect(page.locator(".d-state-item", { hasText: "采集器" })).toBeVisible({ timeout: 10000 });
-    // The floating switch is the reference's collector control.
-    const toggleBtn = page.locator(".d-switch");
-    await expect(toggleBtn).toBeVisible({ timeout: 10000 });
+    // Spec §3.5: the collector control moved out of the dashboard body and
+    // into the top bar's capsule, which keeps the same toggle behaviour.
+    await page.locator(".sig-chip").click();
+    const popover = page.locator("#status-popover");
+    await expect(popover).toBeVisible({ timeout: 10000 });
+    await expect(popover).toContainText("采集器");
+    const toggleBtn = popover.locator("button", { hasText: /启动采集|停止采集/ });
     const originalText = await toggleBtn.textContent();
     await toggleBtn.click();
-    await page.waitForTimeout(2000);
-    const newText = await toggleBtn.textContent();
-    expect(newText).not.toBe(originalText);
+    await expect(toggleBtn).not.toHaveText(originalText ?? "", { timeout: 10000 });
     await toggleBtn.click();
-    await page.waitForTimeout(2000);
+    await expect(toggleBtn).toHaveText(originalText ?? "", { timeout: 10000 });
   });
 });

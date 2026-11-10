@@ -153,21 +153,50 @@ async function bootIsolated(page: Page) {
   await page.routeWebSocket("**/*", () => {});
 }
 
+/** One cell of the 今天 strip. The strip is a single surface with hairline
+ *  separators (spec §3.3), so a cell is identified by its label, and its value
+ *  and delta lines are the two children below it. */
 function statItem(page: Page, title: string) {
-  return page.locator(".d-statistic-item").filter({ hasText: title });
+  return page.locator(".sig-metric").filter({ hasText: title });
+}
+
+/** The reading line of a strip cell, including its unit ("100 分钟"). */
+function statValue(page: Page, title: string) {
+  return statItem(page, title).locator(".sig-metric-value");
+}
+
+/** The day-over-day line of a strip cell. */
+function statDelta(page: Page, title: string) {
+  return statItem(page, title).locator(".sig-metric-delta");
+}
+
+/** Range control (spec §8.4.2): a Segmented group of pressed-state buttons,
+ *  not the removed native select. `chooseRange` keeps the old call shape, so
+ *  every assertion's intent — pick a range, then read its data — is unchanged. */
+function rangeGroup(page: Page) {
+  return page.getByRole("group", { name: "时间范围" });
+}
+
+async function chooseRange(page: Page, label: string) {
+  await rangeGroup(page).getByRole("button", { name: label, exact: true }).click();
+}
+
+/** Which range the control reports as selected. */
+async function pressedRange(page: Page): Promise<string> {
+  return ((await rangeGroup(page).locator('[aria-pressed="true"]').textContent()) ?? "").trim();
 }
 
 async function focusStat(page: Page, title: string) {
-  return page.locator(".f-state .state-item").filter({ hasText: title }).locator(".state-item-number");
+  return page.locator(".f-state .sig-metric").filter({ hasText: title }).locator(".sig-metric-value");
 }
 
-async function chartSlots(page: Page) {
-  return page.locator(".statics-chart-item").evaluateAll((els) =>
-    els.map((el) => ({
-      date: el.querySelector(".date")?.textContent?.trim() ?? "",
-      week: el.querySelector(".week")?.textContent?.trim() ?? "",
-    })),
-  );
+/** The x tick labels of the focus trend chart. The hand-written column chart
+ *  (`.statics-chart-item` with `.date`/`.week` cells) was replaced by
+ *  `StackedBar`; the weekday caption now lives in the SVG x tick, and the date
+ *  is carried by the bar's accessible tooltip title only, so it has no visible
+ *  text carrier of its own. */
+async function chartWeeks(page: Page) {
+  return page.locator(".f-statics .mf-chart-tick--x").allTextContents();
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -179,14 +208,15 @@ test("F1 dashboard: today with no record shows 0, not the previous day's 77", as
   await installApi(page);
   await page.goto("/");
 
-  const minutes = statItem(page, "今日专注时长").locator(".d-statistic-number");
+  const minutes = statValue(page, "专注时长");
   await expect(minutes).toBeVisible({ timeout: 10000 });
-  await expect(minutes).toHaveText("0");
+  await expect(minutes).toHaveText("0分钟");
 
   // No record for today also means no meaningful average / distraction ratio.
-  await expect(statItem(page, "平均专注分数").locator(".d-statistic-number")).toHaveText("--");
+  // Phase 1.1 F5: the unknown glyph is the single character "—" (U+2014), not "--".
+  await expect(statValue(page, "平均专注分")).toHaveText("—");
   // And no yesterday → the comparison must not be invented.
-  await expect(statItem(page, "今日专注时长").locator(".d-statistic-stat")).toHaveText("较昨日 —");
+  await expect(statDelta(page, "专注时长")).toHaveText("较昨日 —");
 });
 
 test("demo dashboard: real probability does not imply personal-model readiness", async ({ page }) => {
@@ -199,16 +229,24 @@ test("demo dashboard: real probability does not imply personal-model readiness",
         : undefined,
   });
   await page.goto("/");
-  const prediction = page.locator(".d-extra-card").filter({ hasText: "ML 专注预测" });
-  const service = page.locator(".d-extra-card").filter({ hasText: "服务状态" });
-  await expect(prediction.locator(".d-extra-value")).toContainText("89.8%");
-  await expect(prediction).toContainText("合成数据演示模型 · 影子模式");
-  await expect(service).toContainText("演示模型已加载 · 影子模式");
-  await expect(service).toContainText("未通过个人模型质量门");
-  await expect(service).not.toContainText("已就绪");
+  // The reading moved into the hero: the big number is the probability, the
+  // band word sits beside it, and the demo caveat is the hero's source line.
+  const hero = page.locator(".dash-hero");
+  // The visible reading is the rounded integer (spec §4.1.1); the exact value
+  // stays available to assistive tech, so precision is not lost.
+  await expect(hero.locator(".hero-num")).toHaveAttribute("aria-label", "专注概率 89.8%");
+  await expect(hero.locator(".hero-num")).toHaveText("90%");
+  // §8.17.1 puts a HelpTip "?" inside the state line, so read the label as a
+  // substring rather than as the element's whole text.
+  await expect(hero.locator(".hero-state")).toContainText("专注中");
+  // §8.21.4: the source line is one of three fixed sentences; the demo one
+  // names the data and says it does not affect reminders.
+  await expect(hero.locator(".hero-source")).toHaveText("演示模型（模拟数据，仅供展示，不影响提醒）");
+  // Readiness is not implied: the hero never claims 已就绪 for a demo model.
+  await expect(hero).not.toContainText("已就绪");
 });
 
-test("demo dashboard: unavailable prediction retains its stale-data reason", async ({ page }) => {
+test("demo dashboard: unavailable prediction explains staleness without the raw reason", async ({ page }) => {
   await bootIsolated(page);
   await installApi(page, {
     override: path => path === "/analytics/model-status"
@@ -218,19 +256,27 @@ test("demo dashboard: unavailable prediction retains its stale-data reason", asy
         : undefined,
   });
   await page.goto("/");
-  const prediction = page.locator(".d-extra-card").filter({ hasText: "ML 专注预测" });
-  await expect(prediction.locator(".d-extra-value")).toHaveText("--");
-  await expect(prediction).toContainText("合成数据演示模型 · 影子模式 · 数据已过期");
+  // An unavailable prediction shows no percentage. §8.21.4 replaced the raw
+  // backend reason ("数据已过期", an internal term) with a fixed sentence per
+  // status, so the assertion keeps its intent — "stale is explained in user
+  // language, not as a number" — on the new carrier.
+  const hero = page.locator(".dash-hero");
+  await expect(hero.locator(".hero-num")).toHaveText("—");
+  await expect(hero.locator(".hero-state")).toHaveText("暂无判断");
+  await expect(hero.locator(".hero-unavailable")).toContainText("最近一段时间没有新的使用记录，判断已暂停。");
+  await expect(hero.locator(".hero-unavailable"), "the raw backend reason must not leak").not.toContainText(
+    "数据过期：数据已过期",
+  );
+  // A stale window is not fixed in the model centre, so no link there.
+  await expect(hero.getByRole("link", { name: "查看模型状态" })).toHaveCount(0);
+  await expect(hero.locator(".hero-source")).toHaveText("演示模型（模拟数据，仅供展示，不影响提醒）");
 });
 
 test("F1 dashboard: chart never labels a historical day 今天", async ({ page }) => {
   await bootIsolated(page);
   await installApi(page);
   await page.goto("/");
-  await expect(statItem(page, "今日专注时长")).toBeVisible({ timeout: 10000 });
-
-  const labels = await page.locator(".d-state-item").first().evaluate(() => true).catch(() => false);
-  expect(labels).toBeTruthy();
+  await expect(statItem(page, "专注时长")).toBeVisible({ timeout: 10000 });
 
   const chartLabels = await page.locator(".d-chart-box-item-week").allTextContents();
   expect(chartLabels, "09-29 must keep a weekday label").toContain("周二");
@@ -252,11 +298,11 @@ test("F1 dashboard: 较昨日 must not compare against a non-consecutive day", a
   });
   await page.goto("/");
 
-  const minutes = statItem(page, "今日专注时长").locator(".d-statistic-number");
+  const minutes = statValue(page, "专注时长");
   await expect(minutes).toBeVisible({ timeout: 10000 });
-  await expect(minutes, "09-30 is today and has data").toHaveText("100");
+  await expect(minutes, "09-30 is today and has data").toHaveText("100分钟");
   await expect(
-    statItem(page, "今日专注时长").locator(".d-statistic-stat"),
+    statDelta(page, "专注时长"),
     "09-29 is missing, so a delta against 09-28 would be a fabricated comparison",
   ).toHaveText("较昨日 —");
   // The card still labels only the real today as 今天.
@@ -265,17 +311,17 @@ test("F1 dashboard: 较昨日 must not compare against a non-consecutive day", a
   expect(chartLabels.filter((t) => t === "今天")).toHaveLength(1);
 });
 
-test("F1 dashboard: a failed trend request shows -- (unknown), never 0 (known-empty)", async ({ page }) => {
+test("F1 dashboard: a failed trend request shows — (unknown), never 0 (known-empty)", async ({ page }) => {
   await bootIsolated(page);
   await installApi(page, {
     override: (path) => (path === "/focus/trend" ? { status: 500 } : undefined),
   });
   await page.goto("/");
 
-  const minutes = statItem(page, "今日专注时长").locator(".d-statistic-number");
+  const minutes = statValue(page, "专注时长");
   await expect(minutes).toBeVisible({ timeout: 10000 });
-  await expect(minutes, "a failed request is unknown, not measured-zero").toHaveText("--");
-  await expect(page.locator(".error-box"), "the failure must be surfaced").toBeVisible();
+  await expect(minutes, "a failed request is unknown, not measured-zero").toHaveText("—");
+  await expect(page.locator(".dash .notice"), "the failure must be surfaced").toBeVisible();
 });
 
 test("F1 focus: a historical slot keeps its date label instead of 今天", async ({ page }) => {
@@ -296,16 +342,17 @@ test("F1 focus: a historical slot keeps its date label instead of 今天", async
         : undefined,
   });
   await page.goto("/focus");
-  await expect(page.locator(".statics-chart")).toBeVisible({ timeout: 10000 });
+  await expect(page.locator(".f-statics .mf-chart-tick--x").first()).toBeVisible({ timeout: 10000 });
 
-  const slots = await chartSlots(page);
-  const slot29 = slots.find((s) => s.date === "09-29");
-  expect(slot29, "the 09-29 slot must be rendered").toBeTruthy();
-  expect(slot29?.week, "09-29 is yesterday-of-nothing, it must not read 今天").not.toBe("今天");
-  expect(
-    slots.filter((s) => s.week === "今天"),
-    "today has no trend data, so no slot may claim 今天",
-  ).toHaveLength(0);
+  // The 09-29 slot is the only datum, so its weekday caption must be there…
+  const ticks = await chartWeeks(page);
+  // §8.21.5: Focus weekday ticks now spell out 周X, matching the dashboard.
+  expect(ticks, "the 09-29 slot must be rendered under its weekday label").toContain("周二");
+  // …and it must not be promoted to 今天. (The per-slot `MM-DD` text carrier
+  // is gone: the date now lives in the bar's hover tooltip title, so that
+  // sub-assertion is measured on the weekday caption alone.)
+  expect(ticks, "09-29 is yesterday-of-nothing, it must not read 今天").not.toContain("今天");
+  expect(ticks.filter((label) => label === "今天")).toHaveLength(0);
 });
 
 test("F1 focus: a failed trend request is distinguished from an empty trend", async ({ page }) => {
@@ -314,7 +361,7 @@ test("F1 focus: a failed trend request is distinguished from an empty trend", as
     override: (path) => (path === "/focus/trend" ? { status: 500 } : undefined),
   });
   await page.goto("/focus");
-  await expect(page.locator(".f-statics-title")).toBeVisible({ timeout: 10000 });
+  await expect(page.getByRole("heading", { name: "近 7 天专注与分心" })).toBeVisible({ timeout: 10000 });
 
   // Auto-waiting assertions: the request must settle into an error message,
   // and that message must not be the "no data" wording.
@@ -343,15 +390,15 @@ async function openFocusWithSessions(page: Page) {
         : undefined,
   });
   await page.goto("/focus");
-  await expect(page.locator(".f-state .state-item").first()).toBeVisible({ timeout: 10000 });
+  await expect(page.locator(".f-state .sig-metric").first()).toBeVisible({ timeout: 10000 });
 }
 
 test("F2 focus: 10m focus + 120m distraction reports 1 focus session / 10m longest", async ({ page }) => {
   await openFocusWithSessions(page);
 
-  await expect(await focusStat(page, "总专注时长")).toHaveText("10m");
-  await expect(await focusStat(page, "专注次数")).toHaveText("1 次");
-  await expect(await focusStat(page, "最长专注")).toHaveText("10m");
+  await expect(await focusStat(page, "总专注时长")).toHaveText("10分钟");
+  await expect(await focusStat(page, "专注次数")).toHaveText("1次");
+  await expect(await focusStat(page, "最长专注")).toHaveText("10分钟");
 });
 
 test("F2 focus: 平均评分 keeps the documented all-sessions policy", async ({ page }) => {
@@ -367,7 +414,7 @@ test("F2 focus: distraction sessions stay listed with their feedback controls", 
 
   const rows = page.locator(".conversation-item");
   await expect(rows).toHaveCount(2, { timeout: 10000 });
-  await expect(rows.last()).toContainText("2h 0m");
+  await expect(rows.last()).toContainText("120 分钟");
   await expect(rows.last()).toContainText("分心");
   // The distraction row must still offer the feedback form.
   await expect(rows.last().locator(".self-accession-table")).toBeVisible();
@@ -390,10 +437,10 @@ test("F2 focus: an all-distraction day reports 0 focus minutes, not a crash", as
         : undefined,
   });
   await page.goto("/focus");
-  await expect(page.locator(".f-state .state-item").first()).toBeVisible({ timeout: 10000 });
+  await expect(page.locator(".f-state .sig-metric").first()).toBeVisible({ timeout: 10000 });
 
-  await expect(await focusStat(page, "总专注时长")).toHaveText("0m");
-  await expect(await focusStat(page, "专注次数")).toHaveText("0 次");
+  await expect(await focusStat(page, "总专注时长")).toHaveText("0分钟");
+  await expect(await focusStat(page, "专注次数")).toHaveText("0次");
   await expect(await focusStat(page, "最长专注")).toHaveText("—");
   await expect(page.locator(".conversation-item")).toHaveCount(1);
 });
@@ -410,22 +457,21 @@ test("F3 analytics: a late 7-day response cannot replace the selected 30-day dat
     hold: (path, search) => hold7 && path === "/analytics/patterns" && search.get("days") === "7",
   });
   await page.goto("/analytics");
-  const combo = page.getByRole("combobox", { name: "时间范围" });
-  await expect(combo).toBeVisible({ timeout: 10000 });
+  await expect(rangeGroup(page)).toBeVisible({ timeout: 10000 });
   // The default range is 14 days, so that is what is on screen before the race.
   await expect(page.getByText("RANGE_14", { exact: true })).toBeVisible();
 
   hold7 = true;
-  await combo.selectOption("近7天");
+  await chooseRange(page, "近 7 天");
   await page.waitForTimeout(200);
-  await combo.selectOption("近30天");
+  await chooseRange(page, "近 30 天");
   await expect(page.getByText("RANGE_30", { exact: true })).toBeVisible({ timeout: 10000 });
 
   // Release the parked 7-day response *after* the 30-day one landed.
   expect(await api.release()).toBeGreaterThan(0);
   await page.waitForTimeout(700);
 
-  await expect(combo, "the selector keeps the user's choice").toHaveValue("近30天");
+  await expect(pressedRange(page), "the selector keeps the user's choice").resolves.toBe("近 30 天");
   await expect(
     page.getByText("RANGE_7", { exact: true }),
     "the stale response must not surface as the current range",
@@ -456,27 +502,28 @@ test("F3 analytics: profile has the same latest-request guarantee", async ({ pag
     hold: (path, search) => hold7 && path === "/analytics/profile" && search.get("days") === "7",
   });
   await page.goto("/analytics");
-  const combo = page.getByRole("combobox", { name: "时间范围" });
+  // 画像概览 is a MetricStrip now (§8.4.7): one cell per figure, its reading
+  // in `.sig-metric-value`. The old `.third-box-item` card is gone.
   const avgBlock = page
-    .locator(".third-box-item")
+    .locator(".third-box .sig-metric")
     .filter({ hasText: "平均专注块" })
-    .locator(".third-item-content");
+    .locator(".sig-metric-value");
 
-  await expect(combo).toBeVisible({ timeout: 10000 });
-  await expect(avgBlock, "initial load uses the default 14-day range").toHaveText("14 分钟");
+  await expect(rangeGroup(page)).toBeVisible({ timeout: 10000 });
+  await expect(avgBlock, "initial load uses the default 14-day range").toHaveText("14分钟");
 
   hold7 = true;
-  await combo.selectOption("近7天");
+  await chooseRange(page, "近 7 天");
   await page.waitForTimeout(200);
-  await combo.selectOption("近30天");
-  await expect(avgBlock, "30-day profile must be displayed").toHaveText("30 分钟", { timeout: 10000 });
+  await chooseRange(page, "近 30 天");
+  await expect(avgBlock, "30-day profile must be displayed").toHaveText("30分钟", { timeout: 10000 });
 
   // Release the parked 7-day profile response *after* the 30-day one landed.
   expect(await api.release()).toBeGreaterThan(0);
   await page.waitForTimeout(700);
 
-  await expect(combo).toHaveValue("近30天");
-  await expect(avgBlock, "the stale 7-day profile must not overwrite").toHaveText("30 分钟");
+  await expect(pressedRange(page)).resolves.toBe("近 30 天");
+  await expect(avgBlock, "the stale 7-day profile must not overwrite").toHaveText("30分钟");
   await expect(page.locator(".error-box")).toHaveCount(0);
 });
 
@@ -490,20 +537,19 @@ test("F3 analytics: a failed 30-day request does not keep showing the old range 
     },
   });
   await page.goto("/analytics");
-  const combo = page.getByRole("combobox", { name: "时间范围" });
-  await expect(combo).toBeVisible({ timeout: 10000 });
+  await expect(rangeGroup(page)).toBeVisible({ timeout: 10000 });
   // Whatever loaded successfully before the switch is the "old" range.
   await expect(page.getByText("RANGE_14", { exact: true })).toBeVisible();
 
   fail30 = true;
-  await combo.selectOption("近30天");
+  await chooseRange(page, "近 30 天");
 
   await expect(page.locator(".error-box"), "the failure must be reported").toBeVisible({ timeout: 10000 });
   await expect(
     page.getByText("RANGE_14", { exact: true }),
     "old-range rows must not be presented as the 30-day result",
   ).toHaveCount(0);
-  await expect(combo).toHaveValue("近30天");
+  await expect(pressedRange(page)).resolves.toBe("近 30 天");
 });
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -663,13 +709,13 @@ test("boundary analytics: changing range hides the old profile summary while loa
     hold: (path, search) => path === "/analytics/profile" && search.get("days") === "30",
   });
   await page.goto("/analytics");
-  const avgBlock = page.locator(".third-box-item").filter({ hasText: "平均专注块" }).locator(".third-item-content");
-  await expect(avgBlock).toHaveText("14 分钟");
-  await page.getByRole("combobox", { name: "时间范围" }).selectOption("近30天");
+  const avgBlock = page.locator(".third-box .sig-metric").filter({ hasText: "平均专注块" }).locator(".sig-metric-value");
+  await expect(avgBlock).toHaveText("14分钟");
+  await chooseRange(page, "近 30 天");
   await expect.poll(api.heldCount).toBeGreaterThan(0);
-  await expect(avgBlock).not.toHaveText("14 分钟");
+  await expect(avgBlock).not.toHaveText("14分钟");
   await api.release();
-  await expect(avgBlock).toHaveText("30 分钟");
+  await expect(avgBlock).toHaveText("30分钟");
 });
 
 test("boundary analytics: refreshing range does not dismiss a baseline failure", async ({ page }) => {
@@ -679,7 +725,7 @@ test("boundary analytics: refreshing range does not dismiss a baseline failure",
   });
   await page.goto("/analytics");
   await expect(page.locator(".error-box")).toBeVisible();
-  await page.getByRole("combobox", { name: "时间范围" }).selectOption("近30天");
+  await chooseRange(page, "近 30 天");
   await expect(page.getByText("RANGE_30", { exact: true })).toBeVisible();
   await expect(page.locator(".error-box")).toBeVisible();
 });
@@ -726,13 +772,12 @@ for (const path of ["/analytics/patterns", "/analytics/profile"]) {
     });
     await page.goto("/analytics");
     await expect(page.getByText("RANGE_14", { exact: true })).toBeVisible();
-    const combo = page.getByRole("combobox", { name: "时间范围" });
-    await combo.selectOption("近7天");
+    await chooseRange(page, "近 7 天");
     await expect.poll(api.heldCount).toBeGreaterThan(0);
-    await combo.selectOption("近30天");
+    await chooseRange(page, "近 30 天");
     await expect.poll(api.heldCount).toBeGreaterThan(1);
     await api.release();
-    await expect(combo).toHaveValue("近30天");
+    await expect(pressedRange(page)).resolves.toBe("近 30 天");
     await expect(page.locator(".error-box")).toHaveCount(0);
   });
 }
@@ -748,7 +793,7 @@ test("boundary focus: loading and failed sessions never display stale or measure
     hold: (path, search) => path === "/focus" && search.get("date") === "2026-09-29",
   });
   await page.goto("/focus");
-  await expect(await focusStat(page, "总专注时长")).toHaveText("10m");
+  await expect(await focusStat(page, "总专注时长")).toHaveText("10分钟");
   await choosePreviousDate(page, 29);
   await expect.poll(api.heldCount).toBeGreaterThan(0);
   await expect(await focusStat(page, "总专注时长")).toHaveText("—");
@@ -770,17 +815,17 @@ for (const outcome of ["success", "failure"]) {
       await route.fulfill({ json: trendBody([{ date: TODAY, focus_min: calls === 1 ? 77 : 200, distraction_min: 0, session_count: 1, avg_score: 80 }]) });
     });
     await page.goto("/focus");
-    await expect(page.locator(".zhuanzhu-number")).toHaveText("77");
+    await expect(page.locator(".f-statics .mf-chart-value-label")).toHaveText("77");
     await choosePreviousDate(page, 29);
     await expect.poll(() => Boolean(pending)).toBe(true);
     await choosePreviousDate(page, 28);
-    await expect(page.locator(".zhuanzhu-number")).toHaveText("200");
+    await expect(page.locator(".f-statics .mf-chart-value-label")).toHaveText("200");
     const response = page.waitForResponse(r => r.url().includes("/focus/trend"));
     await pending!.fulfill(outcome === "success"
       ? { json: DEFAULT_TREND }
       : { status: 500, json: { detail: "stale trend failure" } });
     await (await response).finished();
-    await expect(page.locator(".zhuanzhu-number")).toHaveText("200");
+    await expect(page.locator(".f-statics .mf-chart-value-label")).toHaveText("200");
     await expect(page.locator(".f-statics")).not.toContainText("趋势加载失败");
   });
 }
@@ -843,12 +888,14 @@ test("boundary focus: zero focus and distraction minutes have zero-height bars",
       : undefined,
   });
   await page.goto("/focus");
-  await expect(page.locator(".statics-chart-item")).toHaveCount(1);
+  await expect(page.locator(".f-statics .mf-chart-tick--x")).toHaveCount(1);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.waitForTimeout(100);
-  const heights = await page.locator(".chartbox-fenxin, .chartbox-zhuanzhu").evaluateAll(bars =>
+  // StackedBar renders no segment for a zero value, so both series must leave
+  // the plot empty — a zero-height bar would still draw a visible sliver.
+  const heights = await page.locator(".f-statics .mf-chart-bar").evaluateAll(bars =>
     bars.map(bar => bar.getBoundingClientRect().height));
-  expect(heights).toEqual([0, 0]);
+  expect(heights).toEqual([]);
 });
 
 function dailyReportBody(date: string, app: string) {
@@ -874,9 +921,9 @@ test("boundary reports: a pending date cannot show the previous report's metrics
   await choosePreviousDate(page, 29);
   await expect.poll(api.heldCount).toBeGreaterThan(0);
   await expect(page.locator(".report-detail-list")).not.toContainText("OLD_APP");
-  await expect(page.locator(".chart-box-item")).toHaveCount(0);
-  await expect(page.locator(".t-state")).not.toContainText("2h");
-  await expect(page.locator(".t-state .state-item-number")).toHaveText(["—", "—", "—", "—"]);
+  await expect(page.locator(".chart-box .mf-chart-bar")).toHaveCount(0);
+  await expect(page.locator(".t-state")).not.toContainText("120");
+  await expect(page.locator(".t-state .sig-metric-value")).toHaveText(["—", "—", "—", "—"]);
   await api.release();
   await expect(page.locator(".report-detail-list")).toContainText("NEW_APP");
 });
@@ -887,14 +934,16 @@ test("boundary reports: a zero-minute bucket has no positive bar height", async 
     override: path => path === "/reports/daily" ? { json: dailyReportBody(TODAY, "APP") } : undefined,
   });
   await page.goto("/reports");
-  await expect(page.locator(".chart-box-item")).toHaveCount(8);
+  await expect(page.locator(".chart-box .mf-chart-tick--x")).toHaveCount(8);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.waitForTimeout(100);
-  const heights = await page.locator(".chart-box-item").evaluateAll(items => items
-    .filter(item => item.querySelector(".chart-box-item-number")?.textContent === "0m")
-    .map(item => item.querySelector(".chart-box-item-column")!.getBoundingClientRect().height));
-  expect(heights).toHaveLength(7);
-  expect(heights.every(height => height === 0)).toBe(true);
+  // Only the 9:00~12:00 bucket carries minutes; a zero bucket must not draw a
+  // column at all, so no bar may claim a zero value.
+  await expect(page.locator('.chart-box .mf-chart-bar[data-value="0"]')).toHaveCount(0);
+  const heights = await page.locator(".chart-box .mf-chart-bar").evaluateAll(bars =>
+    bars.map(bar => bar.getBoundingClientRect().height));
+  expect(heights).toHaveLength(1);
+  expect(heights.every(height => height > 0)).toBe(true);
 });
 
 test("boundary navigation: Escape closes the mobile drawer and restores its toggle focus", async ({ page }) => {

@@ -103,7 +103,7 @@ test("daily ready renders KPI model with formatted values", () => {
   const view = toDailyReportView(report);
   assert.equal(view.ready, true);
   assert.ok(view.kpis, "ready must carry a KPI model");
-  assert.equal(view.kpis.totalFocusMinutes, "2h 0m");
+  assert.equal(view.kpis.totalFocusMinutes, "120 分钟");
   assert.equal(view.kpis.totalSessions, "5");
   assert.equal(view.kpis.totalDistractions, "3");
   assert.equal(view.kpis.focusScore, "85");
@@ -119,8 +119,8 @@ test("daily ready renders a 24-bar hourly chart from the 24-key distribution", (
   // max = 60 (hour 10) → hour 9 (30m) is 50%, hour 10 is 100%.
   assert.equal(view.hourlyChart.bars[9].pct, 50);
   assert.equal(view.hourlyChart.bars[10].pct, 100);
-  assert.equal(view.hourlyChart.bars[9].label, "30m");
-  assert.equal(view.hourlyChart.bars[10].label, "60m");
+  assert.equal(view.hourlyChart.bars[9].label, "30 分钟");
+  assert.equal(view.hourlyChart.bars[10].label, "60 分钟");
   assert.equal(view.hourlyChart.bars[0].axisLabel, "0h");
   assert.equal(view.hourlyChart.bars[3].axisLabel, "3h");
   assert.equal(view.hourlyChart.bars[1].axisLabel, "");
@@ -274,7 +274,7 @@ test("weekly ready renders KPI model with formatted values", () => {
   const view = toWeeklyReportView(report);
   assert.equal(view.ready, true);
   assert.ok(view.kpis, "ready must carry a KPI model");
-  assert.equal(view.kpis.totalFocusMinutes, "12h 20m");
+  assert.equal(view.kpis.totalFocusMinutes, "740 分钟");
   assert.equal(view.kpis.totalSessions, "32");
   assert.equal(view.kpis.totalDistractions, "17");
   assert.equal(view.kpis.avgFocusScore, "81");
@@ -289,7 +289,7 @@ test("weekly ready renders a 7-day chart with weekday/date labels", () => {
   assert.equal(view.chart.bars[0].dayLabel, "周一");
   assert.equal(view.chart.bars[0].dateLabel, "7/27");
   assert.equal(view.chart.bars[0].focusMinutes, 120);
-  assert.equal(view.chart.bars[0].label, "2h 0m");
+  assert.equal(view.chart.bars[0].label, "120 分钟");
   assert.equal(view.chart.maxFocusMinutes, 150);
   assert.equal(view.chart.bars[2].pct, 100);
   assert.equal(view.chart.bars[0].pct, 80);
@@ -383,9 +383,9 @@ test("weekly ready with malformed daily_summary entry degrades to unknown", () =
 // ── formatMinutes (shared formatter) ──
 
 test("formatMinutes formats durations and degrades missing values to —", () => {
-  assert.equal(formatMinutes(120), "2h 0m");
-  assert.equal(formatMinutes(45), "45m");
-  assert.equal(formatMinutes(90), "1h 30m");
+  assert.equal(formatMinutes(120), "120 分钟");
+  assert.equal(formatMinutes(45), "45 分钟");
+  assert.equal(formatMinutes(90), "90 分钟");
   assert.equal(formatMinutes(null), "—");
   assert.equal(formatMinutes(undefined), "—");
 });

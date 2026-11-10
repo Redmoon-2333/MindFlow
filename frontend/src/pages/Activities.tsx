@@ -2,6 +2,8 @@ import NativeDateField from "../components/NativeDateField";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getActivities, getCurrentActivity, getErrorMessage } from "../api";
 import type { ActivityItem } from "../api";
+import Surface from "../components/signal/Surface";
+import HelpTip from "../components/signal/HelpTip";
 import "./activities.css";
 
 /** Reference page size — the original table shows 10 rows per page. */
@@ -102,15 +104,14 @@ export default function Activities() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const formatDuration = (seconds: number): string => {
-    if (seconds == null) return "--";
+    if (seconds == null) return "—";
     const s = Math.round(seconds);
-    if (s < 60) return `${s}s`;
-    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
-    return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+    if (s < 60) return `${s} 秒`;
+    return `${Math.round(s / 60)} 分钟`;
   };
 
   const formatTime = (ts: string): string => {
-    if (!ts) return "--";
+    if (!ts) return "—";
     try {
       const d = new Date(ts);
       return d.toLocaleString("zh-CN", {
@@ -137,97 +138,107 @@ export default function Activities() {
   return (
     <>
       <div className="activities">
-        <div className="top-intro act-box">
-          <div className="present-acti act-box">
-            <div className="text-1">当前活动</div>
-            <div className="text-2">
-              {currentActivity ? (
-                <>
-                  <b>{currentActivity.data?.app_name || "未知应用"} </b>
-                  — {currentActivity.data?.window_title || currentActivity.data?.process_name || "暂无活跃窗口"}
-                </>
-              ) : (
-                "暂无活跃窗口"
-              )}
+        <p className="page-lede">按时间查看记录到的应用和窗口，可按日期筛选或搜索。</p>
+
+        <Surface as="section" className="present-acti">
+          <h2 className="sh-title present-acti-title">当前活动</h2>
+          <div className="present-acti-line">
+            {currentActivity ? (
+              <>
+                <b>{currentActivity.data?.app_name || "未知应用"}</b>
+                {" — "}
+                <span className="present-acti-window">
+                  {currentActivity.data?.window_title || currentActivity.data?.process_name || "暂无活跃窗口"}
+                </span>
+              </>
+            ) : (
+              <span className="present-acti-window">暂无活跃窗口</span>
+            )}
+          </div>
+        </Surface>
+
+        <div className="page-toolbar choose-time">
+          <div className="start-time-box">
+            <div className="act-datepicker mf-picker">
+              <NativeDateField label="开始日期" value={startDate} onChange={setStartDate} allowEmpty />
             </div>
           </div>
 
-          <div className="choose-time act-box">
-            <div className="start-time-box">
-              <div className="act-datepicker mf-picker">
-                <NativeDateField label="开始日期" value={startDate} onChange={setStartDate} allowEmpty />
-              </div>
+          <div className="end-time-box">
+            <div className="act-datepicker mf-picker">
+              <NativeDateField label="结束日期" value={endDate} onChange={setEndDate} allowEmpty />
             </div>
+          </div>
 
-            <div className="end-time-box">
-              <div className="act-datepicker mf-picker">
-                <NativeDateField label="结束日期" value={endDate} onChange={setEndDate} allowEmpty />
-              </div>
-            </div>
+          <div className="search-box">
+            <div className="text">搜索</div>
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="按应用名/窗口名搜索…"
+              aria-label="搜索活动"
+            />
+          </div>
+        </div>
 
-            <div className="check-primary-text">
-              <input
-                type="checkbox"
-                id="act-raw-toggle"
-                checked={isRawDebugVisible}
-                onChange={(event) => {
-                  setIsRawDebugVisible(event.target.checked);
-                  setColumns((current) => ({ ...current, raw: event.target.checked }));
-                }}
-              />
-              <label className="text" htmlFor="act-raw-toggle">
-                显示保留期内原始字段
+        <div className="column-options">
+          <input
+            type="checkbox"
+            id="act-raw-toggle"
+            checked={isRawDebugVisible}
+            onChange={(event) => {
+              setIsRawDebugVisible(event.target.checked);
+              setColumns((current) => ({ ...current, raw: event.target.checked }));
+            }}
+          />
+          {/* §8.21.6: the tip belongs to the label text, not to the flex row —
+              as a sibling the row's 16px gap pushed it off its word. */}
+          <label className="column-toggle" htmlFor="act-raw-toggle">
+            显示事件编号
+            <HelpTip
+              term="事件编号"
+              what="多显示一列事件类型和编号，方便排查问题。"
+              effect="只影响显示，不会改动数据。"
+            />
+          </label>
+          {/* Local addition: the plan requires the raw-field switch to
+              really control column display, so the remaining column
+              switches sit with it rather than inside the table block. */}
+          {columnToggles
+            .filter((toggle) => toggle.key !== "raw")
+            .map((toggle) => (
+              <label key={toggle.key} className="column-toggle">
+                <input
+                  type="checkbox"
+                  checked={columns[toggle.key]}
+                  onChange={(event) =>
+                    setColumns((current) => ({ ...current, [toggle.key]: event.target.checked }))
+                  }
+                />
+                {toggle.label}
               </label>
-              {/* Local addition: the plan requires the raw-field switch to
-                  really control column display, so the remaining column
-                  switches sit with it rather than inside the table block. */}
-              {columnToggles
-                .filter((toggle) => toggle.key !== "raw")
-                .map((toggle) => (
-                  <label key={toggle.key} className="column-toggle">
-                    <input
-                      type="checkbox"
-                      checked={columns[toggle.key]}
-                      onChange={(event) =>
-                        setColumns((current) => ({ ...current, [toggle.key]: event.target.checked }))
-                      }
-                    />
-                    {toggle.label}
-                  </label>
-                ))}
-            </div>
-
-            <div className="search-box">
-              <div className="text">搜索</div>
-              <input
-                type="text"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="按应用名/窗口名搜索..."
-                aria-label="搜索活动"
-              />
-            </div>
-          </div>
+            ))}
         </div>
 
         {error && (
           <div className="error-box" role="alert">
             {error}
-            <button className="btn btn-sm" onClick={fetchActivities} style={{ marginLeft: 12 }}>
+            <button className="btn btn-secondary btn-sm error-retry" onClick={fetchActivities}>
               重试
             </button>
           </div>
         )}
 
-        <div className="detail-list act-box">
-          <div className="table-scroll">
-            {loading ? (
-              <div className="spinner" />
-            ) : items.length === 0 ? (
-              <div className="table-empty">
-                {debouncedSearch.trim() ? "当前搜索无匹配记录" : "暂无活动记录"}
-              </div>
-            ) : (
+        <Surface as="section" className="detail-list">
+          {loading ? (
+            <div className="spinner" />
+          ) : items.length === 0 ? (
+            <div className="table-empty">
+              {debouncedSearch.trim() ? "当前搜索无匹配记录" : "暂无活动记录"}
+            </div>
+          ) : (
+            <div className="table-scroll">
               <table className="simple-table">
                 <thead>
                   <tr>
@@ -244,11 +255,11 @@ export default function Activities() {
                   {items.map((item, idx) => (
                     <tr key={item.id ?? idx}>
                       <td className="cell-nowrap">{formatTime(item.timestamp)}</td>
-                      {columns.app && <td>{item.data?.app_name ?? "--"}</td>}
-                      {columns.title && <td className="cell-ellipsis">{item.data?.window_title ?? "--"}</td>}
-                      {columns.process && <td>{item.data?.process_name ?? "--"}</td>}
+                      {columns.app && <td>{item.data?.app_name ?? "—"}</td>}
+                      {columns.title && <td className="cell-ellipsis">{item.data?.window_title ?? "—"}</td>}
+                      {columns.process && <td>{item.data?.process_name ?? "—"}</td>}
                       {columns.duration && <td>{formatDuration(item.duration_s)}</td>}
-                      {columns.status && <td>{item.data?.is_idle ? "idle" : "active"}</td>}
+                      {columns.status && <td>{item.data?.is_idle ? "空闲" : "活跃"}</td>}
                       {columns.raw && (
                         <td className="cell-raw">
                           {item.event_type} · {String(item.id).slice(0, 8)}
@@ -258,15 +269,15 @@ export default function Activities() {
                   ))}
                 </tbody>
               </table>
-            )}
-          </div>
+            </div>
+          )}
 
           <div className="changePage">
             <div className="page">{`共 ${total} 条，第 ${page} / ${totalPages} 页`}</div>
             <div className="button-box">
               <button
                 type="button"
-                className="last-page"
+                className="btn btn-secondary btn-sm last-page"
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page <= 1 || loading}
               >
@@ -274,7 +285,7 @@ export default function Activities() {
               </button>
               <button
                 type="button"
-                className="next-page"
+                className="btn btn-secondary btn-sm next-page"
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 disabled={page >= totalPages || loading}
               >
@@ -282,7 +293,7 @@ export default function Activities() {
               </button>
             </div>
           </div>
-        </div>
+        </Surface>
       </div>
     </>
   );

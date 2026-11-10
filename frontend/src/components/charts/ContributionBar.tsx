@@ -141,14 +141,14 @@ export default function ContributionBar({
                   width={barWidth}
                   height={BAR_HEIGHT}
                   rx={4}
-                  fill={positive ? "var(--good)" : "var(--bad)"}
+                  fill={positive ? "var(--signal)" : "var(--drift)"}
                 />
                 <text
                   className="mf-chart-row-value"
                   x={valueX}
                   y={y + ROW_HEIGHT / 2}
                   textAnchor="end"
-                  fill={positive ? "var(--good)" : "var(--bad)"}
+                  fill="var(--text)"
                 >
                   {formatSigned(row.contribution, 2)}
                 </text>

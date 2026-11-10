@@ -1,47 +1,46 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import {
-  getHealth,
   getCurrentActivity,
   getFocusTrend,
   getFocusPrediction,
   getModelStatus,
-  getAiProviderStatus,
   getInterventionHistory,
-  getCollectorStatus,
   getAutonomy,
-  startCollector,
-  stopCollector,
+  isAutonomyPaused,
   resumeAutonomy,
   pauseAutonomy,
   getErrorMessage,
+  deriveFocusTrendKpi,
 } from "../api";
 import type {
   ActivityItem,
-  AiProviderStatus,
   AutonomyStatus,
-  CollectorStatus,
   FocusPredictionResponse,
   FocusTrendDay,
   FocusTrendResponse,
-  HealthData,
   InterventionHistoryItem,
   ModelStatus,
 } from "../api";
-import { deriveFocusTrendKpi } from "../api";
 import { dayLabel, findDayByDate, localDateStr, previousLocalDateStr } from "../date-utils";
-import { toFocusPredictionView } from "../prediction-state";
+import { FOCUS_BAND_COLORS, FOCUS_BAND_LABELS, focusBand, toFocusPredictionView } from "../prediction-state";
+import type { FocusBand } from "../prediction-state";
 import { realtimeClient } from "../realtime";
 import type { RealtimeStatus } from "../realtime";
 import { getInterventionTypeLabel } from "../lib/intervention-labels";
 import { userTerm } from "../lib/user-terms";
+import { METHOD_LABELS } from "../types/explainability";
 import BarChart from "../components/charts/BarChart";
 import ContributionBar from "../components/charts/ContributionBar";
-import { METHOD_LABELS } from "../types/explainability";
+import Surface from "../components/signal/Surface";
+import SectionHeader from "../components/signal/SectionHeader";
+import MetricStrip from "../components/signal/MetricStrip";
+import type { MetricItem } from "../components/signal/MetricStrip";
+import Disclosure from "../components/signal/Disclosure";
+import LiveDot from "../components/signal/LiveDot";
+import HelpTip from "../components/signal/HelpTip";
 import "./dashboard.css";
 import "../components/primitives.css";
-
-const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
 /** Response wording shared with the intervention page. */
 const RESPONSE_LABELS: Record<string, string> = {
@@ -53,9 +52,10 @@ const RESPONSE_LABELS: Record<string, string> = {
   dismissed: "已关闭",
 };
 
-function formatFloatHeader(date: Date): string {
-  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}  ${WEEKDAY_LABELS[date.getDay()]}`;
-}
+/** The band's name inside the track's sentence ("…处于专注区间"). */
+const BAND_ZONE: Record<FocusBand, string> = { focus: "专注", uncertain: "不确定", drift: "分心" };
+
+const RELATIVE_TIME = new Intl.RelativeTimeFormat("zh-CN", { numeric: "auto" });
 
 /** The machine's real UTC offset, e.g. "UTC+8" or "UTC+5:30". Hardcoding
  *  "UTC+8" mislabelled every timestamp for anyone outside China. */
@@ -75,6 +75,29 @@ function formatClock(iso: string | undefined): string {
   return parsed.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
+/** "刚刚更新" under a minute, then "更新于 2分钟前" / "更新于 3小时前". */
+function formatUpdatedAt(iso: string, now: Date): string | null {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const seconds = Math.round((parsed.getTime() - now.getTime()) / 1000);
+  if (Math.abs(seconds) < 60) return "刚刚更新";
+  const minutes = Math.round(seconds / 60);
+  if (Math.abs(minutes) < 60) return `更新于 ${RELATIVE_TIME.format(minutes, "minute")}`;
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 24) return `更新于 ${RELATIVE_TIME.format(hours, "hour")}`;
+  return `更新于 ${RELATIVE_TIME.format(Math.round(hours / 24), "day")}`;
+}
+
+/** "18:30" inside today, "11月12日 09:00" across midnight. */
+function formatPausedUntil(date: Date, now: Date): string {
+  const clock = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  return sameDay ? clock : `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`;
+}
+
 /** Percentage change between two days, or null when yesterday is missing —
  *  a fabricated "0%" would read as a real comparison. */
 function dayOverDay(today: number | undefined, previous: number | undefined): number | null {
@@ -83,79 +106,54 @@ function dayOverDay(today: number | undefined, previous: number | undefined): nu
   return ((today - previous) / previous) * 100;
 }
 
-interface StatisticView {
-  title: string;
-  content: string;
-  unit: string;
-  delta: number | null;
+/** Spec §4.1.3: null → none, |d| < 0.5 → flat, else up/down. */
+function deltaOf(delta: number | null): MetricItem["delta"] {
+  if (delta == null) return { text: "较昨日 —", tone: "none" };
+  if (Math.abs(delta) < 0.5) return { text: "较昨日 持平", tone: "flat" };
+  return delta > 0
+    ? { text: `较昨日 ↑${Math.round(delta)}%`, tone: "up" }
+    : { text: `较昨日 ↓${Math.round(Math.abs(delta))}%`, tone: "down" };
 }
 
-/**
- * "为什么这样判断" — the SHAP/linear attribution behind the probability.
- *
- * Collapsed by default: the headline number is what a user reads at a glance,
- * the evidence is what a judge opens. Absent/malformed explanation renders a
- * single neutral line rather than an empty chart frame.
- */
-function PredictionExplanationBlock({
-  explanation,
-}: {
-  explanation?: import("../types/explainability").PredictionExplanation;
-}) {
-  const method = explanation?.method ?? "unavailable";
-  const rows = explanation?.contributions ?? [];
-  if (rows.length === 0) {
-    return (
-      <div className="d-explain-muted">
-        暂无解释数据{method === "unavailable" && explanation ? " · 当前模型不提供归因" : ""}
-      </div>
-    );
+/** The latest reminder by `triggered_at || created_at`. */
+function latestIntervention(items: InterventionHistoryItem[]): InterventionHistoryItem | null {
+  let latest: InterventionHistoryItem | null = null;
+  let latestAt = Number.NEGATIVE_INFINITY;
+  for (const item of items) {
+    const raw = item.triggered_at || item.created_at;
+    const at = raw ? Date.parse(raw) : Number.NaN;
+    if (Number.isNaN(at)) continue;
+    if (at >= latestAt) {
+      latest = item;
+      latestAt = at;
+    }
   }
-  return (
-    <details className="proof-details d-explain">
-      <summary>为什么这样判断</summary>
-      <div className="proof-head">
-        <span className="badge badge-neutral">{METHOD_LABELS[method]}</span>
-        <span className="proof-muted">按影响大小排序，最多 8 项</span>
-      </div>
-      <ContributionBar
-        data={rows.map((row) => ({
-          feature: row.feature,
-          label: row.label,
-          contribution: row.contribution,
-          value: row.value,
-          baselineValue: row.baseline_value,
-        }))}
-        ariaLabel="专注预测的特征贡献：右侧推向专注，左侧推向分心"
-        outputSpace={explanation?.output_space}
-        baseValue={explanation?.base_value}
-      />
-      {explanation?.note && <p className="proof-note">{explanation.note}</p>}
-    </details>
-  );
+  return latest;
 }
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
+  /** Request-level failure (the partial-failure notice). */
   const [error, setError] = useState<string | null>(null);
+  /** Action-level failure (pause / resume), shown in the same notice slot. */
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const [health, setHealth] = useState<HealthData | null>(null);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
-  const [providerStatus, setProviderStatus] = useState<AiProviderStatus | null>(null);
   const [focusTrend, setFocusTrend] = useState<FocusTrendResponse | null>(null);
   const [currentActivity, setCurrentActivity] = useState<ActivityItem | null>(null);
   const [interventions, setInterventions] = useState<InterventionHistoryItem[]>([]);
-  const [collector, setCollector] = useState<CollectorStatus | null>(null);
   const [autonomy, setAutonomy] = useState<AutonomyStatus | null>(null);
   const [focusPrediction, setFocusPrediction] = useState<FocusPredictionResponse | null>(null);
-  /** Distinguishes "no record today" (0) from "we could not ask" (--).
+  /** Distinguishes "no record today" (0) from "we could not ask" (—).
    *  Both used to collapse into `trend == null`, which made a failed request
    *  indistinguishable from a genuinely empty day (audit F1). */
   const [trendStatus, setTrendStatus] = useState<"loading" | "ready" | "error">("loading");
 
-  const [collectorLoading, setCollectorLoading] = useState(false);
   const [autonomyLoading, setAutonomyLoading] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  /** Evidence disclosure state; drives whether row 1 keeps equal-height peers. */
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [controlTime, setControlTime] = useState({ hour: "0", minute: "0" });
   const [now, setNow] = useState(() => new Date());
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("idle");
@@ -164,15 +162,18 @@ export default function Dashboard() {
     setLoading(true);
     setError(null);
     setTrendStatus("loading");
+    // Health, collector and provider status now belong to the top bar's
+    // StatusChip (spec §4.1.5), so they are no longer fetched here.
     const results = await Promise.allSettled([
-      getHealth(), getModelStatus(), getAiProviderStatus(), getFocusTrend(7),
-      getCurrentActivity(), getInterventionHistory(7), getCollectorStatus(),
-      getAutonomy(), getFocusPrediction(),
+      getModelStatus(),
+      getFocusTrend(7),
+      getCurrentActivity(),
+      getInterventionHistory(7),
+      getAutonomy(),
+      getFocusPrediction(),
     ]);
-    const [h, ms, ps, ft, ca, ih, cs, au, fp] = results;
-    if (h.status === "fulfilled") setHealth(h.value);
+    const [ms, ft, ca, ih, au, fp] = results;
     if (ms.status === "fulfilled") setModelStatus(ms.value);
-    if (ps.status === "fulfilled") setProviderStatus(ps.value);
     if (ft.status === "fulfilled") {
       setFocusTrend(ft.value);
       setTrendStatus("ready");
@@ -182,8 +183,7 @@ export default function Dashboard() {
       setTrendStatus("error");
     }
     if (ca.status === "fulfilled") setCurrentActivity(ca.value);
-    if (ih.status === "fulfilled") setInterventions([...ih.value.items].reverse());
-    if (cs.status === "fulfilled") setCollector(cs.value);
+    if (ih.status === "fulfilled") setInterventions(ih.value.items);
     if (au.status === "fulfilled") setAutonomy(au.value);
     if (fp.status === "fulfilled") setFocusPrediction(fp.value);
     const failed = results.filter((result) => result.status === "rejected");
@@ -195,8 +195,7 @@ export default function Dashboard() {
     fetchData();
   }, [fetchData]);
 
-  // Clock behind the floating header (date + weekday) — the reference ticks
-  // off a module-level `new Date()`, so refresh it on a slow interval.
+  // The relative "更新于" stamp and the pause countdown both read `now`.
   useEffect(() => {
     const id = window.setInterval(() => setNow(new Date()), 30_000);
     return () => window.clearInterval(id);
@@ -223,56 +222,59 @@ export default function Dashboard() {
     setInterventions((current) => [item, ...current.filter((entry) => entry.id !== item.id)]);
   }), []);
 
-  /** Collector toggle — its own endpoint, independent from autonomy. */
-  const handleCollectorToggle = async () => {
-    setCollectorLoading(true);
-    try {
-      const next = collector?.running ? await stopCollector() : await startCollector();
-      setCollector(next);
-    } catch (e: unknown) {
-      setError(getErrorMessage(e, "采集器开关失败"));
-    } finally {
-      setCollectorLoading(false);
-    }
-  };
-
-  /** Pause hours + minutes collapse into one hour count; the backend keeps
-   *  its 30-minute floor (`hours >= 0.5`). */
-  const handlePause = async () => {
-    const hours = Number.parseInt(controlTime.hour, 10) || 0;
-    const minutes = Number.parseInt(controlTime.minute, 10) || 0;
-    const totalMinutes = hours * 60 + Math.min(Math.max(minutes, 0), 59);
-    if (totalMinutes < 30) {
-      setError("暂停时长至少 30 分钟");
+  /** Every pause path ends in the same endpoint; the backend keeps its
+   *  30-minute floor, so the client refuses to send less. */
+  const pauseFor = async (minutes: number) => {
+    if (minutes < 30) {
+      setActionError("暂停时长至少 30 分钟");
       return;
     }
     setAutonomyLoading(true);
-    setError(null);
+    setActionError(null);
     try {
-      const result = await pauseAutonomy(totalMinutes / 60);
-      setAutonomy(result);
+      setAutonomy(await pauseAutonomy(minutes / 60));
+      setCustomOpen(false);
       setControlTime({ hour: "0", minute: "0" });
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "暂停干预失败"));
+      setActionError(getErrorMessage(e, "暂停干预失败"));
     } finally {
       setAutonomyLoading(false);
     }
   };
 
+  const handlePause = () => {
+    const hours = Number.parseInt(controlTime.hour, 10) || 0;
+    const minutes = Number.parseInt(controlTime.minute, 10) || 0;
+    return pauseFor(hours * 60 + Math.min(Math.max(minutes, 0), 59));
+  };
+
   const handleResume = async () => {
     setAutonomyLoading(true);
-    setError(null);
+    setActionError(null);
     try {
-      const result = await resumeAutonomy();
-      setAutonomy(result);
+      setAutonomy(await resumeAutonomy());
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "恢复干预失败"));
+      setActionError(getErrorMessage(e, "恢复干预失败"));
     } finally {
       setAutonomyLoading(false);
     }
   };
 
   const predictionView = focusPrediction ? toFocusPredictionView(focusPrediction) : null;
+  const probability = focusPrediction?.status === "ready" ? focusPrediction.focus_probability : null;
+  const ready = predictionView?.ready === true && probability != null;
+  const band = probability != null ? focusBand(probability) : null;
+  const bandColor = band ? FOCUS_BAND_COLORS[band] : "var(--text-dim)";
+  const explanation = focusPrediction?.explanation;
+  const contributions = explanation?.contributions ?? [];
+  // §4.1.1: the three strongest features, split by sign. A group with no
+  // members simply does not render its row.
+  const topReasons = [...contributions]
+    .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+    .slice(0, 3);
+  const positiveReasons = topReasons.filter((row) => row.contribution > 0);
+  const negativeReasons = topReasons.filter((row) => row.contribution < 0);
+
   // Local date keys: `daily` is a sparse, recorded-days-only series, so "today"
   // and "yesterday" are looked up by key and may legitimately be absent.
   const todayKey = localDateStr();
@@ -283,8 +285,7 @@ export default function Dashboard() {
   const yesterday = findDayByDate(daily, yesterdayKey);
   /** True only when the trend request itself succeeded. */
   const trendKnown = trendStatus === "ready";
-  const collectorRunning = collector?.running === true;
-  const autonomyPaused = autonomy?.paused === true || (autonomy?.paused_until != null && new Date(autonomy.paused_until).getTime() > Date.now());
+  const autonomyPaused = isAutonomyPaused(autonomy, now.getTime());
 
   // Seven-day bar chart: only a slot that really is today may read 今天.
   const chartbox = daily.map((day) => ({
@@ -297,413 +298,511 @@ export default function Dashboard() {
     today: day.date === todayKey,
   }));
   const hasTodaySlot = chartbox.some((entry) => entry.today);
+  const meanFocus = chartbox.length > 0
+    ? chartbox.reduce((sum, entry) => sum + entry.number, 0) / chartbox.length
+    : 0;
+  // §4.1.4 (F10): the mean number lives in the legend, not above the line, so
+  // it cannot collide with a bar's own value label. No line for an all-zero
+  // series or a failed request.
+  const showMean = trendKnown && meanFocus > 0;
+  const referenceLine = showMean ? { value: meanFocus } : undefined;
 
-  const statistics: StatisticView[] = [
+  /** `…` while loading, `—` when the request failed or the value is unknown,
+   *  otherwise the measured value. A dash never carries a unit — "—min" reads
+   *  as a quantity. One unknown glyph everywhere (U+2014), never "--". */
+  const cell = (value: string | null, unit: string): Pick<MetricItem, "value" | "unit"> => {
+    if (trendStatus === "loading") return { value: "…" };
+    if (!trendKnown) return { value: "—" };
+    return value == null ? { value: "—" } : { value, unit };
+  };
+
+  const metrics: MetricItem[] = [
     {
-      title: "今日专注时长",
-      // ready + no record → 0 (we looked and found nothing);
-      // request failed  → -- (we do not know).
-      content: !trendKnown ? "--" : String(Math.round(today?.focus_min ?? 0)),
-      unit: "min",
-      delta: trendKnown ? dayOverDay(today?.focus_min, yesterday?.focus_min) : null,
+      key: "focus",
+      label: "专注时长",
+      ...cell(String(Math.round(today?.focus_min ?? 0)), "分钟"),
+      delta: deltaOf(trendKnown ? dayOverDay(today?.focus_min, yesterday?.focus_min) : null),
+      help: {
+        what: "连续使用 5 分钟以上、而且很少来回切换软件的时间，算作专注。",
+        effect: "系统只看切换次数，不看内容，所以长时间看视频也可能被算成专注。",
+      },
     },
     {
-      title: "专注次数",
-      content: !trendKnown ? "--" : String(today?.session_count ?? 0),
-      unit: "次",
-      delta: trendKnown ? dayOverDay(today?.session_count, yesterday?.session_count) : null,
+      key: "sessions",
+      label: "会话次数",
+      ...cell(String(today?.session_count ?? 0), "次"),
+      delta: deltaOf(trendKnown ? dayOverDay(today?.session_count, yesterday?.session_count) : null),
+      help: {
+        what: "一段连续使用电脑 5 分钟以上的时间叫一次会话，不管专注还是分心都算。",
+      },
     },
     {
-      title: "平均专注分数",
+      key: "score",
+      label: "平均专注分",
       // No observation today → no average to show, never a fabricated 0.
-      content:
-        trendKnown && today && today.avg_score != null ? today.avg_score.toFixed(1) : "--",
-      unit: "/100",
-      delta: trendKnown ? dayOverDay(today?.avg_score, yesterday?.avg_score) : null,
+      ...cell(today?.avg_score != null ? today.avg_score.toFixed(1) : null, "/100"),
+      delta: deltaOf(trendKnown ? dayOverDay(today?.avg_score, yesterday?.avg_score) : null),
+      help: {
+        what: "每段会话按“主要软件占的比例”和“切换多不多”打分，满分 100，这里是平均值。",
+      },
     },
     {
-      title: "分心比率",
-      content: kpi.distractionRate != null ? (kpi.distractionRate * 100).toFixed(1) : "--",
-      unit: "%",
-      delta: null,
+      key: "distraction",
+      label: "分心比率",
+      ...cell(kpi.distractionRate != null ? (kpi.distractionRate * 100).toFixed(1) : null, "%"),
+      // Deliberately no trend tone: a rising distraction share is not "good".
+      delta: { text: "较昨日 —", tone: "none" },
+      help: {
+        what: "分心时间 ÷（专注时间 + 分心时间）。既不专注也不分心的时间不算在内。",
+      },
     },
   ];
 
-  const stateItems = [
-    {
-      title: "系统健康",
-      content: health ? (health.status === "ok" || health.status === "healthy" ? "正常" : health.status) : "--",
-      icon: "icon-bodong",
-      on: health != null && (health.status === "ok" || health.status === "healthy"),
-      action: undefined as (() => void) | undefined,
-    },
-    {
-      title: "采集器",
-      content: collector ? (collectorRunning ? "运行中" : "已停止") : "--",
-      icon: "icon-shizhong",
-      on: collectorRunning,
-      action: handleCollectorToggle,
-    },
-    {
-      title: "数据库",
-      content: health ? (health.database.status === "ok" ? "已连接" : "异常") : "--",
-      icon: "icon-shujuku",
-      on: health?.database.status === "ok",
-      action: undefined,
-    },
-    {
-      title: "LLM层",
-      content: providerStatus
-        ? providerStatus.configured
-          ? `已配置 · ${providerStatus.model}`
-          : "未配置"
-        : modelStatus?.loaded
-          ? "已加载"
-          : "--",
-      icon: "icon-yuangongguanli",
-      on: providerStatus?.configured === true,
-      action: undefined,
-    },
-  ];
+  const activity = currentActivity?.data;
+  const activityLine = !activity
+    ? "当前没有活动记录"
+    : activity.is_idle
+      ? `当前空闲${activity.app_name ? ` · 最后使用 ${activity.app_name}` : ""}`
+      : activity.window_title
+        ? `正在使用 ${activity.app_name || "未知应用"} — ${activity.window_title}`
+        : `正在使用 ${activity.app_name || "未知应用"}`;
+  const updatedLabel = currentActivity ? formatUpdatedAt(currentActivity.timestamp, now) : null;
 
-  const pausedUntil = autonomy?.paused_until ? new Date(autonomy.paused_until) : null;
-  const tipText = !autonomyPaused
-    ? "自主模式会根据行为模式自动推送干预建议"
-    : pausedUntil
-      ? `已暂停至${pausedUntil.getMonth() + 1}月${pausedUntil.getDate()}日${String(pausedUntil.getHours()).padStart(2, "0")}:${String(pausedUntil.getMinutes()).padStart(2, "0")}，期间不会推送干预`
-      : "已暂停推送干预";
+  const latest = latestIntervention(interventions);
+  const latestAnswered = Boolean(latest?.user_response);
+  const latestResponse = latestAnswered
+    ? RESPONSE_LABELS[(latest?.user_response || "").toLowerCase()] ?? "已回应"
+    : "未回应";
+
+  const pausedUntilDate = autonomy?.paused_until ? new Date(autonomy.paused_until) : null;
+  const pausedUntilLabel = pausedUntilDate && !Number.isNaN(pausedUntilDate.getTime())
+    ? formatPausedUntil(pausedUntilDate, now)
+    : null;
+
+  /** Minutes from now to the end of the local day — "今天不再提醒". */
+  const minutesLeftToday = (() => {
+    const end = new Date(now);
+    end.setHours(23, 59, 0, 0);
+    return Math.floor((end.getTime() - now.getTime()) / 60_000);
+  })();
+
+  const sourceLine = modelStatus?.demo_only
+    ? "演示模型（模拟数据，仅供展示，不影响提醒）"
+    : modelStatus?.loaded
+      ? `个人模型 · ${userTerm(predictionView?.mode)}`
+      : "规则判断";
+
+  // §8.21.4: the backend's `reason` uses internal terms ("v2 特征窗口"), so the
+  // reader gets the fixed friendly sentence for each status instead.
+  const unavailableCopy = (() => {
+    const status = predictionView?.status;
+    switch (status) {
+      case "no_data":
+        return "最近 2 小时的使用记录还不够，暂时无法判断。多用一会儿电脑后会自动更新。";
+      case "stale":
+        return "最近一段时间没有新的使用记录，判断已暂停。";
+      case "no_model":
+        return "还没有可用的预测模型，攒够反馈后可以在模型中心训练。";
+      case "schema_mismatch":
+      case "inference_error":
+        return "预测模型暂时无法使用，系统会先用简单规则判断。";
+      default:
+        return "还没有可用的预测模型，攒够反馈后可以在模型中心训练。";
+    }
+  })();
+
+  // Only model states can be fixed in the model centre; a data or staleness
+  // problem is not the reader's to resolve there.
+  const showModelLink =
+    predictionView?.status === "no_model"
+    || !predictionView
+    || predictionView.status === "schema_mismatch"
+    || predictionView.status === "inference_error";
+
+  const heroTrackStyle = probability != null
+    ? ({ "--hero-p": `${probability * 100}%` } as CSSProperties)
+    : undefined;
 
   if (loading) {
     return (
-      <div className="d-container">
-        <div className="d-content">
-          <div className="spinner" />
-        </div>
+      <div className="dash dash--loading">
+        <div className="spinner" />
       </div>
     );
   }
 
   return (
-    <div className="d-container">
-      <div className="d-float-header">
-        <div className="d-time">{formatFloatHeader(now)}</div>
-        <button
-          type="button"
-          className="d-switch"
-          title="采集器开关"
-          aria-pressed={collectorRunning}
-          disabled={collectorLoading}
-          style={{
-            color: collectorRunning ? "var(--mf-green)" : "var(--mf-text-dim)",
-            border: `1px solid ${collectorRunning ? "var(--mf-green)" : "#94A3B8"}`,
-          }}
-          onClick={handleCollectorToggle}
-        >
-          <span
-            className="d-switch-dot"
-            style={{
-              backgroundColor: collectorRunning ? "var(--mf-green)" : "#94A3B8",
-              animation: collectorRunning ? "d-colorChange 2s linear infinite" : "none",
-            }}
-          />
-          {"\u00a0\u00a0\u00a0"}
-          {collectorLoading ? "切换中" : collectorRunning ? "采集中" : "已停止"}
-        </button>
-      </div>
-
+    <div className={`dash${evidenceOpen ? " dash--evidence-open" : ""}`}>
       {error && (
-        <div className="error-box" role="alert">
-          {error}
-          <button className="btn btn-sm" onClick={fetchData} style={{ marginLeft: 12 }}>
-            重试
+        <div className="notice" role="alert">
+          <span className="notice-text">{error}</span>
+          <button
+            type="button"
+            className="notice-close"
+            aria-label="关闭提示"
+            onClick={() => setError(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {actionError && (
+        <div className="notice" role="alert">
+          <span className="notice-text">{actionError}</span>
+          <button
+            type="button"
+            className="notice-close"
+            aria-label="关闭提示"
+            onClick={() => setActionError(null)}
+          >
+            ×
           </button>
         </div>
       )}
 
-      <div className="d-content">
-        <div className="d-state">
-          {stateItems.map((item) => (
-            <div
-              className="d-state-item"
-              key={item.title}
-              title={item.action ? "采集器开关" : undefined}
-              style={item.action ? { cursor: "pointer" } : undefined}
-              onClick={item.action}
-              role={item.action ? "button" : undefined}
-              tabIndex={item.action ? 0 : undefined}
-              onKeyDown={
-                item.action
-                  ? (event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        item.action?.();
-                      }
-                    }
-                  : undefined
-              }
-            >
-              <div className="d-state-title">{item.title}</div>
-              <div className={item.on ? "d-state-content" : "d-state-close"}>
-                {item.content}
-              </div>
-              <div className={item.on ? "d-icon-box" : "d-icon-box d-icon-box-close"}>
-                <div className={`icon iconfont ${item.icon}`} aria-hidden="true" />
-              </div>
-            </div>
-          ))}
+      {/* ── 此刻 ─────────────────────────────────────────────────────────── */}
+      <Surface as="section" pad="lg" className="dash-hero" aria-labelledby="now-title">
+        <div className="hero-head">
+          <h2 id="now-title" className="sh-title">此刻</h2>
+          <LiveDot status={realtimeStatus} />
+          {updatedLabel && <span className="hero-updated">{updatedLabel}</span>}
         </div>
 
-        <div className="d-activity-chart">
-          <div className="d-activity">
-            <div className="d-activity-title">当前活动</div>
-            {currentActivity ? (
-              <>
-                <div className="d-activity-item">
-                  <div className="d-activity-item-title">应用程序</div>
-                  <div className="d-activity-item-content">{currentActivity.data.app_name || "未知应用"}</div>
-                </div>
-                <div className="d-activity-item">
-                  <div className="d-activity-item-title">窗口标题</div>
-                  <div className="d-activity-item-content">
-                    {currentActivity.data.window_title || "—"}
-                  </div>
-                </div>
-                <div className="d-activity-item">
-                  <div className="d-activity-item-title">进程名称</div>
-                  <div className="d-activity-item-content">
-                    {currentActivity.data.process_name || "—"}
-                  </div>
-                </div>
-                <div className="d-activity-item">
-                  <div className="d-activity-item-title">空闲状态</div>
-                  <div className="d-activity-item-contain">
-                    <div className={currentActivity.data.is_idle ? "d-activity-item-contain-content d-activity-item-contain-content--off" : "d-activity-item-contain-content"}>
-                      {currentActivity.data.is_idle ? "空闲" : "活跃"}
-                    </div>
-                    <div className="d-activity-item-contain-content">实时</div>
-                  </div>
-                </div>
-                <div className="d-subline" />
-                <div className="d-activity-time">
-                  <div className="iconfont icon-shizhong" style={{ transform: "translateY(1px)" }} aria-hidden="true" />
-                  <div className="d-activity-time-content">
-                    最后更新: {new Date(currentActivity.timestamp).toLocaleString("zh-CN", { hour12: false })} {utcOffsetLabel(new Date(currentActivity.timestamp))}
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="d-empty">当前没有活动记录{realtimeStatus === "connected" ? "（实时连接中）" : ""}</div>
-                <div className="d-subline" />
-                <div className="d-activity-time">
-                  <div className="iconfont icon-shizhong" style={{ transform: "translateY(1px)" }} aria-hidden="true" />
-                  <div className="d-activity-time-content">最后更新: —</div>
-                </div>
-              </>
-            )}
+        <div className="hero-read">
+          <div
+            className="hero-num"
+            style={{ color: ready ? bandColor : "var(--text-dim)" }}
+            aria-label={ready && probability != null ? `专注概率 ${(probability * 100).toFixed(1)}%` : undefined}
+          >
+            {ready && probability != null ? Math.round(probability * 100) : "—"}
+            {ready && <span className="hero-unit">%</span>}
           </div>
-
-          <div className="d-chart">
-            <div className="d-chart-title">近 7 日专注趋势</div>
-            <div className="d-chart-plot">
-              <BarChart
-                data={chartbox.map((item) => ({
-                  key: item.key,
-                  label: item.week,
-                  value: item.number,
-                  title: `${item.week} · ${item.key}`,
-                  highlight: item.today,
-                  detail: [
-                    { label: "分心", value: `${item.distraction} min` },
-                    { label: "专注次数", value: `${item.sessions} 次` },
-                    { label: "平均分", value: item.score != null ? item.score.toFixed(1) : "—" },
-                  ],
-                }))}
-                ariaLabel={`近 7 日每日专注分钟数，共 ${chartbox.length} 天`}
-                unit=" min"
-                height={168}
-                yAxisLabel="分钟"
-                htmlXLabelClass="d-chart-box-item-week"
-                emptyMessage={
-                  trendStatus === "error" ? "趋势加载失败（数据未更新）" : "暂无近 7 日趋势数据"
-                }
-              />
-            </div>
-            <div className="d-chart-demonstration">
-              <div className="d-chart-demonstration-item">
-                <div className="d-chart-demonstration-item-dot" />
-                <div className="d-chart-demonstration-item-text">专注时长 (分钟)</div>
-              </div>
-              {hasTodaySlot && (
-                <div className="d-chart-demonstration-item">
-                  <div className="d-chart-demonstration-item-dot d-chart-demonstration-item-dot--today" />
-                  <div className="d-chart-demonstration-item-text">今天 (进行中)</div>
-                </div>
+          <div className="hero-meta">
+            <div className="hero-state" style={{ color: ready && band ? bandColor : "var(--text)" }}>
+              {ready && band ? FOCUS_BAND_LABELS[band] : "暂无判断"}
+              {ready && band && (
+                <HelpTip
+                  term="专注概率"
+                  what="大数字是系统猜你此刻在专注的可能性，越高越可能在专注。"
+                  effect="它只是估计，可能猜错。猜错时，在弹出的“模型校准”里告诉它就好。"
+                />
               )}
             </div>
+            <p className="hero-activity" title={activityLine}>{activityLine}</p>
           </div>
         </div>
 
-        <div className="d-statistic">
-          {statistics.map((item) => (
-            <div className="d-statistic-item" key={item.title}>
-              <div className="d-statistic-title">{item.title}</div>
-              <div className="d-statistic-content">
-                <div className="d-statistic-number">{item.content}</div>
-                <div className="d-statistic-unit">{item.unit}</div>
-              </div>
-              {/* The icon row is always present so the comparison line keeps
-                  the reference's vertical rhythm even without a delta. */}
-              <div
-                className={`icon iconfont d-statistic-icon${item.delta == null ? " d-statistic-icon--flat" : ""} ${item.delta != null && item.delta > 0 ? "icon-tubiaoshangshengqushi" : "icon-xiajiang"}`}
-                style={{ color: item.delta == null ? "var(--mf-text-dim)" : item.delta > 0 ? "var(--mf-green)" : "var(--mf-red)" }}
+        {ready && band && probability != null ? (
+          <>
+            <div
+              className="hero-track"
+              role="img"
+              aria-label={`专注概率 ${(probability * 100).toFixed(1)}%，处于${BAND_ZONE[band]}区间`}
+              style={heroTrackStyle}
+            >
+              <span className="hero-track-band" aria-hidden="true" />
+              <span
+                className="hero-cursor"
+                style={{
+                  background: bandColor,
+                  boxShadow: band === "focus" ? "var(--signal-glow)" : undefined,
+                }}
                 aria-hidden="true"
               />
-              <div
-                className={`d-statistic-stat${item.delta == null ? " d-statistic-stat--flat" : ""}`}
-                style={item.delta == null ? undefined : { color: item.delta > 0 ? "var(--mf-green)" : "var(--mf-red)" }}
-              >
-                {item.delta != null
-                  ? `较昨日 ${item.delta > 0 ? "+" : ""}${item.delta.toFixed(1)}%`
-                  : "较昨日 —"}
-              </div>
             </div>
-          ))}
-        </div>
+            <div className="hero-track-labels" aria-hidden="true">
+              <span>分心</span>
+              <span className="hero-track-mid">不确定区间</span>
+              <span>专注</span>
+            </div>
 
-        <div className="d-control-inference">
-          <div className="d-control">
-            <div className="d-control-title">自主控制</div>
-            <div className="d-control-module">
-              <div className={autonomyPaused ? "d-control-module-jingao" : "d-control-module-statement"}>
-                {autonomyPaused ? "暂停中" : "已启动"}
-              </div>
-              <div className="d-control-module-text">
-                {autonomyPaused ? "自主干预已暂停" : "自主干预模式运行中"}
-              </div>
+            <div className="hero-reasons">
+              {contributions.length === 0 ? (
+                <p className="hero-reason-empty">当前模型不提供逐项依据</p>
+              ) : (
+                <>
+                  {positiveReasons.length > 0 && (
+                    <div className="hero-reason">
+                      <span className="hero-reason-dot" data-tone="up" aria-hidden="true" />
+                      <span className="hero-reason-label">支持专注</span>
+                      <span className="hero-reason-items">
+                        {positiveReasons.map((row) => row.label).join(" · ")}
+                      </span>
+                    </div>
+                  )}
+                  {negativeReasons.length > 0 && (
+                    <div className="hero-reason">
+                      <span className="hero-reason-dot" data-tone="down" aria-hidden="true" />
+                      <span className="hero-reason-label">拉向分心</span>
+                      <span className="hero-reason-items">
+                        {negativeReasons.map((row) => row.label).join(" · ")}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
-            <div className="d-control-pause">
-              <div className="d-control-pause-text">暂停</div>
+
+            {contributions.length > 0 && (
+              <div className="hero-evidence">
+                <Disclosure
+                  summary="查看完整依据"
+                  onOpenChange={setEvidenceOpen}
+                  help={{
+                    what: "展开后能看到哪些习惯让系统觉得你专注、哪些让它觉得你分心。",
+                  }}
+                >
+                  <p className="hero-method">
+                    方法：{METHOD_LABELS[explanation?.method ?? "unavailable"]} · 按影响大小排序，最多 8 项
+                  </p>
+                  <ContributionBar
+                    data={contributions.map((row) => ({
+                      feature: row.feature,
+                      label: row.label,
+                      contribution: row.contribution,
+                      value: row.value,
+                      baselineValue: row.baseline_value,
+                    }))}
+                    ariaLabel="专注预测的特征贡献：右侧推向专注，左侧推向分心"
+                    outputSpace={explanation?.output_space}
+                    baseValue={explanation?.base_value}
+                  />
+                  {explanation?.note && <p className="hero-note">{explanation.note}</p>}
+                  {activity && currentActivity && (
+                    <div className="hero-window">
+                      <h3 className="sub-title">当前窗口</h3>
+                      <dl className="hero-window-list">
+                        <dt>应用</dt>
+                        <dd>{activity.app_name || "—"}</dd>
+                        <dt>窗口</dt>
+                        <dd className="hero-window-title" title={activity.window_title || undefined}>
+                          {activity.window_title || "—"}
+                        </dd>
+                        <dt>进程</dt>
+                        <dd>{activity.process_name || "—"}</dd>
+                        <dt>状态</dt>
+                        <dd>{activity.is_idle ? "空闲" : "活跃"}</dd>
+                        <dt>最后更新</dt>
+                        <dd>
+                          {new Date(currentActivity.timestamp).toLocaleString("zh-CN", { hour12: false })}
+                          {" "}
+                          {utcOffsetLabel(new Date(currentActivity.timestamp))}
+                        </dd>
+                      </dl>
+                    </div>
+                  )}
+                </Disclosure>
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="hero-unavailable">
+            <span>{unavailableCopy}</span>
+            {showModelLink && (
+              <Link className="btn btn-secondary btn-sm" to="/model-center">查看模型状态</Link>
+            )}
+          </p>
+        )}
+
+        <div className="hero-source">{sourceLine}</div>
+      </Surface>
+
+      {/* ── 下一步 ───────────────────────────────────────────────────────── */}
+      <Surface as="section" className="dash-next" aria-labelledby="next-title">
+        <h2 id="next-title" className="sh-title dash-next-title">下一步</h2>
+
+        {latest ? (
+          <>
+            <p className="next-message" title={latest.message || latest.title || undefined}>
+              {latest.message || latest.title || getInterventionTypeLabel(latest.intervention_type)}
+            </p>
+            <p className="next-meta">
+              {getInterventionTypeLabel(latest.intervention_type)}
+              {" · "}
+              {formatClock(latest.triggered_at || latest.created_at)}
+              {" · "}
+              <span className={latestAnswered ? "next-response next-response--accepted" : "next-response"}>
+                {latestResponse}
+              </span>
+            </p>
+            <div className="next-actions">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => navigate("/intervention")}>
+                去干预中心
+              </button>
+            </div>
+            <p className="next-count">最近 7 天共 {interventions.length} 条提醒</p>
+          </>
+        ) : (
+          <>
+            <p className="next-empty">目前不需要提醒，保持现在的节奏。</p>
+            <Link className="btn btn-secondary btn-sm next-link" to="/intervention">去干预中心</Link>
+          </>
+        )}
+
+        <div className="next-auto">
+          <div className="next-auto-head">
+            <span className="sub-title next-auto-title">
+              自动提醒
+              <HelpTip
+                term="自动提醒"
+                what="系统发现你可能分心时，主动弹出的小提示。"
+                effect="暂停后，这段时间不弹提醒，每天自动生成的 AI 分析也会暂停；记录照常进行，时间到了自动恢复。"
+              />
+            </span>
+            <span className={autonomyPaused ? "next-auto-state next-auto-state--paused" : "next-auto-state"}>
+              {autonomyPaused
+                ? pausedUntilLabel ? `已暂停至 ${pausedUntilLabel}` : "已暂停"
+                : "开启中"}
+            </span>
+          </div>
+
+          {autonomyPaused ? (
+            <div className="next-auto-body">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={handleResume}
+                disabled={autonomyLoading}
+              >
+                {autonomyLoading ? "处理中…" : "恢复提醒"}
+              </button>
+              <p className="next-auto-hint">暂停期间不会推送干预</p>
+            </div>
+          ) : customOpen ? (
+            <div className="next-auto-body">
               <input
-                className="d-control-pause-time"
+                className="next-custom-input"
                 placeholder="0"
                 value={controlTime.hour}
                 type="number"
                 min="0"
                 aria-label="暂停小时"
-                disabled={autonomyPaused}
                 onChange={(e) => setControlTime({ ...controlTime, hour: e.target.value })}
               />
-              <div className="d-control-pause-text">小时</div>
+              <span className="next-custom-unit">小时</span>
               <input
-                className="d-control-pause-time"
+                className="next-custom-input"
                 placeholder="0"
                 value={controlTime.minute}
                 type="number"
                 min="0"
                 max="59"
                 aria-label="暂停分钟"
-                disabled={autonomyPaused}
                 onChange={(e) => setControlTime({ ...controlTime, minute: e.target.value })}
               />
-              <div className="d-control-pause-text">分钟</div>
+              <span className="next-custom-unit">分钟</span>
               <button
-                className="d-control-submit"
+                type="button"
+                className="btn btn-secondary btn-sm"
                 onClick={handlePause}
-                disabled={autonomyPaused || autonomyLoading}
+                disabled={autonomyLoading}
               >
-                {autonomyLoading ? "处理中..." : "暂停干预"}
+                {autonomyLoading ? "处理中…" : "暂停"}
               </button>
               <button
-                className="d-control-restore"
-                onClick={handleResume}
-                disabled={!autonomyPaused || autonomyLoading}
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setCustomOpen(false)}
+                disabled={autonomyLoading}
               >
-                {autonomyLoading ? "处理中..." : "恢复"}
+                取消
               </button>
             </div>
-            <div className={`d-control-tip${autonomyPaused ? " d-control-tip--warn" : ""}`}>
-              <div
-                className={`iconfont icon-jinggao1${autonomyPaused ? " d-control-tip--warn" : ""}`}
-                aria-hidden="true"
-              />
-              <div className="control-tips-text">{tipText}</div>
+          ) : (
+            <div className="next-auto-body">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => pauseFor(30)}
+                disabled={autonomyLoading}
+              >
+                {autonomyLoading ? "处理中…" : "暂停 30 分钟"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => pauseFor(60)}
+                disabled={autonomyLoading}
+              >
+                {autonomyLoading ? "处理中…" : "暂停 1 小时"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => pauseFor(minutesLeftToday)}
+                disabled={autonomyLoading || minutesLeftToday < 30}
+                title={minutesLeftToday < 30 ? "今天剩余不足 30 分钟" : undefined}
+              >
+                {autonomyLoading ? "处理中…" : "今天不再提醒"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setCustomOpen(true)}
+                disabled={autonomyLoading}
+              >
+                自定义
+              </button>
             </div>
-          </div>
-
-          <div className="d-inference">
-            <div className="d-inference-title">最近干预</div>
-            <button type="button" className="d-todetail" onClick={() => navigate("/intervention")}>
-              查看全部
-            </button>
-            {interventions.length === 0 ? (
-              <div className="d-empty">最近 7 天无干预记录</div>
-            ) : (
-              <div className="d-inference-scroll">
-                {[...interventions].reverse().slice(-10).map((item, index) => {
-                  // "No answer yet" is not a severity — the old "警告" label
-                  // read as "this intervention is dangerous". Report what is
-                  // actually known: whether the user responded, and how.
-                  const answered = Boolean(item.user_response);
-                  const responseLabel = answered
-                    ? RESPONSE_LABELS[(item.user_response || "").toLowerCase()] ?? "已回应"
-                    : "未回应";
-                  return (
-                    <div className="d-inference-item" key={item.id ?? index}>
-                      <div className={`icon-box${answered ? "" : " icon-box-orange"}`}>
-                        <div className={`iconfont ${answered ? "icon-tixing" : "icon-shizhong"}`} aria-hidden="true" />
-                      </div>
-                      <div className="d-inference-text">
-                        {item.message || item.title || getInterventionTypeLabel(item.intervention_type)}
-                      </div>
-                      <div className={`d-inference-tag${answered ? "" : " d-inference-tag-light"}`}>
-                        {responseLabel}
-                      </div>
-                      <div className="d-inference-time">{formatClock(item.triggered_at || item.created_at)}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          )}
         </div>
+      </Surface>
 
-        {/* Local-only detail: the reference dashboard has no ML/health block,
-            so it is appended after the replicable sections instead of being
-            injected into them. */}
-        <div className="d-extra">
-          <div className="d-extra-card">
-            <div className="d-extra-title">ML 专注预测</div>
-            <div className="d-extra-value">
-              {predictionView ? predictionView.display : "暂无预测数据"}
+      {/* ── 今天 ─────────────────────────────────────────────────────────── */}
+      <MetricStrip
+        label="今天"
+        items={metrics}
+        note={trendStatus === "error" ? "趋势数据加载失败" : undefined}
+      />
+
+      {/* ── 最近 7 天 ────────────────────────────────────────────────────── */}
+      <Surface as="section" className="dash-trend">
+        <SectionHeader
+          title="最近 7 天"
+          summary="每日专注时长（分钟）"
+          actions={
+            <div className="trend-legend">
+              {hasTodaySlot && (
+                <span className="trend-legend-item">
+                  <span className="trend-legend-swatch trend-legend-swatch--today" aria-hidden="true" />
+                  今天
+                </span>
+              )}
+              <span className="trend-legend-item">
+                <span className="trend-legend-swatch" aria-hidden="true" />
+                往日
+              </span>
+              {showMean && (
+                <span className="trend-legend-item">
+                  <span className="trend-legend-line" aria-hidden="true" />
+                  7 日均值 {Math.round(meanFocus)} 分钟
+                </span>
+              )}
             </div>
-            <div className="d-extra-note">
-              {modelStatus?.demo_only
-                ? `合成数据演示模型 · 影子模式${predictionView && !predictionView.ready
-                  ? ` · ${predictionView.reason || predictionView.statusLabel}` : ""}`
-                : predictionView
-                ? predictionView.reason || `预测模式：${userTerm(predictionView.mode)}`
-                : "需积累数据后由模型中心生成"}
-            </div>
-            <PredictionExplanationBlock
-              explanation={focusPrediction?.explanation}
-            />
-          </div>
-          <div className="d-extra-card">
-            <div className="d-extra-title">服务状态</div>
-            <div className="d-extra-value">
-              {modelStatus?.demo_only
-                ? "演示模型已加载 · 影子模式"
-                : modelStatus?.loaded ? "模型已加载" : "规则引擎模式"}
-              {!modelStatus?.demo_only && predictionView ? ` · ${predictionView.statusLabel}` : ""}
-            </div>
-            <div className="d-extra-note">
-              版本 {health?.version ?? "--"} · 实时连接：{realtimeStatus}
-              {modelStatus?.demo_only ? " · 未通过个人模型质量门" : ""}
-            </div>
-          </div>
-        </div>
-      </div>
+          }
+        />
+        <BarChart
+          data={chartbox.map((item) => ({
+            key: item.key,
+            label: item.week,
+            value: item.number,
+            title: `${item.week} · ${item.key}`,
+            highlight: item.today,
+            detail: [
+              { label: "分心", value: `${item.distraction} 分钟` },
+              { label: "会话次数", value: `${item.sessions} 次` },
+              { label: "平均分", value: item.score != null ? item.score.toFixed(1) : "—" },
+            ],
+          }))}
+          ariaLabel={`近 7 日每日专注分钟数，共 ${chartbox.length} 天`}
+          unit=" 分钟"
+          height={220}
+          colorFor={(datum) => (datum.highlight ? "var(--signal)" : "var(--steel)")}
+          referenceLine={referenceLine}
+          htmlXLabelClass="d-chart-box-item-week"
+          emptyMessage={trendStatus === "error" ? "趋势加载失败（数据未更新）" : "暂无近 7 日趋势数据"}
+        />
+      </Surface>
     </div>
   );
 }

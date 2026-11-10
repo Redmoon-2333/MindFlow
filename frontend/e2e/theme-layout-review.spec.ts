@@ -10,7 +10,7 @@ for (const theme of ["white", "black", "navy", "burgundy"]) for (const width of 
     await page.goto(path); await expect(page.locator("html")).toHaveAttribute("data-theme",theme);
     await expect(page.locator(".mf-header-name")).toBeVisible();
     await expect(page.locator(".mf-main .spinner")).toHaveCount(0);
-    if (path === "/") await expect(page.locator(".d-extra-card").first()).toBeVisible();
+    if (path === "/") await expect(page.locator(".dash-hero")).toBeVisible();
     if (path === "/settings") { await page.getByRole("button",{name:"外观与 AI",exact:true}).click(); await expect(page.getByRole("button",{name:"保存 AI Key"})).toBeVisible(); }
     if (path === "/activities") await expect(page.locator(".present-acti")).toContainText("研究报告");
     if (path === "/analytics") await expect(page.getByText("very-long-browser-application.exe")).toBeVisible();
@@ -23,8 +23,18 @@ for (const theme of ["white", "black", "navy", "burgundy"]) for (const width of 
       expect(rects[1].top).toBeGreaterThanOrEqual(rects[0].bottom);
     }
     if (width === 1440 && path === "/") {
-      const cards=await page.evaluate(() => [".d-control", ".d-inference", ".d-extra-card:first-child", ".d-extra-card:last-child"].map(s => {const r=document.querySelector(s)!.getBoundingClientRect();return {left:r.left,width:r.width};}));
-      expect(Math.abs(cards[0].left-cards[2].left)).toBeLessThan(2); expect(Math.abs(cards[1].width-cards[3].width)).toBeLessThan(2);
+      // The dashboard is one grid: 此刻 (2fr) + 下一步 (1fr) share the first
+      // row, and 今天 / 最近 7 天 span both columns. Same intent as the old
+      // "the four cards line up" check, measured on the new structure.
+      const boxes = await page.evaluate(() => [".dash-hero", ".dash-next", ".sig-metrics", ".dash-trend"].map(s => {
+        const r = document.querySelector(s)!.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, width: r.width };
+      }));
+      expect(Math.abs(boxes[0].left - boxes[2].left), "hero and 今天 start on the same column").toBeLessThan(2);
+      expect(Math.abs(boxes[0].top - boxes[1].top), "hero and 下一步 share the first row").toBeLessThan(2);
+      expect(Math.abs(boxes[2].width - boxes[3].width), "今天 and 最近 7 天 are both full width").toBeLessThan(2);
+      expect(Math.abs(boxes[2].left - boxes[3].left)).toBeLessThan(2);
+      expect(Math.abs(boxes[0].width + boxes[1].width + 16 - boxes[2].width), "2fr + 1fr + gap = the full row").toBeLessThan(2);
     }
     await page.screenshot({path:`screenshots/20261008/${theme}-${width}-${path.slice(1)||"dashboard"}.png`,fullPage:true});
   });
@@ -64,7 +74,7 @@ for (const theme of ["white", "black", "navy", "burgundy"]) {
     await page.setViewportSize({width:1440,height:1000}); await setup(page);
     await page.addInitScript(value => localStorage.setItem("mindflow_theme",value),theme);
     await page.goto("/model-center");
-    await page.getByRole("tab",{name:"模型状态",exact:true}).click();
+    await page.getByRole("button",{name:"模型状态",exact:true}).click();
     await expect(page.locator(".mc-model-mode")).toHaveCount(2);
     const spacing=await page.locator(".mc-model-mode").evaluateAll(rows => {
       const a=rows[0].querySelector(".badge")!.getBoundingClientRect();
@@ -76,7 +86,7 @@ for (const theme of ["white", "black", "navy", "burgundy"]) {
     const button=await page.getByRole("button",{name:"添加任务",exact:true}).boundingBox();
     expect(Math.abs(input!.y+input!.height-button!.y-button!.height)).toBeLessThan(2);
     await page.screenshot({path:`screenshots/20261008/${theme}-1440-task-alignment.png`});
-    await page.goto("/"); await expect(page.locator(".d-extra-card").first()).toBeVisible();
+    await page.goto("/"); await expect(page.locator(".dash-trend")).toBeVisible();
     await page.locator(".mf-main").evaluate(el => {el.scrollTop=el.scrollHeight;});
     await page.screenshot({path:`screenshots/20261008/${theme}-1440-dashboard-bottom.png`});
   });

@@ -12,6 +12,13 @@ import {
   getErrorMessage,
 } from "../api";
 import type { BlockedSiteItem, TaskItem, TaskListResponse } from "../api";
+import Segmented from "../components/signal/Segmented";
+import HelpTip from "../components/signal/HelpTip";
+
+const EXECUTION_TABS = [
+  { key: "任务管理", label: "任务管理" },
+  { key: "网站拦截", label: "网站拦截" },
+] as const;
 
 const STATUS_FILTERS = [
   { key: "all", label: "全部" },
@@ -152,6 +159,7 @@ export default function Execution() {
   };
 
   const handleDeleteTask = async (task: TaskItem) => {
+    if (!window.confirm("确定删除这个任务吗？")) return;
     setBusy(true);
     setError(null);
     try {
@@ -195,6 +203,7 @@ export default function Execution() {
   };
 
   const handleRemoveBlock = async (item: BlockedSiteItem) => {
+    if (!window.confirm("确定移除这个网站吗？")) return;
     setBusy(true);
     setError(null);
     try {
@@ -222,13 +231,20 @@ export default function Execution() {
 
   return (
     <WorkspacePage title="干预执行" description="把建议落到行动：整理待办任务，或暂时屏蔽容易让你分心的网站。" className="execution-page">
-      <div className="tabs" aria-label="执行功能">{["任务管理", "网站拦截"].map(name => <button type="button" key={name} className={`tab ${tab === name ? "active" : ""}`} aria-pressed={tab === name} onClick={() => setTab(name)}>{name}</button>)}</div>
+      <div className="page-toolbar">
+        <Segmented
+          ariaLabel="执行功能"
+          options={EXECUTION_TABS.map((item) => ({ value: item.key, label: item.label }))}
+          value={tab}
+          onChange={setTab}
+        />
+      </div>
 
       {error && <div className="error-box mb16">{error}</div>}
 
       {tab === "任务管理" && <div className="card mb24" id="task-editor">
         <h3>{editingId ? "编辑任务" : "任务管理"}</h3>
-        <p style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+        <p className="card-desc">
           写下你准备完成的事情。专注提醒会参考截止时间与优先级，帮你选择下一步。优先级 5 为最高。
         </p>
 
@@ -272,35 +288,31 @@ export default function Execution() {
           <div className="workspace-actions task-form-actions">
           <button
             type="button"
-            className="btn"
+            className="btn btn-primary btn-sm"
             disabled={busy || !taskTitle.trim()}
             onClick={handleAddTask}
           >
             {busy && (
-              <span className="spinner" style={{ width: 14, height: 14, margin: 0, borderWidth: 2 }} />
+              <span className="spinner spinner--inline spinner--xs" />
             )}
             {editingId ? "保存任务" : "添加任务"}
           </button>
-          {editingId && <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => { setEditingId(null); setTaskTitle(""); setTaskDescription(""); setTaskDeadline(""); setTaskMinutes(""); setTaskPriority(3); }}>取消编辑</button>}
+          {editingId && <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setEditingId(null); setTaskTitle(""); setTaskDescription(""); setTaskDeadline(""); setTaskMinutes(""); setTaskPriority(3); }}>取消编辑</button>}
           </div>
         </div>
 
-        <div className="tabs" style={{ marginBottom: 12 }}>
-          {STATUS_FILTERS.map((filter) => (
-            <button
-              type="button"
-              key={filter.key}
-              className={`tab ${statusFilter === filter.key ? "active" : ""}`}
-              onClick={() => setStatusFilter(filter.key)}
-            >
-              {filter.label}
-            </button>
-          ))}
+        <div className="execution-status-filter">
+          <Segmented
+            ariaLabel="任务状态"
+            options={STATUS_FILTERS.map((filter) => ({ value: filter.key, label: filter.label }))}
+            value={statusFilter}
+            onChange={(value) => setStatusFilter(value as StatusFilter)}
+          />
         </div>
 
         {tasksLoading && <div className="spinner" />}
         {!tasksLoading && filteredTasks.length === 0 && (
-          <p style={{ color: "var(--color-text-tertiary)", fontSize: 14 }}>
+          <p className="execution-empty">
             暂无任务，添加一个开始使用优先级建议
           </p>
         )}
@@ -310,15 +322,9 @@ export default function Execution() {
               key={task.id}
               className="workspace-record"
             >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
-                  <span
-                    style={{
-                      textDecoration: task.status === "done" ? "line-through" : "none",
-                      fontSize: 14,
-                      fontWeight: 600,
-                    }}
-                  >
+              <div className="execution-record-body">
+                <div className="workspace-actions">
+                  <span className={`task-title${task.status === "done" ? " task-title--done" : ""}`}>
                     {task.title}
                   </span>
                   <span className={`badge badge-info`}>P{task.priority}</span>
@@ -326,21 +332,21 @@ export default function Execution() {
                     {STATUS_LABELS[task.status]}
                   </span>
                   {task.estimated_minutes != null && (
-                    <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
+                    <span className="execution-meta">
                       约 {task.estimated_minutes} 分钟
                     </span>
                   )}
                 </div>
-                {task.description && <p className="workspace-note" style={{margin: "10px 0"}}>{task.description}</p>}
-                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>
+                {task.description && <p className="workspace-note execution-task-desc">{task.description}</p>}
+                <div className="execution-meta">
                   截止：{formatDeadline(task.deadline_utc)}
                 </div>
               </div>
               <div className="workspace-actions">
-                <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={() => handleEditTask(task)}>编辑</button>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => handleEditTask(task)}>编辑</button>
                 <button
                   type="button"
-                  className="btn btn-sm"
+                  className="btn btn-secondary btn-sm"
                   disabled={busy}
                   onClick={() => handleAdvanceTask(task)}
                 >
@@ -352,7 +358,7 @@ export default function Execution() {
                 </button>
                 <button
                   type="button"
-                  className="btn btn-sm btn-danger"
+                  className="btn btn-danger btn-sm"
                   disabled={busy}
                   onClick={() => handleDeleteTask(task)}
                 >
@@ -365,7 +371,7 @@ export default function Execution() {
 
       {tab === "网站拦截" && <div className="card">
         <h3>网站拦截</h3>
-        <p style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+        <p className="card-desc">
           先在系统设置中配对浏览器扩展，再添加想暂时屏蔽的域名。扩展每分钟同步名单；暂停拦截后可以恢复访问。
         </p>
 
@@ -375,28 +381,33 @@ export default function Execution() {
             aria-label="要拦截的域名"
             value={blockDomain}
             onChange={(e) => setBlockDomain(e.target.value)}
-            style={{ minWidth: 0 }}
+            className="execution-field"
           />
           <input
             placeholder="拦截原因（可选）"
             aria-label="拦截原因"
             value={blockReason}
             onChange={(e) => setBlockReason(e.target.value)}
-            style={{ minWidth: 0 }}
+            className="execution-field"
           />
           <button
             type="button"
-            className="btn btn-danger"
+            className="btn btn-primary btn-sm"
             disabled={busy || !blockDomain.trim()}
             onClick={handleAddBlock}
           >
             添加拦截
           </button>
+          <HelpTip
+            term="网站拦截"
+            what="把网站加入拦截名单，打开时浏览器扩展会挡住它。"
+            effect="需要先在系统设置里配对浏览器扩展，否则不会生效；大约 1 分钟内同步。"
+          />
         </div>
 
         {blocklistLoading && <div className="spinner" />}
         {!blocklistLoading && blocklist.length === 0 && (
-          <p style={{ color: "var(--color-text-tertiary)", fontSize: 14 }}>
+          <p className="execution-empty">
             暂无拦截域名
           </p>
         )}
@@ -406,23 +417,23 @@ export default function Execution() {
               key={item.domain}
               className="workspace-record"
             >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="flex gap8" style={{ alignItems: "center", flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 14, fontWeight: 600 }}>{item.domain}</span>
+              <div className="execution-record-body">
+                <div className="workspace-actions">
+                  <span className="task-title">{item.domain}</span>
                   <span className={`badge ${item.enabled ? "badge-danger" : "badge-info"}`}>
                     {item.enabled ? "拦截中" : "已暂停"}
                   </span>
                 </div>
                 {item.reason && (
-                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>
+                  <div className="execution-meta">
                     {item.reason}
                   </div>
                 )}
               </div>
-              <div className="flex gap8" style={{ flexShrink: 0 }}>
+              <div className="execution-row-actions">
                 <button
                   type="button"
-                  className="btn btn-sm"
+                  className="btn btn-secondary btn-sm"
                   disabled={busy}
                   onClick={() => handleToggleBlock(item)}
                 >
@@ -430,7 +441,7 @@ export default function Execution() {
                 </button>
                 <button
                   type="button"
-                  className="btn btn-sm btn-danger"
+                  className="btn btn-danger btn-sm"
                   disabled={busy}
                   onClick={() => handleRemoveBlock(item)}
                 >
