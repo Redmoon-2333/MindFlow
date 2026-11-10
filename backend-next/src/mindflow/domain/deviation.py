@@ -9,11 +9,15 @@ Scoring model
 Each 5-minute feature window is compared against the user's own baseline for
 the same local (hour_of_day, day_of_week) bucket. The expected value and the
 dispersion come from :meth:`BaselineModel.shrunk_expected`: an empirical-Bayes
-(James–Stein) posterior mean that pulls a sparse bucket toward the user's
-global estimate, paired with a median-absolute-deviation scale. Both replace
-the arithmetic mean / standard deviation because they survive a handful of
-extreme days (breakdown point 50%) that would otherwise inflate σ and mask
-exactly the deviations this detector exists to find.
+(James–Stein) posterior mean that pulls a sparse bucket toward a prior, paired
+with a median-absolute-deviation scale. Both replace the arithmetic mean /
+standard deviation because they survive a handful of extreme days (breakdown
+point 50%) that would otherwise inflate σ and mask exactly the deviations this
+detector exists to find.
+
+The prior and the pseudo-count are estimated, not configured (§8.25): a bucket
+borrows its level from the same hour across all weekdays, and the shrinkage
+strength is the moment estimate of σ²_w / τ² for that feature.
 
 References:
     * Efron, B. & Morris, C. (1975). "Data Analysis Using Stein's Estimator
@@ -33,7 +37,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from mindflow.domain.baseline import DEFAULT_SHRINKAGE_K, BaselineModel
+from mindflow.domain.baseline import BaselineModel
 from mindflow.domain.feature_labels import feature_label
 
 #: How many features ``to_summary`` may return (contract §2 caps at 6).
@@ -81,8 +85,12 @@ class DeviationDetector:
     MODERATE_THRESHOLD = 2.5  # clearly unusual
     SEVERE_THRESHOLD = 4.0  # extreme outlier
 
-    #: Empirical-Bayes pseudo-count (see ``BaselineModel.shrunk_expected``).
-    SHRINKAGE_K: int = DEFAULT_SHRINKAGE_K
+    #: Optional override for the empirical-Bayes pseudo-count. ``None`` (the
+    #: production default) lets :meth:`BaselineModel.shrunk_expected` estimate
+    #: k from the data and use the hour-pooled prior (spec §8.25). Setting it
+    #: pins the legacy fixed-k / global-robust behaviour, which is what the
+    #: pre-§8.25 tests and A/B comparisons use.
+    SHRINKAGE_K: float | None = None
 
     def __init__(self, baseline: BaselineModel) -> None:
         self.baseline = baseline
@@ -253,19 +261,18 @@ class DeviationDetector:
 
         # n_samples: how many windows the bucket actually holds. Taken from the
         # shrunk estimate itself so the reported shrinkage and the number that
-        # produced it can never disagree.
+        # produced it can never disagree — k is per-feature now, so the
+        # shrinkage must come from the same estimate as n_bucket rather than
+        # being recomputed from a class constant.
         n_samples = 0
+        shrinkage = 1.0
         for item in scored:
             estimate = self.baseline.shrunk_expected(
                 str(item["feature"]), hour, dow, k=self.SHRINKAGE_K
             )
-            if estimate is not None:
-                n_samples = max(n_samples, int(estimate["n_bucket"]))
-        shrinkage = (
-            self.SHRINKAGE_K / (n_samples + self.SHRINKAGE_K)
-            if n_samples > 0
-            else 1.0
-        )
+            if estimate is not None and int(estimate["n_bucket"]) >= n_samples:
+                n_samples = int(estimate["n_bucket"])
+                shrinkage = float(estimate["shrinkage"])
 
         ranked = sorted(
             scored,

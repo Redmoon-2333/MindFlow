@@ -467,7 +467,7 @@ test.describe("Intervention", () => {
     await page.waitForTimeout(2000);
 
     // Click accept if latest intervention is visible
-    const acceptBtn = page.locator("button").filter({ hasText: "接受" }).first();
+    const acceptBtn = page.locator("button").filter({ hasText: "好，试试看" }).first();
     if (await acceptBtn.isVisible()) {
       await acceptBtn.click();
       await page.waitForTimeout(2000);

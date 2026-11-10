@@ -49,14 +49,14 @@ export default function PosteriorBars({ candidates, ariaLabel = "候选干预的
               <span className="mf-posterior-ci" style={{ left: `${left}%`, width: `${widthPct}%` }} />
               <span className="mf-posterior-mean" style={{ left: `${clamp(mean, 0, 1) * 100}%` }} />
             </div>
-            <span className="mf-posterior-value">{mean.toFixed(2)}</span>
+            <span className="mf-posterior-value">{Math.round(mean * 100)}%</span>
           </div>
         );
       })}
       <div className="mf-posterior-legend">
-        <span>● 后验均值</span>
-        <span>▬ 90% 可信区间</span>
-        <span>区间越宽 = 探索越多</span>
+        <span>● 估计有用的概率</span>
+        <span>▬ 可能的范围（90%）</span>
+        <span>范围越宽 = 系统还在摸索</span>
       </div>
     </div>
   );

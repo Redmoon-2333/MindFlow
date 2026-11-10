@@ -95,6 +95,8 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
 "tests/test_eval_adapters.py" = ["E501"]
 "tests/test_eval_runner.py" = ["E501"]
 "tests/test_eval_scenarios.py" = ["E501"]
+# Midterm experiment script: X/y matrix conventions and Chinese report text
+"scripts/experiment_midterm_algorithms.py" = ["E501", "N803", "N806"]
 
 [tool.mypy]
 strict = true

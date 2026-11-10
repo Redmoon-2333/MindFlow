@@ -86,7 +86,30 @@ MIN_ROBUST_SAMPLES: int = 8
 #: before the bucket's own estimate gets half the weight (k / (n + k) = 0.5 at
 #: n = 10), which is a deliberately conservative prior for a personal baseline
 #: that starts with a handful of windows per time-of-day bucket.
+#:
+#: This constant now only documents the meaning of an *explicit* ``k``: the
+#: default path estimates k from the data itself (Efron & Morris 1975, JASA
+#: 70(350):311-319; Morris 1983, JASA 78(382):382-388). The E1 experiment
+#: (``scripts/experiment_midterm_algorithms.py``) measured a fixed k = 10 as
+#: 12.6% *worse* in MSE than raw bucket means on 24 synthetic users, because
+#: the true shrinkage strength is the ratio of within- to between-bucket
+#: variance and is not a constant across features.
 DEFAULT_SHRINKAGE_K: int = 10
+
+#: Bounds on the moment-estimated k̂. Below the floor the estimator is
+#: effectively the raw bucket mean; above the cap it is effectively the prior,
+#: which keeps a degenerate τ² from producing an infinite pseudo-count.
+MIN_ESTIMATED_K: float = 0.5
+MAX_ESTIMATED_K: float = 50.0
+
+#: τ² below this is numerically indistinguishable from zero (all bucket means
+#: equal), so k̂ saturates at :data:`MAX_ESTIMATED_K` instead of dividing by ~0.
+ZERO_BETWEEN_VARIANCE: float = 1e-12
+
+#: An hour-pooled prior needs this many observations before it replaces the
+#: global robust median/σ. Below it a single week's worth of that hour is not
+#: enough to claim the hour has its own level.
+MIN_HOUR_POOLED_SAMPLES: float = 3.0
 
 
 def _timezone_key(value: TimezoneLike) -> str:
@@ -144,6 +167,15 @@ class BaselineModel:
         # already has exact Welford statistics.
         self._robust_global: dict[str, deque[float]] = {}
 
+        # Derived per-feature statistics for the data-driven shrinkage path.
+        # Both are pure functions of ``_stats``, so they are cached rather than
+        # persisted: ``to_dict`` keeps its exact shape (spec §8.25 item 4) and
+        # ``update`` drops the cache whenever the buckets move.
+        #   _hour_pooled[feature][hour] = (n, mean, M2) across all weekdays
+        #   _estimated_k[feature] = (k_hat, within_variance σ²_w, τ²)
+        self._hour_pooled: dict[str, dict[int, tuple[float, float, float]]] = {}
+        self._estimated_k: dict[str, tuple[float, float, float]] = {}
+
         self._init_buckets()
 
     def _init_buckets(self) -> None:
@@ -196,6 +228,11 @@ class BaselineModel:
         """
         if not rows:
             return 0
+
+        # Any new window can change a bucket mean, the hour-pooled prior and
+        # therefore k̂; drop the derived caches before mutating the stats.
+        self._hour_pooled.clear()
+        self._estimated_k.clear()
 
         processed = 0
         for row in rows:
@@ -389,43 +426,183 @@ class BaselineModel:
         std = math.sqrt(total_m2 / (total_n - 1.0)) if total_n > 1.0 else 0.0
         return {"n": total_n, "mean": mean, "std": std}
 
+    # ══════════════════════════════════════════════════════════════════
+    # Data-driven shrinkage (hierarchical hour prior + moment-estimated k)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _feature_buckets(self, feature: str) -> list[tuple[int, int, float, float, float]]:
+        """Every bucket with data for *feature* as (hour, dow, n, mean, M2)."""
+        rows: list[tuple[int, int, float, float, float]] = []
+        for hour, hour_bucket in self._stats.items():
+            for dow, dow_bucket in hour_bucket.items():
+                s = dow_bucket.get(feature)
+                if s is None or s["n"] <= 0.0 or not math.isfinite(s["mean"]):
+                    continue
+                rows.append((hour, dow, float(s["n"]), float(s["mean"]), float(s["M2"])))
+        return rows
+
+    def hour_pooled_stats(self, feature: str, hour: int) -> dict[str, float] | None:
+        """Combined statistics of *feature* at local *hour*, across all weekdays.
+
+        The hierarchical prior's level: a bucket (h, d) borrows from the same
+        hour on every other weekday, which is the structure a fixed global
+        median ignores (spec §8.25 item 1). Combining is exact — the pooled
+        ``M2`` is ``Σ(M2_b + n_b·(mean_b − mean_h)²)``, the union's Welford
+        state, not an average of per-bucket variances.
+
+        Returns ``None`` when fewer than :data:`MIN_HOUR_POOLED_SAMPLES`
+        observations exist for that hour; callers then fall back to the global
+        robust median/σ.
+        """
+        pooled = self._hour_pooled.get(feature, {}).get(hour)
+        if pooled is None:
+            members = [b for b in self._feature_buckets(feature) if b[0] == hour]
+            if not members:
+                return None
+            total_n = sum(n for _h, _d, n, _m, _m2 in members)
+            total_m2 = sum(m2 for _h, _d, _n, _m, m2 in members)
+            mean_h = sum(n * mean for _h, _d, n, mean, _m2 in members) / total_n
+            # Re-express each bucket's M2 around the pooled mean.
+            combined_m2 = total_m2 + sum(
+                n * (mean - mean_h) ** 2 for _h, _d, n, mean, _m2 in members
+            )
+            pooled = (total_n, mean_h, combined_m2)
+            self._hour_pooled.setdefault(feature, {})[hour] = pooled
+        total_n, mean_h, combined_m2 = pooled
+        if total_n < MIN_HOUR_POOLED_SAMPLES:
+            return None
+        var_h = combined_m2 / (total_n - 1.0) if total_n > 1.0 else 0.0
+        return {"n": total_n, "mean": mean_h, "var": var_h}
+
+    def estimated_shrinkage(self, feature: str) -> dict[str, float]:
+        """Method-of-moments estimate of the empirical-Bayes pseudo-count k̂.
+
+        For a one-way random-effects model ``mean_b = μ_h(b) + u_b + e_b`` with
+        ``Var(u_b) = τ²`` and ``Var(e_b) = σ²_w / n_b``, the marginal variance
+        of the bucket means around their hour prior is ``τ² + σ²_w/n_b``.
+        Solving for the between-bucket variance gives the classic estimator
+        (Efron & Morris 1975; Morris 1983)::
+
+            σ²_w = Σ M2_b / (Σ n_b − #buckets)
+            τ²   = max(0, weighted_var(mean_b − μ_h(b)) − mean(σ²_w / n_b))
+            k̂    = σ²_w / τ²            clipped to [0.5, 50]
+
+        ``k̂`` is exactly the pseudo-count at which the posterior mean balances
+        the bucket and its prior, so estimating it replaces the constant that
+        the E1 experiment showed to be mis-sized for most features.
+
+        Returns ``{"k", "within_var", "between_var"}``; ``k`` saturates at
+        :data:`MAX_ESTIMATED_K` when ``τ²`` is numerically zero.
+        """
+        cached = self._estimated_k.get(feature)
+        if cached is not None:
+            return {"k": cached[0], "within_var": cached[1], "between_var": cached[2]}
+
+        buckets = self._feature_buckets(feature)
+        if not buckets:
+            self._estimated_k[feature] = (MAX_ESTIMATED_K, 0.0, 0.0)
+            return {"k": MAX_ESTIMATED_K, "within_var": 0.0, "between_var": 0.0}
+
+        n_total = sum(n for _h, _d, n, _m, _m2 in buckets)
+        dof = n_total - float(len(buckets))
+        if dof > 0.0:
+            within_var = sum(m2 for _h, _d, _n, _m, m2 in buckets) / dof
+        else:
+            # Every bucket holds a single observation: no within-bucket
+            # information, so fall back to the pooled variance.
+            welford = self.global_welford_stats(feature)
+            within_var = welford["std"] ** 2 if welford is not None else 0.0
+
+        # Deviations of each bucket mean from its own hour prior, weighted by n.
+        weighted_var = 0.0
+        weight_total = 0.0
+        mean_sampling_var = 0.0
+        for hour, _dow, n, mean, _m2 in buckets:
+            prior = self.hour_pooled_stats(feature, hour)
+            if prior is None:
+                prior_mean = self._global_prior_mean(feature, fallback=mean)
+            else:
+                prior_mean = prior["mean"]
+            weighted_var += n * (mean - prior_mean) ** 2
+            weight_total += n
+            mean_sampling_var += within_var / n
+        weighted_var = weighted_var / weight_total if weight_total > 0.0 else 0.0
+        mean_sampling_var = mean_sampling_var / len(buckets)
+
+        between_var = max(0.0, weighted_var - mean_sampling_var)
+        # τ² ≈ 0 means every bucket mean sits on its hour prior: the data
+        # cannot separate them, so the cap is the honest answer.
+        k_hat = (
+            MAX_ESTIMATED_K
+            if between_var < ZERO_BETWEEN_VARIANCE
+            else within_var / between_var
+        )
+        k_hat = min(max(k_hat, MIN_ESTIMATED_K), MAX_ESTIMATED_K)
+
+        self._estimated_k[feature] = (k_hat, within_var, between_var)
+        return {"k": k_hat, "within_var": within_var, "between_var": between_var}
+
+    def _global_prior_mean(self, feature: str, *, fallback: float) -> float:
+        """Global prior level: robust median, else pooled Welford mean, else *fallback*."""
+        robust = self.global_robust_stats(feature)
+        if robust is not None:
+            return robust["median"]
+        welford = self.global_welford_stats(feature)
+        return welford["mean"] if welford is not None else fallback
+
     def shrunk_expected(
         self,
         feature: str,
         hour: int,
         dow: int,
-        k: int = DEFAULT_SHRINKAGE_K,
-    ) -> dict[str, float] | None:
+        k: float | None = None,
+    ) -> dict[str, Any] | None:
         """Empirical-Bayes expected value and scale for one (bucket, feature).
 
-        The bucket's exact Welford statistics are shrunk toward the user's
-        global robust statistics:
+        Two modes, and the difference is only *where the prior and k come
+        from* — the posterior arithmetic is shared:
 
-        ``μ̂ = (n_b · mean_b + k · median_g) / (n_b + k)`` and
-        ``ŝ = sqrt((n_b · var_b + k · σ_g²) / (n_b + k))``.
+        * ``k is None`` (the default, used by every production caller): the
+          prior is the hierarchical hour-pooled level ``μ_h`` with the pooled
+          hour variance, and the pseudo-count is the method-of-moments
+          estimate :meth:`estimated_shrinkage` (Efron & Morris 1975; Morris
+          1983). When that hour has fewer than
+          :data:`MIN_HOUR_POOLED_SAMPLES` observations the prior degrades to
+          the global robust median/σ.
+        * ``k`` given explicitly: the historical behaviour, byte for byte —
+          global robust median/σ prior and the caller's fixed pseudo-count.
+          Existing callers that pass a k (and the tests pinning them) are
+          unaffected.
 
-        ``median_g`` and ``σ_g`` come from the global ring buffer (median,
-        ``1.4826 · MAD``), so the prior itself is not dragged around by a few
-        extreme windows.
+        The bucket's exact Welford statistics are combined with the prior:
+
+        ``μ̂ = (n_b · mean_b + k · prior_mean) / (n_b + k)`` and
+        ``ŝ = sqrt((n_b · var_b + k · prior_var) / (n_b + k))``.
+
+        In the default mode the prior mean is the hour-pooled mean, so a
+        Tuesday-morning bucket borrows from every morning rather than from a
+        global median that mixes mornings with evenings.
 
         The scale is floored at ``1e-6 + 0.05·|μ̂|``: a feature that is nearly
         constant in absolute terms but large in magnitude (a ratio sitting at
         0.95) must not report a huge z-score for a trivial movement.
 
         A zero combined variance means the feature has never varied in either
-        the bucket or the global ring — there is no dispersion to normalise
-        against, and dividing by the floor would report a meaningless
-        six-figure z for any nonzero value. ``None`` is returned instead so
-        callers skip the feature, exactly as the previous MAD estimator did
-        when the MAD was zero.
+        the bucket or the prior — there is no dispersion to normalise against,
+        and dividing by the floor would report a meaningless six-figure z for
+        any nonzero value. ``None`` is returned instead so callers skip the
+        feature, exactly as the previous MAD estimator did when the MAD was
+        zero.
 
-        Cold start (``n_b = 0``) reduces to the global estimate; if the ring is
-        still too short it falls back to the pooled global Welford mean/std.
+        Cold start (``n_b = 0``) reduces to the prior; if the ring is still too
+        short it falls back to the pooled global Welford mean/std.
         Returns ``None`` only when the feature has never been observed.
 
         Returns:
-            ``{"expected", "scale", "n_bucket", "n_global", "shrinkage"}``
-            where ``shrinkage = k / (n_b + k)``.
+            ``{"expected", "scale", "n_bucket", "n_global", "shrinkage", "k",
+            "prior"}`` where ``shrinkage = k / (n_b + k)``, ``k`` is the
+            pseudo-count actually used, and ``prior`` is ``"hour_pooled"`` or
+            ``"global_robust"``.
         """
         if feature not in self.FEATURE_COLS:
             return None
@@ -438,31 +615,46 @@ class BaselineModel:
             else 0.0
         )
 
-        robust = self.global_robust_stats(feature)
-        if robust is not None:
-            prior_mean = robust["median"]
-            prior_var = robust["sigma"] ** 2
-            n_global = robust["n"]
+        hour_prior = self.hour_pooled_stats(feature, hour) if k is None else None
+        if hour_prior is not None:
+            prior_mean = hour_prior["mean"]
+            prior_var = hour_prior["var"]
+            n_global = hour_prior["n"]
+            prior_kind = "hour_pooled"
+            effective_k = self.estimated_shrinkage(feature)["k"]
         else:
-            welford = self.global_welford_stats(feature)
-            if welford is None and n_b <= 0.0:
-                return None
-            prior_mean = welford["mean"] if welford is not None else mean_b
-            prior_var = welford["std"] ** 2 if welford is not None else var_b
-            n_global = welford["n"] if welford is not None else 0.0
+            robust = self.global_robust_stats(feature)
+            if robust is not None:
+                prior_mean = robust["median"]
+                prior_var = robust["sigma"] ** 2
+                n_global = robust["n"]
+            else:
+                welford = self.global_welford_stats(feature)
+                if welford is None and n_b <= 0.0:
+                    return None
+                prior_mean = welford["mean"] if welford is not None else mean_b
+                prior_var = welford["std"] ** 2 if welford is not None else var_b
+                n_global = welford["n"] if welford is not None else 0.0
+            prior_kind = "global_robust"
+            # k is estimated per feature regardless of which prior supplied the
+            # level: an hour too thin to be a prior is still informative about
+            # how strongly this feature's buckets should be shrunk at all.
+            effective_k = (
+                self.estimated_shrinkage(feature)["k"] if k is None else float(k)
+            )
 
         if n_b <= 0.0:
             expected = prior_mean
             variance = prior_var
             shrinkage = 1.0
         else:
-            denominator = n_b + float(k)
-            expected = (n_b * mean_b + k * prior_mean) / denominator
-            variance = (n_b * var_b + k * prior_var) / denominator
-            shrinkage = float(k) / denominator
+            denominator = n_b + effective_k
+            expected = (n_b * mean_b + effective_k * prior_mean) / denominator
+            variance = (n_b * var_b + effective_k * prior_var) / denominator
+            shrinkage = effective_k / denominator
 
         if variance <= 0.0:
-            # Never varied in the bucket or the global ring: no honest scale.
+            # Never varied in the bucket or the prior: no honest scale.
             return None
         scale = max(
             math.sqrt(variance),
@@ -474,6 +666,8 @@ class BaselineModel:
             "n_bucket": n_b,
             "n_global": n_global,
             "shrinkage": shrinkage,
+            "k": effective_k,
+            "prior": prior_kind,
         }
 
     def robust_z(self, feature: str, value: float, hour: int, dow: int) -> float | None:
@@ -491,7 +685,7 @@ class BaselineModel:
         estimate = self.shrunk_expected(feature, hour, dow)
         if estimate is None:
             return None
-        return (value - estimate["expected"]) / estimate["scale"]
+        return (value - float(estimate["expected"])) / float(estimate["scale"])
 
     def to_dict(self) -> dict[str, Any]:
         return {

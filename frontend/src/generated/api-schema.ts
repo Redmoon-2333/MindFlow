@@ -1796,8 +1796,10 @@ export interface components {
          * DeviationBucket
          * @description The (hour, weekday) bucket the deviation was measured against.
          *
-         *     ``shrinkage`` is ``k / (n + k)``, the empirical-Bayes weight the global
-         *     estimate keeps in this bucket's expectation (Efron & Morris 1975). It is
+         *     ``shrinkage`` is ``k / (n + k)``, the empirical-Bayes weight the prior
+         *     keeps in this bucket's expectation (Efron & Morris 1975). ``k`` is
+         *     estimated per feature from the data (§8.25), so the weight reflects how
+         *     much this bucket's own mean can be trusted about *this* feature. It is
          *     1.0 for an unseen bucket and falls toward 0 as the bucket fills.
          */
         DeviationBucket: {

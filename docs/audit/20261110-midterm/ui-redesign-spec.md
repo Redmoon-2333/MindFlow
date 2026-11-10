@@ -1669,3 +1669,168 @@ interface HelpTipProps { term: string; what: string; effect?: string }
    - A 回归 ui-review `--workers=1`（端口 4300）
 
    截图由主代理统一进行。
+
+### 8.23 离线演示实机核验发现（2026-11-10，全新隔离目录 `mf_demo_1110b`，未配置 LLM）
+
+实测结论：
+- 仪表盘的预测与 TreeSHAP 贡献展示正常。
+- 以下三处在离线（L3 规则引擎）路径下不可用或自相矛盾。答辩现场就是离线演示，所以都必须修。
+
+1. **手动干预被拒（后端，`services/intervention_service.py`）**
+   - 现象：用户点击"标准干预"后提示"本次提醒已跳过：未检测到显著的拖延模式，无需干预"。但按钮说明写的是"不用等系统发现，现在就让它给你一条提醒"。
+   - 原因：`maybe_intervene` 第 1 步调用 `_select_intervention_type(assessment) is None`（最高置信度 < 0.2 且没有推荐技术）后直接跳过，手动和自动两条路径共用这一判断。
+   - 改法：仅当 `bypass_throttle=True`（手动）且 `_select_intervention_type` 返回 None 时，**不跳过**。
+     - `assessment.types` 非空：用 `rule_selection(assessment.types, bucket=...)` 选出主选方案，再用 `dataclasses.replace` 把 `note` 改为 `未检测到明显的拖延模式（最高可能性 {p:.0%}），按你的请求给出一条通用专注提醒`。
+     - `assessment.types` 为空：构造 `Selection(intervention_type="nudge", selection="rule", context_bucket=bucket, candidates=(Candidate(nudge，先验 α/β，chosen=True),), note="当前记录里看不出拖延迹象，按你的请求给出一条通用专注提醒")`，`rationale_payload` 的 `procrastination_type` 为 None。
+     - 之后照常走工作态、深度专注、安全检查和持久化等后续步骤；手动路径本来就会绕过的环节，现在依旧绕过。
+   - 自动路径（`bypass_throttle=False`）的行为**不变**，仍然跳过，原 skip 文案保留。
+   - 测试：
+     - 新增"手动 + 低置信度 → 生成干预，note 含'按你的请求'"；
+     - 新增"手动 + types 为空 → nudge"；
+     - 新增"自动 + 低置信度 → 仍然跳过"；
+     - 已有测试不得放宽。
+2. **动机分解（TMT）在离线归因中为空（后端，先定位再修）**
+   - 现象：在全新目录下 `POST` 归因（前端"运行归因分析"）返回 `tmt=null`，界面显示"暂无动机分解数据"。
+   - 已知：`graph/analysis_graph.py:535-541` 会把 `bundle.tmt` 写入状态，`:983` 写入 verdict，`:402-403` 缓存命中时从 transcript 读取。
+   - 要做的：用 `scripts/demo.py --data-dir <新的临时目录> --prepare-only`，或等价的 `create_demo_app` 配合 httpx ASGI 客户端复现，查清 `tmt` 在哪一步丢失。候选位置：L3 回退链节点、规则引擎 verdict 构造、transcript 持久化、`evidence_service.compute_tmt` 输入缺失返回 None、路由的非 workflow 分支。
+   - 修复要求：`tmt` 和 `deviation` 都是确定性计算，**与是否调用 LLM 无关**。L3 规则引擎路径、单专家降级路径和缓存命中路径都必须返回它们（`deviation` 在没有基线时可以是 null，`tmt` 只要证据包构建成功就不能是 null）。
+   - 若根因是 `compute_tmt` 在缺少任务/截止时间时返回 None：改为返回带缺失标记的分解，与 `domain/tmt.py` 中已有的缺失语义保持一致；**不得编造数值**。
+   - 回归测试：离线（无 LLM）跑一次 `daily_attribution`，断言响应中 `tmt` 非空，四个分量和 `motivation` 都存在；再跑一次（缓存命中），断言 `tmt` 仍非空。
+3. **归因结果自相矛盾（前端，`pages/Analytics.tsx` 归因结果卡）**
+   - 现象：拖延类型显示"冲动分心"、置信度显示 0.15，而证据栏写着"未检测到显著的拖延模式"。
+   - 改法：当 `cbt_technique == null` 且最高置信度 < 0.2 时（阈值与后端 `intervention_service._select_intervention_type` 一致，在常量旁注释引用该函数）：
+     - "拖延类型"一行显示 `没有发现明显的拖延`；
+     - "置信度"一行显示 `—`；
+     - 下方"类型置信度"条形图照常显示，标题旁加一句弱提示 `都很低，仅供参考`。
+     - 其他情况不变。
+4. **空状态文案（前端）**
+   - `Analytics.tsx:227` 的 `暂无偏离数据` 改为 `还在积累记录：用几天后，才能和你平时的水平比较。`；
+   - `TmtGauge.tsx:44` 的 `暂无动机分解数据` 改为 `这次分析没有算出动机分解。`。
+5. **门禁**：
+   - 后端：全量 pytest（串行），通过数 ≥ 3336 + 新增测试数；ruff 和 mypy --strict 均为 0。
+   - 前端：`npx tsc -b`，临时目录构建（禁止 `npm run build`），lint 不新增问题，fe-a 回归 ui-review。
+   - 实机：主代理在新的隔离目录下重新截图核验。
+
+### 8.24 桌面干预弹窗与整体风格统一（用户 2026-11-10 截图："这个需要做好看一点，和整体风格不符了"）
+
+现状：`backend-next/src/mindflow/infrastructure/intervention_popup.py` 是浅色系统窗口，带 Tk 羽毛图标和灰色系统标题栏，三个按钮外观完全一样，标题在标题栏和正文里各出现一次。正文中的方法提示写成"（可尝试 刺激控制 方法）"，多了两处空格。
+
+不新增依赖，只用 tkinter。颜色取自 `frontend/src/theme.css`：bg `#0a0e14`、surface `#121a24`、surface-2 `#18222e`、line `#1f2a36`、text `#d7dee6`、text-dim `#8e9baa`、signal `#33b5e5`；hover 用 signal 提亮后的 `#5cc6ec`。
+
+1. **窗口**
+   - `overrideredirect(True)` 无边框，去掉系统标题栏和羽毛图标，保持 `-topmost`。
+   - 宽 400px（按 DPI 缩放，见第 7 条）。
+   - 位于屏幕右下角，右边距 24px，下边距 72px，避开任务栏。
+   - 外框 1px，颜色为 line；内部底色为 surface；左侧贴边一条 3px 的 signal 色竖条，与整窗等高。
+   - 出现时用 `-alpha` 在约 160ms 内从 0 渐变到 0.97。
+2. **顶栏**（内边距 16/20/0/20）
+   - 左侧：signal 色 `●` 加文字 `MindFlow · 专注提示`，字体 Microsoft YaHei UI 9 号，颜色 text-dim。
+   - 右侧：`×`，平时 text-dim，hover 时 text，光标为 hand2，点击走 `_on_close`（语义不变：ignored，human）。
+   - 按住顶栏可以拖动窗口。
+3. **标题与正文**
+   - 标题：payload title，Microsoft YaHei UI 13 号粗体，颜色 text，上间距 10。
+   - 正文：Microsoft YaHei UI 10 号，颜色 text-dim，上间距 6。
+   - 两者 `wraplength` 均为 352px，左对齐。
+4. **按钮**
+   - 用 `tk.Label` 绑定事件实现，以便完全控制配色。整行右对齐，上间距 16，按钮间距 8，从左到右依次为：
+     - `不适合我` → dismissed：无底色，文字 text-dim，hover 时文字变为 text；
+     - `先忽略` → ignored：底色 surface-2，1px line 色边框，文字 text，hover 时底色变为 line；
+     - `好，试试看` → accepted：底色 signal，文字 bg 色并加粗，hover 时底色变为 `#5cc6ec`。
+   - 三个按钮内边距均为 14×6，光标为 hand2。
+   - `_BUTTON_RESPONSES` 改为以上三个新文案的映射；`ACTION_RESPONSES` **不变**。
+   - 键盘：Enter 等于"好，试试看"，Esc 走 `_on_close`。
+5. **倒计时条**：窗口底部放一个高 2px、横跨全宽的 Canvas，signal 色，在 `timeout_s` 内按线性收缩到 0，每 200ms 刷新一次；超时逻辑不变。
+6. **行为不变**：`post_response`、ready 文件写入时机（窗口显示后写入）、超时以 auto 身份上报、`_finish` 的幂等性都保持原样。
+7. **DPI**
+   - win32 下在 `tk.Tk()` 之前调用 `ctypes.windll.shcore.SetProcessDpiAwareness(1)`，只用 `contextlib.suppress(AttributeError, OSError)` 包住，不吞其他异常。
+   - 所有像素量乘以 `scale = root.winfo_fpixels("1i") / 96`；字体用磅值，不再缩放。
+8. **正文文案**（`services/intervention_service.py:495`）：`（可尝试 {cbt_label} 方法）` 改为 `（方法：{cbt_label}）`。此项由 be-fix 做，避免和它正在改的文件冲突。
+9. **测试**
+   - 已有测试全部保持通过；
+   - 新增 `_BUTTON_RESPONSES == {"好，试试看": "accepted", "先忽略": "ignored", "不适合我": "dismissed"}`；
+   - 新增一个纯函数（例如 `_countdown_fraction(elapsed, timeout)`），并为它的边界写单测。
+10. **预览**
+    - 在仓库外写一个预览脚本，用示例 payload 启动弹窗：标题 `该回到正题了`，正文用截图里那段，`api_url` 指向一个不可达的本地端口，`timeout_s=30`。
+    - 窗口就绪后用 Pillow 的 `ImageGrab` 截下窗口区域，保存到 `D:/大学相关/01_学业与课程/07_双创/MindFlow/.playwright-mcp/audit/popup/popup-preview.png`，截完立即关闭窗口。
+    - 预览脚本本身不进仓库。
+11. **点击必须立即关闭**（用户反馈 2026-11-10："弹窗点击无响应，应该能立刻关掉"）
+    - 根因：`_finish` 先同步执行 `post_response`（超时 5 秒），之后才 `destroy()`。服务端慢或已退出时，窗口会在原地"卡住"最多 5 秒。
+    - 改法：`_finish` 依次做以下几步：
+      1. 置 `_responded`；
+      2. 取消全部 after 任务；
+      3. 立即 `root.withdraw()` 并调用 `root.update_idletasks()`，使窗口在一帧内消失；
+      4. 再上报回答，`post_response` 的超时由 5.0 改为 2.0（仅弹窗调用处传参，函数默认值不改）；
+      5. 最后 `destroy()`。
+    - 窗口显示后调用 `root.focus_force()`，确保 Enter / Esc 能直接生效。
+    - 测试：用假 opener 记录调用顺序，断言 `withdraw` 早于 `post_response`；断言 opener 收到的 timeout 为 2.0。
+    - 实测：在探针中对四个可点击元素（三个按钮和 ×）分别用 `ctypes` 的 `SendInput` 发送**真实鼠标点击**，确认每次点击后 ≤100ms 窗口即不可见，且上报的回答映射正确。
+
+### 8.25 稳健个人基线：收缩强度改为由数据估计（后端算法，2026-11-10 E1 实验暴露）
+
+证据：`scripts/experiment_midterm_algorithms.py`。E1 在 24 个合成用户上的结果：固定 `k=10`、先验为全局中位数的收缩估计，整体 MSE 比原始桶均值**差 12.6%**（95% CI [−22.3%, −2.9%]）。其中 idle_ratio 与 active_seconds_ratio 分别差 59% 和 51%；只有 app_switch_count 好 12.1%。
+
+原因：
+- (1) Efron–Morris 经验贝叶斯的收缩强度应由组间方差与组内方差的比值从数据中估计，而当前实现把它写成了常数；
+- (2) 先验忽略了一天之内的时段结构。
+
+两处都是实现与理论不符，不是调参问题。
+
+改法（`backend-next/src/mindflow/domain/baseline.py`）：
+1. **层次先验**：桶 (h, d) 的先验均值改为同一小时 h 跨所有星期的合并均值 μ_h，合并权重为各桶的 n。
+   - 若该小时合并样本数 < 3，退回现有的全局稳健中位数。
+   - 先验方差同理，使用小时合并方差；不足时退回全局 σ²。
+2. **数据驱动的 k（矩估计）**：对每个特征，在所有 n_b ≥ 1 的桶上计算：
+   - 组内方差 σ²_w：各桶 M2 之和 ÷ (Σn_b − 桶数)，分母 ≤ 0 时取全局方差；
+   - 组间方差 τ² = max(0, 加权方差(mean_b − μ_h(b)) − 平均(σ²_w / n_b))；
+   - k̂ = σ²_w / τ²，截断到 [0.5, 50]；τ² ≈ 0（< 1e-12）时 k̂ = 50。
+   
+   结果按特征缓存，`update()` 后失效。
+3. `shrunk_expected(..., k: int | None = None)`：
+   - `None` 时使用 k̂ 与层次先验；
+   - **显式传入 k 时，行为与现在逐字节一致**（现有测试不改）。
+   - 返回字典新增 `"k"` 和 `"prior"`（取值 `"hour_pooled"` 或 `"global_robust"`）。
+   - `robust_z` 和所有生产调用方都走 `None` 这条路径。
+   - `DEFAULT_SHRINKAGE_K` 保留，仅作为显式参数的含义说明；注释写明默认路径已改为数据估计，并引用 Efron & Morris (1975) 与 Morris (1983)。
+4. **序列化**：k̂ 和 μ_h 都可以从已序列化的桶统计重新算出，`to_dict` / `from_dict` 格式**不变**。
+5. **测试**：
+   - (a) 显式 k 时与旧实现一致（已有测试保持通过）；
+   - (b) 构造组间差异很大、组内很小的数据，断言 k̂ ≤ 1 且估计贴近桶均值；
+   - (c) 构造各桶同分布的数据，断言 k̂ 取到上限 50，估计贴近小时合并均值；
+   - (d) 小时合并样本不足时退回全局先验；
+   - (e) 冷启动时 n_b = 0 返回先验。
+6. **确认性实验（防止对开发数据过拟合）**：
+   - 实验脚本的 E1 同时报告三组：`raw`、`eb_fixed_k10`（旧实现，显式 k=10 加全局先验）、`eb_data_k`（新的默认路径）。
+   - 开发种子与旧 E1 相同；另加**一组与之完全不相交的确认种子**（用户数相同），两组分别报告。
+   - 汇报材料只引用确认种子的结果；结果不利时如实报告，**不再修改算法**。
+7. **门禁**：
+   - 全量 pytest 串行运行，ruff 和 mypy --strict 均为 0；
+   - 重跑 `scripts/experiment_midterm_algorithms.py`，跑全量而不是 `--quick`。
+
+### 8.26 可解释性诚实度与措辞统一（主代理离线实机截图 2026-11-10，`mf_demo_1110c`）
+
+1. **TMT 不得把默认值说成发现**（`frontend/src/components/charts/TmtGauge.tsx`）
+   - 现象：四个分量都是 0.50，而且都是缺少数据时的先验。期望分量的 `raw=null`、`source="先验（无近14天自评）"`，界面却写着"主要瓶颈：E 期望 · 成功预期是主要瓶颈"，并给期望行描了边。
+   - 判定规则：某分量 `raw == null` 时视为"默认值"。若 TS 类型里没有 `raw`，先在 `types/` 里按后端契约补上；后端 `domain/tmt.py` 的 `TmtComponent` 本来就有 `raw` 字段。
+   - 默认值分量：标签后加一个弱提示小标签 `默认值`；条形透明度降到 0.45。
+   - 主导分量为默认值时：瓶颈说明行改成 `数据还不够，暂不判断主要瓶颈`，去掉"瓶颈"标签和描边。
+   - 四个分量全为默认值时：动机等级标签显示 `数据不足`，代替"动机中等"，数值照常显示。
+   - 图例补一句：`默认值 = 还没有你的相关记录，先按中间值 0.5 计算`。
+2. **"为什么是这条提醒"的证据行**（后端 `services/intervention_policy.py::selection_evidence`）
+   - 拖延类型改用中文标签。在本模块新增 `PROCRASTINATION_LABELS_ZH = {task_aversion: 任务厌恶, impulsivity: 冲动分心, decisional: 决策拖延, perfectionism: 完美主义, emotional_regulation: 情绪调节困难}`，与 `frontend/src/lib/user-terms.ts` 保持一致。services 层不能 import agents 层，所以这里单独定义一份。
+   - `上下文：` 改为 `情境：`。
+   - 所选候选行：
+     - α、β 都等于先验 `PRIOR_ALPHA` / `PRIOR_BETA` 时：`选择{label}：还没有你对这类提醒的反馈，先按默认估计 50%`；
+     - 其他情况：`选择{label}：根据你过去的反馈，估计有用的概率 {mean:.0%}`。
+   - 备选行：`备选{label}：估计有用的概率 {mean:.0%}`。
+   - 文案中不再出现 α、β 和"后验"。图形 `PosteriorBars` 保留不动。
+   - 已有测试断言旧字符串的，按新文案更新，并在报告里逐条列出。
+3. **时段名称统一**：`frontend/src/pages/Intervention.tsx:47` 中 `evening: "傍晚"` 改为 `"晚间"`，`night: "夜间"` 改为 `"深夜"`，与后端 `bucket_label` 一致。
+4. **网页响应按钮与桌面弹窗一致**（`Intervention.tsx` 约 364–389 行与第 534 行）
+   - 按钮文字改为 `好，试试看` / `先忽略` / `不适合我`，映射分别为 accepted / ignored / dismissed，保持不变。
+   - HelpTip 改为：`好，试试看：这条提醒有用，你会照做。先忽略：现在先不理它。不适合我：这类提醒对你没用，以后会少用。`
+   - 状态徽章：accepted `已采纳`，ignored `已忽略`，dismissed `不适合`。
+   - 第 534 行的 "接受/忽略" 改为 "好，试试看 / 先忽略"。
+5. **门禁**
+   - 前端：tsc、临时目录构建（禁止 `npm run build`）、lint 不新增问题。
+   - 后端：`tests/test_intervention_policy.py`、`tests/test_intervention_service.py`、`tests/test_routes_intervention.py` 全部通过；ruff 和 mypy --strict 均为 0。
+   - 完成后由 fe-a 做 e2e 回归。

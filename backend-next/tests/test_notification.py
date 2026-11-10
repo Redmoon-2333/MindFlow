@@ -29,9 +29,16 @@ class _FakeProcess:
 class _FakeRoot:
     def __init__(self) -> None:
         self.destroyed = False
+        self.withdrawn = False
 
     def destroy(self) -> None:
         self.destroyed = True
+
+    def withdraw(self) -> None:
+        self.withdrawn = True
+
+    def update_idletasks(self) -> None:
+        return None
 
 
 class _FakeUrlResponse:
@@ -240,9 +247,9 @@ async def test_windows_notifier_marks_plain_fallback_as_degraded() -> None:
 @pytest.mark.parametrize(
     ("button_text", "expected_response"),
     [
-        ("接受", "accepted"),
-        ("忽略", "ignored"),
-        ("关闭", "dismissed"),
+        ("好，试试看", "accepted"),
+        ("先忽略", "ignored"),
+        ("不适合我", "dismissed"),
     ],
 )
 def test_chinese_popup_action_posts_mapped_response_with_actual_latency(
@@ -282,7 +289,9 @@ def test_chinese_popup_action_posts_mapped_response_with_actual_latency(
         # A button press is a genuine user action.
         "source": "human",
     }
-    assert captured["timeout"] == 5.0
+    # The popup passes a shorter timeout than post_response's 5s default: the
+    # window is already hidden by then, so a dead server must not hold on.
+    assert captured["timeout"] == 2.0
     assert root.destroyed is True
 
 
@@ -323,3 +332,76 @@ def test_popup_close_and_timeout_post_ignored(
         "latency_s": 3.5,
         "source": expected_source,
     }
+
+
+def test_popup_hides_before_posting_the_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The window must be gone before the POST can block for its timeout.
+
+    A slow or dead server previously left the popup on screen for up to five
+    seconds after the user clicked; the user read that as "clicking does
+    nothing".
+    """
+    popup_module = importlib.import_module(
+        "mindflow.infrastructure.intervention_popup"
+    )
+    events: list[str] = []
+
+    class _RecordingRoot(_FakeRoot):
+        def withdraw(self) -> None:
+            events.append("withdraw")
+            super().withdraw()
+
+        def update_idletasks(self) -> None:
+            events.append("update_idletasks")
+
+        def destroy(self) -> None:
+            events.append("destroy")
+            super().destroy()
+
+    def fake_urlopen(request: Any, *, timeout: float) -> _FakeUrlResponse:
+        events.append("post")
+        return _FakeUrlResponse()
+
+    monkeypatch.setattr(popup_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(popup_module.time, "monotonic", lambda: 1.0)
+    monkeypatch.setenv("MINDFLOW_POPUP_TOKEN", "system-token")
+
+    popup = popup_module.InterventionPopup(_popup_payload(), tmp_path / "ready")
+    root = _RecordingRoot()
+    popup._root = root
+    popup._on_action("好，试试看")
+
+    assert events.index("withdraw") < events.index("post")
+    # And the window is torn down only after the report is attempted.
+    assert events.index("post") < events.index("destroy")
+    assert root.withdrawn is True
+    assert root.destroyed is True
+
+
+def test_popup_posts_with_a_two_second_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    popup_module = importlib.import_module(
+        "mindflow.infrastructure.intervention_popup"
+    )
+    captured: dict[str, float] = {}
+
+    def fake_urlopen(request: Any, *, timeout: float) -> _FakeUrlResponse:
+        captured["timeout"] = timeout
+        return _FakeUrlResponse()
+
+    monkeypatch.setattr(popup_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(popup_module.time, "monotonic", lambda: 1.0)
+    monkeypatch.setenv("MINDFLOW_POPUP_TOKEN", "system-token")
+
+    popup = popup_module.InterventionPopup(_popup_payload(), tmp_path / "ready")
+    popup._root = _FakeRoot()
+    popup._on_close()
+
+    assert captured["timeout"] == 2.0
+    # The shared default is untouched: only the popup call site overrides it.
+    assert popup_module.post_response.__kwdefaults__["timeout"] == 5.0

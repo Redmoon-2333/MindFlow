@@ -20,7 +20,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from mindflow.domain.baseline import (
+    DEFAULT_SHRINKAGE_K,
     MAD_TO_SIGMA,
+    MAX_ESTIMATED_K,
+    MIN_HOUR_POOLED_SAMPLES,
     ROBUST_RESERVOIR_SIZE,
     BaselineModel,
 )
@@ -704,7 +707,9 @@ class TestRobustBaseline:
         assert welford["std"] > 200.0
         # ... and it drags the shrunk scale up with it, which is exactly why the
         # robust prior is worth having: the global median is still 10.
-        estimate = model.shrunk_expected("app_switch_count", 10, 0)
+        # Explicit k pins the global-robust prior path (spec §8.25 item 3);
+        # the default path now estimates k and uses the hour-pooled prior.
+        estimate = model.shrunk_expected("app_switch_count", 10, 0, k=DEFAULT_SHRINKAGE_K)
         assert estimate is not None
         assert estimate["expected"] == pytest.approx(59.5)
 
@@ -758,7 +763,9 @@ class TestRobustBaseline:
         assert restored.global_robust_stats("app_switch_count") is None
         welford = restored.global_welford_stats("app_switch_count")
         assert welford is not None
-        estimate = restored.shrunk_expected("app_switch_count", 10, 0)
+        # Explicit k exercises the legacy global-prior arithmetic; the default
+        # path is covered by TestDataDrivenShrinkage below.
+        estimate = restored.shrunk_expected("app_switch_count", 10, 0, k=DEFAULT_SHRINKAGE_K)
         assert estimate is not None
         assert estimate["expected"] == pytest.approx(
             (5.0 * 14.0 + 10.0 * welford["mean"]) / 15.0
@@ -794,3 +801,184 @@ class TestRobustBaseline:
         assert payload["robust"]["global"]["app_switch_count"] == [
             10.0, 12.0, 14.0, 16.0, 18.0, 100.0, 102.0, 104.0, 106.0, 108.0,
         ]
+
+
+class TestDataDrivenShrinkage:
+    """§8.25: the shrinkage strength follows the theory instead of a constant.
+
+    The E1 experiment measured a fixed ``k = 10`` with a global median prior as
+    12.6% worse in MSE than raw bucket means, because the true pseudo-count is
+    the ratio of within- to between-bucket variance (Efron & Morris 1975;
+    Morris 1983) and the prior ignores the time-of-day structure. These tests
+    pin the moment estimator, the hierarchical hour prior, their fallbacks, and
+    the backward-compatibility contract for an explicit ``k``.
+    """
+
+    @staticmethod
+    def _hour_model() -> BaselineModel:
+        """Hour 9 has two weekdays with tightly-clustered values.
+
+        (9,0) ~ 10 and (9,1) ~ 12 with tiny within-bucket spread. The
+        between-bucket variance is real but small, so k-hat lands well below
+        the fixed 10 and the estimate tracks the bucket mean.
+        """
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        rows = [
+            _make_feature_row(_shanghai_utc(9, 0), app_switch_count=v)
+            for v in (10.0, 10.2, 9.8, 10.1, 9.9)
+        ] + [
+            _make_feature_row(_shanghai_utc(9, 1), app_switch_count=v)
+            for v in (12.0, 12.2, 11.8, 12.1, 11.9)
+        ]
+        model.update(rows)
+        return model
+
+    # -- (a) explicit k keeps the old arithmetic byte for byte --------------
+
+    def test_explicit_k_matches_the_legacy_global_prior(self) -> None:
+        model = TestRobustBaseline._two_bucket_model()
+        n_b = 5.0
+        mean_b = 14.0
+        var_b = 10.0
+        k = DEFAULT_SHRINKAGE_K
+        estimate = model.shrunk_expected("app_switch_count", 10, 0, k=k)
+        assert estimate is not None
+        expected = (n_b * mean_b + k * TestRobustBaseline._GLOBAL_MEDIAN) / (n_b + k)
+        variance = (n_b * var_b + k * TestRobustBaseline._GLOBAL_SIGMA**2) / (n_b + k)
+        assert estimate["expected"] == pytest.approx(expected)
+        assert estimate["scale"] == pytest.approx(math.sqrt(variance))
+        assert estimate["shrinkage"] == pytest.approx(k / (n_b + k))
+        # The provenance fields describe which path ran.
+        assert estimate["k"] == float(k)
+        assert estimate["prior"] == "global_robust"
+
+    def test_default_path_reports_the_estimated_k_and_hour_prior(self) -> None:
+        model = self._hour_model()
+        estimate = model.shrunk_expected("app_switch_count", 9, 0)
+        assert estimate is not None
+        assert estimate["prior"] == "hour_pooled"
+        assert estimate["k"] == pytest.approx(
+            model.estimated_shrinkage("app_switch_count")["k"]
+        )
+
+    # -- (b) large between-bucket spread, small within -> small k-hat -------
+
+    def test_small_k_when_buckets_differ_and_are_tight(self) -> None:
+        model = self._hour_model()
+        estimate_k = model.estimated_shrinkage("app_switch_count")
+        assert estimate_k["k"] <= 1.0
+        assert estimate_k["between_var"] > 0.0
+
+        # With a tiny k-hat the bucket's own mean dominates the posterior, so
+        # the estimate stays close to that bucket rather than to the hour level.
+        shrunk = model.shrunk_expected("app_switch_count", 9, 0)
+        assert shrunk is not None
+        assert shrunk["expected"] == pytest.approx(10.0, abs=0.2)
+        assert shrunk["expected"] < 11.0
+
+    # -- (c) identical buckets -> tau^2 ~ 0 -> k-hat at the cap -------------
+
+    def test_k_saturates_at_the_cap_when_buckets_are_identical(self) -> None:
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        # Same distribution in two weekdays of hour 9: no between-bucket signal.
+        rows = [
+            _make_feature_row(_shanghai_utc(9, dow), app_switch_count=10.0 + offset)
+            for dow in (0, 1)
+            for offset in (0.0, 1.0, -1.0, 0.5, -0.5)
+        ]
+        model.update(rows)
+        estimate_k = model.estimated_shrinkage("app_switch_count")
+        assert estimate_k["k"] == pytest.approx(MAX_ESTIMATED_K)
+        assert estimate_k["between_var"] < 1e-12
+
+        shrunk = model.shrunk_expected("app_switch_count", 9, 0)
+        assert shrunk is not None
+        # k-hat at the cap means the hour-pooled prior dominates the estimate.
+        assert shrunk["expected"] == pytest.approx(10.0, abs=0.05)
+        hour_prior = model.hour_pooled_stats("app_switch_count", 9)
+        assert hour_prior is not None
+        assert shrunk["expected"] == pytest.approx(hour_prior["mean"], abs=0.05)
+
+    # -- (d) too few observations for that hour -> global prior -------------
+
+    def test_thin_hour_falls_back_to_the_global_prior(self) -> None:
+        model = BaselineModel(user_id=1, timezone="Asia/Shanghai")
+        # One observation at hour 9, plenty at hour 14: hour 9 is too thin.
+        model.update(
+            [_make_feature_row(_shanghai_utc(9, 0), app_switch_count=10.0)]
+            + [
+                _make_feature_row(_shanghai_utc(14, 0), app_switch_count=v)
+                for v in (100.0, 102.0, 104.0, 106.0, 108.0)
+            ]
+        )
+        assert MIN_HOUR_POOLED_SAMPLES == 3.0
+        assert model.hour_pooled_stats("app_switch_count", 9) is None
+        estimate = model.shrunk_expected("app_switch_count", 9, 0)
+        assert estimate is not None
+        assert estimate["prior"] == "global_robust"
+        # k-hat is still estimated per feature even when the level falls back.
+        assert estimate["k"] == pytest.approx(
+            model.estimated_shrinkage("app_switch_count")["k"]
+        )
+
+    # -- (e) cold start ----------------------------------------------------
+
+    def test_cold_bucket_returns_the_prior(self) -> None:
+        model = self._hour_model()
+        estimate = model.shrunk_expected("app_switch_count", 9, 5)
+        assert estimate is not None
+        assert estimate["n_bucket"] == 0.0
+        assert estimate["shrinkage"] == 1.0
+        hour_prior = model.hour_pooled_stats("app_switch_count", 9)
+        assert hour_prior is not None
+        assert estimate["expected"] == pytest.approx(hour_prior["mean"])
+        assert estimate["prior"] == "hour_pooled"
+
+    # -- cache invalidation and serialization ------------------------------
+
+    def test_estimates_are_cached_and_invalidated_by_update(self) -> None:
+        model = self._hour_model()
+        first = model.estimated_shrinkage("app_switch_count")
+        assert model.estimated_shrinkage("app_switch_count") == first
+        assert "app_switch_count" in model._estimated_k
+
+        # A new bucket that sits far from the others changes tau^2, so the
+        # cached k-hat must be dropped rather than reused.
+        model.update(
+            [
+                _make_feature_row(_shanghai_utc(9, 2), app_switch_count=v)
+                for v in (40.0, 40.5, 39.5, 40.2, 39.8)
+            ]
+        )
+        assert model._estimated_k == {}
+        second = model.estimated_shrinkage("app_switch_count")
+        assert second["between_var"] > first["between_var"]
+
+    def test_serialized_format_is_unchanged(self) -> None:
+        """k-hat and mu_h are derived, so the payload keeps its exact shape."""
+        model = self._hour_model()
+        payload = model.to_dict()
+        assert set(payload) == {
+            "user_id",
+            "feature_schema_version",
+            "timezone",
+            "created_at",
+            "updated_at",
+            "total_days",
+            "local_dates",
+            "stats",
+            "top_apps",
+            "robust",
+        }
+        assert set(payload["robust"]) == {"reservoir_size", "global"}
+        # Derived statistics are recomputed after a round trip, not stored.
+        # Bucket stats are persisted rounded to 6 dp, so compare with tolerance.
+        restored = BaselineModel.from_dict(payload)
+        assert restored.estimated_shrinkage("app_switch_count")["k"] == pytest.approx(
+            model.estimated_shrinkage("app_switch_count")["k"]
+        )
+        restored_hour = restored.hour_pooled_stats("app_switch_count", 9)
+        model_hour = model.hour_pooled_stats("app_switch_count", 9)
+        assert restored_hour is not None and model_hour is not None
+        assert restored_hour["mean"] == pytest.approx(model_hour["mean"])
+        assert restored_hour["var"] == pytest.approx(model_hour["var"])

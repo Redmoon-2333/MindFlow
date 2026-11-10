@@ -196,6 +196,9 @@ class TestRenderMessage:
         # Uses Chinese label, not raw enum value (P2 requirement)
         assert "目标设定" in body
         assert "goal_setting" not in body
+        # The technique hint reads "（方法：…）" — no stray spaces around it.
+        assert "（方法：目标设定）" in body
+        assert "可尝试" not in body
 
 
 @pytest.fixture
@@ -711,6 +714,103 @@ class TestBanditSelection:
         frame = mock_broadcast.await_args.args[0]
         assert frame["type"] == "intervention"
         assert frame["payload"]["rationale"] == result.rationale
+
+
+class TestManualTriggerWithoutPattern:
+    """A manual trigger must not be turned into a skip by a low-confidence assessment.
+
+    The button promises "不用等系统发现，现在就让它给你一条提醒", so the
+    "no significant pattern" gate only applies to the automated path.  The
+    reminder still has to be honest: its rationale note says nothing
+    significant was detected instead of dressing a prior up as a diagnosis.
+    """
+
+    @staticmethod
+    def _service(mock_repo, mock_throttle, mock_notifier, mock_broadcast):
+        return InterventionService(
+            intervention_repo=mock_repo,
+            throttle=mock_throttle,
+            notifier=mock_notifier,
+            broadcast_fn=mock_broadcast,
+        )
+
+    @staticmethod
+    def _low_confidence_assessment() -> ProcrastinationAssessment:
+        return ProcrastinationAssessment(
+            types=(ProcrastinationType.IMPULSIVITY,),
+            confidence={ProcrastinationType.IMPULSIVITY: 0.15},
+            recommended_technique=None,
+            rationale="未检测到显著的拖延模式，指标总体正常。",
+            source="rule_engine",
+        )
+
+    async def test_manual_low_confidence_still_intervenes(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        service = self._service(
+            mock_repo, mock_throttle, mock_notifier, mock_broadcast
+        )
+        result = await service.maybe_intervene(
+            assessment=self._low_confidence_assessment(),
+            bypass_throttle=True,
+            bypass_deep_work_guard=True,
+        )
+
+        assert result.skipped is False
+        assert result.intervention is not None
+        assert result.rationale is not None
+        assert result.rationale["selection"] == "rule"
+        assert "按你的请求" in result.rationale["note"]
+        # The detected type still leads the theory-gated candidate set.
+        assert result.intervention.intervention_type == "environment_optimization"
+        assert result.rationale["procrastination_type"] == "impulsivity"
+        mock_repo.log_triggered.assert_awaited_once()
+
+    async def test_manual_empty_types_falls_back_to_nudge(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        service = self._service(
+            mock_repo, mock_throttle, mock_notifier, mock_broadcast
+        )
+        result = await service.maybe_intervene(
+            assessment=ProcrastinationAssessment(
+                types=(),
+                confidence={},
+                recommended_technique=None,
+                rationale="无数据",
+                source="rule_engine",
+            ),
+            bypass_throttle=True,
+            bypass_deep_work_guard=True,
+        )
+
+        assert result.skipped is False
+        assert result.intervention is not None
+        assert result.intervention.intervention_type == "nudge"
+        assert result.rationale is not None
+        # No type was detected, so the payload must not claim one.
+        assert result.rationale["procrastination_type"] is None
+        assert result.rationale["note"] == (
+            "当前记录里看不出拖延迹象，按你的请求给出一条通用专注提醒"
+        )
+        assert len(result.rationale["candidates"]) == 1
+        assert result.rationale["candidates"][0]["chosen"] is True
+
+    async def test_automatic_low_confidence_still_skips(
+        self, mock_repo, mock_throttle, mock_notifier, mock_broadcast
+    ) -> None:
+        service = self._service(
+            mock_repo, mock_throttle, mock_notifier, mock_broadcast
+        )
+        result = await service.maybe_intervene(
+            assessment=self._low_confidence_assessment(),
+            bypass_deep_work_guard=True,
+        )
+
+        assert result.skipped is True
+        assert result.intervention is None
+        assert result.skip_reason == "未检测到显著的拖延模式，无需干预"
+        mock_repo.log_triggered.assert_not_awaited()
 
 
 class TestSafetyGuardWiring:

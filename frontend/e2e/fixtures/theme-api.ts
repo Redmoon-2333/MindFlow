@@ -101,12 +101,16 @@ export const rationale = {
     { intervention_type: "environment_optimization", label: "环境优化", alpha: 4, beta: 5, posterior_mean: 0.44, sample: 8, chosen: false },
     { intervention_type: "smart_prioritization", label: "优先级建议", alpha: 3, beta: 6, posterior_mean: 0.33, sample: 8, chosen: false },
   ],
+  // §8.26.2: `selection_evidence()` now builds these four lines — Chinese type
+  // label, 情境 (not 上下文), and a plain-language probability. No α/β, no
+  // "后验". Kept in the real order and wording so the fixture cannot drift.
   evidence: [
-    "任务厌恶型的既往接受率最高的技术是任务拆解。",
-    "当前时段（周四 15 时）历史接受率为 70%。",
-    "深度工作保护未触发，允许主动提醒。",
+    "拖延类型：任务厌恶",
+    "情境：下午 · 分心",
+    "选择任务拆解：根据你过去的反馈，估计有用的概率 70%",
+    "备选环境优化：估计有用的概率 44%",
   ],
-  note: "后验由干预日志的接受/忽略计数加指数衰减推导，不额外存表。",
+  note: "行为代理变量，不是心理测量。",
 };
 
 export const feedbackRequest = {

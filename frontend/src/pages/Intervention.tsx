@@ -44,7 +44,7 @@ interface InterventionItem {
 // Context buckets arrive as wire identifiers ("afternoon|distracted"). A judge
 // reading the card should not have to decode a pipe-separated key.
 const BUCKET_LABELS: Record<string, string> = {
-  morning: "上午", afternoon: "下午", evening: "傍晚", night: "夜间",
+  morning: "上午", afternoon: "下午", evening: "晚间", night: "深夜",
   focused: "专注", distracted: "分心", mixed: "混合", idle: "空闲",
 };
 
@@ -69,7 +69,12 @@ function RationaleBlock({ rationale }: { rationale?: InterventionRationale | nul
 
       {rationale.evidence.length > 0 ? (
         <ul className="bullet-list">
-          {rationale.evidence.slice(0, 4).map((item) => (
+          {/* The head already shows 情境 from context_bucket; skip the backend's
+              duplicate evidence line when that chip is rendered. */}
+          {rationale.evidence
+            .filter((item) => !(rationale.context_bucket && item.startsWith("情境：")))
+            .slice(0, 4)
+            .map((item) => (
             <li key={item}>{item}</li>
           ))}
         </ul>
@@ -116,13 +121,15 @@ const INTENSITY_CLASS: Record<(typeof INTENSITY_OPTIONS)[number]["key"], string>
 
 const DAYS_OPTIONS = [7, 14, 30, 90] as const;
 
+// Same three answers as the desktop popup, so a user who sees both does not
+// have to translate between them.
 const RESPONSE_LABELS: Record<string, string> = {
-  accept: "已接受",
-  accepted: "已接受",
+  accept: "已采纳",
+  accepted: "已采纳",
   ignore: "已忽略",
   ignored: "已忽略",
-  dismiss: "已关闭",
-  dismissed: "已关闭",
+  dismiss: "不适合",
+  dismissed: "不适合",
 };
 
 const RESPONSE_BADGES: Record<string, string> = {
@@ -366,7 +373,7 @@ export default function Intervention() {
               {respondingId === latest.id && (
                 <span className="spinner spinner--inline spinner--xs" />
               )}
-              接受
+              好，试试看
             </button>
             <button
               type="button"
@@ -374,7 +381,7 @@ export default function Intervention() {
               disabled={respondingId !== null}
               onClick={() => handleRespond(latest.id, "ignored")}
             >
-              忽略
+              先忽略
             </button>
             <button
               type="button"
@@ -382,11 +389,11 @@ export default function Intervention() {
               disabled={respondingId !== null}
               onClick={() => handleRespond(latest.id, "dismissed")}
             >
-              关闭
+              不适合我
             </button>
             <HelpTip
               term="怎么回应"
-              what="接受：这条提醒有用，你会照做。忽略：先不理它。关闭：不想看到这类提醒。"
+              what="好，试试看：这条提醒有用，你会照做。先忽略：现在先不理它。不适合我：这类提醒对你没用，以后会少用。"
               effect="你的选择会让系统学习，以后多给有用的提醒、少给没用的。"
             />
           </div>
@@ -531,7 +538,7 @@ export default function Intervention() {
                       <HelpTip
                         term="评价"
                         what="告诉系统这条提醒是有用、一般还是打扰。"
-                        effect="评价比“接受/忽略”更重要，会直接决定以后多不多用这类提醒；每条只能评价一次。"
+                        effect="评价比“好，试试看 / 先忽略”更重要，会直接决定以后多不多用这类提醒；每条只能评价一次。"
                       />
                     </>
                   )

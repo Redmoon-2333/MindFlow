@@ -19,6 +19,12 @@ const BARRIER_COPY: Record<TmtComponentKey, string> = {
   delay: "截止时间压力是主要瓶颈",
 };
 
+/** A component whose `raw` is null was never measured: its score is the 0.5
+ *  prior, not an observation. The backend sends `source` explaining why. */
+function isDefault(component: TmtBreakdown["components"][TmtComponentKey]): boolean {
+  return component.raw === null;
+}
+
 const LEVEL_COLOR: Record<TmtBreakdown["motivation_level"], string> = {
   low: "var(--bad)",
   medium: "var(--warn)",
@@ -41,12 +47,17 @@ interface TmtGaugeProps {
  */
 export default function TmtGauge({ tmt, showNote = true }: TmtGaugeProps) {
   if (!tmt) {
-    return <div className="mf-chart-empty">暂无动机分解数据</div>;
+    return <div className="mf-chart-empty">这次分析没有算出动机分解。</div>;
   }
 
   const motivation = clamp(tmt.motivation, 0, 1);
   const level = tmt.motivation_level;
   const dominant = tmt.dominant_barrier;
+  const defaultFlags = ORDER.map((key) => isDefault(tmt.components[key]));
+  const allDefault = defaultFlags.every(Boolean);
+  // A bottleneck claim needs at least one measured term. When the dominant
+  // component is itself a default, there is nothing to call a bottleneck.
+  const dominantIsDefault = isDefault(tmt.components[dominant]);
 
   return (
     <div className="mf-tmt">
@@ -54,19 +65,23 @@ export default function TmtGauge({ tmt, showNote = true }: TmtGaugeProps) {
         <span className="mf-tmt-value" style={{ color: LEVEL_COLOR[level] }} data-numeric>
           {motivation.toFixed(2)}
         </span>
-        <span className={`badge ${level === "high" ? "badge-success" : level === "low" ? "badge-danger" : "badge-warning"}`}>
-          {MOTIVATION_LEVEL_LABELS[level]}
+        <span className={`badge ${allDefault ? "badge-neutral" : level === "high" ? "badge-success" : level === "low" ? "badge-danger" : "badge-warning"}`}>
+          {allDefault ? "数据不足" : MOTIVATION_LEVEL_LABELS[level]}
         </span>
         <span className="text-muted" style={{ fontSize: "var(--fs-xs)" }}>
-          主要瓶颈：{SHORT[dominant]} · {BARRIER_COPY[dominant]}
+          {dominantIsDefault
+            ? "数据还不够，暂不判断主要瓶颈"
+            : `主要瓶颈：${SHORT[dominant]} · ${BARRIER_COPY[dominant]}`}
         </span>
       </div>
 
       <div className="mf-tmt-components">
-        {ORDER.map((key) => {
+        {ORDER.map((key, index) => {
           const component = tmt.components[key];
           const score = clamp(component.score, 0, 1);
-          const isDominant = key === dominant;
+          const fallback = defaultFlags[index];
+          // A default value is not a bottleneck finding, and gets no outline.
+          const isDominant = key === dominant && !fallback;
           // E and V are drivers (higher = better); I and D are barriers
           // (higher = worse). Colour therefore follows meaning, not sign.
           // The dominant term keeps its meaning colour and is *outlined* in
@@ -77,14 +92,27 @@ export default function TmtGauge({ tmt, showNote = true }: TmtGaugeProps) {
             <div className="mf-tmt-component" key={key} data-dominant={isDominant}>
               <span className="mf-tmt-component-label">
                 {SHORT[key]}
+                {fallback && (
+                  <span className="badge badge-neutral" style={{ fontSize: 10, padding: "0 6px" }}>
+                    默认值
+                  </span>
+                )}
                 {isDominant && <span className="badge badge-warning" style={{ fontSize: 10, padding: "0 6px" }}>瓶颈</span>}
               </span>
               <div
                 className="mf-tmt-track"
                 role="img"
-                aria-label={`${component.label || SHORT[key]} ${Math.round(score * 100)}%${isDominant ? "（主要瓶颈）" : ""}`}
+                aria-label={`${component.label || SHORT[key]} ${Math.round(score * 100)}%${fallback ? "（默认值）" : ""}${isDominant ? "（主要瓶颈）" : ""}`}
               >
-                <div className="mf-tmt-fill" style={{ width: `${score * 100}%`, background: fill }} />
+                <div
+                  className="mf-tmt-fill"
+                  style={{
+                    width: `${score * 100}%`,
+                    background: fill,
+                    // Dimmed so a prior reads as "not measured", not as a low score.
+                    opacity: fallback ? 0.45 : 1,
+                  }}
+                />
               </div>
               <span className="mf-tmt-component-value">{score.toFixed(2)}</span>
             </div>
@@ -96,6 +124,7 @@ export default function TmtGauge({ tmt, showNote = true }: TmtGaugeProps) {
         <span className="mf-chart-legend-item"><span className="mf-chart-legend-swatch" style={{ background: "var(--good)" }} />E/V 越高越好</span>
         <span className="mf-chart-legend-item"><span className="mf-chart-legend-swatch" style={{ background: "var(--bad)" }} />I/D 越高越阻碍</span>
         <span className="mf-chart-legend-item"><span className="mf-chart-legend-swatch" style={{ background: "transparent", boxShadow: "inset 0 0 0 2px var(--warn)" }} />描边 = 主要瓶颈</span>
+        <span className="mf-chart-legend-item">默认值 = 还没有你的相关记录，先按中间值 0.5 计算</span>
       </div>
 
       {showNote && (tmt.note || true) && (

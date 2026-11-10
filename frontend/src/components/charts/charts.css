@@ -288,9 +288,12 @@
 
 @media (max-width: 700px) {
   .mf-tmt-component { grid-template-columns: 72px minmax(0, 1fr) 36px; }
-  /* At 375px the badge forces "D 延迟" onto two lines; the track outline plus
-     the legend already carry "this is the bottleneck". */
-  .mf-tmt-component-label .badge { display: none; }
+  /* At 375px the 瓶颈 badge forces "D 延迟" onto two lines; the track outline
+     plus the legend already carry "this is the bottleneck". */
+  .mf-tmt-component-label .badge-warning { display: none; }
+  /* The 默认值 badge is not decorative: without it the 0.50 bar reads as a
+     measured low score. Keep it and let the label wrap instead. */
+  .mf-tmt-component-label { white-space: normal; flex-wrap: wrap; }
   .mf-posterior-row { grid-template-columns: minmax(70px, 96px) minmax(0, 1fr) 48px; }
 }
 

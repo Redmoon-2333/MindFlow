@@ -66,6 +66,22 @@ def _dict_or_none(value: object) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, dict) else None
 
 
+def _cached_contract_payloads(cached: dict[str, Any]) -> dict[str, Any]:
+    """Read the contract §2/§3 payloads back out of a cached analysis row.
+
+    They are persisted inside ``panel_transcript`` (see
+    ``terminal_persistence_node``).  Rows written before those features existed
+    carry no such key and degrade to ``None`` rather than a fabricated
+    breakdown.
+    """
+    transcript = cached.get("panel_transcript")
+    transcript = transcript if isinstance(transcript, dict) else {}
+    return {
+        "deviation_summary": _dict_or_none(transcript.get("deviation")),
+        "tmt_breakdown": _dict_or_none(transcript.get("tmt")),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Runtime context — holds live dependencies injected at graph invocation time
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -389,8 +405,6 @@ async def cache_idempotency_check_node(
     if cached is not None:
         logger.debug("AnalysisGraph cache hit for {}/{}", user_id, target_date)
         source, degraded, path = _cached_analysis_meta(cached)
-        transcript = cached.get("panel_transcript")
-        transcript = transcript if isinstance(transcript, dict) else {}
         return {
             "cache_hit": True,
             "cached_result": cached,
@@ -399,8 +413,7 @@ async def cache_idempotency_check_node(
             "degraded": degraded,
             "degradation_path": path,
             "error": None,
-            "deviation_summary": _dict_or_none(transcript.get("deviation")),
-            "tmt_breakdown": _dict_or_none(transcript.get("tmt")),
+            **_cached_contract_payloads(cached),
         }
 
     return {"cache_hit": False}
@@ -458,6 +471,7 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
                     "source": source,
                     "degraded": degraded,
                     "degradation_path": path,
+                    **_cached_contract_payloads(cached),
                 }
         except Exception:
             cached = None
@@ -484,6 +498,7 @@ async def budget_reserve_node(state: AnalysisGraphState) -> dict[str, Any]:
                 "source": source,
                 "degraded": degraded,
                 "degradation_path": path,
+                **_cached_contract_payloads(cached),
             }
 
         return {
@@ -1046,20 +1061,24 @@ async def terminal_persistence_node(
         type_confidence = dict(verdict_json.get("confidence", {}))
         response_text = str(verdict_json.get("rationale", ""))
         cbt_technique = verdict_json.get("recommended_technique")
-        if verdict_json.get("transcript"):
-            panel_transcript = {
-                "transcript": list(verdict_json["transcript"]),
-                "dissent": list(verdict_json.get("dissent", [])),
-                "escalated": bool(verdict_json.get("escalated", False)),
-                "call_count": int(verdict_json.get("call_count", 0)),
-                "degradation_path": list(state.get("degradation_path", []) or []),
-                "cached": bool(verdict_json.get("cached", state.get("cache_hit", False))),
-                "insufficient_data": bool(verdict_json.get("insufficient_data", False)),
-                "uncertainty": verdict_json.get("uncertainty"),
-                "evidence_gaps": list(verdict_json.get("evidence_gaps", [])),
-                "deviation": verdict_json.get("deviation"),
-                "tmt": verdict_json.get("tmt"),
-            }
+        # The metadata block is persisted for EVERY verdict, including the L3
+        # rule-engine one that has no deliberation transcript.  Contract §2/§3
+        # payloads (``deviation``/``tmt``) live only here, so gating the block
+        # on a non-empty transcript silently dropped them from the row and every
+        # later cache hit read back ``tmt: null``.
+        panel_transcript = {
+            "transcript": list(verdict_json.get("transcript", [])),
+            "dissent": list(verdict_json.get("dissent", [])),
+            "escalated": bool(verdict_json.get("escalated", False)),
+            "call_count": int(verdict_json.get("call_count", 0)),
+            "degradation_path": list(state.get("degradation_path", []) or []),
+            "cached": bool(verdict_json.get("cached", state.get("cache_hit", False))),
+            "insufficient_data": bool(verdict_json.get("insufficient_data", False)),
+            "uncertainty": verdict_json.get("uncertainty"),
+            "evidence_gaps": list(verdict_json.get("evidence_gaps", [])),
+            "deviation": verdict_json.get("deviation"),
+            "tmt": verdict_json.get("tmt"),
+        }
     else:
         procrastination_types = list(
             assessment.get("types", assessment.get("procrastination_types", []))

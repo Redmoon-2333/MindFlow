@@ -39,6 +39,7 @@ import json
 import random
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Literal, cast
 
@@ -75,6 +76,10 @@ from mindflow.infrastructure.repositories.intervention import (
 )
 from mindflow.services.intervention_policy import (
     ALLOWED_INTERVENTIONS,
+    PRIOR_ALPHA,
+    PRIOR_BETA,
+    ArmPosterior,
+    Candidate,
     Selection,
     candidate_types_for,
     context_bucket,
@@ -330,6 +335,12 @@ def _deep_work_guard(
     return summary.social_media_ratio <= _QUIET_DEEP_WORK_MAX_ENTERTAINMENT_RATIO
 
 
+#: Confidence below which an assessment carries no actionable pattern.
+#: Used by :func:`_select_intervention_type` and, through it, by the manual
+#: fallback in :meth:`InterventionService.maybe_intervene`.
+_LOW_CONFIDENCE_THRESHOLD: float = 0.2
+
+
 def _select_intervention_type(
     assessment: ProcrastinationAssessment,
 ) -> InterventionType | None:
@@ -343,12 +354,52 @@ def _select_intervention_type(
         return None
     if (
         assessment.recommended_technique is None
-        and assessment.confidence.get(assessment.types[0], 0) < 0.2
+        and assessment.confidence.get(assessment.types[0], 0)
+        < _LOW_CONFIDENCE_THRESHOLD
     ):
         return None
     ptype = assessment.types[0]
     candidates = _TYPE_MAP.get(ptype)
     return candidates[0] if candidates else None
+
+
+def _manual_fallback_selection(
+    assessment: ProcrastinationAssessment, *, bucket: str,
+) -> Selection:
+    """Build the selection a manual trigger uses when no pattern is detected.
+
+    A manual trigger means the user explicitly asked for a reminder ("不用等系统
+    发现，现在就让它给你一条提醒"), so a low-confidence assessment must not turn
+    that request into a skip.  The choice stays deterministic and honest: with
+    detected types the theory's primary candidate is used, with no types at all
+    the generic ``nudge`` is — and the note says out loud that nothing
+    significant was found, so the reminder is not dressed up as a diagnosis.
+    """
+    if assessment.types:
+        top_confidence = assessment.confidence.get(assessment.types[0], 0.0)
+        note = (
+            f"未检测到明显的拖延模式（最高可能性 {top_confidence:.0%}），"
+            "按你的请求给出一条通用专注提醒"
+        )
+        return replace(rule_selection(assessment.types, bucket=bucket), note=note)
+    prior = ArmPosterior(intervention_type="nudge", alpha=PRIOR_ALPHA, beta=PRIOR_BETA)
+    return Selection(
+        intervention_type="nudge",
+        selection="rule",
+        context_bucket=bucket,
+        candidates=(
+            Candidate(
+                intervention_type="nudge",
+                label=INTERVENTION_TYPE_LABELS["nudge"],
+                alpha=PRIOR_ALPHA,
+                beta=PRIOR_BETA,
+                posterior_mean=round(prior.posterior_mean, 4),
+                sample=round(prior.posterior_mean, 4),
+                chosen=True,
+            ),
+        ),
+        note="当前记录里看不出拖延迹象，按你的请求给出一条通用专注提醒",
+    )
 
 
 def _task_context_lines(tasks: Sequence[Task]) -> list[str]:
@@ -442,7 +493,7 @@ def _render_template_message(
 
     if cbt_technique:
         cbt_label = CBT_TECHNIQUE_LABELS_ZH.get(cbt_technique, cbt_technique)
-        suggestion = f"{suggestion}（可尝试 {cbt_label} 方法）"
+        suggestion = f"{suggestion}（方法：{cbt_label}）"
 
     variants = TITLE_VARIANTS[intensity]
     if variant_index is None:
@@ -861,6 +912,17 @@ class InterventionService:
             rng=self._bandit_rng,
         )
 
+    async def _context_bucket(self, user_id: int) -> str:
+        """Current ``"<time band>|<state band>"`` bucket for this user.
+
+        Split out so the manual-trigger fallback records the same bucket the
+        bandit path would, without re-deriving the local hour at the call site.
+        """
+        local_now = datetime.now(UTC).astimezone(resolve_timezone(self._timezone))
+        return context_bucket(
+            local_now.hour, await self._current_focus_probability(user_id),
+        )
+
     async def _current_focus_probability(self, user_id: int) -> float | None:
         """Latest predicted focus probability, or None when unavailable.
 
@@ -918,14 +980,24 @@ class InterventionService:
         # for a specific kind of help, and re-rolling the arm would make the
         # endpoint non-deterministic.  The gates below (work state, deep work,
         # throttle, daily caps) are unchanged and still run first-to-last.
-        if _select_intervention_type(assessment) is None:
+        # A manual trigger is an explicit request for a reminder, so "nothing
+        # significant detected" only skips the *automated* path — the user's
+        # own request still gets the deterministic fallback selection.
+        no_significant_pattern = _select_intervention_type(assessment) is None
+        if no_significant_pattern and not bypass_throttle:
             return InterventionResult(
                 skipped=True,
                 skip_reason="未检测到显著的拖延模式，无需干预",
             )
-        selection = await self._select_with_policy(
-            assessment, bypass_throttle=bypass_throttle, user_id=user_id,
-        )
+        if no_significant_pattern:
+            selection = _manual_fallback_selection(
+                assessment,
+                bucket=await self._context_bucket(user_id),
+            )
+        else:
+            selection = await self._select_with_policy(
+                assessment, bypass_throttle=bypass_throttle, user_id=user_id,
+            )
         intervention_type = selection.intervention_type
         rationale = rationale_payload(selection, assessment.types)
 

@@ -305,6 +305,76 @@ class TestSelection:
         )
         assert len(selection_evidence(selection, types)) <= 4
 
+    def test_evidence_names_the_type_in_chinese(self) -> None:
+        types = (ProcrastinationType.TASK_AVERSION,)
+        selection = rule_selection(types, bucket=_BUCKET)
+        evidence = selection_evidence(selection, types)
+        assert evidence[0] == "拖延类型：任务厌恶"
+
+    def test_evidence_says_context_not_context_in_the_bandit_sense(self) -> None:
+        types = (ProcrastinationType.IMPULSIVITY,)
+        selection = rule_selection(types, bucket=_BUCKET)
+        evidence = selection_evidence(selection, types)
+        assert evidence[1] == "情境：下午·分心"
+
+    def test_evidence_does_not_expose_alpha_beta_or_posterior(self) -> None:
+        types = (ProcrastinationType.DECISIONAL,)
+        selection = thompson_select(
+            types,
+            bucket=_BUCKET,
+            posteriors={
+                "smart_prioritization": ArmPosterior("smart_prioritization", 3.0, 1.0),
+                "nudge": ArmPosterior("nudge", 1.0, 3.0),
+            },
+            rng=random.Random(3),
+        )
+        joined = " ".join(selection_evidence(selection, types))
+        for forbidden in ("后验", "α", "β"):
+            assert forbidden not in joined
+
+    def test_evidence_uses_the_default_wording_at_cold_start(self) -> None:
+        """Every arm still on its prior must not be reported as a rate."""
+        types = (ProcrastinationType.TASK_AVERSION,)
+        selection = rule_selection(types, bucket=_BUCKET)
+        chosen_line = selection_evidence(selection, types)[2]
+        assert chosen_line == "选择任务分解：还没有你对这类提醒的反馈，先按默认估计 50%"
+
+    def test_evidence_reports_the_primary_prior_mean_not_a_flat_50_percent(
+        self,
+    ) -> None:
+        """A primary arm's prior is Beta(2, 1), so its mean is 67%, not 50%.
+
+        Printing "50%" would be a second incorrect claim on top of presenting a
+        prior as a finding.
+        """
+        types = (ProcrastinationType.TASK_AVERSION,)
+        selection = thompson_select(
+            types,
+            bucket=_BUCKET,
+            posteriors={
+                "task_breakdown": ArmPosterior("task_breakdown", PRIMARY_PRIOR_ALPHA, 1.0),
+                "nudge": ArmPosterior("nudge", PRIOR_ALPHA, PRIOR_BETA),
+            },
+            rng=random.Random(1),
+        )
+        evidence = selection_evidence(selection, types)
+        assert evidence[2] == "选择任务分解：还没有你对这类提醒的反馈，先按默认估计 67%"
+
+    def test_evidence_reports_a_learned_rate_when_feedback_exists(self) -> None:
+        types = (ProcrastinationType.DECISIONAL,)
+        selection = thompson_select(
+            types,
+            bucket=_BUCKET,
+            posteriors={
+                "smart_prioritization": ArmPosterior("smart_prioritization", 3.0, 1.0),
+                "nudge": ArmPosterior("nudge", 1.0, 3.0),
+            },
+            rng=random.Random(3),
+        )
+        evidence = selection_evidence(selection, types)
+        assert evidence[2] == "选择优先级建议：根据你过去的反馈，估计有用的概率 75%"
+        assert evidence[3] == "备选行动提示：估计有用的概率 25%"
+
 
 class TestSimulation:
     """300 rounds against a fixed-rate simulated user (deterministic seed)."""

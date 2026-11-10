@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from mindflow.infrastructure.intervention_popup import (
+    _BUTTON_RESPONSES,
     ACTION_RESPONSES,
+    _cjk_wrap_text,
+    _countdown_fraction,
     post_response,
 )
 from mindflow.infrastructure.notification import _TkinterInteractivePopup
@@ -49,6 +53,72 @@ def test_popup_action_mapping() -> None:
         "close": "ignored",
         "timeout": "ignored",
     }
+
+
+def test_popup_button_mapping() -> None:
+    assert _BUTTON_RESPONSES == {
+        "好，试试看": "accepted",
+        "先忽略": "ignored",
+        "不适合我": "dismissed",
+    }
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "timeout", "expected"),
+    [
+        (0.0, 30.0, 1.0),
+        (15.0, 30.0, 0.5),
+        (29.9, 30.0, pytest.approx(1 - 29.9 / 30)),
+        (30.0, 30.0, 0.0),
+        (45.0, 30.0, 0.0),
+        (-1.0, 30.0, 1.0),
+        (0.0, 0.0, 0.0),
+        (5.0, 0.0, 0.0),
+        (5.0, -10.0, 0.0),
+    ],
+)
+def test_countdown_fraction_boundaries(
+    elapsed: float, timeout: float, expected: float
+) -> None:
+    assert _countdown_fraction(elapsed, timeout) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # The space between CJK and a digit is the only break opportunity in
+        # this phrase, so Tk breaks there and leaves a ragged line.
+        ("设定 5 分钟", "设定 5 分钟"),
+        # ASCII-only text has no such adjacency and must be untouched.
+        ("Hello world", "Hello world"),
+        ("CPU usage 80%", "CPU usage 80%"),
+        # CJK-to-CJK spaces are legitimate break points; leave them alone.
+        ("先完成 一小步", "先完成 一小步"),
+        ("检测到似乎有些分心，先完成一小步",
+         "检测到似乎有些分心，先完成一小步"),
+        # Mixed: only the CJK/alphanumeric adjacencies change.
+        (
+            "用系统计时器设定 5 分钟，先完成 一小步",
+            "用系统计时器设定 5 分钟，先完成 一小步",
+        ),
+        ("累计 12 次", "累计 12 次"),
+        ("耗时 3.5 小时", "耗时 3.5 小时"),
+        # No spaces at all.
+        ("该回到正题了", "该回到正题了"),
+        ("", ""),
+    ],
+)
+def test_cjk_wrap_text_joins_cjk_and_alphanumerics(source: str, expected: str) -> None:
+    result = _cjk_wrap_text(source)
+
+    assert result == expected
+    # Only spaces may change: turning one into NBSP must never alter any other
+    # character, so the two strings are equal once NBSP is folded back.
+    assert result.replace(" ", " ") == source
+    # And no breakable ASCII space may remain where Tk would prefer to break.
+    assert not re.search(
+        r"[一-鿿] [A-Za-z0-9]|[A-Za-z0-9] [一-鿿]", result
+    )
 
 
 def test_post_response_sends_authorized_json() -> None:

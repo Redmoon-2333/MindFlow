@@ -119,10 +119,141 @@ test("analytics without deviation or TMT still explains what it can", async ({ p
   await page.getByRole("button", { name: "运行归因分析" }).click();
   const evidence = page.locator(".attribution-evidence");
   await expect(evidence.getByRole("region", { name: "拖延类型置信度" })).toContainText("暂无类型置信度数据");
-  await expect(evidence.getByRole("region", { name: "动机分解" })).toContainText("暂无动机分解数据");
-  await expect(evidence.getByRole("region", { name: "行为偏离" })).toContainText("暂无偏离数据");
+  // §8.23.4: both empty states now say what is happening instead of naming a
+  // missing payload — same intent (the block explains itself, not a blank).
+  await expect(evidence.getByRole("region", { name: "动机分解" })).toContainText("这次分析没有算出动机分解。");
+  await expect(evidence.getByRole("region", { name: "行为偏离" })).toContainText(
+    "还在积累记录：用几天后，才能和你平时的水平比较。",
+  );
   await expect(evidence.getByRole("region", { name: "识别到的认知扭曲" })).toHaveCount(0);
   await expect(evidence.getByText("下一步可以做")).toHaveCount(0);
+});
+
+/** §8.23.3: no recommended technique and nothing above the 0.2 threshold is
+ *  the pair of conditions on which the backend declines to call it a pattern
+ *  (`intervention_service._select_intervention_type`). The card used to name a
+ *  type and a 0.15 score next to evidence saying no pattern was found; it now
+ *  says so plainly. The bars stay — they are the support, not a verdict.
+ *
+ *  The second half is the contrast case: the same null technique with one type
+ *  above the threshold must still be named, so the rule is not just "cbt null". */
+test("analytics hides a below-threshold type but still names one above it", async ({ page }) => {
+  const respond = (typeConfidence: Record<string, number>) => async (route: import("@playwright/test").Route) =>
+    route.fulfill({ json: {
+      // The card reads the top-level field, so the fixture must carry it — the
+      // scenario under test is "backend named a type, but weakly".
+      procrastination_type: "impulsivity",
+      assessment: {
+        procrastination_types: ["impulsivity"],
+        type_confidence: typeConfidence,
+        cbt_technique: null,
+        response_text: "未检测到显著的拖延模式。",
+      },
+      source: "rule_engine", cached: false, meta: { degraded: false },
+    } });
+
+  await setupExplainabilityAbsent(page);
+  await page.route("**/api/v1/analytics/attribution", respond({ impulsivity: 0.15 }));
+  await page.setViewportSize(WIDE);
+  await open(page, "/analytics");
+  const assertClean = failOnPageError(page);
+
+  await page.getByRole("button", { name: "运行归因分析" }).click();
+  const card = page.locator(".fifth-box .left-box");
+  const typeRow = card.locator(".kv-row").filter({ hasText: "拖延类型" });
+  const confidenceRow = card.locator(".kv-row").filter({ hasText: "置信度" }).first();
+  await expect(typeRow).toContainText("没有发现明显的拖延");
+  await expect(typeRow, "the weak type must not be named as the verdict").not.toContainText("冲动分心");
+  await expect(confidenceRow, "a below-threshold score is unknown, not a number").toContainText("—");
+  await expect(confidenceRow).not.toContainText("0.15");
+
+  // The evidence strip is a sibling of the card, not a child of it.
+  const confidence = page.locator(".attribution-evidence").getByRole("region", { name: "拖延类型置信度" });
+  await expect(confidence.getByText("都很低，仅供参考")).toBeVisible();
+  // The bars are still the evidence: one row, with its real percentage.
+  await expect(confidence.locator(".type-bar-row")).toHaveCount(1);
+  await expect(confidence.locator(".type-bar-row")).toContainText("冲动分心");
+  await expect(confidence.getByRole("img", { name: "冲动分心 置信度 15%" })).toBeVisible();
+  assertClean();
+
+  // Contrast: 0.55 clears the threshold, so the type is named again.
+  await page.unroute("**/api/v1/analytics/attribution");
+  await page.route("**/api/v1/analytics/attribution", respond({ impulsivity: 0.55 }));
+  await page.reload();
+  await page.getByRole("button", { name: "运行归因分析" }).click();
+  await expect(typeRow).toContainText("冲动分心");
+  await expect(typeRow).not.toContainText("没有发现明显的拖延");
+  await expect(page.locator(".attribution-evidence").getByText("都很低，仅供参考")).toHaveCount(0);
+});
+
+/** §8.26.1: the four components all sat on the 0.5 prior, yet the card named
+ *  E as "the main bottleneck" and outlined it — a prior presented as a
+ *  finding. A component with `raw: null` is now marked 默认值, and a dominant
+ *  component that is a default produces no bottleneck claim at all. */
+test("tmt does not present prior values as findings", async ({ page }) => {
+  const allDefault = {
+    motivation: 0.5,
+    motivation_level: "medium",
+    // The dominant component is itself unmeasured — exactly the reported case.
+    dominant_barrier: "expectancy",
+    components: {
+      expectancy: { score: 0.5, raw: null, label: "同类任务历史专注成功率", source: "先验（无近14天自评）", evidence_ids: [] },
+      value: { score: 0.5, raw: null, label: "生产类应用占比 × 任务优先级", source: "先验", evidence_ids: [] },
+      impulsiveness: { score: 0.5, raw: null, label: "应用切换频率", source: "先验", evidence_ids: [] },
+      delay: { score: 0.5, raw: null, label: "距离截止时间的剩余天数", source: "先验", evidence_ids: [] },
+    },
+    note: "由行为代理变量估算，不是心理测量。",
+  };
+  const respond = (tmt: typeof allDefault) => async (route: import("@playwright/test").Route) =>
+    route.fulfill({ json: {
+      assessment: {
+        procrastination_types: ["task_aversion"],
+        type_confidence: { task_aversion: 0.6 },
+        cbt_technique: "graded_exposure",
+        response_text: "证据不足，暂不下结论。",
+      },
+      source: "rule_engine", cached: false, meta: { degraded: false }, tmt,
+    } });
+
+  await setupExplainabilityAbsent(page);
+  await page.route("**/api/v1/analytics/attribution", respond(allDefault));
+  await page.setViewportSize(WIDE);
+  await open(page, "/analytics");
+  const assertClean = failOnPageError(page);
+
+  await page.getByRole("button", { name: "运行归因分析" }).click();
+  const tmt = page.locator(".attribution-evidence").getByRole("region", { name: "动机分解" });
+
+  await expect(tmt, "an all-prior reading must not claim a level").toContainText("数据不足");
+  await expect(tmt).toContainText("数据还不够，暂不判断主要瓶颈");
+  // No bottleneck badge, and therefore no outlined dominant row.
+  await expect(tmt.locator(".mf-tmt-component-label .badge-warning")).toHaveCount(0);
+  await expect(tmt.locator('.mf-tmt-component[data-dominant="true"]')).toHaveCount(0);
+  // Each of the four components is tagged as a default, and the number is
+  // still shown — the value is not hidden, only framed honestly.
+  await expect(tmt.getByText("默认值", { exact: true })).toHaveCount(4);
+  await expect(tmt.locator(".mf-tmt-component-value")).toHaveCount(4);
+  await assertClean();
+
+  // Contrast: with every component measured, the normal bottleneck line and
+  // badge come back — the rule keys on `raw`, not on the card being empty.
+  await page.unroute("**/api/v1/analytics/attribution");
+  await page.route("**/api/v1/analytics/attribution", respond({
+    ...allDefault,
+    dominant_barrier: "delay",
+    components: {
+      expectancy: { ...allDefault.components.expectancy, raw: 0.52 },
+      value: { ...allDefault.components.value, raw: 0.61 },
+      impulsiveness: { ...allDefault.components.impulsiveness, raw: 1.9 },
+      delay: { ...allDefault.components.delay, raw: 3.1 },
+    },
+  }));
+  await page.reload();
+  await page.getByRole("button", { name: "运行归因分析" }).click();
+  await expect(tmt.getByText("主要瓶颈：D 延迟 · 截止时间压力是主要瓶颈")).toBeVisible();
+  await expect(tmt.locator('.mf-tmt-component[data-dominant="true"]')).toContainText("D 延迟");
+  await expect(tmt.getByText("默认值", { exact: true })).toHaveCount(0);
+  await expect(tmt).not.toContainText("数据不足");
 });
 
 test("panel exposes how the verdict was reached", async ({ page }) => {

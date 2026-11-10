@@ -524,29 +524,82 @@ def thompson_select(
     )
 
 
+#: Chinese labels for the five procrastination types.  Duplicated from
+#: ``frontend/src/lib/user-terms.ts`` on purpose: the services layer may not
+#: import the agents layer, and the wire value must never reach the UI.
+PROCRASTINATION_LABELS_ZH: Mapping[str, str] = {
+    "task_aversion": "任务厌恶",
+    "impulsivity": "冲动分心",
+    "decisional": "决策拖延",
+    "perfectionism": "完美主义",
+    "emotional_regulation": "情绪调节困难",
+}
+
+
+def _label_for(ptype: object) -> str:
+    return PROCRASTINATION_LABELS_ZH.get(str(ptype), str(ptype))
+
+
+def _is_prior_only(candidate: Candidate) -> bool:
+    """True when the candidate's Beta has never been updated by feedback.
+
+    Two prior pairs exist: ``Beta(1, 1)`` for an ordinary arm, and
+    ``Beta(2, 1)`` for a type's primary candidate (the cold-start favourite).
+    A candidate still sitting on either is a default, not a finding.
+
+    ``rule_selection`` and the fallback inside ``thompson_select`` both build
+    unobserved arms with ``(1, 1)`` regardless of position, so the primary
+    pair cannot be recognised from position alone — both are checked.
+    """
+    return (candidate.alpha, candidate.beta) in _PRIOR_PAIRS
+
+
+_PRIOR_PAIRS: frozenset[tuple[float, float]] = frozenset(
+    {
+        (round(PRIOR_ALPHA, 4), round(PRIOR_BETA, 4)),
+        (round(PRIMARY_PRIOR_ALPHA, 4), round(PRIOR_BETA, 4)),
+    }
+)
+
+
 def selection_evidence(
     selection: Selection,
     procrastination_types: Sequence[ProcrastinationType],
 ) -> tuple[str, ...]:
-    """Up to four human-readable Chinese evidence lines for the rationale."""
+    """Up to four human-readable Chinese evidence lines for the rationale.
+
+    The lines avoid α/β and the word "后验": a reader deciding whether to trust
+    a reminder cannot act on Beta parameters, and naming the machinery invites
+    reading a prior as evidence.
+    """
+    type_labels = "、".join(_label_for(t) for t in procrastination_types[:3])
     lines: list[str] = [
-        f"拖延类型：{'、'.join(str(t) for t in procrastination_types[:3]) or '未判定'}",
-        f"上下文：{bucket_label(selection.context_bucket)}",
+        f"拖延类型：{type_labels or '未判定'}",
+        f"情境：{bucket_label(selection.context_bucket)}",
     ]
     chosen = next(
         (c for c in selection.candidates if c.chosen),
         None,
     )
     if chosen is not None:
-        lines.append(
-            f"选择{chosen.label}（后验均值 {chosen.posterior_mean:.2f}，"
-            f"α={chosen.alpha:.2f}，β={chosen.beta:.2f}）"
-        )
+        if _is_prior_only(chosen):
+            # The number is the prior's own mean. For a non-primary arm that is
+            # exactly 50%; the primary arm's Beta(2, 1) prior averages 67%, and
+            # printing 50% there would be a second wrong claim.
+            lines.append(
+                f"选择{chosen.label}：还没有你对这类提醒的反馈，"
+                f"先按默认估计 {chosen.posterior_mean:.0%}"
+            )
+        else:
+            lines.append(
+                f"选择{chosen.label}：根据你过去的反馈，"
+                f"估计有用的概率 {chosen.posterior_mean:.0%}"
+            )
     for candidate in selection.candidates:
         if chosen is not None and candidate.intervention_type == chosen.intervention_type:
             continue
         lines.append(
-            f"备选{candidate.label}后验均值 {candidate.posterior_mean:.2f}"
+            f"备选{candidate.label}：估计有用的概率 {candidate.posterior_mean:.0%}"
         )
         if len(lines) >= 4:
             break

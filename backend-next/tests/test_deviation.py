@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from mindflow.domain.baseline import BaselineModel
+from mindflow.domain.baseline import DEFAULT_SHRINKAGE_K, BaselineModel
 from mindflow.domain.deviation import DeviationDetector
 from mindflow.domain.feature_schema import V2_FEATURE_NAMES
 
@@ -270,8 +270,14 @@ class TestDeviationSummary:
         assert summary["bucket"]["hour_of_day"] == 10
         assert summary["bucket"]["day_of_week"] == 0
         assert summary["bucket"]["n_samples"] == 10
-        # k / (n + k) with k = 10 and n = 10.
-        assert summary["bucket"]["shrinkage"] == pytest.approx(0.5)
+        # Default path (§8.25): k̂ is estimated from the data. This fixture has
+        # a single bucket, so the between-bucket variance is 0 and k̂ saturates
+        # at the cap, giving 50 / (10 + 50) — reported rounded to 4 dp.
+        assert summary["bucket"]["shrinkage"] == pytest.approx(0.8333)
+        # The legacy fixed-k arithmetic is still reachable and still 0.5.
+        assert model.shrunk_expected(
+            "app_switch_count", 10, 0, k=DEFAULT_SHRINKAGE_K
+        )["shrinkage"] == pytest.approx(0.5)
         assert len(summary["features"]) <= 6
         top = summary["features"][0]
         assert top["feature"] == "app_switch_count"

@@ -82,6 +82,12 @@ function splitPeakFocus(peakFocus: string | undefined): { period: string; averag
   return { period: period || peakFocus.trim(), average };
 }
 
+/** Below this top confidence, with no recommended technique, the backend does
+ *  not consider a procrastination pattern to be present — see
+ *  `services/intervention_service.py::_select_intervention_type`, which returns
+ *  None for exactly this pair of conditions. Kept in sync with that check. */
+const WEAK_CONFIDENCE_THRESHOLD = 0.2;
+
 const TYPE_KEYS = [
   "task_aversion",
   "impulsivity",
@@ -118,12 +124,16 @@ function AttributionEvidence({
   nextAction,
   tmt,
   deviation,
+  weakConfidence,
 }: {
   typeConfidence: Record<string, number>;
   distortions: string[];
   nextAction?: string;
   tmt?: TmtBreakdown | null;
   deviation?: DeviationSummary | null;
+  /** Every type scored below the threshold: say so next to the bars, because
+   *  the bars themselves are still drawn and must not read as a verdict. */
+  weakConfidence?: boolean;
 }) {
   const typeRows = TYPE_KEYS.flatMap((key) => {
     const value = typeConfidence[key];
@@ -139,6 +149,7 @@ function AttributionEvidence({
           <span className="proof-title">
             类型置信度
             <HelpTip term="类型置信度" what="每种拖延类型的可能性，条越长越可能。" />
+            {weakConfidence && <span className="proof-muted">都很低，仅供参考</span>}
           </span>
           <span className="proof-muted">模型对各类型的判断强度</span>
         </div>
@@ -224,7 +235,7 @@ function AttributionEvidence({
           )}
         </div>
         {!deviation ? (
-          <p className="proof-note">暂无偏离数据</p>
+          <p className="proof-note">还在积累记录：用几天后，才能和你平时的水平比较。</p>
         ) : (
           <>
             <div className="deviation-meta">
@@ -533,10 +544,34 @@ export default function Analytics() {
       ? { className: "badge-success", text: "已配置" }
       : { className: "badge-neutral", text: "未配置" };
 
-  const attributionType = userTerm(attribution?.procrastination_type ?? attribution?.results?.[0]?.procrastination_type);
+  const rawCbt = attribution?.cbt_technique ?? attribution?.results?.[0]?.cbt_technique;
+  const attributionCbt = userTerm(rawCbt);
   const attributionConfidence = attribution?.confidence ?? attribution?.results?.[0]?.confidence ?? null;
-  const attributionCbt = userTerm(attribution?.cbt_technique ?? attribution?.results?.[0]?.cbt_technique);
   const attributionEvidence = attribution?.evidence ?? attribution?.results?.[0]?.evidence;
+
+  /** Highest per-type confidence, the same quantity the backend compares
+   *  against its 0.2 threshold. Falls back to the summary value when the
+   *  response carries no per-type breakdown. */
+  const maxTypeConfidence = (() => {
+    const values = Object.values(attribution?.assessment?.type_confidence ?? {})
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    if (values.length > 0) return Math.max(...values);
+    const summary = Number(attributionConfidence);
+    return Number.isFinite(summary) ? summary : null;
+  })();
+
+  /** §8.23.3: no technique recommended and nothing above the threshold — the
+   *  card used to name a type and a 0.15 score beside an evidence line saying
+   *  no pattern was detected. That contradiction is what this flag removes. */
+  const noSignificantPattern =
+    attribution != null
+    && rawCbt == null
+    && maxTypeConfidence != null
+    && maxTypeConfidence < WEAK_CONFIDENCE_THRESHOLD;
+
+  const attributionType = noSignificantPattern
+    ? "没有发现明显的拖延"
+    : userTerm(attribution?.procrastination_type ?? attribution?.results?.[0]?.procrastination_type);
 
   return (
     <div className="analytics" ref={pageRef}>
@@ -723,7 +758,11 @@ export default function Analytics() {
                 what="AI 对这个判断有多大把握，0 到 1，越接近 1 越有把握。"
               />
             </span>
-            <span>{attributionConfidence != null ? String(attributionConfidence) : "—"}</span>
+            <span>
+              {noSignificantPattern
+                ? "—"
+                : attributionConfidence != null ? String(attributionConfidence) : "—"}
+            </span>
           </div>
           <div className="kv-row kv-row--text">
             <span>
@@ -776,6 +815,7 @@ export default function Analytics() {
           nextAction={attribution.assessment?.next_action}
           tmt={attribution.tmt}
           deviation={attribution.deviation}
+          weakConfidence={noSignificantPattern}
         />
       )}
     </div>

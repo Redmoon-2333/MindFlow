@@ -81,6 +81,13 @@ AnswerStatus = Literal["recorded", "skipped", "expired"]
 
 BroadcastFn = Callable[[dict[str, Any]], Awaitable[int]]
 
+#: Clock the store reads when a caller does not inject an instant.
+#: Injected once at construction so every lifecycle decision (expiry,
+#: cooldown, daily cap) is measured against the *same* clock. A test that
+#: injects a fixed ``now`` into ``maybe_create`` and lets the lifecycle
+#: read the wall clock instead would see the two disagree mid-run.
+ClockFn = Callable[[], datetime]
+
 
 @dataclass
 class FeedbackRequest:
@@ -146,6 +153,10 @@ class FeedbackRequestStore:
     activity_repository: SQLAlchemyActivityRepository | None = None
     broadcast_fn: BroadcastFn | None = None
     timezone: TimezoneLike = "local"
+    #: Source of "now" for every lifecycle decision. Defaults to the real
+    #: clock; tests inject a fixed one so expiry/cooldown never depend on
+    #: when the suite happens to run.
+    clock: ClockFn = field(default=lambda: datetime.now(UTC))
     _pending: dict[int, FeedbackRequest] = field(default_factory=dict)
     _ledger: dict[int, _AskLedger] = field(default_factory=dict)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -165,7 +176,7 @@ class FeedbackRequestStore:
         cooldown, the daily cap, or a deep-work session. The guards are
         ordered cheapest-first so a declined tick does no database work.
         """
-        now = now or datetime.now(UTC)
+        now = now or self.clock()
 
         async with self._lock:
             if self._has_live_pending_locked(user_id, now):
@@ -303,7 +314,7 @@ class FeedbackRequestStore:
         so a client polling a request it already answered gets a clear signal
         rather than a silent success.
         """
-        now = now or datetime.now(UTC)
+        now = now or self.clock()
         async with self._lock:
             found = next(
                 (
@@ -350,7 +361,7 @@ class FeedbackRequestStore:
         *forgotten*: answering it must yield ``status="expired"`` (the
         contract's third status), not the 404 that an evicted id would produce.
         """
-        now = now or datetime.now(UTC)
+        now = now or self.clock()
         async with self._lock:
             request = self._pending.get(user_id)
         if request is None or request.is_expired(now):

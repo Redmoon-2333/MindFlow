@@ -76,12 +76,21 @@ async def telemetry_repo(engine, session_factory) -> TelemetryRepository:
     return TelemetryRepository(session_factory)
 
 
+#: Reference instant for the whole module. Every store is built with a
+#: clock pinned here, so expiry/cooldown decisions never depend on the
+#: wall clock at the moment the suite runs (the TTL is only 2 hours, so a
+#: real clock would make these tests fail a couple of hours after the
+#: hard-coded ``_REFERENCE_NOW`` below).
+_REFERENCE_NOW = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
+
+
 def _store(
     telemetry_repo: TelemetryRepository,
     prediction: FocusPrediction | None = None,
     *,
     activity_repository: Any | None = None,
     broadcast: Any | None = None,
+    clock: Any | None = None,
 ) -> FeedbackRequestStore:
     return FeedbackRequestStore(
         telemetry_repository=telemetry_repo,
@@ -90,6 +99,7 @@ def _store(
         ),
         activity_repository=activity_repository,
         broadcast_fn=broadcast,
+        clock=clock or (lambda: _REFERENCE_NOW),
     )
 
 
@@ -189,7 +199,8 @@ class TestCreationGuards:
         self, telemetry_repo: TelemetryRepository
     ) -> None:
         store = _store(telemetry_repo, _prediction(0.5))
-        first = await store.maybe_create(now=datetime(2026, 11, 10, 10, 0, tzinfo=UTC))
+        now = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
+        first = await store.maybe_create(now=now)
         assert first is not None
 
         # 30 minutes later: still inside the TTL, so only the pending slot can
@@ -197,7 +208,9 @@ class TestCreationGuards:
         second = await store.maybe_create(now=datetime(2026, 11, 10, 10, 30, tzinfo=UTC))
 
         assert second is None
-        assert [r.request_id for r in await store.pending()] == [first.request_id]
+        assert [r.request_id for r in await store.pending(now=now)] == [
+            first.request_id
+        ]
 
     async def test_cooldown_blocks_until_45_minutes_elapsed(
         self, telemetry_repo: TelemetryRepository
@@ -446,7 +459,9 @@ class TestRoutes:
 
     async def test_pending_then_answer_roundtrip(self, app: FastAPI) -> None:
         store: FeedbackRequestStore = app.state.feedback_request_store
-        request = await store.maybe_create(now=datetime(2026, 11, 10, 10, 0, tzinfo=UTC))
+        # The store's clock is pinned to _REFERENCE_NOW, so the route's
+        # internal "now" matches the instant the request was created at.
+        request = await store.maybe_create(now=_REFERENCE_NOW)
         assert request is not None
         client = TestClient(app)
 
@@ -492,6 +507,79 @@ class TestRoutes:
         )
 
         assert response.status_code == 422
+
+
+class TestClockIsInjectedEverywhere:
+    """Regression: no lifecycle decision may read the wall clock.
+
+    The store takes an injectable ``clock`` and every public method accepts an
+    explicit ``now``. Before this existed, ``pending()``/``answer()`` fell back
+    to ``datetime.now(UTC)`` while ``maybe_create()`` was being called with a
+    fixed instant, so a request created "at 10:00" was judged against the real
+    clock. Because ``REQUEST_TTL`` is two hours, those tests passed in the
+    morning and failed every run after noon — a time bomb, not a flake.
+
+    These tests pin the store's clock far away from the real one. If any code
+    path reverts to reading the wall clock, the request it just created
+    immediately looks expired and the assertions below fail.
+    """
+
+    @staticmethod
+    def _frozen(instant: datetime) -> Any:
+        return lambda: instant
+
+    async def test_pending_and_answer_use_the_injected_clock(
+        self, telemetry_repo: TelemetryRepository
+    ) -> None:
+        """With the clock frozen, pending() and answer() never see "expired"."""
+        created = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
+        store = _store(
+            telemetry_repo,
+            _prediction(0.5),
+            clock=self._frozen(created),
+        )
+        request = await store.maybe_create(now=created)
+        assert request is not None
+
+        # No ``now`` passed: both methods must consult the injected clock,
+        # which reads exactly the creation instant, so the request is live.
+        pending = await store.pending()
+        assert [r.request_id for r in pending] == [request.request_id]
+
+        result = await store.answer(request.request_id, "focus")
+        assert result is not None
+        assert result.status == "recorded"
+
+    async def test_lifecycle_is_independent_of_the_real_clock(
+        self, telemetry_repo: TelemetryRepository, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Freeze the *real* clock far in the future; results must not change.
+
+        This is the assertion that would have caught the original bug. The
+        calls below deliberately omit ``now`` so they exercise the fallback
+        path the bug lived in: with the store's clock pinned to 10:00 the
+        request stays live no matter what the wall clock says. Reading
+        ``datetime.now`` there reports "expired" and fails the status check.
+        """
+        import mindflow.services.feedback_request_service as module
+
+        created = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
+
+        class _FarFuture(datetime):
+            @classmethod
+            def now(cls, tz: Any = None) -> datetime:
+                return datetime(2099, 1, 1, tzinfo=UTC)
+
+        monkeypatch.setattr(module, "datetime", _FarFuture)
+
+        store = _store(telemetry_repo, _prediction(0.5), clock=self._frozen(created))
+        request = await store.maybe_create(now=created)
+        assert request is not None
+
+        # No ``now``: must consult the pinned store clock, not the real one.
+        assert await store.pending() == [request]
+        result = await store.answer(request.request_id, "focus")
+        assert result is not None and result.status == "recorded"
 
 
 class TestSchedulerJob:

@@ -706,7 +706,10 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── Respond to latest intervention (if visible) ──
-    const acceptBtn = page.locator("button", { hasText: "接受" }).first();
+    // §8.26.4: the three answers now read 好，试试看 / 先忽略 / 不适合我, the
+    // same words the desktop popup uses. The mapping is unchanged
+    // (accepted / ignored / dismissed).
+    const acceptBtn = page.locator("button", { hasText: "好，试试看" }).first();
     if (await acceptBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
       await acceptBtn.click();
       await page.waitForTimeout(2000);
@@ -721,7 +724,7 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── Ignore it ──
-    const ignoreBtn = page.locator("button", { hasText: "忽略" }).first();
+    const ignoreBtn = page.locator("button", { hasText: "先忽略" }).first();
     if (await ignoreBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
       await ignoreBtn.click();
       await page.waitForTimeout(2000);
@@ -735,13 +738,11 @@ test.describe("MindFlow Full E2E", () => {
     }
 
     // ── Dismiss it ──
-    const dismissBtn = page.locator("button", { hasText: "关闭" }).first();
+    // Was "关闭": §8.26.4 renamed the dismiss answer to 不适合我 so it is not
+    // confused with the error box's close button.
+    const dismissBtn = page.locator("button", { hasText: "不适合我" }).first();
     if (await dismissBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-      // Make sure we click the dismiss button (not error close)
-      const allCloseBtns = page.locator("button.btn-danger", { hasText: "关闭" });
-      if (await allCloseBtns.count() > 0) {
-        await allCloseBtns.first().click();
-      }
+      await dismissBtn.click();
       await page.waitForTimeout(2000);
     }
 
