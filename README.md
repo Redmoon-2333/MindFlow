@@ -78,6 +78,12 @@ uv run python -m mindflow.bootstrap
 
 将该 VBS 的快捷方式放入当前用户的 Windows「启动」文件夹，可在登录后自动记录。
 桌面快捷方式可添加 `--open-ui` 参数，启动或复用服务后在 Edge 中打开已认证的界面。
+直接访问本机地址时，点击“进入 MindFlow”即可在当前页面建立本地会话，
+无需外部应用弹窗；`localhost` 和 `127.0.0.1` 都可使用。
+本地会话入口只接受回环连接、与页面地址及端口完全相同的 Origin、
+浏览器同源 Fetch Metadata 和指定 JSON 请求头；外站、跨端口和缺少来源信息的请求均拒绝。
+这是单用户桌面的本机信任边界，不适用于多人或远程部署。
+桌面启动器的一次性票据认证仍可使用，网页脚本无法读取 root token。
 诊断日志位于 `%LOCALAPPDATA%\mindflow\service-logs`，后端日志位于
 `backend-next/runtime_logs/`。
 

@@ -1,13 +1,13 @@
 import { useState } from "react";
 import ParticleText from "../components/ParticleText";
-import { AUTH_MARKER, AUTH_REQUIRED_EVENT } from "../api";
+import { AUTH_MARKER } from "../api";
 import "./login.css";
 
-const DEV_LOGIN_TIMEOUT_MS = 10_000;
+const LOGIN_TIMEOUT_MS = 10_000;
 
-async function fetchDevLogin(url: string, init: RequestInit): Promise<Response> {
+async function fetchLogin(url: string, init: RequestInit): Promise<Response> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), DEV_LOGIN_TIMEOUT_MS);
+  const timeout = window.setTimeout(() => controller.abort(), LOGIN_TIMEOUT_MS);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (error: unknown) {
@@ -26,52 +26,50 @@ interface LoginProps {
 }
 
 export default function Login({ bootstrapError = null, onClearBootstrapError }: LoginProps) {
-  const [devLoading, setDevLoading] = useState(false);
-  const [devError, setDevError] = useState<string | null>(null);
-  const [devSuccess, setDevSuccess] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
 
-  const handleDevLogin = async () => {
-    setDevLoading(true);
-    setDevError(null);
+  const handleLogin = async () => {
+    setLoading(true);
+    setError(null);
     try {
-      const tokenRes = await fetchDevLogin("/api/v1/auth/bootstrap/ticket", {
+      const response = await fetchLogin(
+        import.meta.env.DEV ? "/api/v1/auth/bootstrap/ticket" : "/api/v1/auth/local-session", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-MindFlow-Login": "1" },
         credentials: "include",
+        mode: "same-origin",
+        body: "{}",
       });
-      if (!tokenRes.ok) {
-        if (tokenRes.status === 401) {
-          throw new Error("获取票据失败 (401)：请从 MindFlow 启动器打开开发界面，或重启 Vite 开发服务器");
+      if (!response.ok) {
+        if (response.status === 403) {
+          throw new Error("请在本机 MindFlow 页面登录，或双击桌面的 MindFlow");
         }
-        if (tokenRes.status === 502 || tokenRes.status === 503) {
-          throw new Error(`后端尚未就绪 (${tokenRes.status})：请确认 8765 端口的 MindFlow 后端已启动`);
+        if (response.status === 502 || response.status === 503) {
+          throw new Error(`后端尚未就绪 (${response.status})：请确认 MindFlow 后端已启动`);
         }
-        throw new Error(`获取票据失败 (${tokenRes.status})`);
+        throw new Error(`登录失败 (${response.status})，请重新打开 MindFlow 后重试`);
       }
-      const { ticket } = await tokenRes.json();
-
-      const bootstrapRes = await fetchDevLogin("/api/v1/auth/bootstrap", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ ticket }),
-      });
-      if (!bootstrapRes.ok) {
-        throw new Error(
-          bootstrapRes.status === 401
-            ? "认证失败 (401)：票据已失效，请重新点击进入"
-            : `认证失败 (${bootstrapRes.status})`,
-        );
+      if (import.meta.env.DEV) {
+        const { ticket } = await response.json();
+        const exchanged = await fetchLogin("/api/v1/auth/bootstrap", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ ticket }),
+        });
+        if (!exchanged.ok) throw new Error(`认证失败 (${exchanged.status})，请重新点击进入`);
       }
 
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
       localStorage.setItem(AUTH_MARKER, "1");
-      setDevSuccess(true);
-      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
-      setTimeout(() => window.location.reload(), 500);
+      setSuccess(true);
+      window.location.reload();
     } catch (e: unknown) {
-      setDevError(e instanceof Error ? e.message : "登录失败");
+      setError(e instanceof Error ? e.message : "登录失败");
     } finally {
-      setDevLoading(false);
+      setLoading(false);
     }
   };
 
@@ -86,9 +84,12 @@ export default function Login({ bootstrapError = null, onClearBootstrapError }: 
           <p className="login-subtitle">进入您的 MindFlow 本地工作台</p>
         </div>
 
-        <form className="login-form" onSubmit={(e) => { e.preventDefault(); handleDevLogin(); }}>
+        <form className="login-form" onSubmit={(e) => {
+          e.preventDefault();
+          void handleLogin();
+        }}>
           <div className="info-box login-note">
-            本机认证使用一次性启动票据：请通过 MindFlow 启动器打开界面，主令牌不会暴露给网页脚本。
+            本机工作台，无需账号密码。
           </div>
 
           {bootstrapError && (
@@ -102,15 +103,15 @@ export default function Login({ bootstrapError = null, onClearBootstrapError }: 
             </div>
           )}
 
-          <button className="login-btn" type="submit" disabled={devLoading || devSuccess}>
-            {devLoading ? "认证中…" : devSuccess ? "认证成功，正在进入…" : "进入 MindFlow"}
+          <button className="login-btn" type="submit" disabled={loading || success}>
+            {loading ? "认证中…" : success ? "认证成功，正在进入…" : "进入 MindFlow"}
           </button>
         </form>
 
-        {devError && (
+        {error && (
           <div className="login-error login-error-row" role="alert">
-            {devError}
-            <button type="button" className="btn btn-sm btn-ghost" onClick={handleDevLogin} disabled={devLoading}>
+            {error}
+            <button type="button" className="btn btn-sm btn-ghost" onClick={handleLogin} disabled={loading}>
               重试
             </button>
           </div>
@@ -124,16 +125,16 @@ export default function Login({ bootstrapError = null, onClearBootstrapError }: 
             <button
               type="button"
               className="login-btn login-btn--ghost"
-              onClick={handleDevLogin}
-              disabled={devLoading || devSuccess}
+              onClick={handleLogin}
+              disabled={loading || success}
             >
-              {devLoading ? "认证中…" : devSuccess ? "认证成功" : "Dev 登录（本地调试）"}
+              {loading ? "认证中…" : success ? "认证成功" : "Dev 登录（本地调试）"}
             </button>
           </div>
         )}
 
         <div className="login-footer">
-          没有账号体系：本地票据即凭证，退出后需重新认证。
+          退出或认证失效后，可再次点击进入。
         </div>
       </div>
 

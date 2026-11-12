@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ipaddress import ip_address
+
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
@@ -23,6 +25,35 @@ class BootstrapTicketResponse(BaseModel):
     expires_in_s: int = 60
 
 
+@router.post("/auth/local-session", status_code=204)
+async def create_local_session(request: Request) -> Response:
+    """Sign in from the local UI; cross-origin pages cannot mint a session.
+
+    This is a single-user desktop trust boundary, not a remote account login.
+    Browser-controlled Origin and Fetch Metadata must match the served origin;
+    loopback peers alone are insufficient because hostile sites can reach them.
+    Native callers can use the existing authenticated launcher ticket flow.
+    """
+    try:
+        loopback_peer = request.client is not None and ip_address(request.client.host).is_loopback
+    except ValueError:
+        loopback_peer = False
+    headers = request.headers
+    if not (
+        loopback_peer
+        and request.url.hostname in {"localhost", "127.0.0.1", "::1"}
+        and request.url.scheme in {"http", "https"}
+        and headers.get("origin") == f"{request.url.scheme}://{request.url.netloc}"
+        and headers.get("sec-fetch-site") == "same-origin"
+        and headers.get("sec-fetch-mode") == "same-origin"
+        and headers.get("sec-fetch-dest") == "empty"
+        and headers.get("x-mindflow-login") == "1"
+        and headers.get("content-type", "").split(";", 1)[0].strip() == "application/json"
+    ):
+        raise HTTPException(status_code=403, detail="请从本机 MindFlow 页面进入")
+    return _session_response(request)
+
+
 @router.post("/auth/bootstrap/ticket", response_model=BootstrapTicketResponse)
 async def issue_bootstrap_ticket(request: Request) -> BootstrapTicketResponse:
     """Issue a ticket after AuthMiddleware has authenticated the launcher."""
@@ -39,11 +70,15 @@ async def exchange_bootstrap_ticket(request: Request, body: BootstrapRequest) ->
     if not isinstance(store, BootstrapTicketStore) or not store.consume(body.ticket):
         raise HTTPException(status_code=401, detail="启动票据无效、已过期或已使用")
 
+    return _session_response(request)
+
+
+def _session_response(request: Request) -> Response:
     session_store = getattr(request.app.state, "browser_sessions", None)
     if not isinstance(session_store, SessionTokenStore):
         raise HTTPException(status_code=503, detail="浏览器会话服务不可用")
 
-    response = Response(status_code=204)
+    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
     response.set_cookie(
         key=_COOKIE_NAME,
         value=session_store.issue(),

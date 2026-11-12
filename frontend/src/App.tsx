@@ -408,6 +408,13 @@ export default function App() {
   const [authenticated, setAuthenticated] = useState(hasAuthenticatedSession);
   const [bootstrapping, setBootstrapping] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const [bootstrapHash, setBootstrapHash] = useState(() => window.location.hash);
+
+  useEffect(() => {
+    const handleHashChange = () => setBootstrapHash(window.location.hash);
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
 
   useEffect(() => {
     if (!authenticated) resetChatRuntime();
@@ -418,7 +425,7 @@ export default function App() {
   // a failed attempt stays retryable via the login page's retry button.
   useEffect(() => {
     if (authenticated) return;
-    const params = new URLSearchParams(window.location.hash.slice(1));
+    const params = new URLSearchParams(bootstrapHash.slice(1));
     const ticket = params.get("bootstrap");
     if (!ticket) return;
     setBootstrapping(true);
@@ -426,6 +433,7 @@ export default function App() {
     bootstrapFromFragment()
       .then((ok) => {
         if (ok) {
+          setBootstrapHash(window.location.hash);
           setAuthenticated(true);
         }
       })
@@ -433,7 +441,7 @@ export default function App() {
         setBootstrapError(error instanceof Error ? error.message : "认证失败，请重试");
       })
       .finally(() => setBootstrapping(false));
-  }, [authenticated]);
+  }, [authenticated, bootstrapHash]);
 
   useEffect(() => {
     const handleAuthRequired = () => setAuthenticated(false);
