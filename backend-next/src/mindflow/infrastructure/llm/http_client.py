@@ -19,6 +19,7 @@ so both paths back off identically.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import random
 import time
@@ -185,7 +186,18 @@ class GatedHTTPClient(httpx.AsyncClient):
         self, request: httpx.Request, *, stream: bool = False, **kwargs: Any,
     ) -> httpx.Response:
         queue_started = time.perf_counter()
-        await self._gate.__aenter__()
+        # Pool timeout also bounds waiting for a generation permit. HTTPX's
+        # connection-pool timer only starts after this application-level queue.
+        pool_timeout = request.extensions.get("timeout", {}).get("pool", self.timeout.pool)
+        try:
+            async with asyncio.timeout(pool_timeout):
+                await self._gate.__aenter__()
+        except TimeoutError as exc:
+            record_http_attempt(HTTPAttemptMetrics(
+                queue_latency_ms=(time.perf_counter() - queue_started) * 1000.0,
+                error_category="timeout",
+            ))
+            raise httpx.PoolTimeout("LLM concurrency queue timed out", request=request) from exc
         queue_ms = (time.perf_counter() - queue_started) * 1000.0
         http_started = time.perf_counter()
         handed_off = False

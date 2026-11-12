@@ -5,16 +5,16 @@ Every LLM call the panel makes is shaped by one row of the plan's table:
 ===============  ================  ==================  ==========================
 role             reasoning effort  max output tokens   intent
 ===============  ================  ==================  ==========================
-analyst          low               1200                fact extraction + anomaly
+analyst          low               8192                fact extraction + anomaly
                                                        ranking only
-attribution      low               1000                structured claims only
-rebuttal         low               800                 answer the conflicting
+attribution      low               8192                structured claims only
+rebuttal         low               8192                answer the conflicting
                                                        fields only
-moderator        high              1600                synthesis + abstention
+moderator        high              16384               synthesis + abstention
                                                        judgement only
-critic           low               500                 approved / issues / detail
+critic           low               8192                approved / issues / detail
                                                        only
-chat             provider default  2048                independent of panel policy
+chat             provider default  8192                independent of panel policy
 ===============  ================  ==================  ==========================
 
 ``CompletionPolicy`` is a *request* policy, not a model policy: the gateway
@@ -169,7 +169,7 @@ def _attribution_policy(role: str, node: str) -> CompletionPolicy:
     return CompletionPolicy(
         role=role,
         reasoning_effort="low",
-        max_output_tokens=1000,
+        max_output_tokens=8192,
         intent="只输出结构化归因主张（类型、置信度、证据引用），不做自由论证",
         node=node,
     )
@@ -178,7 +178,7 @@ def _attribution_policy(role: str, node: str) -> CompletionPolicy:
 ANALYST_POLICY: CompletionPolicy = CompletionPolicy(
     role=ROLE_ANALYST,
     reasoning_effort="low",
-    max_output_tokens=1200,
+    max_output_tokens=8192,
     intent="只做事实提取与异常排序，不解释成因",
     node="analyst",
 )
@@ -193,7 +193,7 @@ EMOTION_POLICY: CompletionPolicy = replace(ATTRIBUTION_POLICY, role="emotion")
 REBUTTAL_POLICY: CompletionPolicy = CompletionPolicy(
     role=ROLE_REBUTTAL,
     reasoning_effort="low",
-    max_output_tokens=800,
+    max_output_tokens=8192,
     intent="只回答冲突字段（对方的归因类型与置信度是否成立），不重写全文",
     node="rebuttal",
 )
@@ -201,7 +201,7 @@ REBUTTAL_POLICY: CompletionPolicy = CompletionPolicy(
 MODERATOR_POLICY: CompletionPolicy = CompletionPolicy(
     role=ROLE_MODERATOR,
     reasoning_effort="high",
-    max_output_tokens=1600,
+    max_output_tokens=16384,
     intent="只做综合裁决与数据不足判断（insufficient_data / evidence_gaps）",
     node="moderator",
 )
@@ -209,7 +209,7 @@ MODERATOR_POLICY: CompletionPolicy = CompletionPolicy(
 CRITIC_POLICY: CompletionPolicy = CompletionPolicy(
     role=ROLE_CRITIC,
     reasoning_effort="low",
-    max_output_tokens=500,
+    max_output_tokens=8192,
     intent="只输出 approved / issues / critique_detail，不新增分析",
     node="critic",
 )
@@ -219,7 +219,7 @@ CRITIC_POLICY: CompletionPolicy = CompletionPolicy(
 CHAT_POLICY: CompletionPolicy = CompletionPolicy(
     role=ROLE_CHAT,
     reasoning_effort=None,
-    max_output_tokens=2048,
+    max_output_tokens=8192,
     intent="对话回复；沿用 provider 默认推理强度，与面板策略无关",
     node="chat",
 )

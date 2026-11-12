@@ -413,3 +413,35 @@ def test_attempt_metrics_defaults_are_empty() -> None:
     assert metrics.http_latency_ms == 0.0
     assert metrics.status_class == ""
     assert metrics.error_category == ""
+
+
+async def test_queue_timeout_never_reaches_provider_or_steals_slot() -> None:
+    gate = LLMConcurrencyGate(1)
+    wire = MockLLMWire(_default_ok)
+    async with GatedHTTPClient(
+        gate, transport=wire.singleton, timeout=httpx.Timeout(1.0, pool=0.02),
+    ) as client:
+        async with gate:
+            with collect_http_attempts() as attempts, pytest.raises(httpx.PoolTimeout):
+                await asyncio.wait_for(client.post(_URL, json={}), timeout=1.0)
+            assert gate.stats.current_in_flight == 1
+            assert wire.recorder.total_requests == 0
+            assert len(attempts) == 1
+            assert attempts[0].error_category == "timeout"
+            assert attempts[0].http_latency_ms == 0.0
+
+        response = await client.post(_URL, json={})
+        assert response.status_code == 200
+        assert gate.stats.current_in_flight == 0
+
+
+async def test_explicit_no_pool_timeout_allows_queue_until_slot_is_free() -> None:
+    gate = LLMConcurrencyGate(1)
+    wire = MockLLMWire(_default_ok)
+    async with GatedHTTPClient(gate, transport=wire.singleton) as client:
+        async with gate:
+            queued = asyncio.create_task(client.post(_URL, json={}, timeout=None))
+            await asyncio.sleep(0)
+            assert not queued.done()
+        assert (await asyncio.wait_for(queued, timeout=1.0)).status_code == 200
+        assert gate.stats.current_in_flight == 0

@@ -82,6 +82,24 @@ def test_output_cap_is_always_set() -> None:
     assert payload["max_completion_tokens"] == 16384
 
 
+@pytest.mark.parametrize("role_cap", [500, 800, 1000, 1200, 1600])
+def test_thinking_role_budget_leaves_room_for_reasoning_and_json(role_cap: int) -> None:
+    payload = _model()._get_request_payload(
+        [HumanMessage(content="Return a structured analysis.")],
+        max_completion_tokens=role_cap,
+    )
+    assert payload["max_completion_tokens"] == 4096
+
+
+@pytest.mark.parametrize("role_cap", [800, 1600, 8192])
+def test_non_thinking_role_budget_stays_exact(role_cap: int) -> None:
+    payload = _model(thinking_enabled=False)._get_request_payload(
+        [HumanMessage(content="Return a structured analysis.")],
+        max_completion_tokens=role_cap,
+    )
+    assert payload["max_completion_tokens"] == role_cap
+
+
 def test_temperature_dropped_while_thinking() -> None:
     """The gateway restricts sampling params in thinking mode."""
     payload = _model(temperature=0.7)._get_request_payload([HumanMessage(content="h")])

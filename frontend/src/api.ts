@@ -452,39 +452,21 @@ export function hasAuthenticatedSession(): boolean {
   return localStorage.getItem(AUTH_MARKER) === "1";
 }
 
-function requestOptions(timeoutMs = REQUEST_TIMEOUT_MS) {
+/** Own the typed client's abort signal until fetching and parsing settle. */
+async function withClientTimeout<T>(
+  send: (options: { credentials: "include"; signal: AbortSignal }) => Promise<T>,
+): Promise<T> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  // The caller owns the controller: openapi-fetch invokes fetch immediately,
-  // and the timer is cleared once the response settles via fetchWithTimeout
-  // semantics below — for client.* calls we clear it in the promise chain.
-  const signal = controller.signal;
-  signal.addEventListener("abort", () => clearTimeout(timeoutId), { once: true });
-  return { credentials: "include" as const, signal };
-}
-
-/** Ensure a hang on AI-backed routes surfaces as a typed timeout instead
- *  of a forever spinner.  `requestOptions()` already carries a per-request
- *  `signal`; the `client.*` path is therefore covered.  This wrapper only
- *  adds an external deadline for callers that still pass a raw promise.
- *  AI mutations use request()/fetchWithTimeout() instead, with one timer
- *  directly bound to fetch and optional caller cancellation.
- *
- *  The difference between the old no-op version and this one: the controller
- *  here is actually wired to the promise via `Promise.race`; the timeout
- *  can now abort the await, so `408 请求超时` is reachable in practice. */
-async function withTimeout<T>(promise: Promise<T>, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    controller.signal.addEventListener(
-      "abort",
-      () => reject(new ApiError(REQUEST_TIMEOUT_MESSAGE, 408)),
-      { once: true },
-    );
-  });
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
   try {
-    return await Promise.race([promise, timeoutPromise]);
+    return await send({ credentials: "include", signal: controller.signal });
+  } catch (error: unknown) {
+    if (timedOut) throw new ApiError(REQUEST_TIMEOUT_MESSAGE, 408);
+    throw error;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -660,7 +642,7 @@ export async function bootstrapFromFragment(): Promise<boolean> {
   const params = new URLSearchParams(window.location.hash.slice(1));
   const ticket = params.get("bootstrap");
   if (!ticket) return false;
-  const result = await client.POST("/api/v1/auth/bootstrap", { ...requestOptions(), body: { ticket } });
+  const result = await withClientTimeout((options) => client.POST("/api/v1/auth/bootstrap", { ...options, body: { ticket } }));
   if (result.error !== undefined || !result.response.ok) throw await toApiError(result.response, result.error);
   // Only clear the one-time ticket after the exchange succeeded, so a failed
   // attempt keeps the URL retryable (audit report 🟡-bootstrap).
@@ -700,7 +682,7 @@ function isActivityItem(value: unknown): value is ActivityItem {
 }
 
 export async function getActivities(params: ActivityQuery = {}): Promise<ActivitiesResponse> {
-  const raw = await unwrap<unknown>(await client.GET("/api/v1/activities", { ...requestOptions(), params: { query: params } }));
+  const raw = await unwrap<unknown>(await withClientTimeout((options) => client.GET("/api/v1/activities", { ...options, params: { query: params } })));
   if (!isRecord(raw) || !Array.isArray(raw.items) || !raw.items.every(isActivityItem)) throw new ApiError("活动列表响应格式无效", 500);
   return {
     items: raw.items,
@@ -714,7 +696,7 @@ export async function getActivities(params: ActivityQuery = {}): Promise<Activit
 
 export async function getCurrentActivity(): Promise<ActivityItem | null> {
   try {
-    const raw = await unwrap<unknown>(await client.GET("/api/v1/activities/current", requestOptions()));
+    const raw = await unwrap<unknown>(await withClientTimeout((options) => client.GET("/api/v1/activities/current", options)));
     const candidate = isRecord(raw) && "current_activity" in raw ? raw.current_activity : raw;
     if (candidate === null) return null;
     if (!isActivityItem(candidate)) throw new ApiError("当前活动响应格式无效", 500);
@@ -769,7 +751,7 @@ export async function sendChat(message: string, sessionId?: string, signal?: Abo
   }, CHAT_REQUEST_TIMEOUT_MS);
 }
 export async function getChatSessions(): Promise<ChatSession[]> {
-  return unwrap(await withTimeout(client.GET("/api/v1/chat/sessions", requestOptions()))) as unknown as ChatSession[];
+  return unwrap(await withClientTimeout((options) => client.GET("/api/v1/chat/sessions", options))) as unknown as ChatSession[];
 }
 export const renameChatSession = (sessionId: string, title: string) =>
   request<{session_id: string; title: string}>(`/chat/sessions/${encodeURIComponent(sessionId)}`, {
@@ -778,7 +760,7 @@ export const renameChatSession = (sessionId: string, title: string) =>
 export const deleteChatSession = (sessionId: string) =>
   request<void>(`/chat/sessions/${encodeURIComponent(sessionId)}`, {method: "DELETE"});
 export async function getChatMessages(sessionId: string): Promise<ChatMessageRecord[]> {
-  return unwrap(await withTimeout(client.GET("/api/v1/chat/{session_id}/messages", { ...requestOptions(), params: { path: { session_id: sessionId } } }))) as unknown as ChatMessageRecord[];
+  return unwrap(await withClientTimeout((options) => client.GET("/api/v1/chat/{session_id}/messages", { ...options, params: { path: { session_id: sessionId } } }))) as unknown as ChatMessageRecord[];
 }
 
 export const triggerPanel = async (body?: { force?: boolean; retryIfDegraded?: boolean }): Promise<ExplainablePanelResult> =>
@@ -835,13 +817,13 @@ export async function respondIntervention(
   latencyS = 0,
   source: "human" | "auto" = "human",
 ): Promise<InterventionCommandResponse> {
-  return unwrap(await withTimeout(client.POST("/api/v1/intervention/{intervention_id}/response", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { response, latency_s: latencyS, source } })));
+  return unwrap(await withClientTimeout((options) => client.POST("/api/v1/intervention/{intervention_id}/response", { ...options, params: { path: { intervention_id: id } }, body: { response, latency_s: latencyS, source } })));
 }
 export async function feedbackIntervention(id: string, rating: InterventionRating, comment?: string): Promise<InterventionCommandResponse> {
-  return unwrap(await withTimeout(client.POST("/api/v1/intervention/{intervention_id}/feedback", { ...requestOptions(), params: { path: { intervention_id: id } }, body: { rating, comment } })));
+  return unwrap(await withClientTimeout((options) => client.POST("/api/v1/intervention/{intervention_id}/feedback", { ...options, params: { path: { intervention_id: id } }, body: { rating, comment } })));
 }
 export async function getInterventionHistory(days = 7): Promise<InterventionHistoryResponse> {
-  const raw = await unwrap(await withTimeout(client.GET("/api/v1/intervention/history", { ...requestOptions(), params: { query: { days } } }))) as unknown as InterventionHistoryResponse;
+  const raw = await unwrap(await withClientTimeout((options) => client.GET("/api/v1/intervention/history", { ...options, params: { query: { days } } }))) as unknown as InterventionHistoryResponse;
   return withRationale(raw);
 }
 

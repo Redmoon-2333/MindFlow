@@ -388,9 +388,11 @@ export default function Dashboard() {
 
   const sourceLine = modelStatus?.demo_only
     ? "演示模型（模拟数据，仅供展示，不影响提醒）"
-    : modelStatus?.loaded
-      ? `个人模型 · ${userTerm(predictionView?.mode)}`
-      : "规则判断";
+    : modelStatus?.model_origin === "bundled_base"
+      ? "基础模型 · 待个人验证"
+      : modelStatus?.loaded
+        ? `个人模型 · ${userTerm(modelStatus.mode)}`
+        : "规则判断";
 
   // §8.21.4: the backend's `reason` uses internal terms ("v2 特征窗口"), so the
   // reader gets the fixed friendly sentence for each status instead.
@@ -400,7 +402,7 @@ export default function Dashboard() {
       case "no_data":
         return "最近 2 小时的使用记录还不够，暂时无法判断。多用一会儿电脑后会自动更新。";
       case "stale":
-        return "最近一段时间没有新的使用记录，判断已暂停。";
+        return "最近的记录不足或已过期，判断暂时暂停。继续使用电脑后会自动更新。";
       case "no_model":
         return "还没有可用的预测模型，攒够反馈后可以在模型中心训练。";
       case "schema_mismatch":

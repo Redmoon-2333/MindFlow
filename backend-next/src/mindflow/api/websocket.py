@@ -87,21 +87,23 @@ async def broadcast(message: dict[str, Any]) -> int:
         Number of clients the message was successfully sent to.
     """
     payload = json.dumps(_with_timestamp(message), ensure_ascii=False)
-    sent = 0
-
     async with _connection_lock:
-        disconnected: list[str] = []
-        for cid, ws in _active_connections.items():
-            try:
-                await asyncio.wait_for(ws.send_text(payload), timeout=_SEND_TIMEOUT_S)
-                sent += 1
-            except Exception:  # noqa: BLE001 — best-effort fan-out
-                disconnected.append(cid)
+        connections = list(_active_connections.items())
 
-        for cid in disconnected:
-            _active_connections.pop(cid, None)
+    async def send(ws: WebSocket) -> bool:
+        try:
+            await asyncio.wait_for(ws.send_text(payload), timeout=_SEND_TIMEOUT_S)
+            return True
+        except Exception:  # noqa: BLE001 — best-effort fan-out
+            return False
 
-    return sent
+    delivered = await asyncio.gather(*(send(ws) for _, ws in connections))
+    async with _connection_lock:
+        for (cid, ws), success in zip(connections, delivered, strict=True):
+            if not success and _active_connections.get(cid) is ws:
+                _active_connections.pop(cid, None)
+
+    return sum(delivered)
 
 
 async def close_all_connections() -> int:
@@ -111,15 +113,17 @@ async def close_all_connections() -> int:
         Number of connections closed.
     """
     async with _connection_lock:
-        closed = 0
-        for ws in _active_connections.values():
-            try:
-                await asyncio.wait_for(ws.close(code=1001), timeout=_SEND_TIMEOUT_S)
-                closed += 1
-            except Exception:  # noqa: BLE001 — best-effort during shutdown
-                pass
+        connections = list(_active_connections.values())
         _active_connections.clear()
-    return closed
+
+    async def close(ws: WebSocket) -> bool:
+        try:
+            await asyncio.wait_for(ws.close(code=1001), timeout=_SEND_TIMEOUT_S)
+            return True
+        except Exception:  # noqa: BLE001 — best-effort during shutdown
+            return False
+
+    return sum(await asyncio.gather(*(close(ws) for ws in connections)))
 
 
 _last_activity_push: float = 0.0

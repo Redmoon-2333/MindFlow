@@ -43,8 +43,10 @@ class FocusPrediction:
         focus_probability: Probability of focus in [0, 1], or None.
         uncertainty: Prediction uncertainty in [0, 1], or None.
         window_count: Number of feature windows used for this prediction.
-        coverage_ratio: Fraction of expected windows that were present, in [0, 1].
-        data_age_s: Seconds since the newest feature window ended, or None.
+        coverage_ratio: Fraction of the requested time range covered by usable
+            feature windows, in [0, 1]; overlapping windows count once.
+        data_age_s: Gap between the newest feature window's end and the reference
+            time, in seconds. Historical predictions use the requested range end.
         model_version: Active model version tag, or None.
         feature_schema_version: Schema version of the features used.
         top_factors: Top 3 most influential features, each with name, value, importance.

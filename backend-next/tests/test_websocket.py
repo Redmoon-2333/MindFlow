@@ -11,8 +11,10 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import suppress
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -31,6 +33,63 @@ TEST_TOKEN = "test-token-123"
 # a trusted Host header, exactly like test_middleware_host.py does for the
 # HTTP-side equivalent.
 _TRUSTED_HOST_HEADERS = {"host": "localhost"}
+
+
+async def test_slow_broadcast_does_not_block_healthy_clients_or_registry(monkeypatch):
+    import mindflow.api.websocket as ws_module
+
+    slow_started = asyncio.Event()
+    release_slow = asyncio.Event()
+    healthy_received = asyncio.Event()
+
+    async def slow_send(_payload):
+        slow_started.set()
+        await release_slow.wait()
+
+    async def healthy_send(_payload):
+        healthy_received.set()
+
+    monkeypatch.setattr(ws_module, "_connection_lock", asyncio.Lock())
+    monkeypatch.setattr(ws_module, "_active_connections", {
+        "slow": AsyncMock(send_text=slow_send),
+        "healthy": AsyncMock(send_text=healthy_send),
+    })
+    sending = asyncio.create_task(ws_module.broadcast({"type": "activity_update"}))
+    try:
+        await asyncio.wait_for(slow_started.wait(), timeout=1)
+        async with asyncio.timeout(0.5):
+            await healthy_received.wait()
+            async with ws_module._connection_lock:
+                assert len(ws_module._active_connections) == 2
+    finally:
+        release_slow.set()
+        assert await asyncio.wait_for(sending, timeout=1) == 2
+
+
+async def test_shutdown_releases_registry_before_waiting_for_sockets(monkeypatch):
+    import mindflow.api.websocket as ws_module
+
+    closing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_close(*, code):
+        assert code == 1001
+        closing.set()
+        await release.wait()
+
+    monkeypatch.setattr(ws_module, "_connection_lock", asyncio.Lock())
+    monkeypatch.setattr(ws_module, "_active_connections", {
+        "slow": AsyncMock(close=slow_close),
+    })
+    shutdown = asyncio.create_task(ws_module.close_all_connections())
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=1)
+        async with asyncio.timeout(0.5):
+            async with ws_module._connection_lock:
+                assert not ws_module._active_connections
+    finally:
+        release.set()
+        assert await asyncio.wait_for(shutdown, timeout=1) == 1
 
 
 @pytest.fixture

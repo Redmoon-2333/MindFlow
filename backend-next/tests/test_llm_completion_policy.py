@@ -74,12 +74,12 @@ from tests._llm_test_support import (
 
 #: Every role the panel can run as, with the policy the plan assigns it.
 ROLE_TABLE: tuple[tuple[str, str | None, int], ...] = (
-    (ROLE_ANALYST, "low", 1200),
-    (ROLE_ATTRIBUTION, "low", 1000),
-    (ROLE_REBUTTAL, "low", 800),
-    (ROLE_MODERATOR, "high", 1600),
-    (ROLE_CRITIC, "low", 500),
-    (ROLE_CHAT, None, 2048),
+    (ROLE_ANALYST, "low", 8192),
+    (ROLE_ATTRIBUTION, "low", 8192),
+    (ROLE_REBUTTAL, "low", 8192),
+    (ROLE_MODERATOR, "high", 16384),
+    (ROLE_CRITIC, "low", 8192),
+    (ROLE_CHAT, None, 8192),
 )
 
 
@@ -114,7 +114,7 @@ def test_attribution_experts_share_one_row_but_stay_distinguishable() -> None:
     """CBT/TMT/emotion share the plan's numbers yet aggregate separately."""
     for policy in (CBT_POLICY, TMT_POLICY, EMOTION_POLICY):
         assert policy.reasoning_effort == ATTRIBUTION_POLICY.reasoning_effort == "low"
-        assert policy.max_output_tokens == ATTRIBUTION_POLICY.max_output_tokens == 1000
+        assert policy.max_output_tokens == ATTRIBUTION_POLICY.max_output_tokens == 8192
     # Same numbers, different role keys: per-role aggregates stay meaningful.
     assert len({CBT_POLICY.role, TMT_POLICY.role, EMOTION_POLICY.role}) == 3
     assert {CBT_POLICY.role, TMT_POLICY.role, EMOTION_POLICY.role} == {
@@ -125,14 +125,8 @@ def test_attribution_experts_share_one_row_but_stay_distinguishable() -> None:
 def test_chat_is_independent_of_the_panel() -> None:
     """Chat keeps the provider default effort rather than inheriting a tier."""
     assert CHAT_POLICY.reasoning_effort is None
-    assert CHAT_POLICY.max_output_tokens == 2048
-    assert CHAT_POLICY.max_output_tokens not in {
-        ANALYST_POLICY.max_output_tokens,
-        ATTRIBUTION_POLICY.max_output_tokens,
-        REBUTTAL_POLICY.max_output_tokens,
-        MODERATOR_POLICY.max_output_tokens,
-        CRITIC_POLICY.max_output_tokens,
-    }
+    assert CHAT_POLICY.max_output_tokens == 8192
+    assert CHAT_POLICY is not ATTRIBUTION_POLICY
 
 
 def test_policy_lookup_by_canonical_role_and_alias() -> None:
@@ -205,7 +199,7 @@ def test_request_overrides_omit_unset_fields() -> None:
     """A field the policy leaves ``None`` must not appear as an override."""
     chat = CHAT_POLICY.request_overrides(provider="ecnu")
     assert "reasoning_effort" not in chat  # provider default, not "send nothing"
-    assert chat["max_completion_tokens"] == 2048
+    assert chat["max_completion_tokens"] == 8192
 
     bare = CompletionPolicy(role="x", reasoning_effort=None, max_output_tokens=None)
     assert bare.request_overrides(provider="ecnu") == {}
@@ -219,29 +213,27 @@ def test_request_overrides_spell_the_cap_per_provider() -> None:
     reaches the wire unchanged.
     """
     ecnu = ANALYST_POLICY.request_overrides(provider="ecnu")
-    assert ecnu["max_completion_tokens"] == 1200
+    assert ecnu["max_completion_tokens"] == 8192
     assert ecnu["reasoning_effort"] == "low"
     assert "max_tokens" not in ecnu
     assert "extra_body" not in ecnu
 
     # The production L1 (DeepSeek): documented cap in ``extra_body``, the
     # thinking switch next to it, the effort top-level where DeepSeek reads it.
-    # With thinking on, thinking tokens are billed against the cap, so the
-    # request carries the thinking floor instead of the answer-only cap
-    # (real-request observation 2026-09-25: a 1200-token thinking request
-    # truncated with ``LengthFinishReasonError`` before emitting any JSON).
+    # Thinking tokens count against the cap. The expanded role ceiling exceeds
+    # the safety floor and must reach the wire without being lowered to it.
     deepseek = ANALYST_POLICY.request_overrides(provider="deepseek")
     assert deepseek["reasoning_effort"] == "low"
     assert deepseek["extra_body"] == {
         "max_tokens": max(ANALYST_POLICY.max_output_tokens, THINKING_TOKEN_FLOOR),
         "thinking": {"type": "enabled"},
     }
-    assert deepseek["extra_body"]["max_tokens"] == THINKING_TOKEN_FLOOR
+    assert deepseek["extra_body"]["max_tokens"] == 8192
     assert "max_completion_tokens" not in deepseek
 
     # Without thinking the policy's own cap is exactly what goes out.
     generic = ANALYST_POLICY.request_overrides(provider="generic")
-    assert generic["extra_body"] == {"max_tokens": 1200}
+    assert generic["extra_body"] == {"max_tokens": 8192}
     assert "max_completion_tokens" not in generic
     # The thinking tier is a campus-gateway concept; it never travels generically.
     assert "reasoning_effort" not in generic
@@ -266,12 +258,12 @@ def test_thinking_requests_respect_the_floor_and_non_thinking_ones_do_not() -> N
 def test_chat_policy_sends_only_its_cap_on_the_deepseek_path() -> None:
     """Chat rides the provider default effort — no effort, no thinking field.
 
-    The plan's chat row asks for 2048 output tokens and the provider's own
+    The chat row asks for 8192 output tokens and the provider's own
     thinking default (DeepSeek documents thinking on / effort ``high``), so the
     DeepSeek body must carry the cap and *nothing* that would override it.
     """
     overrides = CHAT_POLICY.request_overrides(provider="deepseek")
-    assert overrides == {"extra_body": {"max_tokens": 2048}}
+    assert overrides == {"extra_body": {"max_tokens": 8192}}
     assert "reasoning_effort" not in overrides
     assert "thinking" not in overrides["extra_body"]
 
@@ -295,7 +287,7 @@ def test_completion_policy_is_frozen() -> None:
 
 
 async def test_complete_passes_policy_fields_on_the_request_body() -> None:
-    """The mocked transport sees the policy's numbers, not the model's defaults."""
+    """Role effort reaches the wire; thinking caps include room for reasoning."""
     wire = _ok_wire()
     settings = make_settings()
     gateway = LangChainGateway(
@@ -313,9 +305,9 @@ async def test_complete_passes_policy_fields_on_the_request_body() -> None:
     assert wire.recorder.total_requests == 2
     analyst_body, moderator_body = wire.recorder.payloads
     assert analyst_body["reasoning_effort"] == "low"
-    assert analyst_body["max_completion_tokens"] == 1200
+    assert analyst_body["max_completion_tokens"] == 8192
     assert moderator_body["reasoning_effort"] == "high"
-    assert moderator_body["max_completion_tokens"] == 1600
+    assert moderator_body["max_completion_tokens"] == 16384
     # The instance default (settings.reasoning_effort = "max") never leaks in.
     assert "max" not in {analyst_body["reasoning_effort"], moderator_body["reasoning_effort"]}
 
@@ -352,9 +344,9 @@ async def test_chat_policy_keeps_the_provider_default_effort() -> None:
 
     chat_body, critic_body = wire.recorder.payloads
     assert chat_body["reasoning_effort"] == "high"  # provider default, unchanged
-    assert chat_body["max_completion_tokens"] == 2048
+    assert chat_body["max_completion_tokens"] == 8192
     assert critic_body["reasoning_effort"] == "low"
-    assert critic_body["max_completion_tokens"] == 500
+    assert critic_body["max_completion_tokens"] == 8192
 
 
 async def test_every_panel_role_sends_its_own_numbers_on_one_gateway() -> None:
@@ -375,7 +367,8 @@ async def test_every_panel_role_sends_its_own_numbers_on_one_gateway() -> None:
 
     assert wire.recorder.total_requests == len(calls)
     for (role, _, policy), body in zip(calls, wire.recorder.payloads, strict=True):
-        assert body["max_completion_tokens"] == policy.max_output_tokens, role
+        expected_cap = 16384 if role == ROLE_MODERATOR else 8192
+        assert body["max_completion_tokens"] == expected_cap, role
         if policy.reasoning_effort is None:
             assert body["reasoning_effort"] == "max", role  # provider default
         else:
@@ -422,7 +415,7 @@ def test_ecnu_thinking_mode_drops_the_temperature_override() -> None:
         reasoning_effort="max", thinking_enabled=True,
     )._get_request_payload([HumanMessage(content="x")], **overrides)
     assert "temperature" not in thinking_on
-    assert thinking_on["max_completion_tokens"] == 512
+    assert thinking_on["max_completion_tokens"] == 4096
     assert thinking_on["extra_body"]["thinking"] == {"type": "enabled"}
 
     thinking_off = build_ecnu_model(
@@ -430,6 +423,7 @@ def test_ecnu_thinking_mode_drops_the_temperature_override() -> None:
         reasoning_effort="max", thinking_enabled=False,
     )._get_request_payload([HumanMessage(content="x")], **overrides)
     assert thinking_off["temperature"] == 0.35
+    assert thinking_off["max_completion_tokens"] == 512
 
 
 async def test_model_construction_does_not_carry_the_effort_override() -> None:
@@ -584,7 +578,7 @@ async def test_policy_aware_gateway_receives_the_resolved_policy() -> None:
     # The rebuttal round reuses the moderator expert under a tighter policy —
     # the call site's explicit policy must win over the expert's own row.
     assert modern.calls[2]["policy"] is not None
-    assert modern.calls[2]["policy"].max_output_tokens == 800
+    assert modern.calls[2]["policy"].max_output_tokens == 8192
 
 
 def test_gateway_accepts_policy_probe_shapes() -> None:
@@ -644,7 +638,14 @@ async def test_policy_overrides_survive_a_concurrent_gateway_run() -> None:
     gateway = LangChainGateway(
         api_key="test-key", base_url=ECNU_BASE_URL, llm_settings=make_settings(),
     )
-    roles = (ANALYST_POLICY, MODERATOR_POLICY, CRITIC_POLICY, CHAT_POLICY)
+    roles = tuple(
+        replace(policy, max_output_tokens=cap)
+        for policy, cap in zip(
+            (ANALYST_POLICY, MODERATOR_POLICY, CRITIC_POLICY, CHAT_POLICY),
+            (5000, 6000, 7000, 8000),
+            strict=True,
+        )
+    )
     with wire.patch_async_client():
         await asyncio.gather(*(
             gateway.complete("s", f"user-{policy.role}", model="chat", policy=policy)

@@ -21,6 +21,7 @@ import json
 import math
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -79,6 +80,8 @@ class FocusPredictionService:
         #: explanation; keying on the version prevents a stale model serving
         #: another version's SHAP values after a hot reload.
         self._explainers: dict[str, LocalExplainer] = {}
+        self._explainer_classifier: object | None = None
+        self._explainer_lock = Lock()
 
     def attach_model_manager(self, model_manager: ModelManager) -> None:
         """Attach or replace the active model manager.
@@ -91,6 +94,8 @@ class FocusPredictionService:
     def detach_model_manager(self) -> None:
         """Detach the active manager so subsequent calls return ``no_model``."""
         self._model_manager = None
+        self._explainers.clear()
+        self._explainer_classifier = None
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API
@@ -243,10 +248,11 @@ class FocusPredictionService:
         return await asyncio.to_thread(
             self._predict_from_windows,
             windows,
-            now,
+            min(now, end),
             model_manager,
             None,
             False,
+            start,
         )
 
     # ══════════════════════════════════════════════════════════════════════
@@ -260,6 +266,7 @@ class FocusPredictionService:
         model_manager: ModelManager,
         baseline_values: dict[str, float] | None = None,
         explain: bool = True,
+        range_start: datetime | None = None,
     ) -> FocusPrediction:
         """Run batch ML inference on a list of feature window rows.
 
@@ -278,6 +285,8 @@ class FocusPredictionService:
                 prediction endpoint needs it; ``predict_range`` (panel evidence)
                 does not read it and SHAP would add tens of milliseconds per
                 build, so it opts out.
+            range_start: Coverage starts here and ends at ``now``. Historical
+                ranges use their own end as the freshness reference.
         """
         model_version = model_manager.current_version_tag
 
@@ -291,9 +300,12 @@ class FocusPredictionService:
 
         # ── Build feature matrix ────────────────────────────────────────
         parsed: list[dict[str, float]] = []
+        valid_windows: list[dict[str, Any]] = []
         newest_window_end: datetime | None = None
         newest_window_start: str | None = None
         for row in windows:
+            if not _has_activity_data(row):
+                continue
             try:
                 features = json.loads(str(row.get("features_json", "{}")))
                 if not isinstance(features, dict):
@@ -307,21 +319,17 @@ class FocusPredictionService:
                 fv = _finite_float(value)
                 feature_row[name] = fv
             parsed.append(feature_row)
+            valid_windows.append(row)
 
             # Track newest window end for staleness
-            w_end = features.get("window_end_utc") or row.get("window_end_utc")
-            if w_end:
-                try:
-                    parsed_end = datetime.fromisoformat(str(w_end).replace("Z", "+00:00"))
-                    if parsed_end.tzinfo is None:
-                        parsed_end = parsed_end.replace(tzinfo=UTC)
-                    if newest_window_end is None or parsed_end > newest_window_end:
-                        newest_window_end = parsed_end
-                        w_start = row.get("window_start_utc")
-                        if w_start:
-                            newest_window_start = str(w_start)
-                except (ValueError, TypeError):
-                    pass
+            parsed_end = _parse_window_end(row)
+            if parsed_end is not None and (
+                newest_window_end is None or parsed_end > newest_window_end
+            ):
+                newest_window_end = parsed_end
+                w_start = row.get("window_start_utc")
+                if w_start:
+                    newest_window_start = str(w_start)
 
         if not parsed:
             return FocusPrediction(
@@ -399,6 +407,15 @@ class FocusPredictionService:
         # ── Aggregate over windows (wrapped for "never raises") ────────
         # proba shape: (n_samples, 2) — columns [distraction, focus]
         try:
+            probabilities = np.asarray(probabilities, dtype=np.float64)
+            if (
+                probabilities.shape != (window_count, 2)
+                or not np.all(np.isfinite(probabilities))
+                or np.any(probabilities < 0.0)
+                or np.any(probabilities > 1.0)
+                or not np.allclose(probabilities.sum(axis=1), 1.0, atol=1e-6, rtol=0)
+            ):
+                raise ValueError("invalid binary probability distribution")
             focus_probas = probabilities[:, 1]
             mean_focus = float(np.mean(focus_probas))
             mean_uncertainty = float(np.mean(1.0 - np.abs(2.0 * focus_probas - 1.0)))
@@ -412,19 +429,16 @@ class FocusPredictionService:
             )
 
         # ── Compute coverage ────────────────────────────────────────────
-        # Expected windows based on 5-min window size and time span
-        coverage_ratio = 1.0
-        if newest_window_end is not None and window_count > 0:
-            covered_seconds = (
-                newest_window_end - now + timedelta(seconds=_LATEST_LOOKBACK_S)
-            ).total_seconds()
-            expected = max(1, int(covered_seconds / 300))
-            coverage_ratio = min(1.0, window_count / expected)
+        coverage_ratio = _window_coverage(
+            valid_windows,
+            range_start or now - timedelta(seconds=_LATEST_LOOKBACK_S),
+            now,
+        )
 
         # ── Compute data age ────────────────────────────────────────────
         data_age_s: float | None = None
         if newest_window_end is not None:
-            data_age_s = (now - newest_window_end).total_seconds()
+            data_age_s = max(0.0, (now - newest_window_end).total_seconds())
 
         # ── Compute top factors ─────────────────────────────────────────
         top_factors: list[dict[str, float | str]] = []
@@ -536,14 +550,14 @@ class FocusPredictionService:
     def _explainer_for(self, model_manager: ModelManager) -> LocalExplainer:
         """Cached ``LocalExplainer`` for the manager's current model version."""
         version = model_manager.current_version_tag or "unknown"
-        explainer = self._explainers.get(version)
-        if explainer is None:
-            explainer = LocalExplainer(model_manager.classifier)
-            # A hot reload can change the model without changing the tag in a
-            # test fixture; keep only the newest entry so a stale one cannot
-            # outlive its model.
-            self._explainers = {version: explainer}
-        return explainer
+        with self._explainer_lock:
+            explainer = self._explainers.get(version)
+            if explainer is None or self._explainer_classifier is not model_manager.classifier:
+                explainer = LocalExplainer(model_manager.classifier)
+                if self._model_manager is model_manager:
+                    self._explainers = {version: explainer}
+                    self._explainer_classifier = model_manager.classifier
+            return explainer
 
     async def _baseline_values(
         self,
@@ -619,6 +633,26 @@ def _finite_float(value: object) -> float:
     return number if math.isfinite(number) else 0.0
 
 
+def _has_activity_data(row: dict[str, Any]) -> bool:
+    """Legacy rows remain usable; explicit collection gaps are not observations."""
+    raw = row.get("quality_json")
+    if raw is None:
+        return True
+    try:
+        quality = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(quality, dict) or quality.get("quality_tier") == "empty":
+        return False
+    available = quality.get("sources_available")
+    if isinstance(available, dict) and available.get("activity") is False:
+        return False
+    coverage = quality.get("coverage")
+    if isinstance(coverage, dict) and coverage.get("activity") is not None:
+        return _finite_float(coverage["activity"]) > 0.0
+    return True
+
+
 def _parse_window_end(row: dict[str, Any]) -> datetime | None:
     """Parse a feature window's end time from its row dict."""
     w_end = row.get("window_end_utc")
@@ -629,6 +663,33 @@ def _parse_window_end(row: dict[str, Any]) -> datetime | None:
         return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
     except (ValueError, TypeError):
         return None
+
+
+def _window_coverage(
+    windows: Sequence[dict[str, Any]], start: datetime, end: datetime,
+) -> float:
+    """Union valid intervals inside the requested range, including trailing gaps."""
+    if end <= start:
+        return 0.0
+    intervals: list[tuple[datetime, datetime]] = []
+    for row in windows:
+        right = _parse_window_end(row)
+        try:
+            left = datetime.fromisoformat(str(row.get("window_start_utc")))
+        except (ValueError, TypeError):
+            continue
+        if left.tzinfo is None:
+            left = left.replace(tzinfo=UTC)
+        if right is not None and right > left:
+            intervals.append((max(start, left), min(end, right)))
+    covered = 0.0
+    cursor = start
+    for left, right in sorted(intervals):
+        left = max(left, cursor)
+        if right > left:
+            covered += (right - left).total_seconds()
+            cursor = right
+    return min(1.0, covered / (end - start).total_seconds())
 
 
 def _local_bucket(
