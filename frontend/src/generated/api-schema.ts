@@ -64,6 +64,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/local-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Local Session
+         * @description Sign in from the local UI; cross-origin pages cannot mint a session.
+         *
+         *     This is a single-user desktop trust boundary, not a remote account login.
+         *     Browser-controlled Origin and Fetch Metadata must match the served origin;
+         *     loopback peers alone are insufficient because hostile sites can reach them.
+         *     Native callers can use the existing authenticated launcher ticket flow.
+         */
+        post: operations["create_local_session_api_v1_auth_local_session_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/bootstrap/ticket": {
         parameters: {
             query?: never;
@@ -2883,6 +2908,24 @@ export interface operations {
                         [key: string]: unknown;
                     };
                 };
+            };
+        };
+    };
+    create_local_session_api_v1_auth_local_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

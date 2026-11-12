@@ -172,3 +172,84 @@ def test_auth_required_for_protected_api_paths(method: str, path: str) -> None:
         f"Expected 401 for unauthenticated {method} {path}, "
         f"got {response.status_code}"
     )
+
+
+def _local_login_headers(origin: str) -> dict[str, str]:
+    return {
+        "Origin": origin,
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "same-origin",
+        "Sec-Fetch-Dest": "empty",
+        "X-MindFlow-Login": "1",
+        "Content-Type": "application/json",
+    }
+
+
+@pytest.mark.parametrize("origin", [
+    "http://127.0.0.1:8765", "http://localhost:8765", "http://[::1]:8765",
+])
+def test_local_page_can_sign_in_and_sign_in_again_after_logout(origin: str) -> None:
+    with TestClient(
+        _app(), base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000),
+        headers={"Host": origin.removeprefix("http://")},
+    ) as client:
+        for _ in range(2):
+            assert client.get("/api/v1/protected").status_code == 401
+            response = client.post(
+                "/api/v1/auth/local-session", headers=_local_login_headers(origin), json={},
+            )
+            assert response.status_code == 204
+            assert not response.content
+            cookie = response.headers["set-cookie"]
+            assert "HttpOnly" in cookie and "SameSite=strict" in cookie
+            assert "system-secret" not in cookie
+            assert "no-store" in response.headers["cache-control"]
+            assert client.get("/api/v1/protected").status_code == 200
+            assert client.post("/api/v1/auth/logout").status_code == 204
+
+
+@pytest.mark.parametrize(("header", "value"), [
+    ("Origin", None),
+    ("Origin", "null"),
+    ("Origin", "https://example.com"),
+    ("Origin", "http://localhost:8765"),
+    ("Origin", "http://127.0.0.1:4173"),
+    ("Origin", "http://127.0.0.1:8765/"),
+    ("Sec-Fetch-Site", None),
+    ("Sec-Fetch-Site", "cross-site"),
+    ("Sec-Fetch-Site", "same-site"),
+    ("Sec-Fetch-Mode", None),
+    ("Sec-Fetch-Mode", "navigate"),
+    ("Sec-Fetch-Mode", "no-cors"),
+    ("Sec-Fetch-Dest", "document"),
+    ("X-MindFlow-Login", None),
+    ("X-MindFlow-Login", "0"),
+    ("Content-Type", "application/x-www-form-urlencoded"),
+    ("Content-Type", "text/plain"),
+])
+def test_local_login_rejects_untrusted_browser_requests(header: str, value: str | None) -> None:
+    origin = "http://127.0.0.1:8765"
+    headers = _local_login_headers(origin)
+    if value is None:
+        headers.pop(header)
+    else:
+        headers[header] = value
+    with TestClient(_app(), base_url=origin, client=("127.0.0.1", 50000)) as client:
+        response = client.post("/api/v1/auth/local-session", headers=headers, content="{}")
+        assert response.status_code == 403
+        assert "set-cookie" not in response.headers
+        assert client.get("/api/v1/protected").status_code == 401
+
+
+@pytest.mark.parametrize(("origin", "peer"), [
+    ("http://127.0.0.1:8765", "192.0.2.4"),
+    ("http://127.0.0.1:8765", "not-an-ip"),
+    ("http://example.com:8765", "127.0.0.1"),
+])
+def test_local_login_rejects_remote_peers_and_non_loopback_hosts(origin: str, peer: str) -> None:
+    with TestClient(_app(), base_url=origin, client=(peer, 50000)) as client:
+        response = client.post(
+            "/api/v1/auth/local-session", headers=_local_login_headers(origin), json={},
+        )
+        assert response.status_code == 403
+        assert "set-cookie" not in response.headers
