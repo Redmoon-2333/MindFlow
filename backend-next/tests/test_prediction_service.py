@@ -401,7 +401,9 @@ class TestFocusPredictionRangeBoundedRetrieval:
         mm.classifier.predict_proba.side_effect = side_effect
         service = FocusPredictionService(telemetry_repository=repo, model_manager=mm)
         result = await service.predict_latest(user_id=1, now=now)
-        assert result.status == "ready"
+        # The retained overlapping rows cover 1797 seconds, not 500 full windows.
+        assert result.status == "stale"
+        assert result.coverage_ratio == 0.2496
         repo.list_feature_windows_in_range.assert_awaited_once()
         repo.list_feature_windows.assert_not_awaited()
         assert probe["rows"] == _MAX_PREDICT_WINDOWS
@@ -731,3 +733,160 @@ class TestLocalExplanationWiring:
 
         assert set(first) == {"20261110_v4"}
         assert service._explainers["20261110_v4"] is first["20261110_v4"]  # noqa: SLF001
+
+
+class TestPredictionTimeRange:
+    @pytest.mark.parametrize("minutes", [5, 30, 120, 360])
+    async def test_complete_range_has_full_coverage(self, minutes: int) -> None:
+        end = datetime(2026, 11, 12, 8, tzinfo=UTC)
+        start = end - timedelta(minutes=minutes)
+        windows = [
+            _make_feature_window(start + timedelta(minutes=5 * i))
+            for i in range(minutes // 5)
+        ]
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
+        service = FocusPredictionService(repo, _make_mock_model_manager())
+
+        result = await service.predict_range(1, start, end, now=end)
+
+        assert result.status == "ready"
+        assert result.coverage_ratio == 1.0
+
+    async def test_historical_range_is_fresh_at_its_own_end(self) -> None:
+        now = datetime(2026, 11, 12, 8, tzinfo=UTC)
+        end = now - timedelta(days=1)
+        start = end - timedelta(hours=1)
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=[
+            _make_feature_window(start + timedelta(minutes=5 * i)) for i in range(12)
+        ])
+        service = FocusPredictionService(repo, _make_mock_model_manager())
+
+        result = await service.predict_range(1, start, end, now=now)
+
+        assert result.status == "ready"
+        assert result.coverage_ratio == 1.0
+        assert result.data_age_s == 0.0
+
+    async def test_missing_hours_are_not_hidden_by_recent_data(self) -> None:
+        end = datetime(2026, 11, 12, 8, tzinfo=UTC)
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=[
+            _make_feature_window(end - timedelta(minutes=5 * i))
+            for i in range(6, 0, -1)
+        ])
+        service = FocusPredictionService(repo, _make_mock_model_manager())
+
+        result = await service.predict_range(1, end - timedelta(hours=6), end, now=end)
+
+        assert result.status == "stale"
+        assert result.coverage_ratio == pytest.approx(0.0833)
+
+    async def test_latest_coverage_includes_gap_after_last_window(self) -> None:
+        now = datetime(2026, 11, 12, 8, tzinfo=UTC)
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=[
+            _make_feature_window(now - timedelta(minutes=5 * i))
+            for i in range(24, 18, -1)
+        ])
+        service = FocusPredictionService(repo, _make_mock_model_manager())
+
+        result = await service.predict_latest(1, now=now)
+
+        assert result.status == "stale"
+        assert result.coverage_ratio == 0.25
+
+    async def test_partial_boundary_windows_use_clipped_duration(self) -> None:
+        end = datetime(2026, 11, 12, 8, tzinfo=UTC)
+        repo = MagicMock()
+        repo.list_feature_windows_in_range = AsyncMock(return_value=[
+            _make_feature_window(end - timedelta(minutes=10)),
+            _make_feature_window(end - timedelta(minutes=5)),
+        ])
+        service = FocusPredictionService(repo, _make_mock_model_manager())
+
+        result = await service.predict_range(
+            1, end - timedelta(minutes=7), end - timedelta(minutes=2), now=end,
+        )
+
+        assert result.status == "ready"
+        assert result.coverage_ratio == 1.0
+        assert result.data_age_s == 0.0
+
+
+@pytest.mark.parametrize("invalid", [
+    [[float("nan"), 0.7]],
+    [[0.3, float("inf")]],
+    [[-0.2, 1.2]],
+    [[0.3, 0.3]],
+    [[0.3, 0.7], [0.2, 0.8]],
+    [[0.3, 0.7, 0.0]],
+])
+async def test_invalid_probabilities_degrade_without_exposing_numbers(invalid: list) -> None:
+    now = datetime(2026, 11, 12, 8, tzinfo=UTC)
+    repo = MagicMock()
+    repo.list_feature_windows_in_range = AsyncMock(
+        return_value=[_make_feature_window(now - timedelta(minutes=5))],
+    )
+    manager = _make_mock_model_manager()
+    manager.classifier.predict_proba.side_effect = None
+    manager.classifier.predict_proba.return_value = np.asarray(invalid)
+    service = FocusPredictionService(repo, manager)
+
+    result = await service.predict_range(1, now - timedelta(minutes=5), now, now=now)
+
+    assert result.status == "inference_error"
+    assert result.focus_probability is None
+    assert result.uncertainty is None
+
+
+@pytest.mark.parametrize("observed_windows", [0, 1])
+async def test_empty_collection_windows_do_not_become_behavior(observed_windows: int) -> None:
+    now = datetime(2026, 11, 12, 8, tzinfo=UTC)
+    windows = [
+        _make_feature_window(now - timedelta(minutes=5 * i)) for i in range(24, 0, -1)
+    ]
+    for index, window in enumerate(windows):
+        observed = index >= 24 - observed_windows
+        window["quality_json"] = json.dumps({
+            "sources_available": {"activity": observed},
+            "coverage": {"activity": 1.0 if observed else 0.0},
+            "quality_tier": "full" if observed else "empty",
+        })
+    repo = MagicMock()
+    repo.list_feature_windows_in_range = AsyncMock(return_value=windows)
+    service = FocusPredictionService(repo, _make_mock_model_manager())
+
+    result = await service.predict_latest(1, now=now)
+
+    assert result.window_count == observed_windows
+    assert result.status == ("stale" if observed_windows else "no_data")
+    assert result.coverage_ratio == pytest.approx(0.0417 if observed_windows else 0.0)
+
+
+def test_model_replacement_with_same_tag_refreshes_explanation() -> None:
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+
+    matrix = np.zeros((20, len(V2_FEATURE_NAMES)))
+    matrix[:, 0] = np.arange(20)
+    scaler = StandardScaler().fit(matrix)
+    scaled = scaler.transform(matrix)
+    query = matrix[-1:]
+    service = FocusPredictionService(MagicMock())
+    explanations = []
+    for reverse in (False, True):
+        labels = np.arange(20) > 9
+        classifier = LogisticRegression().fit(scaled, ~labels if reverse else labels)
+        manager = _make_mock_model_manager()
+        manager.classifier.model = classifier
+        manager.classifier.scaler = scaler
+        service.attach_model_manager(manager)
+        probabilities = classifier.predict_proba(scaler.transform(query))[:, 1]
+        explanations.append(service._explain(manager, query, probabilities, None))
+
+    first, second = explanations
+    assert first is not None and second is not None
+    assert first["contributions"][0]["contribution"] > 0
+    assert second["contributions"][0]["contribution"] < 0

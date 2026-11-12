@@ -69,6 +69,27 @@ uv run python -m mindflow.bootstrap
 
 启动器使用本地 root token 换取一次性 bootstrap ticket，浏览器最终使用 `HttpOnly`、`SameSite=Strict` 的 session cookie；root token 不进入 URL 或网页脚本。
 
+### Windows 日常运行与 Edge 配对
+
+先执行 `frontend/` 下的 `npm run build`。随后双击
+`backend-next/start_mindflow_bg.vbs`，即可隐藏启动后端并在同一地址
+`http://127.0.0.1:8765` 提供前端页面。启动器使用项目 uv 环境，
+检查数据库就绪状态；服务已经就绪时会复用现有进程。
+
+将该 VBS 的快捷方式放入当前用户的 Windows「启动」文件夹，可在登录后自动记录。
+桌面快捷方式可添加 `--open-ui` 参数，启动或复用服务后在 Edge 中打开已认证的界面。
+诊断日志位于 `%LOCALAPPDATA%\mindflow\service-logs`，后端日志位于
+`backend-next/runtime_logs/`。
+
+在 Edge 的 `edge://extensions/` 页面加载 `browser_extension/` 文件夹。
+从 MindFlow 设置页生成八位配对码，在扩展选项页输入后配对；配对码五分钟内有效，
+成功后由浏览器保存配对令牌，后端重启不需要重新配对。
+扩展只记录前台标签页的域名和停留时间，忽略隐私窗口和休眠间隔。
+
+AI 请求的普通专家与 DeepSeek 对话输出上限为 8,192 token，主持人为 16,384 token。
+ChatECNU 独立对话沿用全局输出配置，默认为 16,384 token。
+这些是包含推理空间的上限，不是要求模型每次生成的长度；较长回复可能增加耗时和费用。
+
 ### 新电脑离线体验
 
 仓库提供 `backend-next/demo-models/v4/` 合成数据预训练模型，不包含个人数据库、

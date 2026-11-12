@@ -52,6 +52,9 @@ ECNU_EFFORT_TIERS: dict[str, tuple[str, ...]] = {
 
 DEFAULT_THINKING_EFFORT = "max"
 
+# Live campus responses exhausted the 800/1600-token role caps while reasoning.
+_THINKING_TOKEN_FLOOR = 4096
+
 
 def supported_efforts(model: str) -> tuple[str, ...]:
     """Return the reasoning_effort tiers the platform documents for *model*.
@@ -81,6 +84,9 @@ def ecnu_request_fields(
 ) -> dict[str, Any]:
     """Build the same wire fields for SDK and raw HTTP completions.
 
+    Thinking requests reserve at least 4096 output tokens for reasoning and JSON.
+    Non-thinking requests preserve the caller's cap.
+
     Args:
         model: Model id the request targets (drives tier validation).
         thinking_enabled: Send ``thinking={"type": "enabled"}``.
@@ -93,7 +99,9 @@ def ecnu_request_fields(
         "thinking": {"type": "enabled" if thinking_enabled else "disabled"},
     }
     if max_tokens is not None:
-        fields["max_completion_tokens"] = max_tokens
+        fields["max_completion_tokens"] = (
+            max(max_tokens, _THINKING_TOKEN_FLOOR) if thinking_enabled else max_tokens
+        )
     if thinking_enabled:
         fields["reasoning_effort"] = (
             effort if effort is not None else resolve_effort(model, reasoning_effort)[0]

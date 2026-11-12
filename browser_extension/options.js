@@ -13,7 +13,8 @@ function normalizeBackend(value) {
   if (parsed.protocol !== "http:" || !isLoopback || parsed.port !== "8765") {
     throw new Error("后端地址必须是 http://127.0.0.1:8765 或等价本机地址");
   }
-  return parsed.origin;
+  // Keep loopback aliases within the origin authorized by manifest.json.
+  return DEFAULT_BACKEND;
 }
 
 document.querySelector("#pair").addEventListener("click", async () => {

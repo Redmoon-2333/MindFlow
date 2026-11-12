@@ -71,20 +71,34 @@ class RealtimeClient {
   }
 
   private open(status: RealtimeStatus): void {
+    if (this.stopped) return;
+    this.clearTimers();
     this.setStatus(status);
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = new URL(`${protocol}//${window.location.host}/api/v1/ws`);
     const socket = new WebSocket(url);
     this.socket = socket;
+    let lastReceivedAt = Date.now();
 
     socket.onopen = () => {
+      if (this.socket !== socket || this.stopped) return;
+      lastReceivedAt = Date.now();
       this.retryAttempt = 0;
       this.setStatus("connected");
       this.heartbeatTimer = window.setInterval(() => {
+        if (this.socket !== socket || this.stopped) return;
+        if (Date.now() - lastReceivedAt >= 90_000) {
+          socket.close(4000, "Heartbeat timeout");
+          return;
+        }
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ping" }));
       }, 30_000);
     };
-    socket.onmessage = (event) => this.handleMessage(event.data);
+    socket.onmessage = (event) => {
+      if (this.socket !== socket || this.stopped) return;
+      lastReceivedAt = Date.now();
+      this.handleMessage(event.data);
+    };
     socket.onclose = (event) => {
       // Only the *current* socket may mutate shared connection state. A stale
       // socket's close handler used to clear the timers and schedule a retry
@@ -184,7 +198,13 @@ class RealtimeClient {
 
   private setStatus(status: RealtimeStatus): void {
     this.status = status;
-    this.statusListeners.forEach((listener) => listener(status));
+    for (const listener of this.statusListeners) {
+      try {
+        listener(status);
+      } catch {
+        // An observer cannot interrupt heartbeat or reconnection scheduling.
+      }
+    }
   }
 }
 

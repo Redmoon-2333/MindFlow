@@ -288,7 +288,7 @@ async def test_chat_policy_sends_only_its_cap_on_the_pinned_wire() -> None:
 
     body = wire.recorder.last
     assert body["model"] == PINNED_MODEL
-    assert body["max_tokens"] == CHAT_POLICY.max_output_tokens == 2048
+    assert body["max_tokens"] == CHAT_POLICY.max_output_tokens == 8192
     # DeepSeek documents thinking on / effort ``high`` as its own default, so
     # the chat row must not override either.
     assert "reasoning_effort" not in body

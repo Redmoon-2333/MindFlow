@@ -3,6 +3,7 @@ const HEARTBEAT_SECONDS = 30;
 const BLOCKLIST_REFRESH_MINUTES = 1;
 
 let activeContext = null;
+let contextTask = Promise.resolve();
 
 async function getSettings() {
   return chrome.storage.local.get({ backendUrl: DEFAULT_BACKEND, browserToken: "" });
@@ -21,21 +22,32 @@ function dynamicRuleFor(domain, index) {
     id: index + 1,
     priority: 1,
     action: { type: "block" },
-    condition: { urlFilter: `||${domain}^` },
+    condition: { urlFilter: `||${domain}^`, resourceTypes: ["main_frame"] },
   };
 }
 
 async function syncBlocklist() {
   const settings = await getSettings();
-  if (!settings.browserToken) return;
   try {
-    const response = await fetch(
-      `${settings.backendUrl}/api/v1/telemetry/browser/blocklist`,
-      { headers: { "X-Browser-Token": settings.browserToken } },
-    );
-    if (!response.ok) return;
-    const data = await response.json();
-    const domains = Array.isArray(data.domains) ? data.domains : [];
+    let domains = [];
+    if (settings.browserToken) {
+      const response = await fetch(
+        `${settings.backendUrl}/api/v1/telemetry/browser/blocklist`,
+        {
+          headers: { "X-Browser-Token": settings.browserToken },
+          signal: AbortSignal.timeout(5_000),
+        },
+      );
+      if (response.status === 401 || response.status === 403) {
+        const current = await getSettings();
+        if (current.browserToken !== settings.browserToken) return;
+        await chrome.storage.local.remove("browserToken");
+      } else {
+        if (!response.ok) return;
+        const data = await response.json();
+        domains = Array.isArray(data.domains) ? data.domains : [];
+      }
+    }
     const rules = domains.map((domain, index) => dynamicRuleFor(domain, index));
     const oldRules = await chrome.declarativeNetRequest.getDynamicRules();
     await chrome.declarativeNetRequest.updateDynamicRules({
@@ -66,6 +78,8 @@ function contextFromTab(tab) {
 }
 
 async function currentContext() {
+  const window = await chrome.windows.getLastFocused();
+  if (!window.focused) return null;
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return contextFromTab(tab);
 }
@@ -76,11 +90,21 @@ function isSameContext(first, second) {
 
 async function flushContext(context, endedAt) {
   if (!context) return;
+  const elapsedSeconds = (endedAt - context.lastSentAt) / 1000;
+  // A delayed alarm after sleep is missing observation, not a minute of dwell.
+  if (elapsedSeconds > 60 || elapsedSeconds < 0) {
+    context.lastSentAt = endedAt;
+    return;
+  }
+  if (elapsedSeconds < 1) return;
   const settings = await getSettings();
-  if (!settings.browserToken) return;
-  const elapsedSeconds = Math.max(1, Math.min(60, (endedAt - context.lastSentAt) / 1000));
+  if (!settings.browserToken) {
+    context.lastSentAt = endedAt;
+    return;
+  }
   const response = await fetch(`${settings.backendUrl}/api/v1/telemetry/browser/heartbeat`, {
     method: "POST",
+    signal: AbortSignal.timeout(5_000),
     headers: {
       "Content-Type": "application/json",
       "X-Browser-Token": settings.browserToken,
@@ -97,7 +121,14 @@ async function flushContext(context, endedAt) {
   if (response?.ok) context.lastSentAt = endedAt;
 }
 
-async function reconcileContext({ flushCurrent = false } = {}) {
+function reconcileContext(options = {}) {
+  contextTask = contextTask.then(() => updateContext(options)).catch(() => {
+    // Tab/window teardown can race a query; the next event retries.
+  });
+  return contextTask;
+}
+
+async function updateContext({ flushCurrent = false } = {}) {
   const now = Date.now();
   const nextContext = await currentContext();
   if (!isSameContext(activeContext, nextContext)) {
@@ -137,6 +168,11 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
   }
 });
 chrome.windows.onFocusChanged.addListener(() => reconcileContext());
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || (!changes.browserToken && !changes.backendUrl)) return;
+  reconcileContext();
+  syncBlocklist();
+});
 
 ensureAlarm();
 reconcileContext();

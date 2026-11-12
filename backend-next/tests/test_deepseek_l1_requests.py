@@ -225,7 +225,7 @@ async def test_chat_policy_keeps_the_provider_default_effort() -> None:
             await gateway.close()
 
     body = wire.recorder.last
-    assert body["max_tokens"] == 2048
+    assert body["max_tokens"] == 8192
     # Provider default: no explicit effort is sent, so DeepSeek applies its own.
     assert "reasoning_effort" not in body
     assert "thinking" not in body
