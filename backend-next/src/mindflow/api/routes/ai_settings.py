@@ -28,7 +28,7 @@ _CONFIG_NAMES = {
 class CredentialInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     api_key: SecretStr
-    service: Literal["deepseek", "ecnu"] = "deepseek"
+    service: Literal["deepseek", "ecnu"] = "ecnu"
     ecnu_model: Literal["ecnu-max", "ecnu-plus"] = "ecnu-max"
 
 
@@ -80,9 +80,9 @@ def _persist(key: str | None, service: str | None = None, model: str = "ecnu-max
     with _lock:
         original = path.read_text(encoding="utf-8") if path.exists() else ""
         values = dotenv_values(path) if path.exists() else {}
-        selected = service or values.get("MINDFLOW_LLM__SERVICE") or "deepseek"
+        selected = service or values.get("MINDFLOW_LLM__SERVICE") or "ecnu"
         if selected not in _KEYS:
-            selected = "deepseek"
+            selected = "ecnu"
         names = {_KEYS[selected]}
         if selected == "deepseek":
             names.add("DEEPSEEK_API_KEY")

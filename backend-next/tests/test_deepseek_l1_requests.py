@@ -51,6 +51,7 @@ def _legacy_ecnu_settings(**overrides: object) -> LLMSettings:
         "base_url": "https://chat.ecnu.edu.cn/open/api/v1",
         "model": "ecnu-max",
         "provider": "ecnu",
+        "service": "deepseek",
         "timeout_s": 30,
         "max_retries": 0,
         "max_concurrent_requests": 1,

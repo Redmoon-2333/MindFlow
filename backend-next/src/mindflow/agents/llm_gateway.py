@@ -122,7 +122,7 @@ _BACKOFF_CAP_S: float = 60.0
 _LLM_TEMPERATURE: float = 0.2
 
 #: Tier labels accepted by ``complete(model=...)``. Both request the same
-#: provider model (DeepSeek Flash in production); the tier only selects the
+#: resolved provider model (ChatECNU max by default); the tier only selects the
 #: output constraint. ``"chat"`` = structured JSON output mode, ``"reasoner"`` =
 #: prose (the caller parses it).
 _STRUCTURED_TIER: str = "chat"
@@ -481,8 +481,8 @@ class LangChainGateway:
             user: User message.
             model: Tier label — "chat" (structured: JSON output mode) or
                 "reasoner" (prose: no JSON constraint). Both tiers request the
-                same provider model (the resolved L1 model, DeepSeek Flash in
-                production); the tier only decides the output constraint.
+                same provider model (ChatECNU max by default); the tier only
+                decides the output constraint.
             policy: Role-level completion policy, applied as *per-request*
                 overrides on the cached model instance. ``None`` sends nothing
                 extra, preserving the provider-configured defaults.
@@ -496,9 +496,14 @@ class LangChainGateway:
         """
         tier = _STRUCTURED_TIER if model == "chat" else _PROSE_TIER
         if not self._api_key:
+            provider_name = "ChatECNU" if self._is_ecnu else "DeepSeek"
+            credential_env = (
+                "MINDFLOW_LLM__ECNU_API_KEY"
+                if self._is_ecnu
+                else "DEEPSEEK_API_KEY (or MINDFLOW_LLM__DEEPSEEK_API_KEY)"
+            )
             raise GatewayNotConfiguredError(
-                "LLM API key is not configured — set DEEPSEEK_API_KEY "
-                "(or MINDFLOW_LLM__DEEPSEEK_API_KEY) to enable L1"
+                f"{provider_name} API key is not configured — set {credential_env} to enable L1"
             )
 
         chat = self._get_model(tier)

@@ -13,7 +13,7 @@ MindFlow 是一个**本地优先的智能专注助手**：记录电脑使用行�
 | 专注分析 | 会话识别、专注评分、切换频率、个人基线与趋势 | 已实现 |
 | 手动软件分类 | 用户把软件设为工作、娱乐或不确定，并支持进程名/窗口标题模式 | API/UI 已实现 |
 | 智能干预 | 深度工作保护、节流、内容安全、任务排序、站点拦截 | 已实现；工作态规则仍在持续收敛 |
-| LLM 分析 | DeepSeek → Ollama → RuleEngine 三层降级，支持归因、面板和聊天 | 已实现 |
+| LLM 分析 | ChatECNU（默认）/ DeepSeek（可选）→ Ollama → RuleEngine 三层降级 | 已实现 |
 | ML 训练 | V4 特征窗口、用户窗口标签、显式反馈、分类器/聚类/HMM、7 项质量门禁 | 已实现 |
 | 数据控制 | 导出、按范围清理、输入/浏览器追踪开关、采集器启停 | 已实现 |
 | 可观测性 | 工作流运行、节点事件、本地 OpenTelemetry SQLite exporter | 已实现 |
@@ -36,7 +36,7 @@ MindFlow 不把“应用切换次数多”直接等同于分心，而是采用�
 |------|------|
 | 后端 | Python 3.11+ / FastAPI / SQLAlchemy 2 / SQLite / Alembic |
 | 编排 | LangGraph `AnalysisGraph`、`PanelGraph`、`ChatGraph` |
-| LLM | DeepSeek、Ollama、本地 RuleEngine；ProviderRegistry 统一生命周期 |
+| LLM | ChatECNU（默认）、DeepSeek、Ollama、本地 RuleEngine；ProviderRegistry 统一生命周期 |
 | ML | scikit-learn / XGBoost（可选）/ hmmlearn / Platt sigmoid 校准 |
 | 前端 | React 19 / TypeScript / Vite / `openapi-fetch` / plain CSS |
 | 包管理 | **uv**（后端）；npm（前端） |
@@ -117,7 +117,7 @@ uv run python scripts/demo.py
 
 本地 ML 提供专注概率及行为证据，不是本地大语言模型。无联网凭据时，对话、
 面板和归因使用现有规则降级；完整生成式能力仍需在正式运行环境配置
-DeepSeek 或 Ollama。本演示入口不会继承本机的在线密钥。
+ChatECNU、DeepSeek 或 Ollama。本演示入口不会继承本机的在线密钥。
 
 ### 启动前端开发服务器
 
@@ -239,9 +239,9 @@ uv run python -m mindflow.train --source db --use-window-labels
 ### LLM 降级顺序
 
 ```text
-DeepSeek / PanelGraph
+所选云端服务（默认 ChatECNU）/ PanelGraph
         ↓ 失败、超时或解析失败
-DeepSeek 单专家 / Ollama
+所选云端服务单专家 / Ollama
         ↓ 仍不可用
 RuleEngine / 模板干预
 ```

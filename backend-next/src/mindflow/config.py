@@ -47,8 +47,8 @@ class L1Target:
     reasoning_effort: str
     thinking_enabled: bool
     max_output_tokens: int
-    #: Why this target was chosen: ``"deepseek-direct"`` (production pin) or
-    #: ``"ecnu-compat"`` (legacy triple, explicitly opted in).
+    #: Why this target was chosen: ``"ecnu-explicit"``, ``"deepseek-direct"``,
+    #: or ``"ecnu-compat"`` (legacy triple, explicitly opted in).
     provenance: str
 
     @property
@@ -73,24 +73,21 @@ class LLMSettings(BaseSettings):
     """LLM API configuration for attribution pipeline (Wave 6).
 
     Three-tier degradation chain (Architecture §3.3):
-      L1: Explicit ``service="ecnu"`` selects ChatECNU with its dedicated
-          credential and model. Otherwise the default is **DeepSeek direct** (`provider=generic`,
-          ``base_url=https://api.deepseek.com``, ``model=deepseek-flash``,
-          credential from ``DEEPSEEK_API_KEY``).  The campus (ECNU) gateway is
-          used only with explicit service selection; there is no automatic provider
-          failover or credential sharing: a
-          missing DeepSeek credential makes L1 unavailable and the existing
-          L2 (Ollama, when enabled) / L3 (RuleEngine) tiers take over.
+      L1: ChatECNU is the default (``service="ecnu"``, model ``ecnu-max``) and
+          uses its dedicated credential. Set ``service="deepseek"`` to select
+          DeepSeek direct (``provider=generic``, ``base_url=https://api.deepseek.com``,
+          ``model=deepseek-flash``). Providers never share credentials or
+          automatically fail over to one another: a missing selected-provider
+          credential makes L1 unavailable and the existing L2 (Ollama, when
+          enabled) / L3 (RuleEngine) tiers take over.
       L2: Ollama local (ollama_enabled + ollama_base_url + ollama_model)
       L3: RuleEngine (always available, zero config)
 
-    Legacy ECNU values (``PROVIDER=ecnu``, an ``ecnu.edu.cn`` base URL, an
-    ``ecnu-*`` model or an ECNU-issued key) are deliberately **overridden** by
-    the pin so a lingering ``.env`` cannot mix an ECNU endpoint with a DeepSeek
-    model or key.  The ECNU adapter code is retained, and the legacy triple can
-    still be exercised by opting in explicitly (``ecnu_compat_enabled=True``,
-    env ``MINDFLOW_LLM__ECNU_COMPAT_ENABLED``) — used by the adapter's own
-    compatibility tests and diagnostics, never by the production assembly.
+    Legacy ``provider`` / ``base_url`` / ``model`` / ``api_key`` values do not
+    select a production provider. The selected service uses its own endpoint,
+    model and credential. ``ecnu_compat_enabled=True`` is retained for
+    compatibility tests and diagnostics that intentionally exercise the legacy
+    triple; it is not needed for the default ChatECNU path.
     """
 
     timeout_s: int = Field(default=180, ge=1, le=600, description="LLM request timeout in seconds")
@@ -107,18 +104,17 @@ class LLMSettings(BaseSettings):
             "`ecnu_compat_enabled` is true; use service for production selection."
         ),
     )
-    # ── Production L1 pin (DeepSeek direct) ─────────────────────────────
+    # ── Explicit DeepSeek settings ──────────────────────────────────────
     deepseek_api_key: str | None = Field(
         default=None,
         description=(
-            "Production L1 credential. Read from DEEPSEEK_API_KEY or "
-            "MINDFLOW_LLM__DEEPSEEK_API_KEY. When absent, L1 is unavailable and "
-            "the chain degrades to L2/L3 — it never falls back to the ECNU key."
+            "DeepSeek credential, used only when service='deepseek'. Read from "
+            "DEEPSEEK_API_KEY or MINDFLOW_LLM__DEEPSEEK_API_KEY."
         ),
     )
     deepseek_base_url: str = Field(
         default="https://api.deepseek.com",
-        description="DeepSeek API base URL used by the production pin",
+        description="DeepSeek API base URL used when service='deepseek'",
     )
     deepseek_model: str = Field(
         default="deepseek-flash",
@@ -128,8 +124,8 @@ class LLMSettings(BaseSettings):
         ),
     )
     service: Literal["deepseek", "ecnu"] = Field(
-        default="deepseek",
-        description="Explicit production L1 selection; legacy values never select ECNU",
+        default="ecnu",
+        description="Selected L1 service; ChatECNU is the default, DeepSeek is opt-in",
     )
     ecnu_api_key: str | None = Field(default=None, description="Dedicated ChatECNU credential")
     ecnu_model: Literal["ecnu-max", "ecnu-plus"] = "ecnu-max"
@@ -144,7 +140,7 @@ class LLMSettings(BaseSettings):
     )
     thinking_enabled: bool = Field(
         default=True,
-        description="Request thinking mode on every generation (DeepSeek `thinking`)",
+        description="Request thinking mode on every generation (provider-specific)",
     )
     reasoning_effort: str = Field(
         default="high",
@@ -227,9 +223,8 @@ class LLMSettings(BaseSettings):
         """True when this configuration *describes* the campus gateway.
 
         This is a property of the legacy triple (used by the ECNU adapter and
-        its compatibility tests). Production does not consult it directly: the
-        assembly resolves :meth:`l1_target`, which pins DeepSeek unless
-        ``ecnu_compat_enabled`` opts back into the legacy behaviour.
+        its compatibility tests). Normal production selection uses ``service``;
+        the heuristic is only used by the compatibility path.
         """
         if self.provider.strip().lower() == "ecnu":
             return True
@@ -241,7 +236,7 @@ class LLMSettings(BaseSettings):
 
     @property
     def deepseek_credential(self) -> str | None:
-        """The production L1 credential, or None when L1 is unavailable.
+        """The DeepSeek credential, or None when none is configured.
 
         Resolution order:
 
@@ -265,12 +260,10 @@ class LLMSettings(BaseSettings):
     def l1_target(self) -> L1Target:
         """Resolve the effective L1 provider/endpoint/model for this process.
 
-        Explicit ``service="ecnu"`` selects the campus endpoint with its own key.
-        Otherwise production (``ecnu_compat_enabled`` false, the default) returns
-        the DeepSeek pin, overriding any legacy ECNU URL, model or key that is
-        still present in the environment.  Setting ``ecnu_compat_enabled``
-        returns the legacy triple unchanged so the ECNU adapter remains usable
-        in its own tests and in diagnostics.
+        ChatECNU is the default. ``service="deepseek"`` selects the explicit
+        DeepSeek endpoint and credential; legacy values cannot mix providers.
+        ``ecnu_compat_enabled`` only restores the legacy triple for
+        compatibility tests and diagnostics.
         """
         if self.service == "ecnu":
             return L1Target(

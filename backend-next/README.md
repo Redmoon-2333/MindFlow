@@ -8,7 +8,7 @@ MindFlow 当前活动后端：FastAPI + LangGraph + SQLite + 本地 ML/LLM 推�
 - **输入统计**：30 秒聚合桶记录键盘敲击、鼠标点击、滚动、鼠标移动距离、输入活跃时长和交互突发次数；5 分钟 rollup 产生 `keypress_rate_per_min`、`mouse_click_rate_per_min`、`click_key_ratio` 等特征。
 - **用户标注**：支持 `focus` / `distracted` / `mixed` 会话反馈与用户确认的窗口标签。
 - **用户软件分类**：`app_classification_rules` + `/api/v1/app-classifications`，支持进程名、窗口标题模式和优先级。
-- **LLM**：DeepSeek / Ollama / RuleEngine 三层降级；AnalysisGraph、PanelGraph、ChatGraph 为生产图路径。
+- **LLM**：ChatECNU 默认、DeepSeek 可选，之后按 Ollama / RuleEngine 降级；AnalysisGraph、PanelGraph、ChatGraph 为生产图路径。
 - **ML**：训练默认使用窗口标签增广与 Platt sigmoid 校准；质量门通过后才发布 `ready` 模型。
 - **模型发布**：候选通过质量门后还要通过发布一致性检查；自动训练只生成 shadow candidate，不移动 active 指针。
 - **最近后端验证**：`pytest` 3120 passed、4 skipped、22 warnings；Ruff 通过；mypy strict 185 个源文件无错误。warning 详情见 pytest 汇总。
@@ -270,7 +270,10 @@ npm run build
 | `MINDFLOW_CHECKPOINTING_ENABLED` | `False` | 是否使用 SQLite checkpoint |
 | `MINDFLOW_TRAINING_USE_WINDOW_LABELS` | `True` | 是否把用户窗口标签纳入训练 |
 | `MINDFLOW_PANEL_FAST_PATH_ENABLED` | `False` | 面板快速路径（默认关闭；离线回放一致率未达 95%，不得开启） |
-| `MINDFLOW_LLM__DEEPSEEK_API_KEY` | 未设置 | 生产 L1（DeepSeek 直连 `deepseek-flash`）凭证；缺失则 L1 不可用并降级 L2/L3，不会借用遗留 ECNU 密钥 |
+| `MINDFLOW_LLM__SERVICE` | `ecnu` | 默认使用 ChatECNU；设为 `deepseek` 可显式选择 DeepSeek |
+| `MINDFLOW_LLM__ECNU_API_KEY` | 未设置 | ChatECNU 独立凭证；缺失时降级到 L2/L3，不自动切换到 DeepSeek |
+| `MINDFLOW_LLM__ECNU_MODEL` | `ecnu-max` | ChatECNU 模型，可选 `ecnu-max` / `ecnu-plus` |
+| `MINDFLOW_LLM__DEEPSEEK_API_KEY` | 未设置 | 仅在 `MINDFLOW_LLM__SERVICE=deepseek` 时使用的 DeepSeek 凭证 |
 | `MINDFLOW_LLM__ECNU_COMPAT_ENABLED` | `False` | 为兼容测试/诊断保留的遗留 ECNU 三元组开关；生产必须保持关闭 |
 | `MINDFLOW_LLM__TIMEOUT_S` | `30` | 单次 LLM 请求超时 |
 | `MINDFLOW_LLM__MAX_RETRIES` | `1` | LLM 重试预算 |
@@ -297,14 +300,14 @@ sqlite3 mindflow.db ".backup mindflow_pre_migration.db"
 
 MIT License © 2026 RedMoon (胡淙煜)
 
-### 网页选择 ChatECNU（2026-10-09）
+### AI 服务选择（更新于 2026-11-13）
 
-在系统设置的“外观与 AI”中选择 ChatECNU，填写校园 Key 并选择 `ecnu-max` / `ecnu-plus`，保存后重启后端。默认 DeepSeek 行为不变；遗留 ECNU 三元组不会自动启用校园服务，兼容开关仍默认关闭。
+默认服务为 ChatECNU，模型为 `ecnu-max`。在系统设置的“外观与 AI”中可选择 `ecnu-max` / `ecnu-plus` 并保存校园 Key；如需 DeepSeek，可在同一处显式切换。修改服务或 Key 后需重启后端。
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
-| `MINDFLOW_LLM__SERVICE` | `deepseek` | 显式选择 `ecnu` 才启用 ChatECNU |
-| `MINDFLOW_LLM__ECNU_API_KEY` | 未设置 | 独立校园凭证，不与 DeepSeek Key 混用 |
+| `MINDFLOW_LLM__SERVICE` | `ecnu` | 显式设为 `deepseek` 才使用 DeepSeek |
+| `MINDFLOW_LLM__ECNU_API_KEY` | 未设置 | ChatECNU 专用凭证，不与 DeepSeek Key 混用 |
 | `MINDFLOW_LLM__ECNU_MODEL` | `ecnu-max` | 支持 `ecnu-max`、`ecnu-plus` |
 
-校园目标固定为 `https://chat.ecnu.edu.cn/open/api/v1`。所有校园 L1 路径共享并发门，不使用第二个独立 panel burst 门；上限 3。`GET/PUT/DELETE /api/v1/settings/ai` 需要本机会话认证，不回传密钥。PUT 支持 `service`、`ecnu_model`；省略 service 仍保存 DeepSeek。重启后从本机用户目录的 .env 加载，启动环境变量优先。缺选定服务的凭证时按既有 L2/L3 降级，不自动切到另一云端服务。
+ChatECNU 目标固定为 `https://chat.ecnu.edu.cn/open/api/v1`。所有校园 L1 路径共享并发门，不使用第二个独立 panel burst 门；上限 3。`GET/PUT/DELETE /api/v1/settings/ai` 需要本机会话认证，不回传密钥。PUT 支持 `service`、`ecnu_model`；省略 service 时默认为 ChatECNU。重启后从本机用户目录的 `.env` 加载，启动环境变量优先。缺选定服务的凭证时按既有 L2/L3 降级，不自动切到另一云端服务。

@@ -95,7 +95,7 @@ Frontend (React/TS) <-> Backend (FastAPI :8765) <-> Collector (cross-platform ac
 - **AnalysisGraph** (`src/mindflow/graph/analysis_graph.py`): Daily analysis composition root implementing `AnalysisWorkflowPort`; owns idempotency, budget, crisis gating, persistence, and fallback routing.
 - **PanelGraph** (`src/mindflow/graph/panel_graph.py`): Explicit AnalysisGraph subgraph for expert deliberation (Analyst -> 3x Attribution parallel -> validation -> Moderator -> Critic). The legacy `PanelOrchestrator` class was removed at v2 cutover; v2 is the production route.
 - **ChatGraph** (`src/mindflow/graph/chat_graph.py`): Explicit chat lifecycle StateGraph, independent from analysis. It is the only production chat path; the former LangChain `create_agent` path has been removed.
-- **ProviderRegistry** (`src/mindflow/infrastructure/provider_registry.py`): Manages LLM provider lifecycle (L1 DeepSeek, L2 Ollama, L3 RuleEngine). Single HTTP session pool shut down atomically.
+- **ProviderRegistry** (`src/mindflow/infrastructure/provider_registry.py`): Manages LLM provider lifecycle (L1 ChatECNU by default, DeepSeek optional, L2 Ollama, L3 RuleEngine). Single HTTP session pool shut down atomically.
 - **SQLite checkpointer**: LangGraph checkpoint persistence (off by default via `checkpointing_enabled=False`). Shares the same DB file.
 - **Workflow run store**: `workflow_runs` + `workflow_node_events` tables track every analysis run with status, timing, call count, and degradation metadata. Exposed read-only via `/api/v1/ai/runs`.
 - **Local OTel**: OpenTelemetry SDK configured with local SQLite exporter. No external OTLP/gRPC export. Span attributes never include raw window titles, file paths, or PII (per ADR-003).
@@ -105,7 +105,7 @@ Frontend (React/TS) <-> Backend (FastAPI :8765) <-> Collector (cross-platform ac
 
 - **All-local data**: SQLite WAL mode, no cloud upload, privacy-first.
 - **No global singletons**: Shared state on `app.state`, `create_app(settings)` factory assembly, dependency injection throughout.
-- **Three-tier LLM degradation** (`config.LLMSettings`): L1 DeepSeek (key required) -> L2 Ollama local -> L3 RuleEngine (always available).
+- **Three-tier LLM degradation** (`config.LLMSettings`): L1 ChatECNU by default or explicitly selected DeepSeek -> L2 Ollama local -> L3 RuleEngine (always available).
 - **LLM output treated as untrusted**: Pydantic v2 strict + `extra="forbid"` + forbidden-word validators (NF-S7), citation code-enforced, independent crisis detector gates before LLM calls.
 - **Async SQLAlchemy**: Each repository method opens its own `async with session_factory()`, no cross-request session sharing.
 - **Timezone**: UTC everywhere internally.
@@ -124,21 +124,23 @@ deprecated compatibility inputs for older `.env` files, but they do not change r
 | `new_analysis_graph` | bool | `True` | Deprecated compatibility input; v2 AnalysisGraph is always active |
 | `new_chat_graph` | bool | `True` | Deprecated compatibility input; v2 ChatGraph is always active |
 | `panel_fast_path_enabled` | bool | `False` | Panel fast path (plan 2.2). Must stay `False`: the offline replay measured 60% top-1 agreement on the 5/30 scenarios it triggered (target ≥95%). |
-| `deepseek_api_key` | str | unset | Production L1 credential (`DEEPSEEK_API_KEY` / `MINDFLOW_LLM__DEEPSEEK_API_KEY`). Absent → L1 unavailable, degrade to L2/L3; the legacy ECNU key is never reused. |
-| `ecnu_compat_enabled` | bool | `False` | Honour the legacy ECNU triple instead of the DeepSeek pin. Compatibility tests/diagnostics only; **must stay `False` in production**. |
+| `service` | Literal | `ecnu` | Default ChatECNU; set `deepseek` to opt into DeepSeek. |
+| `ecnu_api_key` | str | unset | Dedicated ChatECNU credential (`MINDFLOW_LLM__ECNU_API_KEY`); never shared with DeepSeek. |
+| `deepseek_api_key` | str | unset | DeepSeek credential (`DEEPSEEK_API_KEY` / `MINDFLOW_LLM__DEEPSEEK_API_KEY`), used only when `service=deepseek`. |
+| `ecnu_compat_enabled` | bool | `False` | Honour the legacy ECNU triple for compatibility tests/diagnostics; normal ChatECNU selection does not need it. |
 
-## L1 = DeepSeek Direct (2026-09-25)
+## L1 Provider Selection (updated 2026-11-13)
 
-- Production L1 is DeepSeek itself: `provider=generic`,
-  `base_url=https://api.deepseek.com`, `model=deepseek-flash`, resolved once by
-  `LLMSettings.l1_target()` and consumed by `ProviderRegistry` (structured client,
-  gateway, chat model). Legacy ECNU URL/model/provider/key values are overridden
-  and never mixed; a missing DeepSeek credential means L1 is unavailable — there
-  is no ECNU fallback.
-- `chat`/`reasoner` are **output policies** (JSON mode vs prose), not two model
-  ids: both tiers request the same model. Role-level `reasoning_effort`,
-  `thinking` and `max_tokens` travel per request via `CompletionPolicy`
-  (official spelling: `max_tokens`, `extra_body={"thinking": {...}}`).
+- The default L1 is ChatECNU: `service=ecnu`, `model=ecnu-max`, and the fixed
+  `https://chat.ecnu.edu.cn/open/api/v1` endpoint, with its dedicated key.
+- Set `MINDFLOW_LLM__SERVICE=deepseek` to explicitly select
+  `provider=generic`, `https://api.deepseek.com`, and `deepseek-flash`.
+- The two services never share credentials or automatically switch to each
+  other. A missing selected-provider key degrades to L2/L3.
+- The `chat` and `reasoner` labels remain request policies, not separate models.
+- Role-level `reasoning_effort`, `thinking` and `max_tokens` travel per request
+  via `CompletionPolicy` (official spelling: `max_tokens`,
+  `extra_body={"thinking": {...}}`).
 - Thinking mode requires the previous assistant turns' `reasoning_content` to be
   echoed on any request carrying `tools` (DeepSeek answers 400 otherwise);
   `infrastructure/llm/thinking.py` is the shared implementation used by both the

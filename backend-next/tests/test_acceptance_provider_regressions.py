@@ -67,17 +67,16 @@ def _error_body():
 def _settings(**overrides):
     """ECNU-shaped settings for this suite: the legacy triple, explicitly opted in.
 
-    ``ecnu_compat_enabled`` keeps these regressions on the campus wire — the
-    production pin (DeepSeek direct) would otherwise replace the URL, model and
-    key below. ``reasoning_effort="max"`` is the gateway's own default tier,
-    which the application default (DeepSeek's ``"high"``) must not silently
-    change under the ECNU wire assertions.
+    ``ecnu_compat_enabled`` keeps these regressions on the legacy campus wire.
+    Explicit service selection avoids relying on the ChatECNU application
+    default while these tests exercise compatibility behavior.
     """
     return LLMSettings(**{
         "api_key": "test-key",
         "base_url": "https://chat.ecnu.edu.cn/open/api/v1",
         "model": "ecnu-max",
         "provider": "ecnu",
+        "service": "deepseek",
         "ecnu_compat_enabled": True,
         "reasoning_effort": "max",
         "timeout_s": 180,

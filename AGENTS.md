@@ -35,7 +35,7 @@ Run all from `mindflow-app/backend-next/`:
 - **AnalysisGraph**: Composition root for daily analysis. Implements `AnalysisWorkflowPort`. Contains PanelGraph as subgraph.
 - **PanelGraph**: Explicit expert-deliberation subgraph (Analyst -> 3x parallel attribution -> validation -> Moderator -> Critic). The old `PanelOrchestrator` class was removed at v2 cutover; keep its parsing helpers module-level and do not reintroduce the inline graph.
 - **ChatGraph**: Explicit chat lifecycle StateGraph. The v2 graph is now the only production chat path; the former `create_agent` route has been removed.
-- **ProviderRegistry**: LLM provider lifecycle (L1 DeepSeek, L2 Ollama, L3 RuleEngine). Single HTTP session pool.
+- **ProviderRegistry**: LLM provider lifecycle (L1 ChatECNU by default, DeepSeek optional; L2 Ollama; L3 RuleEngine). Single HTTP session pool.
 - **Scheduler**: No graph. Owns time, claims, heartbeats (`scheduled_job_runs` table). Two-layer design per ADR-001.
 - **Local OTel**: Traces to local SQLite; no external export. No PII in span attributes (ADR-003).
 - **Unified entry point**: All analysis triggers (scheduler, API, chat, auto-intervention) go through one `AnalysisWorkflowPort`.
@@ -58,7 +58,7 @@ Run all from `mindflow-app/backend-next/`:
 
 ## 2026-09-25 规则（优化方案落地后的不变式）
 
-- **L1 是 DeepSeek 直连**：`LLMSettings.l1_target()` 在生产（`ecnu_compat_enabled=False`，默认）固定 `provider=generic`、`base_url=https://api.deepseek.com`、`model=deepseek-flash`，凭证取 `DEEPSEEK_API_KEY` / `MINDFLOW_LLM__DEEPSEEK_API_KEY`；遗留的 ECNU URL/model/provider/密钥会被**覆盖且不混用**（ECNU 形状的遗留配置不会把它的密钥交给 DeepSeek）。缺凭证时 L1 不可用，走既有 L2/L3，**不回退 ECNU**。面板的 `chat`/`reasoner` 只是输出策略（JSON vs 散文），两个 tier 都请求同一模型；`reasoning_effort`/`thinking`/`max_tokens` 是**每次请求**下发（`agents/policies.py`）。ECNU 适配代码保留，仅通过 `ecnu_compat_enabled=True` 供兼容测试与诊断使用。
+- **L1 默认是 ChatECNU**：`LLMSettings.l1_target()` 默认选 `service=ecnu`、`https://chat.ecnu.edu.cn/open/api/v1`、`ecnu-max`，凭证取 `MINDFLOW_LLM__ECNU_API_KEY`。设 `MINDFLOW_LLM__SERVICE=deepseek` 可显式选择 DeepSeek 直连 (`deepseek-flash`)，凭证取 `DEEPSEEK_API_KEY` / `MINDFLOW_LLM__DEEPSEEK_API_KEY`。两家密钥与端点不混用；缺少所选凭证时走既有 L2/L3，不自动切换另一家云服务。遗留 `provider/base_url/model/api_key` 不决定生产服务；面板的 `chat`/`reasoner` 只是输出策略（JSON vs 散文），`reasoning_effort`/`thinking`/`max_tokens` 仍按每次请求下发。`ecnu_compat_enabled=True` 只用于兼容测试与诊断。
 - **thinking 模式必须回传 `reasoning_content`**：任何携带 `tools` 的请求都要把历史 assistant 回合的 `reasoning_content` 原样回传，否则 DeepSeek 返回 400。`infrastructure/llm/thinking.py` 提供共享实现，ECNU 与 DeepSeek 两个适配器都用它；思考模式下 `temperature` 无效且不再下发。4xx 与「长度截断」不做同参重试（`LengthFinishReasonError` 已列入不可重试集合）。
 - **思考模式下 token 上限有下限**：DeepSeek 的 thinking token **计入** `max_tokens`。2026-09-25 真实请求实测：attribution 角色 1000 token 上限时每次都被截断（`LengthFinishReasonError`，JSON 从未产出）。因此 `agents/policies.py` 的 `THINKING_TOKEN_FLOOR=4096` 只在请求开启思考时生效（`max(角色上限, 4096)`），关闭思考时仍精确使用角色上限；面板路径真实推理 token 占输出约 55%（13 次请求 12755 输出 token / 7075 推理 token），这是下限存在的依据。
 - **训练发布拦截**：质量门通过后、移动 active 指针前，`train/publication.py` 比对「评估选中候选」与「实际分类器」。只有二者确认一致（当前仅 `rf_xgb_soft_voting` ↔ `EnsembleClassifier`）才允许激活；不一致、评估无候选、未知制品、XGBoost 缺失导致的 RF-only 回退一律保存为 shadow 并记录 `activation_blocked_reason`（报告与 manifest 都带 `publication` 块）。`allow_activation=False` 的自动训练策略继续生效，且本轮不扩展为发布所有候选。**验收**（`scripts/acceptance_publication_guard.py`，三路径端到端全 PASS）：A 不一致→shadow+原因；B 数据工程让评估选中集成（896 窗口、漂移 PSI 0.21 过门）→ 一致→激活（latest.json 移动、ready）；C `allow_activation=False`→shadow。激活路径要求 xgboost 已安装（缺失即 REASON_XGB_FALLBACK）。
@@ -90,8 +90,11 @@ parse, but changing them no longer selects a legacy implementation.
 | `MINDFLOW_NEW_CHAT_GRAPH` | `True` | Deprecated compatibility flag; v2 ChatGraph is always active |
 | `MINDFLOW_TRAINING_USE_WINDOW_LABELS` | `True` | Also train on user-calibrated `behavior_feature_windows.label` (weight 0.8; feedback still wins; quality-gate counts stay feedback-only). Measured 2026-08-20: BA 0.46→0.64, Brier 0.40→0.23, folds stable — activated the model. Set `0` to disable. |
 | `MINDFLOW_PANEL_FAST_PATH_ENABLED` | `False` | Panel fast path (plan 2.2): skip the LLM panel when evidence coverage/quality is high, the rule engine is confident and nothing conflicts (route to rule engine or a single expert); return `insufficient_data` without any LLM call when collectors are missing or coverage is too low. **Must stay `False`**: the 2026-09-24 offline replay measured only 60% top-1 agreement on the 5 scenarios it did trigger (target ≥95%). |
-| `MINDFLOW_LLM__DEEPSEEK_API_KEY` / `DEEPSEEK_API_KEY` | unset | Production L1 credential for DeepSeek direct (`deepseek-flash`). Without it L1 is unavailable and the chain degrades to L2/L3 — the legacy ECNU key is never borrowed. |
-| `MINDFLOW_LLM__ECNU_COMPAT_ENABLED` | `False` | Honour the legacy ECNU triple (provider/base_url/model/api_key) instead of the DeepSeek pin. For the ECNU adapter's compatibility tests and diagnostics only — **must stay `False` in production**. |
+| `MINDFLOW_LLM__SERVICE` | `ecnu` | Select ChatECNU by default or set `deepseek` to opt into DeepSeek. |
+| `MINDFLOW_LLM__ECNU_API_KEY` | unset | Dedicated ChatECNU credential; never shared with DeepSeek. |
+| `MINDFLOW_LLM__ECNU_MODEL` | `ecnu-max` | ChatECNU model; `ecnu-max` or `ecnu-plus`. |
+| `MINDFLOW_LLM__DEEPSEEK_API_KEY` / `DEEPSEEK_API_KEY` | unset | DeepSeek credential, used only when `MINDFLOW_LLM__SERVICE=deepseek`. |
+| `MINDFLOW_LLM__ECNU_COMPAT_ENABLED` | `False` | Honour the legacy ECNU triple for compatibility tests/diagnostics only; normal ChatECNU selection does not need it. |
 
 ## 2026-08-20 补充
 

@@ -8,14 +8,14 @@ function configError(error: unknown, fallback: string) {
 
 export default function AISettings() {
   const [status, setStatus] = useState<AICredentialStatus | null>(null);
-  const [service, setService] = useState<"deepseek" | "ecnu">("deepseek");
+  const [service, setService] = useState<"deepseek" | "ecnu">("ecnu");
   const [model, setModel] = useState<"ecnu-max" | "ecnu-plus">("ecnu-max");
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   function accept(data: AICredentialStatus) {
-    setStatus(data); setService(data.service ?? "deepseek");
+    setStatus(data); setService(data.service ?? "ecnu");
     setModel(data.model === "ecnu-plus" ? "ecnu-plus" : "ecnu-max");
   }
   useEffect(() => {
@@ -35,7 +35,7 @@ export default function AISettings() {
       setNotice(remove ? "已移除当前服务在本机保存的 Key。请重启 MindFlow 以重新加载配置。" : "服务与 Key 已保存到本机用户配置目录。请重启 MindFlow 后使用 AI 功能；保存不验证密钥是否可调用。");
     } catch (e) { setError(configError(e, "AI 配置保存失败")); } finally { setBusy(false); }
   }
-  const selectedMatchesSaved = service === (status?.service ?? "deepseek");
+  const selectedMatchesSaved = service === (status?.service ?? "ecnu");
   return <div className="card">
     <h3>AI 服务配置</h3>
     <p className="workspace-note">选择 DeepSeek 或 ChatECNU（华东师范大学）。两家服务的 Key 分别保存到本机用户配置目录，不写入仓库或浏览器存储；切换服务或修改 Key 后需要重启 MindFlow。未配置时仍可使用已有本地模型与规则分析。</p>
