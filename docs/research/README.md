@@ -14,6 +14,11 @@ responsibilities, important prompt passages, retrieval implementation, and
 evaluation boundaries. [The continuous presentation manuscript](defense-speech.md)
 keeps the four-minute presentation separate from technical backup material.
 
+The [campus pilot and delivery plan](landing-plan.md) covers first users,
+local deployment, installation acceptance, planned pilot tasks, evaluation,
+operating costs, maintenance, and adoption. It distinguishes the running
+prototype from future recruitment and user research.
+
 The [acceptance record](reports/acceptance-20261113.md) separates the published
 baseline's 3477 passing tests from the local workspace's 3500 passing tests.
 Both have 4 skipped tests and 22 warnings. Retrieval diagnostics are
