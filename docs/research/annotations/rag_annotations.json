@@ -1,0 +1,90 @@
+[
+  {
+    "paper_id": "lewis_2020",
+    "key": "retrieval_context",
+    "pages": [2, 3],
+    "summary": "论文把外部文档记忆与生成模型结合：根据输入检索相关段落，生成器同时读取问题和这些段落。原方法使用稠密索引，并联合训练检索器与生成器；序列级和词元级方案对文档的使用方式不同。它支持先检索再生成的架构选择，不能直接证明某个领域的建议一定正确。",
+    "application": "把已核实论文的少量相关片段连同出处放入模型消息，记录检索版本和片段编号；将一般理论依据与当前用户的行为证据分开。",
+    "limits": "本项目采用检索增强提示，没有复现原论文的端到端训练或概率边缘化；原文的问答成绩不能移作专注改善或心理判断准确率。",
+    "terms": "retrieval augmented generation document index retriever generator external knowledge context",
+    "roles": ["development"],
+    "anchor": "additional context"
+  },
+  {
+    "paper_id": "robertson_2009",
+    "key": "bm25_ranking",
+    "pages": [27, 29, 30],
+    "summary": "BM25把查询词与文档词项的匹配转成排序信号，对词频使用逐渐饱和的函数，并通过文档长度归一化减弱长文档优势。参数控制词频饱和与长度修正。它衡量的是给定词项下的检索相关性，分数既不是概率，也不能代表被检索论文的证据等级或某个结论的可信度。",
+    "application": "使用现有SQLite的FTS5检索静态论文卡，配经核对的中英术语表；用开发查询检查排序，固定top-k和上下文上限后再评估。",
+    "limits": "稀疏词项检索可能漏掉未覆盖的同义表达；人工术语扩展不等于学习了语义向量。SQLite分数方向按官方实现处理，不解读成置信度。",
+    "terms": "BM25 probabilistic relevance term frequency saturation document length normalization ranking",
+    "roles": ["development"],
+    "anchor": "classic BM25"
+  },
+  {
+    "paper_id": "gao_2023_alce",
+    "key": "citation_support",
+    "pages": [4],
+    "summary": "ALCE将带引用生成的评估拆成表达、答案内容和引用质量。引用召回关注回答中的论断是否得到所引材料支持，引用精度关注是否引入不相关出处；作者结合自然语言推断模型和人工评价进行检查。因此，文献编号能解析只是必要条件，还要判断原文与具体论断的支持关系。",
+    "application": "程序拦截不存在或不属于本次检索的引用编号；批评角色逐项核对理论主张，人工评审另记支持程度与遗漏论断，分别报告两层结果。",
+    "limits": "编号合法率不能叫作语义正确率；未复现原文的推断模型与标注协议时，只能说明借鉴了评估维度，不能声称已有ALCE评测结果。",
+    "terms": "citation precision citation recall attribution claim support entailment evidence",
+    "roles": ["development", "批评家"],
+    "anchor": "Citation Quality"
+  },
+  {
+    "paper_id": "es_2024",
+    "key": "rag_evaluation_dimensions",
+    "pages": [3, 4],
+    "summary": "RAGAS分别讨论回答是否忠于给定上下文、是否回应实际问题，以及检索内容是否集中相关。它使用模型拆分论断并核对支持关系，还以问题生成和相似度估计回答相关性。各项衡量不同环节，不能用一项通过替代其他维度；自动评价自身也依赖模型和提示词。",
+    "application": "离线报告分开列检索命中、引用合法性、人工支持度和回答可用性；开发阶段可以先用固定查询与mock测试，不自动外发用户信息。",
+    "limits": "本项目不把人工规则或ID校验包装成RAGAS分数；没有运行对应评价流程就不报告自动忠实度，更不把它解释为真实用户效果。",
+    "terms": "faithfulness answer relevance context relevance RAG evaluation metrics",
+    "roles": ["development"],
+    "anchor": "Context relevance"
+  },
+  {
+    "paper_id": "liu_2024",
+    "key": "context_budget",
+    "pages": [1],
+    "summary": "论文通过多文档问答和键值检索实验改变相关信息在输入中的位置，发现被测模型的表现常在信息位于开头或末尾时较好，位于长上下文中部时变差。这说明可接收很长输入不等于能稳定利用全部内容，也提示检索系统应选择和组织材料，而非只增加输入长度。",
+    "application": "每次只注入少量相关片段，限制单片段与总字符数，先放高相关材料；在固定测试问题上另检查片段顺序是否影响回答。",
+    "limits": "论文实验并未测试本项目当前的ChatECNU调用；不能沿用其下降幅度作为本项目结果，具体长度和顺序仍需本地验证。",
+    "terms": "long context lost middle position relevant information token budget ordering",
+    "roles": ["development"],
+    "anchor": "beginning or end"
+  },
+  {
+    "paper_id": "asai_2024",
+    "key": "retrieve_and_check",
+    "pages": [3],
+    "summary": "Self-RAG通过专门训练让模型产生反思标记，用于决定是否检索，并检查段落相关性、回答支持和完整程度。它把检索与生成过程中的检查显式化，目标是避免无条件加入材料或引用不足。这项方法涉及训练与推理控制，不能由普通的自我批评提示词完整替代。",
+    "application": "在工程链路中明确检查是否需要理论依据、片段是否相关，以及回答是否超出支持范围；将无匹配片段作为可测试的正常分支。",
+    "limits": "本项目没有训练Self-RAG的反思token或复现其解码算法；按需检索和审查是设计借鉴，不能引用原论文性能说明本项目效果。",
+    "terms": "self RAG reflection tokens retrieval on demand relevance support critique",
+    "roles": ["development"],
+    "anchor": "reflection tokens"
+  },
+  {
+    "paper_id": "yan_2024",
+    "key": "retrieval_failure",
+    "pages": [3],
+    "summary": "CRAG关注检索返回不准确材料时的处理。原方法用检索评价器判断相关性，并据此选择保留提炼、放弃原检索结果或补充其他来源等动作。论文说明检索本身也会出错，生成器能力不能保证消除错误上下文带来的影响，因此检索失败需要独立处理路径。",
+    "application": "本地无相关片段时返回空结果和证据缺口，保留行为描述及原有规则回退；只有通过范围检查的论文片段才能进入后续消息。",
+    "limits": "本项目不包含原文训练的检索评价器或自动联网补救，不能称为复现完整CRAG；词项命中门限只是启发式相关性约束。",
+    "terms": "corrective RAG retrieval evaluator relevance incorrect ambiguous fallback robustness",
+    "roles": ["development"],
+    "anchor": "retrieval evaluator"
+  },
+  {
+    "paper_id": "wang_2024",
+    "key": "strong_single_agent",
+    "pages": [1, 5],
+    "summary": "论文在推理任务上重新比较多角色讨论与强提示词单角色，发现示例和任务说明会显著影响对照结果，强单角色在不少设置下接近讨论框架的表现。这要求把提示词信息和资源条件纳入比较，不能仅因角色较多或输出达成共识就判断系统更准确。",
+    "application": "为单角色与面板提供相同的行为证据和论文片段，在同一场景集上分别评审建议并记录调用数、token和延迟，比较审查带来的价值。",
+    "limits": "原实验是推理基准，不是专注干预试验；不能据此直接宣布本项目多角色无效或更好。同一底模形成的共识也不构成独立实验证据。",
+    "terms": "multi agent discussion strong single agent demonstrations prompt baseline evaluation",
+    "roles": ["development", "批评家"],
+    "anchor": "single-agent LLM with strong prompts"
+  }
+]

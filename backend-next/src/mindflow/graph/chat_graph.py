@@ -50,6 +50,11 @@ from langgraph.graph.state import CompiledStateGraph
 from loguru import logger
 
 from mindflow.agents.types import FORBIDDEN_WORDS
+from mindflow.services.literature_service import (
+    LITERATURE_RULES,
+    invalid_literature_citations,
+    retrieve_literature,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Constants
@@ -246,6 +251,9 @@ CHAT_SYSTEM_PROMPT: str = (
     "- 使用中文\n"
     "- 根据用户的行为数据给出个性化建议\n"
     "- 引用具体证据，例如「根据你的行为数据……」\n"
+    "- 先确认用户正在做什么；工具切换可能是探索，日志不直接测量情绪\n"
+    "- 先回应用户当前问题，再给一个可执行的下一步；中文用完整短句，减少术语和套话\n"
+    "- 研究结论使用 [论文: chunk_id]，只引用当前检索内容，保留研究人群和方法限制\n"
     '- 禁止使用以下词汇：诊断、治疗、患者、处方\n'
     "- 友善、鼓励、具体"
 )
@@ -378,6 +386,8 @@ class ChatGraphState(TypedDict, total=False):
     evidence_cited: bool
     history_summary: str | None
     model_messages_raw: list[Any]
+    research_context_json: str
+    literature_citation_ids: list[str]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -812,6 +822,8 @@ async def model_call_node(state: ChatGraphState) -> dict[str, Any]:
             "tool_messages": existing_tool_msgs,
             "tools_used": tools_used,
             "evidence_cited": evidence_cited,
+            "research_context_json": state.get("research_context_json", ""),
+            "literature_citation_ids": state.get("literature_citation_ids", []),
         }
 
     # No tool calls — this is the final answer
@@ -819,6 +831,8 @@ async def model_call_node(state: ChatGraphState) -> dict[str, Any]:
         "model_messages_raw": messages,
         "tools_used": tools_used,
         "evidence_cited": evidence_cited,
+        "research_context_json": state.get("research_context_json", ""),
+        "literature_citation_ids": state.get("literature_citation_ids", []),
     }
 
 
@@ -842,7 +856,14 @@ def _build_messages_from_state(state: ChatGraphState) -> list[Any]:
     runtime = state.get("runtime", ChatRunContext())
     _folded_turns, recent_turns = _split_history(state)
 
-    messages: list[Any] = [SystemMessage(content=CHAT_SYSTEM_PROMPT)]
+    if "research_context_json" not in state:
+        literature = retrieve_literature(state["user_message"], role="chat")
+        state["research_context_json"] = literature.as_json()
+        state["literature_citation_ids"] = sorted(literature.citation_ids)
+    messages: list[Any] = [SystemMessage(content=(
+        CHAT_SYSTEM_PROMPT + "\n\n" + LITERATURE_RULES
+        + "\n\n## research_context\n" + state["research_context_json"]
+    ))]
     summary = state.get("history_summary")
     if summary:
         messages.append(SystemMessage(content=summary))
@@ -1010,6 +1031,15 @@ async def answer_extraction_node(state: ChatGraphState) -> dict[str, Any]:
         return {}
     model_messages = state.get("model_messages_raw", [])
     answer = _extract_answer_from_messages(model_messages)
+    if invalid_literature_citations(answer, state.get("literature_citation_ids", [])):
+        return {
+            "answer": "这条解释的文献引用未能核对。请说说当前任务，我们先确定一件能做的小事。",
+            "degraded": True,
+            "errors": list(state.get("errors", [])) + [{
+                "key": "literature_citation_invalid",
+                "message": "Literature citation outside retrieved context",
+            }],
+        }
 
     return {"answer": answer}
 
@@ -1129,7 +1159,12 @@ async def correction_loop_node(state: ChatGraphState) -> dict[str, Any]:
             retry_count=retry_count,
         )
 
-        if _contains_forbidden_words(retry_answer) is not None:
+        if (
+            _contains_forbidden_words(retry_answer) is not None
+            or invalid_literature_citations(
+                retry_answer, state.get("literature_citation_ids", []),
+            )
+        ):
             return {
                 "answer": _SAFE_REPLY,
                 "degraded": True,

@@ -1,0 +1,90 @@
+[
+  {
+    "paper_id": "barke_2023",
+    "key": "programming_task_context",
+    "pages": [1],
+    "summary": "作者观察二十名参与者使用代码生成助手完成四种语言的编程任务，归纳出加速与探索两种协作模式。前者已有明确下一步，借助手更快执行；后者尚不确定如何推进，通过建议探索方案。这个区分说明同样的工具往返可能承载不同任务目的，单看应用类别或切换次数不足以解释工作状态。",
+    "application": "数据分析师先结合任务目标解读窗口往返，允许把编辑器、文档和助手之间的切换列为正常探索。目标未知时先询问；将偏离目标作为待用户核对的候选，而非直接认定拖延。",
+    "limits": "这是针对代码生成助手的观察与扎根理论研究，样本二十人，主要任务由研究者设计。两种模式不是心理诊断，也没有提供桌面专注分类器的真值标签或准确率。",
+    "terms": "programming code assistant task context acceleration exploration Copilot switching intent",
+    "roles": ["数据分析师", "会诊综合主持人", "批评家", "chat"],
+    "anchor": "in acceleration mode"
+  },
+  {
+    "paper_id": "barke_2023",
+    "key": "preserve_programming_flow",
+    "pages": [21],
+    "summary": "论文的设计讨论建议让助手感知当前协作模式：加速模式中避免以低把握或过长建议打断思路，探索模式中帮助比较候选。作者也记录了参与者希望建议更有选择性、匹配当前关注的代码单位。这些是从观察提出的设计建议，强调输出的长度、出现时机和具体工作步骤应相互匹配。",
+    "application": "生成提醒时只围绕眼前任务给一个短而具体的动作。连续工作且未请求帮助时优先延后，避免展开长篇分析；探索中可建议核对文档或测试，并让用户选择是否继续。",
+    "limits": "此处主要是从观察推导的工具设计建议，论文使用推测性表述，没有证明这些改动的干预收益。不能宣称 MindFlow 已能可靠识别两种模式，或已复现强化学习策略。",
+    "terms": "programming flow interruption selective suggestions interaction mode acceleration exploration timing",
+    "roles": ["会诊综合主持人", "批评家", "intervention", "chat"],
+    "anchor": "Awareness of the interaction mode"
+  },
+  {
+    "paper_id": "lyngs_2019",
+    "key": "self_control_goal_feedback",
+    "pages": [6],
+    "summary": "论文区分服务目标的广义自我调节与有意识抵抗眼前冲动的自我控制，并把反馈描述为观察当前状态、对照目标和标准、再调整行为的过程。习惯性动作也可能服务长期目标，反过来，有电脑活动并不表示目标始终在工作记忆中。该框架帮助组织目标核对问题，而不是为个体贴固定标签。",
+    "application": "认知和动机角色先确认用户想完成什么，再比较记录与目标是否一致。提醒帮助用户恢复下一步动作；计划休息或改目标由用户确认，不把暂缓、关闭工具改写成自控失败。",
+    "limits": "双系统框架用于解释和组织设计，不是由鼠标日志测量两种认知系统的量表。行为代理不能直接转换成认知状态数值，是否产生冲突仍需用户意图或其他独立证据。",
+    "terms": "self regulation self control goals intentions feedback monitoring working memory habits",
+    "roles": ["CBT归因专家", "TMT归因专家", "会诊综合主持人", "chat"],
+    "anchor": "Self-regulation and self-control"
+  },
+  {
+    "paper_id": "lyngs_2019",
+    "key": "digital_tools_design_evidence",
+    "pages": [2],
+    "summary": "作者分析三类应用商店中的三百六十七个应用和浏览器扩展，整理数字自控工具的常见功能，并用整合的双系统模型映射设计机制。研究关注工具如何相同、如何不同，以及哪些机制值得后续研究。功能分类有助于设计者解释自己选择了什么策略，但产品数量和理论对应都不等于工具有效性的实验结论。",
+    "application": "综合主持人把建议对应到明确机制，如目标提醒或自我观察，并保留用户控制。开发与答辩材料区分功能调研、机制假设和效果验证，不能用角色或功能数量证明创新收益。",
+    "limits": "该工作是功能分析和理论映射，商店资料与功能存在性不是因果效果证据。二〇一九年的工具样本也不是当前市场份额，不能当作校园需求比例或本项目的临床背书。",
+    "terms": "digital self control tools design features intervention strategies review dual systems evidence",
+    "roles": ["会诊综合主持人", "批评家", "development"],
+    "anchor": "367 apps and browser extensions"
+  },
+  {
+    "paper_id": "mark_2008",
+    "key": "interruptions_speed_stress",
+    "pages": [3],
+    "summary": "实验结果中，受打断条件的邮件任务完成时间短于无打断条件，错误数量和礼貌指标没有显著差异；但参与者报告了更高的压力、挫败、时间压力或努力。这个组合表明更快完成与更舒适工作可以分离，评价提醒时应同时考虑任务表现和主观负担，不能把速度变化直接解释为专注或体验改善。",
+    "application": "提醒策略把是否打扰和任务推进分别记录。提示词不得用完成变快推断用户压力降低；连续工作中出现切换时，先核对目的和接收时机，再决定是否给短建议或延后。",
+    "limits": "研究有四十八名参与者，采用实验室邮件任务及电话或即时消息打断，不能直接外推到 AI 编程。论文的压力来自独立自评，MindFlow 没有相应测量时不能推算个人压力。",
+    "terms": "interruption notification stress workload frustration time pressure task performance speed",
+    "roles": ["数据分析师", "情绪调节归因专家", "会诊综合主持人", "批评家", "intervention"],
+    "anchor": "Measures of workload"
+  },
+  {
+    "paper_id": "biedermann_2024",
+    "key": "dual_purpose_platform_context",
+    "pages": [14],
+    "summary": "论文讨论学习工具的双重用途：同一平台同时承载教学内容和娱乐内容，按整个平台封锁可能挡住学习所需资源，导致停用与挫败。作者据此强调适应使用者需求与情境，并讨论意图和内容区分的设计方向。域名、应用名称和停留时长因此只能提供线索，还需要当前任务的用途说明。",
+    "application": "数据分析师优先结合用户声明的任务和内容用途，避免将视频或社交平台统一归为分心。证据不足时保留未知或追问；提醒只针对已核对的偏离，不据网站名推断动机。",
+    "limits": "这是高校工具使用问卷的讨论，非自动内容分类器的准确率实验。样本主要使用英语或德语，作者提到的其他界面研究亦不能当成本项目已完成的实现或中国学生效果。",
+    "terms": "dual purpose platforms learning entertainment context intent classification user needs YouTube",
+    "roles": ["数据分析师", "CBT归因专家", "会诊综合主持人", "批评家", "chat"],
+    "anchor": "Challenge of dual-purpose platforms"
+  },
+  {
+    "paper_id": "biedermann_2024",
+    "key": "perceived_helpfulness_outcome",
+    "pages": [17],
+    "summary": "作者明确区分主观觉得有帮助与实际行为改变：问卷和自报难以单独确定工具效果，横断面设计也无法呈现工具使用随时间的起伏。论文建议评价时区分学习与休闲，注意多个设备以及需要单独询问的内部状态。对项目而言，满意反馈可以作为体验线索，仍应与任务结果和行为变化分别报告。",
+    "application": "批评家检查输出是否把接受建议、满意或停止访问某应用写成已提高专注。研究评价分别记录可执行性、目标推进、打扰和使用持续性；无跨设备记录时标明观察范围。",
+    "limits": "原研究分析二百七十三名学生的问卷，主要终点是感知帮助程度而非干预效果。不能据此给 MindFlow 计算改善比例，也不能用一次反馈确认某人的心理状态或长期习惯改变。",
+    "terms": "perceived helpfulness actual effectiveness self report longitudinal task outcome multiple devices",
+    "roles": ["会诊综合主持人", "批评家", "development"],
+    "anchor": "perceived helpfulness and not the actual"
+  },
+  {
+    "paper_id": "kovacs_2019",
+    "key": "cross_platform_spillover_evaluation",
+    "pages": [1],
+    "summary": "作者使用 HabitLab 浏览器扩展与手机应用改变目标上的干预频率，观察其他应用和平台的时间变化。该研究未发现实质性的拖延时间转移，部分非目标使用保持不变或减少。研究价值在于把转移作为可检验问题，不能反过来声称所有生产力提醒只是转移，也不能把某网站时间减少等同总体任务收益。",
+    "application": "综合主持人准确陈述跨平台研究结论，评价方案同时考虑目标和非目标行为。MindFlow 只观察电脑时，建议质量与任务反馈单列；未经观测的手机或线下活动不补成事实。",
+    "limits": "实验改变的是 HabitLab 干预频率，并非 MindFlow 的有无对照。平台覆盖浏览器与 Android，其他设备和线下行为未全面测量，研究结果不证明任意提醒策略都无转移效应。",
+    "terms": "time redistribution spillover productivity interventions cross platform browser mobile HabitLab",
+    "roles": ["会诊综合主持人", "批评家", "development"],
+    "anchor": "held constant or even reduced"
+  }
+]

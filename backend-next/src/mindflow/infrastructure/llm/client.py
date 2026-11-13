@@ -51,6 +51,11 @@ from mindflow.infrastructure.llm.http_client import compute_backoff as _compute_
 from mindflow.infrastructure.llm.http_client import parse_retry_after as _parse_retry_after
 from mindflow.infrastructure.llm.safety import safe_error_metadata
 from mindflow.infrastructure.llm.schemas import LLMAttributionResult
+from mindflow.services.literature_service import (
+    LITERATURE_RULES,
+    retrieve_literature,
+    validate_literature_citations,
+)
 
 # ── System prompt ──────────────────────────────────────────────────────────────
 
@@ -61,6 +66,9 @@ _SYSTEM_PROMPT: str = (
     "1. 镜像确认：基于行为数据描述观察到的情况\n"
     "2. 归因探索：识别拖延类型和认知扭曲\n"
     "3. 行动约定：提供最小下一步建议\n\n"
+    "先核对任务意图；切换可能来自探索或计划休息。类型是待核对候选，"
+    "日志不能显示内心想法；无明确自述时 cognitive_distortions 为空数组。"
+    "文献只支持一般机制，不能填补个人证据缺口。\n\n"
     "## 安全边界\n"
     "- 你不冒充心理治疗师或医生\n"
     "- 检测到严重拖延模式时，回应以温和建议\n"
@@ -164,13 +172,16 @@ class DeepSeekClient:
         # attribution policy's effort and a cap that leaves room for the
         # thinking trace (thinking tokens are billed against ``max_tokens``).
         policy = ATTRIBUTION_POLICY
+        literature = retrieve_literature(summary_json, role="attribution")
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": _SYSTEM_PROMPT + "\n\n" + LITERATURE_RULES},
                 {
                     "role": "user",
-                    "content": f"请分析以下行为数据，输出结构化归因结果：\n\n{summary_json}",
+                    "content": literature.augment(
+                        f"请分析以下行为数据，输出结构化归因结果：\n\n{summary_json}",
+                    ),
                 },
             ],
             "response_format": {"type": "json_object"},
@@ -259,6 +270,7 @@ class DeepSeekClient:
                 continue
 
             # Parse and validate via Pydantic strict mode
+            validate_literature_citations(content, literature)
             try:
                 return LLMAttributionResult.model_validate_json(content)
             except ValidationError as exc:

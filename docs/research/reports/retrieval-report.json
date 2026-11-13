@@ -1,0 +1,672 @@
+{
+  "date": "2026-11-13",
+  "scope": "Declared development queries; not a held-out benchmark or semantic evaluation.",
+  "llm_calls": 0,
+  "human_participants": 0,
+  "corpus_sha256": "a67e3345bb8977b1621c041da64b84396724be2a30ec8c39ffef4f0f9f83432a",
+  "packaged": {
+    "positive_cases": 9,
+    "negative_cases": 3,
+    "hit_at_3": 1.0,
+    "mrr_at_3": 0.8888888888888888,
+    "negative_passed": 3,
+    "cases": [
+      {
+        "query": "动机期望价值截止",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "steel_konig_2006"
+        ],
+        "paper_ids": [
+          "steel_konig_2006",
+          "steel_2007"
+        ],
+        "chunk_ids": [
+          "steel_konig_2006.p009.tmt_value_expectancy_time",
+          "steel_2007.p002.definition_intention_delay"
+        ],
+        "pages": [
+          [
+            9,
+            10
+          ],
+          [
+            2
+          ]
+        ],
+        "backend": "reviewed_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 11.057
+      },
+      {
+        "query": "情绪调节任务厌恶",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "sirois_pychyl_2013",
+          "tong_2024",
+          "eckert_2016"
+        ],
+        "paper_ids": [
+          "eckert_2016",
+          "sirois_pychyl_2013",
+          "tong_2024"
+        ],
+        "chunk_ids": [
+          "eckert_2016.p074.tolerate_modify_aversive_emotions",
+          "sirois_pychyl_2013.p004.mood_repair_hypothesis",
+          "tong_2024.p001.reappraisal_and_task_aversiveness"
+        ],
+        "pages": [
+          [
+            74,
+            75,
+            76,
+            77
+          ],
+          [
+            4,
+            5,
+            7
+          ],
+          [
+            1,
+            3,
+            4
+          ]
+        ],
+        "backend": "reviewed_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 3.272
+      },
+      {
+        "query": "AI编程探索切换",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "barke_2023"
+        ],
+        "paper_ids": [
+          "barke_2023",
+          "steel_2007"
+        ],
+        "chunk_ids": [
+          "barke_2023.p001.programming_task_context",
+          "steel_2007.p002.definition_intention_delay"
+        ],
+        "pages": [
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ],
+        "backend": "reviewed_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 2.699
+      },
+      {
+        "query": "提醒时机接受打扰",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "nahum_shani_2018",
+          "mark_2008"
+        ],
+        "paper_ids": [
+          "nahum_shani_2018",
+          "barke_2023",
+          "lyngs_2019"
+        ],
+        "chunk_ids": [
+          "nahum_shani_2018.p005.receptivity_and_fatigue",
+          "barke_2023.p021.preserve_programming_flow",
+          "lyngs_2019.p002.digital_tools_design_evidence"
+        ],
+        "pages": [
+          [
+            5
+          ],
+          [
+            21
+          ],
+          [
+            2
+          ]
+        ],
+        "backend": "reviewed_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 2.392
+      },
+      {
+        "query": "引用核验citation",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "gao_2023_alce"
+        ],
+        "paper_ids": [
+          "gao_2023_alce"
+        ],
+        "chunk_ids": [
+          "gao_2023_alce.p004.citation_support"
+        ],
+        "pages": [
+          [
+            4
+          ]
+        ],
+        "backend": "reviewed_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 2.298
+      },
+      {
+        "query": "temporal motivation expectancy",
+        "role": "TMT归因专家",
+        "acceptable_paper_ids": [
+          "steel_konig_2006"
+        ],
+        "paper_ids": [
+          "steel_konig_2006",
+          "steel_2007"
+        ],
+        "chunk_ids": [
+          "steel_konig_2006.p009.tmt_value_expectancy_time",
+          "steel_2007.p001.correlates_not_individual_causes"
+        ],
+        "pages": [
+          [
+            9,
+            10
+          ],
+          [
+            1,
+            4
+          ]
+        ],
+        "backend": "reviewed_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 2.866
+      },
+      {
+        "query": "task aversiveness",
+        "role": "情绪调节归因专家",
+        "acceptable_paper_ids": [
+          "sirois_pychyl_2013",
+          "tong_2024"
+        ],
+        "paper_ids": [
+          "eckert_2016",
+          "sirois_pychyl_2013",
+          "tong_2024"
+        ],
+        "chunk_ids": [
+          "eckert_2016.p074.tolerate_modify_aversive_emotions",
+          "sirois_pychyl_2013.p004.mood_repair_hypothesis",
+          "tong_2024.p001.reappraisal_and_task_aversiveness"
+        ],
+        "pages": [
+          [
+            74,
+            75,
+            76,
+            77
+          ],
+          [
+            4,
+            5,
+            7
+          ],
+          [
+            1,
+            3,
+            4
+          ]
+        ],
+        "backend": "reviewed_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 0.5,
+        "negative_pass": null,
+        "latency_ms": 3.539
+      },
+      {
+        "query": "receptivity fatigue",
+        "role": "intervention",
+        "acceptable_paper_ids": [
+          "nahum_shani_2018"
+        ],
+        "paper_ids": [
+          "nahum_shani_2018",
+          "rozental_2014",
+          "eckert_2016"
+        ],
+        "chunk_ids": [
+          "nahum_shani_2018.p005.receptivity_and_fatigue",
+          "rozental_2014.p007.small_steps_and_stimulus_control",
+          "eckert_2016.p074.tolerate_modify_aversive_emotions"
+        ],
+        "pages": [
+          [
+            5
+          ],
+          [
+            7,
+            8
+          ],
+          [
+            74,
+            75,
+            76,
+            77
+          ]
+        ],
+        "backend": "reviewed_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 3.991
+      },
+      {
+        "query": "多角色强单角色对照",
+        "role": "批评家",
+        "acceptable_paper_ids": [
+          "wang_2024"
+        ],
+        "paper_ids": [
+          "gao_2023_alce",
+          "wang_2024"
+        ],
+        "chunk_ids": [
+          "gao_2023_alce.p004.citation_support",
+          "wang_2024.p001.strong_single_agent"
+        ],
+        "pages": [
+          [
+            4
+          ],
+          [
+            1,
+            5
+          ]
+        ],
+        "backend": "reviewed_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 0.5,
+        "negative_pass": null,
+        "latency_ms": 2.551
+      },
+      {
+        "query": "今天天气怎样",
+        "role": "chat",
+        "acceptable_paper_ids": [],
+        "paper_ids": [],
+        "chunk_ids": [],
+        "pages": [],
+        "backend": "reviewed_fts5",
+        "hit_at_3": null,
+        "reciprocal_rank": 0,
+        "negative_pass": true,
+        "latency_ms": 0.015
+      },
+      {
+        "query": "quantum chromodynamics",
+        "role": "chat",
+        "acceptable_paper_ids": [],
+        "paper_ids": [],
+        "chunk_ids": [],
+        "pages": [],
+        "backend": "reviewed_fts5",
+        "hit_at_3": null,
+        "reciprocal_rank": 0,
+        "negative_pass": true,
+        "latency_ms": 2.283
+      },
+      {
+        "query": "\" OR 1=1 --",
+        "role": "chat",
+        "acceptable_paper_ids": [],
+        "paper_ids": [],
+        "chunk_ids": [],
+        "pages": [],
+        "backend": "reviewed_fts5",
+        "hit_at_3": null,
+        "reciprocal_rank": 0,
+        "negative_pass": true,
+        "latency_ms": 0.195
+      }
+    ]
+  },
+  "local_pdf": {
+    "positive_cases": 9,
+    "negative_cases": 3,
+    "hit_at_3": 1.0,
+    "mrr_at_3": 0.8888888888888888,
+    "negative_passed": 3,
+    "cases": [
+      {
+        "query": "动机期望价值截止",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "steel_konig_2006"
+        ],
+        "paper_ids": [
+          "steel_konig_2006",
+          "steel_2007"
+        ],
+        "chunk_ids": [
+          "steel_konig_2006.p009.c04",
+          "steel_2007.p002.c03"
+        ],
+        "pages": [
+          [
+            9
+          ],
+          [
+            2
+          ]
+        ],
+        "backend": "pdf_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 4.051
+      },
+      {
+        "query": "情绪调节任务厌恶",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "sirois_pychyl_2013",
+          "tong_2024",
+          "eckert_2016"
+        ],
+        "paper_ids": [
+          "eckert_2016",
+          "sirois_pychyl_2013",
+          "tong_2024"
+        ],
+        "chunk_ids": [
+          "eckert_2016.p074.tolerate_modify_aversive_emotions",
+          "sirois_pychyl_2013.p004.mood_repair_hypothesis",
+          "tong_2024.p003.c03"
+        ],
+        "pages": [
+          [
+            74,
+            75,
+            76,
+            77
+          ],
+          [
+            4,
+            5,
+            7
+          ],
+          [
+            3
+          ]
+        ],
+        "backend": "pdf_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 3.213
+      },
+      {
+        "query": "AI编程探索切换",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "barke_2023"
+        ],
+        "paper_ids": [
+          "barke_2023",
+          "steel_2007"
+        ],
+        "chunk_ids": [
+          "barke_2023.p001.programming_task_context",
+          "steel_2007.p002.definition_intention_delay"
+        ],
+        "pages": [
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ],
+        "backend": "pdf_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 4.407
+      },
+      {
+        "query": "提醒时机接受打扰",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "nahum_shani_2018",
+          "mark_2008"
+        ],
+        "paper_ids": [
+          "nahum_shani_2018",
+          "barke_2023",
+          "rozental_2014"
+        ],
+        "chunk_ids": [
+          "nahum_shani_2018.p005.c03",
+          "barke_2023.p021.preserve_programming_flow",
+          "rozental_2014.p008.c03"
+        ],
+        "pages": [
+          [
+            5
+          ],
+          [
+            21
+          ],
+          [
+            8
+          ]
+        ],
+        "backend": "pdf_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 2.833
+      },
+      {
+        "query": "引用核验citation",
+        "role": "chat",
+        "acceptable_paper_ids": [
+          "gao_2023_alce"
+        ],
+        "paper_ids": [
+          "gao_2023_alce"
+        ],
+        "chunk_ids": [
+          "gao_2023_alce.p004.citation_support"
+        ],
+        "pages": [
+          [
+            4
+          ]
+        ],
+        "backend": "pdf_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 1.347
+      },
+      {
+        "query": "temporal motivation expectancy",
+        "role": "TMT归因专家",
+        "acceptable_paper_ids": [
+          "steel_konig_2006"
+        ],
+        "paper_ids": [
+          "steel_konig_2006",
+          "steel_2007"
+        ],
+        "chunk_ids": [
+          "steel_konig_2006.p010.c02",
+          "steel_2007.p001.c01"
+        ],
+        "pages": [
+          [
+            10
+          ],
+          [
+            1
+          ]
+        ],
+        "backend": "pdf_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 3.32
+      },
+      {
+        "query": "task aversiveness",
+        "role": "情绪调节归因专家",
+        "acceptable_paper_ids": [
+          "sirois_pychyl_2013",
+          "tong_2024"
+        ],
+        "paper_ids": [
+          "eckert_2016",
+          "sirois_pychyl_2013",
+          "tong_2024"
+        ],
+        "chunk_ids": [
+          "eckert_2016.p074.tolerate_modify_aversive_emotions",
+          "sirois_pychyl_2013.p004.mood_repair_hypothesis",
+          "tong_2024.p003.c03"
+        ],
+        "pages": [
+          [
+            74,
+            75,
+            76,
+            77
+          ],
+          [
+            4,
+            5,
+            7
+          ],
+          [
+            3
+          ]
+        ],
+        "backend": "pdf_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 0.5,
+        "negative_pass": null,
+        "latency_ms": 3.35
+      },
+      {
+        "query": "receptivity fatigue",
+        "role": "intervention",
+        "acceptable_paper_ids": [
+          "nahum_shani_2018"
+        ],
+        "paper_ids": [
+          "nahum_shani_2018",
+          "rozental_2014"
+        ],
+        "chunk_ids": [
+          "nahum_shani_2018.p005.c03",
+          "rozental_2014.p008.c03"
+        ],
+        "pages": [
+          [
+            5
+          ],
+          [
+            8
+          ]
+        ],
+        "backend": "pdf_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 1.0,
+        "negative_pass": null,
+        "latency_ms": 3.019
+      },
+      {
+        "query": "多角色强单角色对照",
+        "role": "批评家",
+        "acceptable_paper_ids": [
+          "wang_2024"
+        ],
+        "paper_ids": [
+          "gao_2023_alce",
+          "wang_2024"
+        ],
+        "chunk_ids": [
+          "gao_2023_alce.p004.citation_support",
+          "wang_2024.p001.c01"
+        ],
+        "pages": [
+          [
+            4
+          ],
+          [
+            1
+          ]
+        ],
+        "backend": "pdf_fts5",
+        "hit_at_3": true,
+        "reciprocal_rank": 0.5,
+        "negative_pass": null,
+        "latency_ms": 2.464
+      },
+      {
+        "query": "今天天气怎样",
+        "role": "chat",
+        "acceptable_paper_ids": [],
+        "paper_ids": [],
+        "chunk_ids": [],
+        "pages": [],
+        "backend": "reviewed_fts5",
+        "hit_at_3": null,
+        "reciprocal_rank": 0,
+        "negative_pass": true,
+        "latency_ms": 0.013
+      },
+      {
+        "query": "quantum chromodynamics",
+        "role": "chat",
+        "acceptable_paper_ids": [],
+        "paper_ids": [],
+        "chunk_ids": [],
+        "pages": [],
+        "backend": "pdf_fts5",
+        "hit_at_3": null,
+        "reciprocal_rank": 0,
+        "negative_pass": true,
+        "latency_ms": 0.818
+      },
+      {
+        "query": "\" OR 1=1 --",
+        "role": "chat",
+        "acceptable_paper_ids": [],
+        "paper_ids": [],
+        "chunk_ids": [],
+        "pages": [],
+        "backend": "reviewed_fts5",
+        "hit_at_3": null,
+        "reciprocal_rank": 0,
+        "negative_pass": true,
+        "latency_ms": 0.013
+      }
+    ]
+  }
+}

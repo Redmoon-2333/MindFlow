@@ -1,0 +1,123 @@
+[
+  {
+    "paper_id": "steel_2007",
+    "key": "definition_intention_delay",
+    "pages": [2],
+    "summary": "这篇综述把拖延界定为：原本打算采取某项行动，却在预期延迟会使自己处境更差时，仍自愿推迟行动。定义既要求存在原计划，也要求识别延迟及其预期后果。暂缓决定、等待信息和正常任务探索不能仅凭外观相似就归入拖延，分析时需要核对用户意图。",
+    "application": "数据分析师先报告可观察动作。原计划或行动目的未知时，主持人保留探索、计划休息等替代解释，向用户核对任务目标，不把切换次数直接写成拖延事实。",
+    "limits": "这是概念与证据综述中的定义，不是桌面行为诊断标准。它没有提供从鼠标、键盘或窗口日志识别个人主观意图的方法，也未验证本项目分类器。",
+    "terms": "procrastination definition intention voluntary delay exploration task goal",
+    "roles": ["数据分析师", "会诊综合主持人", "批评家", "chat"],
+    "anchor": "Definition of Procrastination"
+  },
+  {
+    "paper_id": "steel_2007",
+    "key": "correlates_not_individual_causes",
+    "pages": [1, 4],
+    "summary": "作者综合六百九十一项相关关系，讨论任务厌恶、任务延迟、自我效能、冲动性以及尽责性相关因素。这里报告的是跨研究的关联模式，相关因素可以帮助组织待核对的问题。任务令人不愉快与偏好及时回报也需结合具体时间情境理解，不能简化成懒惰标签。",
+    "application": "归因角色把文献因素写成候选解释，引用当前行为或用户自报后再说明适配性。批评家检查是否把群体相关因素直接写成当前用户的确定原因。",
+    "limits": "六百九十一是相关关系数量，不是被试数或随机试验数。群体统计没有直接测量本项目用户的动机、情绪或人格，不能支持日志到心理原因的因果断言。",
+    "terms": "task aversiveness self efficacy impulsiveness delay correlates motivation",
+    "roles": ["CBT归因专家", "TMT归因专家", "情绪调节归因专家", "批评家"],
+    "anchor": "691 correlations"
+  },
+  {
+    "paper_id": "steel_konig_2006",
+    "key": "tmt_value_expectancy_time",
+    "pages": [9, 10],
+    "summary": "时间动机理论整合期望、价值和时间因素，并区分收益与损失的作用。某项结果的吸引力依赖当前需要与主观评价，期望也受情境及个体差异影响。奖励距离越远，其当下影响通常越弱；原文完整理论还考虑时间敏感性，不能只用一个简化分数概括所有心理过程。",
+    "application": "动机角色读取程序预计算的分量和来源说明。观测值、行为代理及默认参数分别描述，对未获得用户确认的心理含义提出核对问题，不覆盖程序计算结果。",
+    "limits": "本文是整合理论，未给出把应用切换映射成真实期望、价值或冲动性的通用测量函数。项目分量和主导障碍算法属于工程操作化，需另行验证。",
+    "terms": "temporal motivation theory expectancy value delay sensitivity rewards utility",
+    "roles": ["TMT归因专家", "会诊综合主持人", "chat", "development"],
+    "anchor": "Fundamental Features"
+  },
+  {
+    "paper_id": "steel_konig_2006",
+    "key": "equifinality_and_context",
+    "pages": [11, 12],
+    "summary": "作者用学生写论文的例子展示时间动机理论如何解释任务与社交之间的选择。不同的任务价值、自我效能、冲动性和诱惑距离可以产生相似的延迟表现。行为外观相同不意味着内在原因相同，理解具体人的情境和差异是选择支持方式时的重要条件。",
+    "application": "主持人在多个解释都能对应同一行为时保留替代解释，并说明区分它们所需的用户反馈。动机角色不得仅按最大代理分量宣布已经找出真实原因。",
+    "limits": "这里的学生情境是理论演示，不是本项目用户实验。理论上的多因同果不证明某个具体用户具有这些因素，也不能为缺失的心理测量填补证据。",
+    "terms": "individual differences self efficacy task aversiveness alternative explanation context",
+    "roles": ["TMT归因专家", "会诊综合主持人", "批评家", "development"],
+    "anchor": "Differences in self-efficacy"
+  },
+  {
+    "paper_id": "sirois_pychyl_2013",
+    "key": "mood_repair_hypothesis",
+    "pages": [4, 5, 7],
+    "summary": "这篇理论综述把部分拖延理解为优先修复眼前心情而延后长期目标的过程。令人厌恶、无聊或缺少结构的任务可能带来不适，回避任务则可能暂时改善感受。作者以此解释当前自我与未来自我的目标冲突，但没有主张每次任务推迟都由同一种情绪机制引起。",
+    "application": "情绪角色把短期情绪修复作为待核对假设。用户没有自报不适时，先问当前任务哪里难以开始；建议围绕经用户确认的困难，避免直接赋予焦虑或抑郁标签。",
+    "limits": "这是对既有研究的理论整合，不是桌面日志的情绪识别实验。行为切换不能确定任务厌恶或回避动机，相关心理状态需要用户自报或合适的独立测量。",
+    "terms": "emotion regulation short term mood repair task aversiveness avoidance future self",
+    "roles": ["情绪调节归因专家", "CBT归因专家", "chat"],
+    "anchor": "short-term mood repair"
+  },
+  {
+    "paper_id": "nahum_shani_2018",
+    "key": "receptivity_and_fatigue",
+    "pages": [5],
+    "summary": "即时自适应干预需要关注用户当下是否有意愿和能力接收、处理及使用支持。论文将这种短暂状态与介入参与度、介入疲劳区分开来，说明接受状态会随内部感受和外部环境变化。需要帮助与适合被打断并非同一件事，支持本身也可能占用时间和注意力。",
+    "application": "提醒策略先检查工作态、免打扰和冷却；文案角色遵守这些结果。用户忽略通知时记录反馈，不把忽略解释成意志力不足，也不自动提高发送频率。",
+    "limits": "该设计框架主要面向移动健康，未直接验证桌面专注提醒。点击、接受或发送较少都不能单独代表真实任务改善，需分别测量打扰负担和任务结果。",
+    "terms": "just in time adaptive intervention receptivity engagement fatigue burden notification",
+    "roles": ["intervention", "会诊综合主持人", "批评家", "development"],
+    "anchor": "receptivity"
+  },
+  {
+    "paper_id": "nahum_shani_2018",
+    "key": "no_intervention_is_valid",
+    "pages": [3, 6, 7],
+    "summary": "论文把决策点、干预选项、适配变量和决策规则与近端、远端结果联系起来。每次决策不一定发送提醒，规则可以选择不提供支持。设计应明确何种状态需要何种行动、行动想改善什么结果，而不是在每个检测点都输出建议或把提醒发送量当作成效。",
+    "application": "将不提醒保留为策略选项，代码负责状态与频率门。生成模型只为获准的候选动作写文案；研究记录分别保存触发原因、是否发送、用户反应和后续任务结果。",
+    "limits": "框架说明如何设计适配策略，不提供适用于本项目的现成阈值。使用某种采样算法或实现六个组成部分，也不等于已经证明提醒具有因果效果。",
+    "terms": "decision points tailoring variables decision rules intervention options provide nothing",
+    "roles": ["intervention", "会诊综合主持人", "development"],
+    "anchor": "Provide nothing"
+  },
+  {
+    "paper_id": "tong_2024",
+    "key": "reappraisal_and_task_aversiveness",
+    "pages": [1, 3, 4],
+    "summary": "研究将六十八名高拖延大学生随机分成两组，跟踪七天内对真实任务的十四次评定。作者比较积极重评和对照策略，观察到执行意愿及任务厌恶的组间变化，并考察任务厌恶在其中的中介作用。测量依赖参与者对具体任务的报告，执行意愿是主要拖延改善指标。",
+    "application": "情绪或认知角色在用户确认任务厌恶后，可提供重新看待任务意义或缩小启动步骤的候选建议。自报反馈与日志特征分别保存，避免把执行意愿和实际完成混为一谈。",
+    "limits": "样本为高拖延大学生，单人多项任务和重复测量不等于更多独立被试。执行意愿及任务感受的改善不能直接当作客观生产率提升，更不能代替本项目效果验证。",
+    "terms": "cognitive reappraisal task aversiveness execution willingness experience sampling procrastination",
+    "roles": ["情绪调节归因专家", "CBT归因专家", "chat", "development"],
+    "anchor": "执行意愿"
+  },
+  {
+    "paper_id": "hofmann_2012",
+    "key": "collaborative_cognitive_behavioral_scope",
+    "pages": [1, 2],
+    "summary": "该综述识别二百六十九项认知行为疗法元分析，重点介绍其中一百零六项。原文说明认知行为干预包含认知、行为和情绪等技术，强调参与者在协作问题解决中检验想法并调整行为。不同问题有不同治疗方案，具体证据需对应人群、干预内容及评价结果。",
+    "application": "认知角色围绕用户自己报告的任务理解提出可检验解释和小步骤，给用户纠正与拒绝的空间。对外描述为受认知行为方法启发的任务支持，不将角色名称写成治疗资质。",
+    "limits": "综述讨论特定心理问题的专业干预，不能证明自动化聊天或桌面助手能治疗。元分析数量不是被试数量，也没有验证本项目从行为日志识别认知扭曲的能力。",
+    "terms": "cognitive behavioral therapy collaborative problem solving thoughts behavior evidence scope",
+    "roles": ["CBT归因专家", "批评家", "chat", "development"],
+    "anchor": "collaborative problem-solving process"
+  },
+  {
+    "paper_id": "rozental_2014",
+    "key": "small_steps_and_stimulus_control",
+    "pages": [7, 8],
+    "summary": "这篇叙述性综述讨论按个体情境理解拖延，并整理刺激控制、日程、具体目标和分阶段行动等行为方法。较大的承诺可以拆成较小且可检查的步骤，启动努力应结合个人愿意接受的程度。综述也强调不同维持因素可能对应不同支持方式，不能向所有人给出同一套指令。",
+    "application": "干预文案一次给一个符合当前任务的小动作，并保留用户选择。关闭无关通知、限定启动步骤等只作为可选建议，不能让模型自行修改设备设置或扩大监控。",
+    "limits": "这是一篇叙述性临床综述，行为方法的归纳不等于每种方法均有充分随机试验证据。不能把举例时长当成统一有效剂量，也不能据此承诺本产品疗效。",
+    "terms": "stimulus control behavioral intervention goal setting subgoals minimal effort routine",
+    "roles": ["CBT归因专家", "intervention", "chat"],
+    "anchor": "Behavioral Interventions"
+  },
+  {
+    "paper_id": "eckert_2016",
+    "key": "tolerate_modify_aversive_emotions",
+    "pages": [74, 75, 76, 77],
+    "summary": "博士论文所载作者稿的第三项研究采用随机候补对照，分析八十三名完成前后测的参与者。两周网络训练先让人选择容易拖延的任务，再辨认、容纳并尝试调整任务引起的不适，随后评价应对情况。论文报告自评拖延的变化；这一训练包含反复练习，不能等同一条提醒。",
+    "application": "情绪角色在用户确认不适后提供自愿选择的短动作，并询问实际体验。容纳和调整情绪作为不同候选，不强迫积极化；系统记录行动与反馈，不能声称一次文案完成训练。",
+    "limits": "来源是博士论文载体中的作者稿，对应物理页七十四至七十七。研究主要为成年在职参与者，采用自报和完成者分析；候补对照结果不能直接外推至校园桌面助手。",
+    "terms": "emotion regulation tolerate modify aversive emotions procrastination web intervention",
+    "roles": ["情绪调节归因专家", "intervention", "chat"],
+    "anchor": "two-week web-based intervention"
+  }
+]
