@@ -49,17 +49,16 @@ Handler = Callable[[httpx.Request], Awaitable[httpx.Response]]
 def make_settings(**overrides: object) -> LLMSettings:
     """ECNU-flavoured settings for tests (override any field by keyword).
 
-    ``ecnu_compat_enabled`` is what makes these settings mean anything: since
-    the production L1 is pinned to DeepSeek direct, ``l1_target()`` would
-    otherwise replace the campus URL, model and key configured here.
-    ``reasoning_effort="max"`` is the campus gateway's own default tier, kept
-    explicit because the application default is now DeepSeek's ``"high"``.
+    ``ecnu_compat_enabled`` explicitly exercises the legacy ECNU triple.
+    ``service="deepseek"`` is explicit so these tests do not depend on the
+    application's ChatECNU default.
     """
     defaults: dict[str, object] = {
         "api_key": "test-key",
         "base_url": ECNU_BASE_URL,
         "model": "ecnu-max",
         "provider": "ecnu",
+        "service": "deepseek",
         "ecnu_compat_enabled": True,
         "reasoning_effort": "max",
         "timeout_s": 30,
@@ -83,6 +82,7 @@ def make_generic_settings(**overrides: object) -> LLMSettings:
         "base_url": GENERIC_BASE_URL,
         "model": "deepseek-chat",
         "provider": "generic",
+        "service": "deepseek",
         "timeout_s": 30,
         "max_retries": 0,
         "max_concurrent_requests": 1,

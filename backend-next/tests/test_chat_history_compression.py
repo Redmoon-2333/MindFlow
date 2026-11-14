@@ -138,7 +138,8 @@ def _summary_messages(payload: list[Any]) -> list[Any]:
     """Payload messages that are history summaries (not the system prompt)."""
     return [
         message for message in payload
-        if isinstance(message, SystemMessage) and message.content != CHAT_SYSTEM_PROMPT
+        if isinstance(message, SystemMessage)
+        and str(message.content).startswith(_SUMMARY_HEADER)
     ]
 
 
@@ -171,7 +172,8 @@ class TestPayloadShape:
         payload = model.payloads[-1]
 
         assert isinstance(payload[0], SystemMessage)
-        assert payload[0].content == CHAT_SYSTEM_PROMPT
+        assert str(payload[0].content).startswith(CHAT_SYSTEM_PROMPT + "\n\n")
+        assert "## research_context\n" in str(payload[0].content)
 
         summaries = _summary_messages(payload)
         assert len(summaries) == 1

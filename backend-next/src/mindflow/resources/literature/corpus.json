@@ -1,0 +1,1019 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-11-13",
+  "scope": "Original Chinese paraphrases; page-verified; not original PDF quotations.",
+  "papers": [
+    {
+      "paper_id": "steel_2007",
+      "title": "The nature of procrastination: A meta-analytic and theoretical review of quintessential self-regulatory failure.",
+      "doi": "10.1037/0033-2909.133.1.65",
+      "pdf_sha256": "b6e94a2ffbf1e6c4b32832589ba0352447e9f64d0e58be7427479e1d02e962d9",
+      "authors": "Piers Steel",
+      "year": 2007,
+      "filename": "Steel_2007_Nature_of_Procrastination.pdf",
+      "url": "https://doi.org/10.1037/0033-2909.133.1.65",
+      "download_url": null,
+      "pages": 30,
+      "bytes": 341319,
+      "download_status": "reused_local",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        1,
+        2,
+        4
+      ]
+    },
+    {
+      "paper_id": "steel_konig_2006",
+      "title": "Integrating Theories of Motivation",
+      "doi": "10.5465/amr.2006.22527462",
+      "pdf_sha256": "e217007b470011b8b1f5138a95acbe3626977cb90ba1f8c35ca20c8f6bea9979",
+      "authors": "Piers Steel; Cornelius J. König",
+      "year": 2006,
+      "filename": "Steel_Konig_2006_Integrating_Theories_of_Motivation.pdf",
+      "url": "https://goal-lab.psych.umn.edu/orgPsych/readings/12.%20Judgment%20%26%20Decision%20Making/Steel%20%26%20Konig%20%282006%29.pdf",
+      "download_url": "https://goal-lab.psych.umn.edu/orgPsych/readings/12.%20Judgment%20%26%20Decision%20Making/Steel%20%26%20Konig%20%282006%29.pdf",
+      "pages": 26,
+      "bytes": 353022,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        9,
+        10,
+        11,
+        12
+      ]
+    },
+    {
+      "paper_id": "sirois_pychyl_2013",
+      "title": "Procrastination and the Priority of Short‐Term Mood Regulation: Consequences for Future Self",
+      "doi": "10.1111/spc3.12011",
+      "pdf_sha256": "e62bd7b0ca64efca0725ed35d91882427c81f2c13a014a405b29beaba6c35035",
+      "authors": "Fuschia Sirois; Timothy Pychyl",
+      "year": 2013,
+      "filename": "Sirois_Pychyl_2013_Short_Term_Mood_Regulation.pdf",
+      "url": "https://eprints.whiterose.ac.uk/91793/1/Compass%20Paper%20revision%20FINAL.pdf",
+      "download_url": "https://eprints.whiterose.ac.uk/id/eprint/91793/1/Compass%20Paper%20revision%20FINAL.pdf",
+      "pages": 32,
+      "bytes": 436404,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        4,
+        5,
+        7
+      ]
+    },
+    {
+      "paper_id": "nahum_shani_2018",
+      "title": "Just-in-Time Adaptive Interventions (JITAIs) in Mobile Health: Key Components and Design Principles for Ongoing Health Behavior Support",
+      "doi": "10.1007/s12160-016-9830-8",
+      "pdf_sha256": "ddd915f2ce6368f09f0fef21cb6606e3835d54c470b8f9927f088ba20409595f",
+      "authors": "Inbal Nahum-Shani; Shawna N Smith; Bonnie J Spring; Linda M Collins; Katie Witkiewitz; Ambuj Tewari; Susan A Murphy",
+      "year": 2018,
+      "filename": "Nahum_Shani_2018_JITAI.pdf",
+      "url": "https://dept.stat.lsa.umich.edu/~tewaria/research/nahum-shani16just-in-time.pdf",
+      "download_url": "https://dept.stat.lsa.umich.edu/~tewaria/research/nahum-shani16just-in-time.pdf",
+      "pages": 17,
+      "bytes": 524611,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        3,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "paper_id": "tong_2024",
+      "title": "情绪调节改善拖延行为的认知机制：任务厌恶中介作用",
+      "doi": "10.3724/SP.J.1041.2024.00458",
+      "pdf_sha256": "e89fdb1b39a25a4111e8832640a7350effaeab2c4735d04558463ee6db33ee95",
+      "authors": "童廷婷; 白幼玲; 冯廷勇",
+      "year": 2024,
+      "filename": "Tong_2024_Procrastination_Time_Decision.pdf",
+      "url": "https://journal.psych.ac.cn/xlxb/CN/article/downloadArticleFile.do?attachType=PDF&id=15727",
+      "download_url": "https://journal.psych.ac.cn/xlxb/CN/article/downloadArticleFile.do?attachType=PDF&id=15727",
+      "pages": 11,
+      "bytes": 566878,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        1,
+        3,
+        4
+      ]
+    },
+    {
+      "paper_id": "hofmann_2012",
+      "title": "The Efficacy of Cognitive Behavioral Therapy: A Review of Meta-analyses",
+      "doi": "10.1007/s10608-012-9476-1",
+      "pdf_sha256": "b492f41aa6a57f079cd19e7ad8eb7cfd326e6a225a32818e2508e278d51ba334",
+      "authors": "Stefan G. Hofmann; Anu Asnaani; Imke J. J. Vonk; Alice T. Sawyer; Angela Fang",
+      "year": 2012,
+      "filename": "Hofmann_2012_Efficacy_of_CBT.pdf",
+      "url": "https://doi.org/10.1007/s10608-012-9476-1",
+      "download_url": null,
+      "pages": 14,
+      "bytes": 260624,
+      "download_status": "reused_local",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        1,
+        2
+      ]
+    },
+    {
+      "paper_id": "rozental_2014",
+      "title": "Understanding and Treating Procrastination: A Review of a Common Self-Regulatory Failure",
+      "doi": "10.4236/psych.2014.513160",
+      "pdf_sha256": "8cd6353b39fff217d2740147f73cfcc859fbc5bcc9294f47c0987ca9a1a58cf5",
+      "authors": "Alexander Rozental; Per Carlbring",
+      "year": 2014,
+      "filename": "Rozental_2014_Understanding_Treating_Procrastination.pdf",
+      "url": "https://doi.org/10.4236/psych.2014.513160",
+      "download_url": null,
+      "pages": 16,
+      "bytes": 2637982,
+      "download_status": "reused_local",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        7,
+        8
+      ]
+    },
+    {
+      "paper_id": "eckert_2016",
+      "title": "Overcome procrastination: Enhancing emotion regulation skills reduce procrastination",
+      "doi": "10.1016/j.lindif.2016.10.001",
+      "pdf_sha256": "7c006cc3b92ba41bd903705118d0cca736aa77614c50b9da21a01bbe600e219f",
+      "authors": "Marcus Eckert; David D Ebert; Dirk Lehr; Bernhard Sieland; Matthias Berking",
+      "year": 2016,
+      "filename": "Eckert_2016_Emotion_Regulation_Procrastination.pdf",
+      "url": "https://fox.leuphana.de/portal/files/21591459/repo_8955445_oa_by.pdf",
+      "download_url": "https://pubdata.leuphana.de/server/api/core/bitstreams/98f76140-5eed-40fe-9d99-065c6dfd4dab/content",
+      "pages": 190,
+      "bytes": 2134947,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "doctoral_thesis_submitted_manuscript",
+      "indexed_pdf_pages": [
+        74,
+        75,
+        76,
+        77
+      ]
+    },
+    {
+      "paper_id": "barke_2023",
+      "title": "Grounded Copilot: How Programmers Interact with Code-Generating Models",
+      "doi": "10.1145/3586030",
+      "pdf_sha256": "3dd61259716f0fe735ed167071e7a508817e63d9c94df064086c75dcccfa7836",
+      "authors": "Shraddha Barke; Michael B. James; Nadia Polikarpova",
+      "year": 2023,
+      "filename": "Barke_2023_Grounded_Copilot.pdf",
+      "url": "https://cseweb.ucsd.edu/~npolikarpova/publications/oopsla23-copilot.pdf",
+      "download_url": "https://cseweb.ucsd.edu/~npolikarpova/publications/oopsla23-copilot.pdf",
+      "pages": 27,
+      "bytes": 1632442,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        1,
+        21
+      ]
+    },
+    {
+      "paper_id": "lyngs_2019",
+      "title": "Self-Control in Cyberspace",
+      "doi": "10.1145/3290605.3300361",
+      "pdf_sha256": "f316028b2709e62c7e081b3099b742d418b7940c535bd011b45febad40ed64c4",
+      "authors": "Ulrik Lyngs; Kai Lukoff; Petr Slovak; Reuben Binns; Adam Slack; Michael Inzlicht; Max Van Kleek; Nigel Shadbolt",
+      "year": 2019,
+      "filename": "Lyngs_2019_Digital_Self_Control_Tools.pdf",
+      "url": "https://kclpure.kcl.ac.uk/ws/files/105313743/Lyngs2019_preprint_jan_30_1_.pdf",
+      "download_url": "https://kclpure.kcl.ac.uk/ws/files/105313743/Lyngs2019_preprint_jan_30_1_.pdf",
+      "pages": 19,
+      "bytes": 1865948,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        2,
+        6
+      ]
+    },
+    {
+      "paper_id": "mark_2008",
+      "title": "The cost of interrupted work",
+      "doi": "10.1145/1357054.1357072",
+      "pdf_sha256": "e562bd16eca40a2a59499d79b15d5577d1ea3365401a8b6cb8e834187fb7fb8b",
+      "authors": "Gloria Mark; Daniela Gudith; Ulrich Klocke",
+      "year": 2008,
+      "filename": "Mark_2008_Cost_of_Interrupted_Work.pdf",
+      "url": "https://www.ics.uci.edu/~gmark/chi08-mark.pdf",
+      "download_url": "https://ics.uci.edu/~gmark/chi08-mark.pdf",
+      "pages": 4,
+      "bytes": 269479,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        3
+      ]
+    },
+    {
+      "paper_id": "biedermann_2024",
+      "title": "Use of digital self-control tools in higher education – a survey study",
+      "doi": "10.1007/s10639-023-12198-2",
+      "pdf_sha256": "67ebd5685a3e76c0fa32b426ca38fd4740d6ee0c577b1178ad34a234de559046",
+      "authors": "Daniel Biedermann; Stella Kister; Jasmin Breitwieser; Joshua Weidlich; Hendrik Drachsler",
+      "year": 2024,
+      "filename": "Biedermann_2024_Digital_Self_Control.pdf",
+      "url": "https://link.springer.com/content/pdf/10.1007/s10639-023-12198-2.pdf",
+      "download_url": "https://link.springer.com/content/pdf/10.1007/s10639-023-12198-2.pdf",
+      "pages": 22,
+      "bytes": 1284472,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        14,
+        17
+      ]
+    },
+    {
+      "paper_id": "kovacs_2019",
+      "title": "Conservation of Procrastination",
+      "doi": "10.1145/3290605.3300560",
+      "pdf_sha256": "8cfd030020b921f50c26fedf4037ec53a08f725a73170181204dab935d1459ec",
+      "authors": "Geza Kovacs; Drew Mylander Gregory; Zilin Ma; Zhengxuan Wu; Golrokh Emami; Jacob Ray; Michael S. Bernstein",
+      "year": 2019,
+      "filename": "Kovacs_2019_Conservation_of_Procrastination.pdf",
+      "url": "https://hci.stanford.edu/publications/2019/conservation/conservation-chi2019.pdf",
+      "download_url": "https://hci.stanford.edu/publications/2019/conservation/conservation-chi2019.pdf",
+      "pages": 12,
+      "bytes": 8259584,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        1
+      ]
+    },
+    {
+      "paper_id": "lewis_2020",
+      "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+      "doi": "arXiv:2005.11401",
+      "pdf_sha256": "720f67eb41aa49995d5fcf3d24ac7efe431fbe08ce109b14b5a9fa4d4ebe2f8b",
+      "authors": "Patrick Lewis et al.",
+      "year": 2020,
+      "filename": "Lewis_2020_Retrieval_Augmented_Generation.pdf",
+      "url": "https://papers.nips.cc/paper_files/paper/2020/file/6b493230205f780e1bc26945df7481e5-Paper.pdf",
+      "download_url": "https://papers.nips.cc/paper_files/paper/2020/file/6b493230205f780e1bc26945df7481e5-Paper.pdf",
+      "pages": 16,
+      "bytes": 946122,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        2,
+        3
+      ]
+    },
+    {
+      "paper_id": "robertson_2009",
+      "title": "The Probabilistic Relevance Framework: BM25 and Beyond",
+      "doi": "10.1561/1500000019",
+      "pdf_sha256": "11a9ef825dfd3fe50c8621273d02ea26b6f502b60379db9519d6c5c10de4fd25",
+      "authors": "Stephen Robertson; Hugo Zaragoza",
+      "year": 2009,
+      "filename": "Robertson_2009_BM25_and_Beyond.pdf",
+      "url": "https://www.staff.city.ac.uk/~sbrp622/papers/foundations_bm25_review.pdf",
+      "download_url": "https://www.staff.city.ac.uk/~sbrp622/papers/foundations_bm25_review.pdf",
+      "pages": 59,
+      "bytes": 423997,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        27,
+        29,
+        30
+      ]
+    },
+    {
+      "paper_id": "gao_2023_alce",
+      "title": "Enabling Large Language Models to Generate Text with Citations",
+      "doi": "10.18653/v1/2023.emnlp-main.398",
+      "pdf_sha256": "ae9868f07f0f7ffaae5346778f79b7827d9ec6b13b1e6aae4dff6b2ffc37a2e1",
+      "authors": "Tianyu Gao; Howard Yen; Jiatong Yu; Danqi Chen",
+      "year": 2023,
+      "filename": "Gao_2023_ALCE_Text_with_Citations.pdf",
+      "url": "https://aclanthology.org/2023.emnlp-main.398.pdf",
+      "download_url": "https://aclanthology.org/2023.emnlp-main.398.pdf",
+      "pages": 24,
+      "bytes": 481920,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        4
+      ]
+    },
+    {
+      "paper_id": "es_2024",
+      "title": "RAGAs: Automated Evaluation of Retrieval Augmented Generation",
+      "doi": "10.18653/v1/2024.eacl-demo.16",
+      "pdf_sha256": "e2038b8cff7574bf5302e1ceb6bfbac6d2471c352073b27f21460910936febce",
+      "authors": "Shahul Es; Jithin James; Luis Espinosa Anke; Steven Schockaert",
+      "year": 2024,
+      "filename": "Es_2024_RAGAS.pdf",
+      "url": "https://aclanthology.org/2024.eacl-demo.16.pdf",
+      "download_url": "https://aclanthology.org/2024.eacl-demo.16.pdf",
+      "pages": 9,
+      "bytes": 377888,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        3,
+        4
+      ]
+    },
+    {
+      "paper_id": "liu_2024",
+      "title": "Lost in the Middle: How Language Models Use Long Contexts",
+      "doi": "10.1162/tacl_a_00638",
+      "pdf_sha256": "f37f6fabe0fe0d8c73b67579cd115dbf14e282cfb7b7af655ae8109638402c9b",
+      "authors": "Nelson F. Liu; Kevin Lin; John Hewitt; Ashwin Paranjape; Michele Bevilacqua; Fabio Petroni; Percy Liang",
+      "year": 2024,
+      "filename": "Liu_2024_Lost_in_the_Middle.pdf",
+      "url": "https://aclanthology.org/2024.tacl-1.9.pdf",
+      "download_url": "https://aclanthology.org/2024.tacl-1.9.pdf",
+      "pages": 17,
+      "bytes": 2609413,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        1
+      ]
+    },
+    {
+      "paper_id": "asai_2024",
+      "title": "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection",
+      "doi": "arXiv:2310.11511",
+      "pdf_sha256": "d9eaa1398abac0df67a9d0933a5bf8b6d9d83d2e72da2a486073cd842dd52978",
+      "authors": "Akari Asai; Zeqiu Wu; Yizhong Wang; Avirup Sil; Hannaneh Hajishirzi",
+      "year": 2024,
+      "filename": "Asai_2024_Self_RAG.pdf",
+      "url": "https://arxiv.org/pdf/2310.11511",
+      "download_url": "https://arxiv.org/pdf/2310.11511",
+      "pages": 30,
+      "bytes": 1405127,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        3
+      ]
+    },
+    {
+      "paper_id": "yan_2024",
+      "title": "Corrective Retrieval Augmented Generation",
+      "doi": "arXiv:2401.15884",
+      "pdf_sha256": "975aa1fd3c1b603126e93ff99d6504858b61301bf1d34c9df88ebe53a0b026cb",
+      "authors": "Shi-Qi Yan; Jia-Chen Gu; Yun Zhu; Zhen-Hua Ling",
+      "year": 2024,
+      "filename": "Yan_2024_Corrective_RAG.pdf",
+      "url": "https://arxiv.org/pdf/2401.15884",
+      "download_url": "https://arxiv.org/pdf/2401.15884",
+      "pages": 16,
+      "bytes": 667756,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        3
+      ]
+    },
+    {
+      "paper_id": "wang_2024",
+      "title": "Rethinking the Bounds of LLM Reasoning: Are Multi-Agent Discussions the Key?",
+      "doi": "10.18653/v1/2024.acl-long.331",
+      "pdf_sha256": "f4d1dfc2028491bc1745705a01ff887a18e16ff5995f053365c7de08a1037589",
+      "authors": "Qineng Wang; Zihao Wang; Ying Su; Hanghang Tong; Yangqiu Song",
+      "year": 2024,
+      "filename": "Wang_2024_Multi_Agent_Discussions.pdf",
+      "url": "https://aclanthology.org/2024.acl-long.331.pdf",
+      "download_url": "https://aclanthology.org/2024.acl-long.331.pdf",
+      "pages": 26,
+      "bytes": 1250295,
+      "download_status": "downloaded",
+      "license": "Local research copy; redistribution permission not assumed. Do not commit full PDF without a verified license.",
+      "source_version": "downloaded_research_copy",
+      "indexed_pdf_pages": [
+        1,
+        5
+      ]
+    }
+  ],
+  "passages": [
+    {
+      "paper_id": "steel_2007",
+      "title": "The nature of procrastination: A meta-analytic and theoretical review of quintessential self-regulatory failure.",
+      "doi": "10.1037/0033-2909.133.1.65",
+      "pdf_sha256": "b6e94a2ffbf1e6c4b32832589ba0352447e9f64d0e58be7427479e1d02e962d9",
+      "chunk_id": "steel_2007.p002.definition_intention_delay",
+      "pages": [
+        2
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "这篇综述把拖延界定为：原本打算采取某项行动，却在预期延迟会使自己处境更差时，仍自愿推迟行动。定义既要求存在原计划，也要求识别延迟及其预期后果。暂缓决定、等待信息和正常任务探索不能仅凭外观相似就归入拖延，分析时需要核对用户意图。",
+      "application": "数据分析师先报告可观察动作。原计划或行动目的未知时，主持人保留探索、计划休息等替代解释，向用户核对任务目标，不把切换次数直接写成拖延事实。",
+      "limits": "这是概念与证据综述中的定义，不是桌面行为诊断标准。它没有提供从鼠标、键盘或窗口日志识别个人主观意图的方法，也未验证本项目分类器。",
+      "terms": "procrastination definition intention voluntary delay exploration task goal",
+      "roles": [
+        "数据分析师",
+        "会诊综合主持人",
+        "批评家",
+        "chat"
+      ],
+      "anchor": "Definition of Procrastination"
+    },
+    {
+      "paper_id": "steel_2007",
+      "title": "The nature of procrastination: A meta-analytic and theoretical review of quintessential self-regulatory failure.",
+      "doi": "10.1037/0033-2909.133.1.65",
+      "pdf_sha256": "b6e94a2ffbf1e6c4b32832589ba0352447e9f64d0e58be7427479e1d02e962d9",
+      "chunk_id": "steel_2007.p001.correlates_not_individual_causes",
+      "pages": [
+        1,
+        4
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "作者综合六百九十一项相关关系，讨论任务厌恶、任务延迟、自我效能、冲动性以及尽责性相关因素。这里报告的是跨研究的关联模式，相关因素可以帮助组织待核对的问题。任务令人不愉快与偏好及时回报也需结合具体时间情境理解，不能简化成懒惰标签。",
+      "application": "归因角色把文献因素写成候选解释，引用当前行为或用户自报后再说明适配性。批评家检查是否把群体相关因素直接写成当前用户的确定原因。",
+      "limits": "六百九十一是相关关系数量，不是被试数或随机试验数。群体统计没有直接测量本项目用户的动机、情绪或人格，不能支持日志到心理原因的因果断言。",
+      "terms": "task aversiveness self efficacy impulsiveness delay correlates motivation",
+      "roles": [
+        "CBT归因专家",
+        "TMT归因专家",
+        "情绪调节归因专家",
+        "批评家"
+      ],
+      "anchor": "691 correlations"
+    },
+    {
+      "paper_id": "steel_konig_2006",
+      "title": "Integrating Theories of Motivation",
+      "doi": "10.5465/amr.2006.22527462",
+      "pdf_sha256": "e217007b470011b8b1f5138a95acbe3626977cb90ba1f8c35ca20c8f6bea9979",
+      "chunk_id": "steel_konig_2006.p009.tmt_value_expectancy_time",
+      "pages": [
+        9,
+        10
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "时间动机理论整合期望、价值和时间因素，并区分收益与损失的作用。某项结果的吸引力依赖当前需要与主观评价，期望也受情境及个体差异影响。奖励距离越远，其当下影响通常越弱；原文完整理论还考虑时间敏感性，不能只用一个简化分数概括所有心理过程。",
+      "application": "动机角色读取程序预计算的分量和来源说明。观测值、行为代理及默认参数分别描述，对未获得用户确认的心理含义提出核对问题，不覆盖程序计算结果。",
+      "limits": "本文是整合理论，未给出把应用切换映射成真实期望、价值或冲动性的通用测量函数。项目分量和主导障碍算法属于工程操作化，需另行验证。",
+      "terms": "temporal motivation theory expectancy value delay sensitivity rewards utility",
+      "roles": [
+        "TMT归因专家",
+        "会诊综合主持人",
+        "chat",
+        "development"
+      ],
+      "anchor": "Fundamental Features"
+    },
+    {
+      "paper_id": "steel_konig_2006",
+      "title": "Integrating Theories of Motivation",
+      "doi": "10.5465/amr.2006.22527462",
+      "pdf_sha256": "e217007b470011b8b1f5138a95acbe3626977cb90ba1f8c35ca20c8f6bea9979",
+      "chunk_id": "steel_konig_2006.p011.equifinality_and_context",
+      "pages": [
+        11,
+        12
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "作者用学生写论文的例子展示时间动机理论如何解释任务与社交之间的选择。不同的任务价值、自我效能、冲动性和诱惑距离可以产生相似的延迟表现。行为外观相同不意味着内在原因相同，理解具体人的情境和差异是选择支持方式时的重要条件。",
+      "application": "主持人在多个解释都能对应同一行为时保留替代解释，并说明区分它们所需的用户反馈。动机角色不得仅按最大代理分量宣布已经找出真实原因。",
+      "limits": "这里的学生情境是理论演示，不是本项目用户实验。理论上的多因同果不证明某个具体用户具有这些因素，也不能为缺失的心理测量填补证据。",
+      "terms": "individual differences self efficacy task aversiveness alternative explanation context",
+      "roles": [
+        "TMT归因专家",
+        "会诊综合主持人",
+        "批评家",
+        "development"
+      ],
+      "anchor": "Differences in self-efficacy"
+    },
+    {
+      "paper_id": "sirois_pychyl_2013",
+      "title": "Procrastination and the Priority of Short‐Term Mood Regulation: Consequences for Future Self",
+      "doi": "10.1111/spc3.12011",
+      "pdf_sha256": "e62bd7b0ca64efca0725ed35d91882427c81f2c13a014a405b29beaba6c35035",
+      "chunk_id": "sirois_pychyl_2013.p004.mood_repair_hypothesis",
+      "pages": [
+        4,
+        5,
+        7
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "这篇理论综述把部分拖延理解为优先修复眼前心情而延后长期目标的过程。令人厌恶、无聊或缺少结构的任务可能带来不适，回避任务则可能暂时改善感受。作者以此解释当前自我与未来自我的目标冲突，但没有主张每次任务推迟都由同一种情绪机制引起。",
+      "application": "情绪角色把短期情绪修复作为待核对假设。用户没有自报不适时，先问当前任务哪里难以开始；建议围绕经用户确认的困难，避免直接赋予焦虑或抑郁标签。",
+      "limits": "这是对既有研究的理论整合，不是桌面日志的情绪识别实验。行为切换不能确定任务厌恶或回避动机，相关心理状态需要用户自报或合适的独立测量。",
+      "terms": "emotion regulation short term mood repair task aversiveness avoidance future self",
+      "roles": [
+        "情绪调节归因专家",
+        "CBT归因专家",
+        "chat"
+      ],
+      "anchor": "short-term mood repair"
+    },
+    {
+      "paper_id": "nahum_shani_2018",
+      "title": "Just-in-Time Adaptive Interventions (JITAIs) in Mobile Health: Key Components and Design Principles for Ongoing Health Behavior Support",
+      "doi": "10.1007/s12160-016-9830-8",
+      "pdf_sha256": "ddd915f2ce6368f09f0fef21cb6606e3835d54c470b8f9927f088ba20409595f",
+      "chunk_id": "nahum_shani_2018.p005.receptivity_and_fatigue",
+      "pages": [
+        5
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "即时自适应干预需要关注用户当下是否有意愿和能力接收、处理及使用支持。论文将这种短暂状态与介入参与度、介入疲劳区分开来，说明接受状态会随内部感受和外部环境变化。需要帮助与适合被打断并非同一件事，支持本身也可能占用时间和注意力。",
+      "application": "提醒策略先检查工作态、免打扰和冷却；文案角色遵守这些结果。用户忽略通知时记录反馈，不把忽略解释成意志力不足，也不自动提高发送频率。",
+      "limits": "该设计框架主要面向移动健康，未直接验证桌面专注提醒。点击、接受或发送较少都不能单独代表真实任务改善，需分别测量打扰负担和任务结果。",
+      "terms": "just in time adaptive intervention receptivity engagement fatigue burden notification",
+      "roles": [
+        "intervention",
+        "会诊综合主持人",
+        "批评家",
+        "development"
+      ],
+      "anchor": "receptivity"
+    },
+    {
+      "paper_id": "nahum_shani_2018",
+      "title": "Just-in-Time Adaptive Interventions (JITAIs) in Mobile Health: Key Components and Design Principles for Ongoing Health Behavior Support",
+      "doi": "10.1007/s12160-016-9830-8",
+      "pdf_sha256": "ddd915f2ce6368f09f0fef21cb6606e3835d54c470b8f9927f088ba20409595f",
+      "chunk_id": "nahum_shani_2018.p003.no_intervention_is_valid",
+      "pages": [
+        3,
+        6,
+        7
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "论文把决策点、干预选项、适配变量和决策规则与近端、远端结果联系起来。每次决策不一定发送提醒，规则可以选择不提供支持。设计应明确何种状态需要何种行动、行动想改善什么结果，而不是在每个检测点都输出建议或把提醒发送量当作成效。",
+      "application": "将不提醒保留为策略选项，代码负责状态与频率门。生成模型只为获准的候选动作写文案；研究记录分别保存触发原因、是否发送、用户反应和后续任务结果。",
+      "limits": "框架说明如何设计适配策略，不提供适用于本项目的现成阈值。使用某种采样算法或实现六个组成部分，也不等于已经证明提醒具有因果效果。",
+      "terms": "decision points tailoring variables decision rules intervention options provide nothing",
+      "roles": [
+        "intervention",
+        "会诊综合主持人",
+        "development"
+      ],
+      "anchor": "Provide nothing"
+    },
+    {
+      "paper_id": "tong_2024",
+      "title": "情绪调节改善拖延行为的认知机制：任务厌恶中介作用",
+      "doi": "10.3724/SP.J.1041.2024.00458",
+      "pdf_sha256": "e89fdb1b39a25a4111e8832640a7350effaeab2c4735d04558463ee6db33ee95",
+      "chunk_id": "tong_2024.p001.reappraisal_and_task_aversiveness",
+      "pages": [
+        1,
+        3,
+        4
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "研究将六十八名高拖延大学生随机分成两组，跟踪七天内对真实任务的十四次评定。作者比较积极重评和对照策略，观察到执行意愿及任务厌恶的组间变化，并考察任务厌恶在其中的中介作用。测量依赖参与者对具体任务的报告，执行意愿是主要拖延改善指标。",
+      "application": "情绪或认知角色在用户确认任务厌恶后，可提供重新看待任务意义或缩小启动步骤的候选建议。自报反馈与日志特征分别保存，避免把执行意愿和实际完成混为一谈。",
+      "limits": "样本为高拖延大学生，单人多项任务和重复测量不等于更多独立被试。执行意愿及任务感受的改善不能直接当作客观生产率提升，更不能代替本项目效果验证。",
+      "terms": "cognitive reappraisal task aversiveness execution willingness experience sampling procrastination",
+      "roles": [
+        "情绪调节归因专家",
+        "CBT归因专家",
+        "chat",
+        "development"
+      ],
+      "anchor": "执行意愿"
+    },
+    {
+      "paper_id": "hofmann_2012",
+      "title": "The Efficacy of Cognitive Behavioral Therapy: A Review of Meta-analyses",
+      "doi": "10.1007/s10608-012-9476-1",
+      "pdf_sha256": "b492f41aa6a57f079cd19e7ad8eb7cfd326e6a225a32818e2508e278d51ba334",
+      "chunk_id": "hofmann_2012.p001.collaborative_cognitive_behavioral_scope",
+      "pages": [
+        1,
+        2
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "该综述识别二百六十九项认知行为疗法元分析，重点介绍其中一百零六项。原文说明认知行为干预包含认知、行为和情绪等技术，强调参与者在协作问题解决中检验想法并调整行为。不同问题有不同治疗方案，具体证据需对应人群、干预内容及评价结果。",
+      "application": "认知角色围绕用户自己报告的任务理解提出可检验解释和小步骤，给用户纠正与拒绝的空间。对外描述为受认知行为方法启发的任务支持，不将角色名称写成治疗资质。",
+      "limits": "综述讨论特定心理问题的专业干预，不能证明自动化聊天或桌面助手能治疗。元分析数量不是被试数量，也没有验证本项目从行为日志识别认知扭曲的能力。",
+      "terms": "cognitive behavioral therapy collaborative problem solving thoughts behavior evidence scope",
+      "roles": [
+        "CBT归因专家",
+        "批评家",
+        "chat",
+        "development"
+      ],
+      "anchor": "collaborative problem-solving process"
+    },
+    {
+      "paper_id": "rozental_2014",
+      "title": "Understanding and Treating Procrastination: A Review of a Common Self-Regulatory Failure",
+      "doi": "10.4236/psych.2014.513160",
+      "pdf_sha256": "8cd6353b39fff217d2740147f73cfcc859fbc5bcc9294f47c0987ca9a1a58cf5",
+      "chunk_id": "rozental_2014.p007.small_steps_and_stimulus_control",
+      "pages": [
+        7,
+        8
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "这篇叙述性综述讨论按个体情境理解拖延，并整理刺激控制、日程、具体目标和分阶段行动等行为方法。较大的承诺可以拆成较小且可检查的步骤，启动努力应结合个人愿意接受的程度。综述也强调不同维持因素可能对应不同支持方式，不能向所有人给出同一套指令。",
+      "application": "干预文案一次给一个符合当前任务的小动作，并保留用户选择。关闭无关通知、限定启动步骤等只作为可选建议，不能让模型自行修改设备设置或扩大监控。",
+      "limits": "这是一篇叙述性临床综述，行为方法的归纳不等于每种方法均有充分随机试验证据。不能把举例时长当成统一有效剂量，也不能据此承诺本产品疗效。",
+      "terms": "stimulus control behavioral intervention goal setting subgoals minimal effort routine",
+      "roles": [
+        "CBT归因专家",
+        "intervention",
+        "chat"
+      ],
+      "anchor": "Behavioral Interventions"
+    },
+    {
+      "paper_id": "eckert_2016",
+      "title": "Overcome procrastination: Enhancing emotion regulation skills reduce procrastination",
+      "doi": "10.1016/j.lindif.2016.10.001",
+      "pdf_sha256": "7c006cc3b92ba41bd903705118d0cca736aa77614c50b9da21a01bbe600e219f",
+      "chunk_id": "eckert_2016.p074.tolerate_modify_aversive_emotions",
+      "pages": [
+        74,
+        75,
+        76,
+        77
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "博士论文所载作者稿的第三项研究采用随机候补对照，分析八十三名完成前后测的参与者。两周网络训练先让人选择容易拖延的任务，再辨认、容纳并尝试调整任务引起的不适，随后评价应对情况。论文报告自评拖延的变化；这一训练包含反复练习，不能等同一条提醒。",
+      "application": "情绪角色在用户确认不适后提供自愿选择的短动作，并询问实际体验。容纳和调整情绪作为不同候选，不强迫积极化；系统记录行动与反馈，不能声称一次文案完成训练。",
+      "limits": "来源是博士论文载体中的作者稿，对应物理页七十四至七十七。研究主要为成年在职参与者，采用自报和完成者分析；候补对照结果不能直接外推至校园桌面助手。",
+      "terms": "emotion regulation tolerate modify aversive emotions procrastination web intervention",
+      "roles": [
+        "情绪调节归因专家",
+        "intervention",
+        "chat"
+      ],
+      "anchor": "two-week web-based intervention"
+    },
+    {
+      "paper_id": "barke_2023",
+      "title": "Grounded Copilot: How Programmers Interact with Code-Generating Models",
+      "doi": "10.1145/3586030",
+      "pdf_sha256": "3dd61259716f0fe735ed167071e7a508817e63d9c94df064086c75dcccfa7836",
+      "chunk_id": "barke_2023.p001.programming_task_context",
+      "pages": [
+        1
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "作者观察二十名参与者使用代码生成助手完成四种语言的编程任务，归纳出加速与探索两种协作模式。前者已有明确下一步，借助手更快执行；后者尚不确定如何推进，通过建议探索方案。这个区分说明同样的工具往返可能承载不同任务目的，单看应用类别或切换次数不足以解释工作状态。",
+      "application": "数据分析师先结合任务目标解读窗口往返，允许把编辑器、文档和助手之间的切换列为正常探索。目标未知时先询问；将偏离目标作为待用户核对的候选，而非直接认定拖延。",
+      "limits": "这是针对代码生成助手的观察与扎根理论研究，样本二十人，主要任务由研究者设计。两种模式不是心理诊断，也没有提供桌面专注分类器的真值标签或准确率。",
+      "terms": "programming code assistant task context acceleration exploration Copilot switching intent",
+      "roles": [
+        "数据分析师",
+        "会诊综合主持人",
+        "批评家",
+        "chat"
+      ],
+      "anchor": "in acceleration mode"
+    },
+    {
+      "paper_id": "barke_2023",
+      "title": "Grounded Copilot: How Programmers Interact with Code-Generating Models",
+      "doi": "10.1145/3586030",
+      "pdf_sha256": "3dd61259716f0fe735ed167071e7a508817e63d9c94df064086c75dcccfa7836",
+      "chunk_id": "barke_2023.p021.preserve_programming_flow",
+      "pages": [
+        21
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "论文的设计讨论建议让助手感知当前协作模式：加速模式中避免以低把握或过长建议打断思路，探索模式中帮助比较候选。作者也记录了参与者希望建议更有选择性、匹配当前关注的代码单位。这些是从观察提出的设计建议，强调输出的长度、出现时机和具体工作步骤应相互匹配。",
+      "application": "生成提醒时只围绕眼前任务给一个短而具体的动作。连续工作且未请求帮助时优先延后，避免展开长篇分析；探索中可建议核对文档或测试，并让用户选择是否继续。",
+      "limits": "此处主要是从观察推导的工具设计建议，论文使用推测性表述，没有证明这些改动的干预收益。不能宣称 MindFlow 已能可靠识别两种模式，或已复现强化学习策略。",
+      "terms": "programming flow interruption selective suggestions interaction mode acceleration exploration timing",
+      "roles": [
+        "会诊综合主持人",
+        "批评家",
+        "intervention",
+        "chat"
+      ],
+      "anchor": "Awareness of the interaction mode"
+    },
+    {
+      "paper_id": "lyngs_2019",
+      "title": "Self-Control in Cyberspace",
+      "doi": "10.1145/3290605.3300361",
+      "pdf_sha256": "f316028b2709e62c7e081b3099b742d418b7940c535bd011b45febad40ed64c4",
+      "chunk_id": "lyngs_2019.p006.self_control_goal_feedback",
+      "pages": [
+        6
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "论文区分服务目标的广义自我调节与有意识抵抗眼前冲动的自我控制，并把反馈描述为观察当前状态、对照目标和标准、再调整行为的过程。习惯性动作也可能服务长期目标，反过来，有电脑活动并不表示目标始终在工作记忆中。该框架帮助组织目标核对问题，而不是为个体贴固定标签。",
+      "application": "认知和动机角色先确认用户想完成什么，再比较记录与目标是否一致。提醒帮助用户恢复下一步动作；计划休息或改目标由用户确认，不把暂缓、关闭工具改写成自控失败。",
+      "limits": "双系统框架用于解释和组织设计，不是由鼠标日志测量两种认知系统的量表。行为代理不能直接转换成认知状态数值，是否产生冲突仍需用户意图或其他独立证据。",
+      "terms": "self regulation self control goals intentions feedback monitoring working memory habits",
+      "roles": [
+        "CBT归因专家",
+        "TMT归因专家",
+        "会诊综合主持人",
+        "chat"
+      ],
+      "anchor": "Self-regulation and self-control"
+    },
+    {
+      "paper_id": "lyngs_2019",
+      "title": "Self-Control in Cyberspace",
+      "doi": "10.1145/3290605.3300361",
+      "pdf_sha256": "f316028b2709e62c7e081b3099b742d418b7940c535bd011b45febad40ed64c4",
+      "chunk_id": "lyngs_2019.p002.digital_tools_design_evidence",
+      "pages": [
+        2
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "作者分析三类应用商店中的三百六十七个应用和浏览器扩展，整理数字自控工具的常见功能，并用整合的双系统模型映射设计机制。研究关注工具如何相同、如何不同，以及哪些机制值得后续研究。功能分类有助于设计者解释自己选择了什么策略，但产品数量和理论对应都不等于工具有效性的实验结论。",
+      "application": "综合主持人把建议对应到明确机制，如目标提醒或自我观察，并保留用户控制。开发与答辩材料区分功能调研、机制假设和效果验证，不能用角色或功能数量证明创新收益。",
+      "limits": "该工作是功能分析和理论映射，商店资料与功能存在性不是因果效果证据。二〇一九年的工具样本也不是当前市场份额，不能当作校园需求比例或本项目的临床背书。",
+      "terms": "digital self control tools design features intervention strategies review dual systems evidence",
+      "roles": [
+        "会诊综合主持人",
+        "批评家",
+        "development"
+      ],
+      "anchor": "367 apps and browser extensions"
+    },
+    {
+      "paper_id": "mark_2008",
+      "title": "The cost of interrupted work",
+      "doi": "10.1145/1357054.1357072",
+      "pdf_sha256": "e562bd16eca40a2a59499d79b15d5577d1ea3365401a8b6cb8e834187fb7fb8b",
+      "chunk_id": "mark_2008.p003.interruptions_speed_stress",
+      "pages": [
+        3
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "实验结果中，受打断条件的邮件任务完成时间短于无打断条件，错误数量和礼貌指标没有显著差异；但参与者报告了更高的压力、挫败、时间压力或努力。这个组合表明更快完成与更舒适工作可以分离，评价提醒时应同时考虑任务表现和主观负担，不能把速度变化直接解释为专注或体验改善。",
+      "application": "提醒策略把是否打扰和任务推进分别记录。提示词不得用完成变快推断用户压力降低；连续工作中出现切换时，先核对目的和接收时机，再决定是否给短建议或延后。",
+      "limits": "研究有四十八名参与者，采用实验室邮件任务及电话或即时消息打断，不能直接外推到 AI 编程。论文的压力来自独立自评，MindFlow 没有相应测量时不能推算个人压力。",
+      "terms": "interruption notification stress workload frustration time pressure task performance speed",
+      "roles": [
+        "数据分析师",
+        "情绪调节归因专家",
+        "会诊综合主持人",
+        "批评家",
+        "intervention"
+      ],
+      "anchor": "Measures of workload"
+    },
+    {
+      "paper_id": "biedermann_2024",
+      "title": "Use of digital self-control tools in higher education – a survey study",
+      "doi": "10.1007/s10639-023-12198-2",
+      "pdf_sha256": "67ebd5685a3e76c0fa32b426ca38fd4740d6ee0c577b1178ad34a234de559046",
+      "chunk_id": "biedermann_2024.p014.dual_purpose_platform_context",
+      "pages": [
+        14
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "论文讨论学习工具的双重用途：同一平台同时承载教学内容和娱乐内容，按整个平台封锁可能挡住学习所需资源，导致停用与挫败。作者据此强调适应使用者需求与情境，并讨论意图和内容区分的设计方向。域名、应用名称和停留时长因此只能提供线索，还需要当前任务的用途说明。",
+      "application": "数据分析师优先结合用户声明的任务和内容用途，避免将视频或社交平台统一归为分心。证据不足时保留未知或追问；提醒只针对已核对的偏离，不据网站名推断动机。",
+      "limits": "这是高校工具使用问卷的讨论，非自动内容分类器的准确率实验。样本主要使用英语或德语，作者提到的其他界面研究亦不能当成本项目已完成的实现或中国学生效果。",
+      "terms": "dual purpose platforms learning entertainment context intent classification user needs YouTube",
+      "roles": [
+        "数据分析师",
+        "CBT归因专家",
+        "会诊综合主持人",
+        "批评家",
+        "chat"
+      ],
+      "anchor": "Challenge of dual-purpose platforms"
+    },
+    {
+      "paper_id": "biedermann_2024",
+      "title": "Use of digital self-control tools in higher education – a survey study",
+      "doi": "10.1007/s10639-023-12198-2",
+      "pdf_sha256": "67ebd5685a3e76c0fa32b426ca38fd4740d6ee0c577b1178ad34a234de559046",
+      "chunk_id": "biedermann_2024.p017.perceived_helpfulness_outcome",
+      "pages": [
+        17
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "作者明确区分主观觉得有帮助与实际行为改变：问卷和自报难以单独确定工具效果，横断面设计也无法呈现工具使用随时间的起伏。论文建议评价时区分学习与休闲，注意多个设备以及需要单独询问的内部状态。对项目而言，满意反馈可以作为体验线索，仍应与任务结果和行为变化分别报告。",
+      "application": "批评家检查输出是否把接受建议、满意或停止访问某应用写成已提高专注。研究评价分别记录可执行性、目标推进、打扰和使用持续性；无跨设备记录时标明观察范围。",
+      "limits": "原研究分析二百七十三名学生的问卷，主要终点是感知帮助程度而非干预效果。不能据此给 MindFlow 计算改善比例，也不能用一次反馈确认某人的心理状态或长期习惯改变。",
+      "terms": "perceived helpfulness actual effectiveness self report longitudinal task outcome multiple devices",
+      "roles": [
+        "会诊综合主持人",
+        "批评家",
+        "development"
+      ],
+      "anchor": "perceived helpfulness and not the actual"
+    },
+    {
+      "paper_id": "kovacs_2019",
+      "title": "Conservation of Procrastination",
+      "doi": "10.1145/3290605.3300560",
+      "pdf_sha256": "8cfd030020b921f50c26fedf4037ec53a08f725a73170181204dab935d1459ec",
+      "chunk_id": "kovacs_2019.p001.cross_platform_spillover_evaluation",
+      "pages": [
+        1
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "作者使用 HabitLab 浏览器扩展与手机应用改变目标上的干预频率，观察其他应用和平台的时间变化。该研究未发现实质性的拖延时间转移，部分非目标使用保持不变或减少。研究价值在于把转移作为可检验问题，不能反过来声称所有生产力提醒只是转移，也不能把某网站时间减少等同总体任务收益。",
+      "application": "综合主持人准确陈述跨平台研究结论，评价方案同时考虑目标和非目标行为。MindFlow 只观察电脑时，建议质量与任务反馈单列；未经观测的手机或线下活动不补成事实。",
+      "limits": "实验改变的是 HabitLab 干预频率，并非 MindFlow 的有无对照。平台覆盖浏览器与 Android，其他设备和线下行为未全面测量，研究结果不证明任意提醒策略都无转移效应。",
+      "terms": "time redistribution spillover productivity interventions cross platform browser mobile HabitLab",
+      "roles": [
+        "会诊综合主持人",
+        "批评家",
+        "development"
+      ],
+      "anchor": "held constant or even reduced"
+    },
+    {
+      "paper_id": "lewis_2020",
+      "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+      "doi": "arXiv:2005.11401",
+      "pdf_sha256": "720f67eb41aa49995d5fcf3d24ac7efe431fbe08ce109b14b5a9fa4d4ebe2f8b",
+      "chunk_id": "lewis_2020.p002.retrieval_context",
+      "pages": [
+        2,
+        3
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "论文把外部文档记忆与生成模型结合：根据输入检索相关段落，生成器同时读取问题和这些段落。原方法使用稠密索引，并联合训练检索器与生成器；序列级和词元级方案对文档的使用方式不同。它支持先检索再生成的架构选择，不能直接证明某个领域的建议一定正确。",
+      "application": "把已核实论文的少量相关片段连同出处放入模型消息，记录检索版本和片段编号；将一般理论依据与当前用户的行为证据分开。",
+      "limits": "本项目采用检索增强提示，没有复现原论文的端到端训练或概率边缘化；原文的问答成绩不能移作专注改善或心理判断准确率。",
+      "terms": "retrieval augmented generation document index retriever generator external knowledge context",
+      "roles": [
+        "development"
+      ],
+      "anchor": "additional context"
+    },
+    {
+      "paper_id": "robertson_2009",
+      "title": "The Probabilistic Relevance Framework: BM25 and Beyond",
+      "doi": "10.1561/1500000019",
+      "pdf_sha256": "11a9ef825dfd3fe50c8621273d02ea26b6f502b60379db9519d6c5c10de4fd25",
+      "chunk_id": "robertson_2009.p027.bm25_ranking",
+      "pages": [
+        27,
+        29,
+        30
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "BM25把查询词与文档词项的匹配转成排序信号，对词频使用逐渐饱和的函数，并通过文档长度归一化减弱长文档优势。参数控制词频饱和与长度修正。它衡量的是给定词项下的检索相关性，分数既不是概率，也不能代表被检索论文的证据等级或某个结论的可信度。",
+      "application": "使用现有SQLite的FTS5检索静态论文卡，配经核对的中英术语表；用开发查询检查排序，固定top-k和上下文上限后再评估。",
+      "limits": "稀疏词项检索可能漏掉未覆盖的同义表达；人工术语扩展不等于学习了语义向量。SQLite分数方向按官方实现处理，不解读成置信度。",
+      "terms": "BM25 probabilistic relevance term frequency saturation document length normalization ranking",
+      "roles": [
+        "development"
+      ],
+      "anchor": "classic BM25"
+    },
+    {
+      "paper_id": "gao_2023_alce",
+      "title": "Enabling Large Language Models to Generate Text with Citations",
+      "doi": "10.18653/v1/2023.emnlp-main.398",
+      "pdf_sha256": "ae9868f07f0f7ffaae5346778f79b7827d9ec6b13b1e6aae4dff6b2ffc37a2e1",
+      "chunk_id": "gao_2023_alce.p004.citation_support",
+      "pages": [
+        4
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "ALCE将带引用生成的评估拆成表达、答案内容和引用质量。引用召回关注回答中的论断是否得到所引材料支持，引用精度关注是否引入不相关出处；作者结合自然语言推断模型和人工评价进行检查。因此，文献编号能解析只是必要条件，还要判断原文与具体论断的支持关系。",
+      "application": "程序拦截不存在或不属于本次检索的引用编号；批评角色逐项核对理论主张，人工评审另记支持程度与遗漏论断，分别报告两层结果。",
+      "limits": "编号合法率不能叫作语义正确率；未复现原文的推断模型与标注协议时，只能说明借鉴了评估维度，不能声称已有ALCE评测结果。",
+      "terms": "citation precision citation recall attribution claim support entailment evidence",
+      "roles": [
+        "development",
+        "批评家"
+      ],
+      "anchor": "Citation Quality"
+    },
+    {
+      "paper_id": "es_2024",
+      "title": "RAGAs: Automated Evaluation of Retrieval Augmented Generation",
+      "doi": "10.18653/v1/2024.eacl-demo.16",
+      "pdf_sha256": "e2038b8cff7574bf5302e1ceb6bfbac6d2471c352073b27f21460910936febce",
+      "chunk_id": "es_2024.p003.rag_evaluation_dimensions",
+      "pages": [
+        3,
+        4
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "RAGAS分别讨论回答是否忠于给定上下文、是否回应实际问题，以及检索内容是否集中相关。它使用模型拆分论断并核对支持关系，还以问题生成和相似度估计回答相关性。各项衡量不同环节，不能用一项通过替代其他维度；自动评价自身也依赖模型和提示词。",
+      "application": "离线报告分开列检索命中、引用合法性、人工支持度和回答可用性；开发阶段可以先用固定查询与mock测试，不自动外发用户信息。",
+      "limits": "本项目不把人工规则或ID校验包装成RAGAS分数；没有运行对应评价流程就不报告自动忠实度，更不把它解释为真实用户效果。",
+      "terms": "faithfulness answer relevance context relevance RAG evaluation metrics",
+      "roles": [
+        "development"
+      ],
+      "anchor": "Context relevance"
+    },
+    {
+      "paper_id": "liu_2024",
+      "title": "Lost in the Middle: How Language Models Use Long Contexts",
+      "doi": "10.1162/tacl_a_00638",
+      "pdf_sha256": "f37f6fabe0fe0d8c73b67579cd115dbf14e282cfb7b7af655ae8109638402c9b",
+      "chunk_id": "liu_2024.p001.context_budget",
+      "pages": [
+        1
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "论文通过多文档问答和键值检索实验改变相关信息在输入中的位置，发现被测模型的表现常在信息位于开头或末尾时较好，位于长上下文中部时变差。这说明可接收很长输入不等于能稳定利用全部内容，也提示检索系统应选择和组织材料，而非只增加输入长度。",
+      "application": "每次只注入少量相关片段，限制单片段与总字符数，先放高相关材料；在固定测试问题上另检查片段顺序是否影响回答。",
+      "limits": "论文实验并未测试本项目当前的ChatECNU调用；不能沿用其下降幅度作为本项目结果，具体长度和顺序仍需本地验证。",
+      "terms": "long context lost middle position relevant information token budget ordering",
+      "roles": [
+        "development"
+      ],
+      "anchor": "beginning or end"
+    },
+    {
+      "paper_id": "asai_2024",
+      "title": "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection",
+      "doi": "arXiv:2310.11511",
+      "pdf_sha256": "d9eaa1398abac0df67a9d0933a5bf8b6d9d83d2e72da2a486073cd842dd52978",
+      "chunk_id": "asai_2024.p003.retrieve_and_check",
+      "pages": [
+        3
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "Self-RAG通过专门训练让模型产生反思标记，用于决定是否检索，并检查段落相关性、回答支持和完整程度。它把检索与生成过程中的检查显式化，目标是避免无条件加入材料或引用不足。这项方法涉及训练与推理控制，不能由普通的自我批评提示词完整替代。",
+      "application": "在工程链路中明确检查是否需要理论依据、片段是否相关，以及回答是否超出支持范围；将无匹配片段作为可测试的正常分支。",
+      "limits": "本项目没有训练Self-RAG的反思token或复现其解码算法；按需检索和审查是设计借鉴，不能引用原论文性能说明本项目效果。",
+      "terms": "self RAG reflection tokens retrieval on demand relevance support critique",
+      "roles": [
+        "development"
+      ],
+      "anchor": "reflection tokens"
+    },
+    {
+      "paper_id": "yan_2024",
+      "title": "Corrective Retrieval Augmented Generation",
+      "doi": "arXiv:2401.15884",
+      "pdf_sha256": "975aa1fd3c1b603126e93ff99d6504858b61301bf1d34c9df88ebe53a0b026cb",
+      "chunk_id": "yan_2024.p003.retrieval_failure",
+      "pages": [
+        3
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "CRAG关注检索返回不准确材料时的处理。原方法用检索评价器判断相关性，并据此选择保留提炼、放弃原检索结果或补充其他来源等动作。论文说明检索本身也会出错，生成器能力不能保证消除错误上下文带来的影响，因此检索失败需要独立处理路径。",
+      "application": "本地无相关片段时返回空结果和证据缺口，保留行为描述及原有规则回退；只有通过范围检查的论文片段才能进入后续消息。",
+      "limits": "本项目不包含原文训练的检索评价器或自动联网补救，不能称为复现完整CRAG；词项命中门限只是启发式相关性约束。",
+      "terms": "corrective RAG retrieval evaluator relevance incorrect ambiguous fallback robustness",
+      "roles": [
+        "development"
+      ],
+      "anchor": "retrieval evaluator"
+    },
+    {
+      "paper_id": "wang_2024",
+      "title": "Rethinking the Bounds of LLM Reasoning: Are Multi-Agent Discussions the Key?",
+      "doi": "10.18653/v1/2024.acl-long.331",
+      "pdf_sha256": "f4d1dfc2028491bc1745705a01ff887a18e16ff5995f053365c7de08a1037589",
+      "chunk_id": "wang_2024.p001.strong_single_agent",
+      "pages": [
+        1,
+        5
+      ],
+      "source_kind": "reviewed_paraphrase",
+      "content": "论文在推理任务上重新比较多角色讨论与强提示词单角色，发现示例和任务说明会显著影响对照结果，强单角色在不少设置下接近讨论框架的表现。这要求把提示词信息和资源条件纳入比较，不能仅因角色较多或输出达成共识就判断系统更准确。",
+      "application": "为单角色与面板提供相同的行为证据和论文片段，在同一场景集上分别评审建议并记录调用数、token和延迟，比较审查带来的价值。",
+      "limits": "原实验是推理基准，不是专注干预试验；不能据此直接宣布本项目多角色无效或更好。同一底模形成的共识也不构成独立实验证据。",
+      "terms": "multi agent discussion strong single agent demonstrations prompt baseline evaluation",
+      "roles": [
+        "development",
+        "批评家"
+      ],
+      "anchor": "single-agent LLM with strong prompts"
+    }
+  ]
+}

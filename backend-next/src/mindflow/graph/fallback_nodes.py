@@ -95,6 +95,11 @@ from mindflow.infrastructure.llm.summary import (
     serialize_summary,
 )
 from mindflow.infrastructure.security.crisis_detector import CrisisDetector, CrisisLevel
+from mindflow.services.literature_service import (
+    LITERATURE_RULES,
+    retrieve_literature,
+    validate_literature_citations,
+)
 from mindflow.services.llm_observability import LLMRequestRecord, record_llm_request
 
 # ── Route type ────────────────────────────────────────────────────────────────
@@ -783,6 +788,8 @@ _OLLAMA_SYSTEM_PROMPT: str = (
     "包含 procrastination_types, type_confidence, cbt_technique, response_text, next_action。\n"
     '不要使用"诊断""治疗""患者""处方"等词汇。\n'
     "最多包含 3 个拖延类型。response_text 不超过 500 字。"
+    "类型只作为候选；先核对任务意图，保留正常探索或计划休息的解释。"
+    "没有用户自述时 cognitive_distortions 为空，不能从日志断言情绪。"
 )
 
 #: Backoff ceiling for the L2 tier (state-wide default, matching RetryPolicy).
@@ -860,11 +867,14 @@ async def _ollama_api_call(
         ValueError/ValidationError: On schema/forbidden-word failure.
     """
     url = base_url.rstrip("/") + "/v1/chat/completions"
+    literature = retrieve_literature(summary_json, role="attribution")
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _OLLAMA_SYSTEM_PROMPT},
-            {"role": "user", "content": f"请分析以下行为数据：\n\n{summary_json}"},
+            {"role": "system", "content": _OLLAMA_SYSTEM_PROMPT + "\n\n" + LITERATURE_RULES},
+            {"role": "user", "content": literature.augment(
+                f"请分析以下行为数据：\n\n{summary_json}",
+            )},
         ],
         "stream": False,
     }
@@ -886,6 +896,7 @@ async def _ollama_api_call(
                 content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if not content:
                     raise LLMAPIError("Ollama returned empty content")
+                validate_literature_citations(content, literature)
                 return LLMAttributionResult.model_validate_json(content)
 
             # Provider bodies are never echoed back: only the status class.

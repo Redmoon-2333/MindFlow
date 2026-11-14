@@ -80,6 +80,12 @@ from mindflow.agents.types import (
     _contains_forbidden_words,
 )
 from mindflow.graph.reducers import append_opinion, append_transcript
+from mindflow.services.literature_service import (
+    LITERATURE_RULES,
+    LiteratureHit,
+    retrieve_literature,
+    validate_literature_citations,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Budget helpers — standalone (was on PanelOrchestrator)
@@ -122,6 +128,7 @@ class _PanelRunContext:
     budget_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Per-role LLM-call usage for phase budgets (architecture plan G/1.3).
     phase_usage: dict[str, int] = field(default_factory=dict)
+    literature_hits: dict[str, LiteratureHit] = field(default_factory=dict)
 
 
 # Context variable to carry the mutable per-invocation runtime through the
@@ -164,13 +171,22 @@ async def _call_with_budget(
             raise PanelBudgetExceededError(call_count=runtime.call_count)
         runtime.phase_usage[expert.role] = phase_used + 1
 
+    literature = retrieve_literature(user_message, role=expert.role)
+    if not hasattr(runtime, "literature_hits"):
+        runtime.literature_hits = {}
+    literature = literature.with_referenced(user_message, runtime.literature_hits)
+    runtime.literature_hits.update({hit.chunk_id: hit for hit in literature.hits})
+    grounded_system = expert.system_prompt + "\n\n" + LITERATURE_RULES
+    grounded_user = literature.augment(user_message)
     resolved_policy = policy if policy is not None else policy_for_role(expert.role)
     if not gateway_accepts_policy(gateway):
-        return await gateway.complete(
-            system=expert.system_prompt,
-            user=user_message,
+        raw = await gateway.complete(
+            system=grounded_system,
+            user=grounded_user,
             model=expert.model,
         )
+        validate_literature_citations(raw, literature)
+        return raw
     # Label the call for observability (graph/node/role) — the gateway records
     # the transport facts, the graph owns the labels.
     from mindflow.services.llm_observability import llm_call_context  # noqa: PLC0415
@@ -178,12 +194,14 @@ async def _call_with_budget(
     node = resolved_policy.node if resolved_policy is not None else expert.role
     role = resolved_policy.role if resolved_policy is not None else expert.role
     with llm_call_context(graph="panel", node=node, role=role):
-        return await gateway.complete(
-            system=expert.system_prompt,
-            user=user_message,
+        raw = await gateway.complete(
+            system=grounded_system,
+            user=grounded_user,
             model=expert.model,
             policy=resolved_policy,
         )
+        validate_literature_citations(raw, literature)
+        return raw
 
 
 async def _safe_call_with_budget(

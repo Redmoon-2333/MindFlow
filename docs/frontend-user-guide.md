@@ -51,7 +51,7 @@
 
 ## 启动方式
 
-后端：Python 3.11+、uv、FastAPI、SQLAlchemy/SQLite、Alembic、LangGraph；LLM 为 DeepSeek → Ollama → 规则引擎，缺云端凭证会按既有逻辑降级。ML 使用 scikit-learn/XGBoost。
+后端：Python 3.11+、uv、FastAPI、SQLAlchemy/SQLite、Alembic、LangGraph；LLM 默认使用 ChatECNU，也可选择 DeepSeek，缺少所选云端凭证时按既有逻辑降级到 Ollama / 规则引擎。ML 使用 scikit-learn/XGBoost。
 
 ```powershell
 cd D:\Mindflow\backend-next
@@ -112,21 +112,21 @@ npm run dev
 - 隐私统计改为五个等宽卡片；生成配对码与四个清除按钮同排逐列对齐，小屏自动堆叠。
 - 输入桶是每 30 秒汇总的输入活动统计，包含按键次数、鼠标点击、滚动及移动距离等，不保存输入文字或鼠标坐标。浏览器配对码在 5 分钟内有效，在扩展设置中输入后用于授权浏览器域名采集；它不是 AI Key。
 - 会话专注评分采用后端固定公式：主要应用使用时长占比与确认切换频率（默认权重 60/40），并排除空闲活动。个人 ML 模型另外负责专注/分心预测。统计、画像、基线由本地算法完成；拖延归因、专家讨论、对话和部分建议会使用大语言模型，并有本地模型/规则降级。
-- AI 配置页只支持当前生产 DeepSeek 服务，ChatECNU Key 不适用于该服务。404 Not Found 表示所连接后端没有配置接口，不表示密钥校验失败。当前本机 8765 实例的 OpenAPI 清单没有 `/api/v1/settings/ai`，需停止旧进程并在 `backend-next` 目录运行 `uv run python -m mindflow.main`，之后重新加载配置。保存只检查格式与写入，不验证供应商密钥可用性。
+- AI 设置页支持 ChatECNU 与 DeepSeek 两种服务，默认 ChatECNU；两家凭证分开保存。404 Not Found 表示所连接后端没有配置接口，不表示密钥校验失败；请确认运行的是当前 `backend-next` 后端。保存只检查格式与写入，不验证供应商密钥可用性。
 
 验证：完整隔离 UI 回归先通过 198/200，用例中的两个旧英文分钟单位断言更新后，与布局及 AI 配置 404/重新加载流程共 11 项复测全部通过。前端生产构建与 git diff --check 通过；lint 无错误，保留已有警告。本轮未更改后端分析算法，未使用真实 AI Key 发起收费调用。
 
 ### 2026-10-09 ChatECNU 服务选择
 
-当前 AI 设置已支持 DeepSeek 与 ChatECNU 两家服务，替代上一版“仅支持 DeepSeek”的限制。
-进入“系统设置 → 外观与 AI”，选择 ChatECNU，选择 ecnu-max / ecnu-plus，填写在 ChatECNU“我的令牌”申请的 Key，保存后重启后端。页面区分当前进程的服务与保存待生效的服务，已有密钥不回显。切换选择会清空输入框，避免误用另一家的 Key。
+当前默认 AI 服务为 ChatECNU（`ecnu-max`），也可显式切换到 DeepSeek。
+进入“系统设置 → 外观与 AI”，选择 ChatECNU 模型 `ecnu-max` / `ecnu-plus`，填写在 ChatECNU“我的令牌”申请的 Key，保存后重启后端。页面区分当前进程的服务与保存待生效的服务，已有密钥不回显。切换选择会清空输入框，避免误用另一家的 Key。
 
-后端新增 `MINDFLOW_LLM__SERVICE=ecnu`、`MINDFLOW_LLM__ECNU_API_KEY`、`MINDFLOW_LLM__ECNU_MODEL`（默认 ecnu-max）。默认 service=deepseek，遗留校园 URL/model/key 不会自动切换服务。显式选择 ecnu 后固定连接学校接口 https://chat.ecnu.edu.cn/open/api/v1，使用独立校园密钥；缺校园凭证只走既有 L2/L3，不借用 DeepSeek Key。兼容开关 ECNU_COMPAT_ENABLED 仍默认关闭。对话、面板与结构化归因均使用同一个解析后的服务目标，校园所有路径共用并发门，上限 3。
+后端默认 `MINDFLOW_LLM__SERVICE=ecnu`，可设为 `deepseek` 显式切换。ChatECNU 使用独立的 `MINDFLOW_LLM__ECNU_API_KEY` 与 `MINDFLOW_LLM__ECNU_MODEL`（默认 `ecnu-max`），固定连接学校接口 https://chat.ecnu.edu.cn/open/api/v1；缺校园凭证只走既有 L2/L3，不借用 DeepSeek Key。兼容开关 `MINDFLOW_LLM__ECNU_COMPAT_ENABLED` 仍默认关闭。对话、面板与结构化归因均使用同一个解析后的服务目标，校园所有路径共用并发门，上限 3。
 
 密钥与服务配置保存到本机用户数据目录的 .env，保留另一家服务的独立密钥。删除只清除当前已选服务的文件凭证；启动环境变量仍有最高优先级。保存不进行真实密钥、余额或连通性验证。
 官方文档：https://developer.ecnu.edu.cn/vitepress/llm/index.html
 
-验证：服务配置、默认 DeepSeek 与校园适配器回归 68 项通过；补充的校园 gateway / 结构化归因 / 对话模拟请求 3 项通过；API 类型生成与契约漂移检查 3 项通过，网页配置流程 4 项通过，校园设置另复核桌面与手机截图。Ruff 零问题，Mypy 186 源文件无错误，前端生产构建通过。全量后端回归为 3162 通过、4 跳过、1 个旧训练重复提交用例竞态失败；该测试现明确保持首个任务 pending，训练任务文件 23 项复测全部通过，不修改生产训练逻辑。未发起真实收费调用，未验证用户校园 Key。
+历史验证（2026-10-09，当时默认 DeepSeek）：服务配置、校园适配器回归 68 项通过；补充的校园 gateway / 结构化归因 / 对话模拟请求 3 项通过；API 类型生成与契约漂移检查 3 项通过，网页配置流程 4 项通过，校园设置另复核桌面与手机截图。Ruff 零问题，Mypy 186 源文件无错误，前端生产构建通过。全量后端回归为 3162 通过、4 跳过、1 个旧训练重复提交用例竞态失败；该测试现明确保持首个任务 pending，训练任务文件 23 项复测全部通过，不修改生产训练逻辑。未发起真实收费调用，未验证用户校园 Key。
 
 
 ### AI 对话更新（2026-10-09）

@@ -95,6 +95,12 @@ from mindflow.services.intervention_throttle import (
     ThrottleDecision,
     ThrottleReason,
 )
+from mindflow.services.literature_service import (
+    LITERATURE_RULES,
+    LiteratureContext,
+    retrieve_literature,
+    validate_literature_citations,
+)
 from mindflow.services.safety_guard import evaluate_safety
 from mindflow.time_utils import resolve_timezone
 
@@ -152,6 +158,9 @@ _LLM_SYSTEM_PROMPT: str = (
     "（关闭标签页、退出应用、整理桌面、使用系统勿扰模式等），"
     "不得提及手机、躺下、离开书桌等非桌面语境\n"
     "- 不要解释你的分析过程，直接给出提醒内容\n\n"
+    "- 检索文献用于选择表达和行动，不在短提醒里堆作者、学派或论文术语\n"
+    "- 不能由社交媒体比例断言情绪或由切换次数断言分心；任务用途未知时先核对\n"
+    "- 用一个可选择的小动作收尾；尊重用户已经选定的休息、勿扰和退出\n\n"
     "输出 JSON 格式：\n"
     '  "title": 提醒标题(14字以内，有温度、有变化，避免千篇一律的"整理环境"式标题)\n'
     '  "message": 提醒正文(100字以内，包含具体建议)\n'
@@ -512,6 +521,8 @@ def _build_message_user_content(
     intensity: str,
     cbt_technique: str | None = None,
     task_context: Sequence[Task] | None = None,
+    *,
+    literature: LiteratureContext | None = None,
 ) -> str:
     """Build the user-content context lines shared by DeepSeek and Ollama."""
     context_parts = [
@@ -525,6 +536,11 @@ def _build_message_user_content(
     if task_context:
         lines = _task_context_lines(task_context)
         context_parts.append(f"用户待办任务(按优先级排序): {'; '.join(lines)}")
+    if literature is None:
+        literature = retrieve_literature(
+            f"{intervention_type} {cbt_technique or ''}", role="intervention",
+        )
+    context_parts.extend(["## research_context", literature.as_json()])
     return "\n".join(context_parts)
 
 
@@ -584,8 +600,12 @@ async def _generate_llm_message(
     Returns:
         (title, message) on success, None on any failure.
     """
+    literature = retrieve_literature(
+        f"{intervention_type} {cbt_technique or ''}", role="intervention",
+    )
     user_content = _build_message_user_content(
-        summary_json, intervention_type, intensity, cbt_technique, task_context
+        summary_json, intervention_type, intensity, cbt_technique, task_context,
+        literature=literature,
     )
 
     try:
@@ -594,7 +614,7 @@ async def _generate_llm_message(
             json={
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": _LLM_SYSTEM_PROMPT},
+                    {"role": "system", "content": _LLM_SYSTEM_PROMPT + "\n\n" + LITERATURE_RULES},
                     {"role": "user", "content": user_content},
                 ],
                 "temperature": 0.7,
@@ -613,6 +633,7 @@ async def _generate_llm_message(
             logger.warning("LLM intervention message: empty response")
             return None
 
+        validate_literature_citations(content, literature)
         result = _parse_message_response(content)
         if result is not None:
             logger.debug("LLM generated intervention message")
@@ -651,14 +672,18 @@ async def _generate_ollama_message(
     Returns:
         (title, message) on success, None on any failure.
     """
+    literature = retrieve_literature(
+        f"{intervention_type} {cbt_technique or ''}", role="intervention",
+    )
     user_content = _build_message_user_content(
-        summary_json, intervention_type, intensity, cbt_technique, task_context
+        summary_json, intervention_type, intensity, cbt_technique, task_context,
+        literature=literature,
     )
 
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _LLM_SYSTEM_PROMPT},
+            {"role": "system", "content": _LLM_SYSTEM_PROMPT + "\n\n" + LITERATURE_RULES},
             {"role": "user", "content": user_content},
         ],
         "stream": False,
@@ -681,6 +706,7 @@ async def _generate_ollama_message(
             logger.warning("Ollama intervention message: empty response")
             return None
 
+        validate_literature_citations(content, literature)
         result = _parse_message_response(content)
         if result is not None:
             logger.debug("Ollama generated intervention message")

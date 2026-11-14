@@ -231,15 +231,18 @@ class TestSystemPrompt:
         await graph.ask(user_id=1, session_id="s1", message="新的问题")
 
         assert isinstance(captured_messages[0], SystemMessage)
-        assert captured_messages[0].content == CHAT_SYSTEM_PROMPT
+        assert str(captured_messages[0].content).startswith(CHAT_SYSTEM_PROMPT + "\n\n")
+        assert "## research_context\n" in str(captured_messages[0].content)
         assert sum(
-            message.content == CHAT_SYSTEM_PROMPT for message in captured_messages
+            str(message.content).startswith(CHAT_SYSTEM_PROMPT)
+            for message in captured_messages
         ) == 1
         assert "使用中文" in CHAT_SYSTEM_PROMPT
         assert "引用具体证据" in CHAT_SYSTEM_PROMPT
         assert "禁止使用以下词汇" in CHAT_SYSTEM_PROMPT
         assert all(
-            call.args[2] != CHAT_SYSTEM_PROMPT for call in repo.append.call_args_list
+            not str(call.args[2]).startswith(CHAT_SYSTEM_PROMPT)
+            for call in repo.append.call_args_list
         )
 
     async def test_correction_call_keeps_single_leading_system_prompt(self) -> None:
@@ -266,14 +269,16 @@ class TestSystemPrompt:
         assert len(invocations) == 2
         for messages in invocations:
             assert isinstance(messages[0], SystemMessage)
-            assert messages[0].content == CHAT_SYSTEM_PROMPT
+            assert str(messages[0].content).startswith(CHAT_SYSTEM_PROMPT + "\n\n")
             assert sum(
-                message.content == CHAT_SYSTEM_PROMPT for message in messages
+                str(message.content).startswith(CHAT_SYSTEM_PROMPT) for message in messages
             ) == 1
+        assert invocations[0][0].content == invocations[1][0].content
         assert isinstance(invocations[1][-1], SystemMessage)
         assert "请用中文重新回答" in str(invocations[1][-1].content)
         assert all(
-            call.args[2] != CHAT_SYSTEM_PROMPT for call in repo.append.call_args_list
+            not str(call.args[2]).startswith(CHAT_SYSTEM_PROMPT)
+            for call in repo.append.call_args_list
         )
 
 
@@ -597,7 +602,7 @@ class TestHistoryCompression:
         summaries = [
             message for message in payload
             if isinstance(message, SystemMessage)
-            and message.content != CHAT_SYSTEM_PROMPT
+            and str(message.content).startswith("之前的对话摘要:")
         ]
         assert len(summaries) == 1
         assert str(summaries[0].content).startswith("之前的对话摘要:")

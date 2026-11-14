@@ -37,6 +37,11 @@ from mindflow.infrastructure.repositories.analysis import (
     SQLAlchemyProcrastinationAnalysisRepository,
 )
 from mindflow.infrastructure.security.crisis_detector import CrisisDetector, CrisisLevel
+from mindflow.services.literature_service import (
+    LITERATURE_RULES,
+    retrieve_literature,
+    validate_literature_citations,
+)
 from mindflow.time_utils import TimezoneLike, business_day_bounds_utc
 
 SourceType = Literal["deepseek", "ollama", "rule_engine"]
@@ -375,11 +380,14 @@ class LLMService:
         """
         import httpx  # noqa: PLC0415 — lazy import for optional dependency
 
+        literature = retrieve_literature(summary_json, role="attribution")
         payload = {
             "model": self._ollama_model,
             "messages": [
-                {"role": "system", "content": _OLLAMA_SYSTEM_PROMPT},
-                {"role": "user", "content": f"请分析以下行为数据：\n\n{summary_json}"},
+                {"role": "system", "content": _OLLAMA_SYSTEM_PROMPT + "\n\n" + LITERATURE_RULES},
+                {"role": "user", "content": literature.augment(
+                    f"请分析以下行为数据：\n\n{summary_json}",
+                )},
             ],
             "stream": False,
         }
@@ -401,6 +409,7 @@ class LLMService:
         if not content:
             return None
 
+        validate_literature_citations(content, literature)
         return LLMAttributionResult.model_validate_json(content)
 
     # ── Conversion helpers ────────────────────────────────────────────

@@ -132,6 +132,7 @@ def _registry(**overrides: object) -> object:  # noqa: ANN202 - test helper
         "base_url": ECNU_BASE_URL,
         "model": "ecnu-max",
         "provider": "ecnu",
+        "service": "deepseek",
         "max_retries": 0,
     }
     defaults.update(overrides)

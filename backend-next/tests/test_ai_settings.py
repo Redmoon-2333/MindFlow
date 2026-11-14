@@ -12,6 +12,15 @@ from mindflow.api.routes.ai_settings import router
 from mindflow.config import Settings
 
 
+def test_default_ai_service_is_chatecnu(client: TestClient) -> None:
+    response = client.get("/api/v1/settings/ai")
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "ecnu"
+    assert response.json()["provider"] == "ChatECNU"
+    assert response.json()["model"] == "ecnu-max"
+
+
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     # Explicitly bind the credential file to this test's temporary directory.
@@ -28,17 +37,20 @@ def test_save_is_secret_free_and_loads_after_restart(client: TestClient, tmp_pat
     path = tmp_path / ".env"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "MINDFLOW_LOG_LEVEL='DEBUG'\nDEEPSEEK_API_KEY='old-key-example'\n", encoding="utf-8"
+        "MINDFLOW_LOG_LEVEL='DEBUG'\n"
+        "MINDFLOW_LLM__DEEPSEEK_API_KEY='old-key-example'\n",
+        encoding="utf-8",
     )
     secret = "sk-test-only-123456789"
     response = client.put("/api/v1/settings/ai", json={"api_key": secret})
     assert response.status_code == 200
+    assert response.json()["service"] == "ecnu"
     assert secret not in response.text
     assert response.json()["saved"] is True
     assert response.json()["restart_required"] is True
     content = path.read_text(encoding="utf-8")
     assert "MINDFLOW_LOG_LEVEL='DEBUG'" in content
-    assert "old-key-example" not in content
+    assert "MINDFLOW_LLM__DEEPSEEK_API_KEY='old-key-example'" in content
     reloaded = Settings(_env_file=path)  # type: ignore[call-arg]
     assert reloaded.llm.l1_target().api_key == secret
     assert secret not in client.get("/api/v1/settings/ai").text
@@ -52,7 +64,10 @@ def test_environment_override_is_explicit(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-environment-test-123")
-    response = client.put("/api/v1/settings/ai", json={"api_key": "sk-saved-test-456"})
+    response = client.put(
+        "/api/v1/settings/ai",
+        json={"service": "deepseek", "api_key": "sk-saved-test-456"},
+    )
     assert response.json()["environment_override"] is True
     assert "sk-saved" not in response.text
 
@@ -87,7 +102,10 @@ def test_ecnu_save_restart_and_switch_keep_credentials_separate(
 ) -> None:
     campus_key = "sk-campus-test-12345"
     direct_key = "sk-direct-test-12345"
-    client.put("/api/v1/settings/ai", json={"api_key": direct_key})
+    client.put(
+        "/api/v1/settings/ai",
+        json={"service": "deepseek", "api_key": direct_key},
+    )
     response = client.put(
         "/api/v1/settings/ai",
         json={
@@ -110,7 +128,10 @@ def test_ecnu_save_restart_and_switch_keep_credentials_separate(
     assert target.model == model
     client.app.state.settings = reloaded  # type: ignore[union-attr]
     assert client.get("/api/v1/settings/ai").json()["restart_required"] is False
-    response = client.put("/api/v1/settings/ai", json={"api_key": direct_key})
+    response = client.put(
+        "/api/v1/settings/ai",
+        json={"service": "deepseek", "api_key": direct_key},
+    )
     assert response.json()["restart_required"] is True
     assert response.json()["active_provider"] == "ChatECNU"
     switched = Settings(_env_file=path)  # type: ignore[call-arg]

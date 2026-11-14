@@ -94,8 +94,7 @@ class ProviderRegistry:
 
     def __init__(self, settings: LLMSettings) -> None:
         self._settings = settings
-        #: Resolved L1 endpoint (plan item 2): production pins DeepSeek direct,
-        #: overriding any legacy ECNU URL/model/key left in the environment.
+        #: Resolved L1 endpoint: ChatECNU by default, or DeepSeek when selected.
         self._target = settings.l1_target()
         self.retry_policy = RetryPolicy(
             timeout_s=settings.timeout_s,
@@ -177,21 +176,20 @@ class ProviderRegistry:
             self._target.reasoning_effort,
         )
         if not self._target.api_key:
-            # Make an *unintended* capability drop loud. The production pin
-            # overrides a legacy ECNU URL/model/key by design, so a machine that
-            # still carries the old ECNU `.env` (and no DeepSeek credential)
-            # silently loses L1: say so, with the exact remedy, instead of only
-            # logging "credential=absent" at INFO level.
-            legacy_present = bool(settings.api_key) or bool(settings.base_url)
+            provider_name = "ChatECNU" if self._target.is_ecnu else "DeepSeek"
+            credential_env = (
+                "MINDFLOW_LLM__ECNU_API_KEY"
+                if self._target.is_ecnu
+                else "DEEPSEEK_API_KEY (or MINDFLOW_LLM__DEEPSEEK_API_KEY)"
+            )
+            other_provider = "DeepSeek" if self._target.is_ecnu else "ChatECNU"
             logger.warning(
-                "ProviderRegistry: L1 (DeepSeek direct) is DISABLED — no DeepSeek "
-                "credential configured{}. The degradation chain will use L2 "
-                "(Ollama, if enabled) or L3 (RuleEngine). Set DEEPSEEK_API_KEY "
-                "(or MINDFLOW_LLM__DEEPSEEK_API_KEY) to enable L1; a legacy ECNU "
-                "key is never reused, by design.",
-                " (a legacy ECNU credential/endpoint is present but not reused)"
-                if legacy_present
-                else "",
+                "ProviderRegistry: L1 ({}) is DISABLED — its credential is missing. "
+                "Set {} to enable it. The chain will use L2 (Ollama, if enabled) "
+                "or L3 (RuleEngine); it will not automatically switch to {}.",
+                provider_name,
+                credential_env,
+                other_provider,
             )
 
         # ── Standalone chat model for ChatService's LangGraph agent ─────────────
@@ -228,9 +226,8 @@ class ProviderRegistry:
         """A settings view whose credential/endpoint match the resolved target.
 
         ``DeepSeekClient`` and the standalone chat model read their values from
-        an ``LLMSettings`` object, so the pin is applied once here instead of
-        every consumer re-deriving it. The pinned copy carries the DeepSeek
-        endpoint, so its own ``is_ecnu``/``l1_target`` resolve identically.
+        an ``LLMSettings`` object, so the resolved target is applied once here
+        instead of every consumer re-deriving it.
         """
         return self._settings.model_copy(
             update={
@@ -250,11 +247,10 @@ class ProviderRegistry:
         Returns ``None`` when no API key is configured so the degradation
         path (LLM-down safe reply) stays reachable.
 
-        For an explicitly selected campus gateway or compat mode this is an
+        For the default campus gateway or compat mode this is an
         :class:`ECNUChatModel`, which adds the thinking fields and preserves
-        ``reasoning_content`` across tool calls. Production uses the pinned
-        DeepSeek endpoint, where thinking is requested per call through the
-        chat policy (see ``agents/policies.py``).
+        ``reasoning_content`` across tool calls. Explicit DeepSeek selection
+        uses the DeepSeek endpoint and its request policy.
         """
         if self._closed:
             raise RuntimeError("ProviderRegistry is closed")
@@ -269,7 +265,7 @@ class ProviderRegistry:
         return self._chat_model
 
     def _build_chat_model(self, api_key: str) -> BaseChatModel:
-        """Construct the configured chat model (pinned DeepSeek, or ECNU compat)."""
+        """Construct the model selected by the resolved L1 target."""
         target = self._target
         http_client = ProviderHTTPClient(self._settings, self.concurrency)
         if target.is_ecnu:

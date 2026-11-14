@@ -1,6 +1,6 @@
 """Configuration-level regressions for the DeepSeek-direct L1 contract.
 
-Production L1 is DeepSeek direct: ``provider="generic"``,
+When explicitly selected, DeepSeek L1 uses ``provider="generic"``,
 ``base_url="https://api.deepseek.com"``, ``model="deepseek-flash"`` and a
 credential resolved from ``DEEPSEEK_API_KEY`` (or the prefixed
 ``MINDFLOW_LLM__DEEPSEEK_API_KEY``). These tests pin the *resolution* rules and
@@ -58,12 +58,13 @@ def _no_ssl_cert_file_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _legacy_ecnu(**overrides: object) -> LLMSettings:
-    """The legacy campus triple: ECNU URL, ``ecnu-max``, provider ``ecnu``."""
+    """Explicit DeepSeek selection with a legacy ECNU triple still present."""
     defaults: dict[str, object] = {
         "api_key": ECNU_KEY_SENTINEL,
         "base_url": ECNU_URL,
         "model": "ecnu-max",
         "provider": "ecnu",
+        "service": "deepseek",
         "timeout_s": 30,
         "max_retries": 0,
         "max_concurrent_requests": 1,
@@ -110,6 +111,7 @@ def test_legacy_ecnu_env_vars_resolve_to_the_deepseek_pin(
     monkeypatch.setenv("MINDFLOW_LLM__BASE_URL", ECNU_URL)
     monkeypatch.setenv("MINDFLOW_LLM__MODEL", "ecnu-max")
     monkeypatch.setenv("MINDFLOW_LLM__PROVIDER", "ecnu")
+    monkeypatch.setenv("MINDFLOW_LLM__SERVICE", "deepseek")
 
     settings = Settings(_env_file=None).llm
     assert settings.base_url == ECNU_URL and settings.model == "ecnu-max"
@@ -131,6 +133,7 @@ def test_deepseek_shaped_legacy_config_keeps_its_key_but_is_pinned() -> None:
         api_key=DEEPSEEK_KEY_SENTINEL,
         base_url="https://api.deepseek.com/v1",
         model="deepseek-chat",
+        service="deepseek",
     )
     target = settings.l1_target()
 
@@ -159,6 +162,7 @@ def test_prefixed_env_var_wins_over_the_bare_one(monkeypatch: pytest.MonkeyPatch
     """``MINDFLOW_LLM__DEEPSEEK_API_KEY`` outranks the conventional variable."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", DEEPSEEK_KEY_SENTINEL)
     monkeypatch.setenv("MINDFLOW_LLM__DEEPSEEK_API_KEY", PREFIXED_KEY_SENTINEL)
+    monkeypatch.setenv("MINDFLOW_LLM__SERVICE", "deepseek")
 
     # The prefixed name is the application's own; the bare one is the fallback,
     # so both a standalone ``LLMSettings`` and the nested ``Settings`` take it.

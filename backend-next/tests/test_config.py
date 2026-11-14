@@ -201,6 +201,17 @@ class TestLLMSettings:
         assert llm.api_key is None
         assert llm.base_url is None
         assert llm.model is None
+        assert llm.service == "ecnu"
+
+    def test_default_l1_target_is_chatecnu(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SERVICE", raising=False)
+        monkeypatch.delenv("MINDFLOW_LLM__SERVICE", raising=False)
+        llm = LLMSettings(_env_file=None)
+        target = llm.l1_target()
+
+        assert target.provider == "ecnu"
+        assert target.model == "ecnu-max"
+        assert target.base_url == "https://chat.ecnu.edu.cn/open/api/v1"
 
     def test_llm_settings_override(self):
         """LLMSettings can be configured."""
