@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from mindflow.domain.period_review import Narrative, PeriodDigest
 from mindflow.domain.prediction import FocusPredictionStatus
 
 
@@ -750,3 +751,72 @@ class BlocklistCommandResponse(BaseModel):
 
     status: Literal["ok"] = "ok"
     domain: str
+
+
+# ── Period review schemas (阶段总结) ───────────────────────────────────────
+
+
+class PeriodReviewRequest(BaseModel):
+    """Ask for a period review over the last 3, 7 or 14 local days."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: Literal[3, 7, 14] = 7
+    use_ai: bool = True
+
+
+class PeriodReviewResponse(BaseModel):
+    """The digest, the exact payload sent to the AI, and the written summary.
+
+    ``llm_payload`` is the compact JSON that went to the model (or would have,
+    when ``use_ai`` was false) — the UI shows it verbatim so the privacy claim
+    is inspectable.
+    """
+
+    digest: PeriodDigest
+    llm_payload: str
+    ai_requested: bool
+    narrative: Narrative
+    generated_at: str
+
+
+# ── Task-context assignment (未识别项目归类) ──────────────────────────────
+
+#: Task contexts a user may assign. ``unknown`` is deliberately absent: the
+#: list only shows items the resolver could not place, so "keep it unknown" is
+#: not an answer the UI offers.
+AssignableTaskContext = Literal[
+    "coding", "writing", "reading", "meeting", "entertainment", "social"
+]
+
+
+class UnclassifiedItemResponse(BaseModel):
+    """One unrecognised app or site, with the time it accounts for."""
+
+    kind: Literal["app", "site"]
+    key: str
+    display: str
+    minutes: int
+
+
+class UnclassifiedItemsResponse(BaseModel):
+    """Unclassified listing envelope."""
+
+    items: list[UnclassifiedItemResponse]
+
+
+class TaskContextAssignRequest(BaseModel):
+    """Remember what an unrecognised app or site is used for."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["app", "site"]
+    key: str = Field(min_length=1, max_length=255)
+    context: AssignableTaskContext
+
+
+class TaskContextAssignResponse(BaseModel):
+    """Acknowledgement: the rule is saved, the 14-day recompute is queued."""
+
+    saved: Literal[True] = True
+    recompute: Literal["started"] = "started"

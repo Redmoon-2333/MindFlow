@@ -66,6 +66,12 @@ def test_feedback_request_store_is_shared_by_routes_and_scheduler(
         # The daily cap resets at the user's midnight, so the store must carry
         # the configured business timezone rather than assuming UTC.
         assert store.timezone == settings.timezone
+        # Appendix B: the store follows up an ignored/rejected reminder, which
+        # needs the same reminder log the intervention service reads.
+        assert store.intervention_repository is app.state.intervention_repository
+        # Appendix B: the store follows up an ignored/rejected reminder, which
+        # needs the same reminder log the intervention service reads.
+        assert store.intervention_repository is app.state.intervention_repository
         # The scheduler job closes over the same object the routes resolve.
         assert app.state.scheduler.get_job("feedback_request_check") is not None
 

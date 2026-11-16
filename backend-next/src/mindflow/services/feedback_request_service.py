@@ -35,6 +35,7 @@ from typing import Any, Final, Literal
 from loguru import logger
 
 from mindflow.infrastructure.repositories.activity import SQLAlchemyActivityRepository
+from mindflow.infrastructure.repositories.intervention import InterventionLogRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.services.prediction_service import FocusPredictionService
 from mindflow.time_utils import TimezoneLike, resolve_timezone
@@ -72,10 +73,26 @@ REASON_LABELS: Final[dict[str, str]] = {
     "panel_disagreement": "专家意见分歧",
     "task_context_mismatch": "任务上下文与行为不符",
     "data_drift": "近期行为相对训练数据发生漂移",
+    "reminder_ignored": "你忽略了一次提醒",
+    "reminder_dismissed": "你选了“不适合我”",
 }
 
 #: Default question. One sentence, no jargon, answerable from memory.
 DEFAULT_PROMPT: Final = "刚才 15 分钟你在专注吗？"
+
+#: Follow-up question asked once after the user ignored or rejected a reminder.
+#: Ignoring a reminder says nothing about whether the model was *wrong*, so the
+#: answer — not the button press — is what becomes a window label.
+FOLLOWUP_PROMPT: Final = "刚才 MindFlow 提醒你的时候，你其实在专注做事吗？"
+
+#: The reminder responses a follow-up may be based on.
+_FOLLOWUP_RESPONSES: Final = frozenset({"ignored", "dismissed"})
+
+#: The two follow-up reason identifiers (``REASON_LABELS`` keys).
+_FOLLOWUP_REASONS: Final[dict[str, str]] = {
+    "ignored": "reminder_ignored",
+    "dismissed": "reminder_dismissed",
+}
 
 AnswerStatus = Literal["recorded", "skipped", "expired"]
 
@@ -151,6 +168,9 @@ class FeedbackRequestStore:
     telemetry_repository: TelemetryRepository
     prediction_service: FocusPredictionService | None = None
     activity_repository: SQLAlchemyActivityRepository | None = None
+    #: Reminder log. Read-only here: a follow-up is derived from the user's
+    #: own ``ignored``/``dismissed`` answer, never written back to the log.
+    intervention_repository: InterventionLogRepository | None = None
     broadcast_fn: BroadcastFn | None = None
     timezone: TimezoneLike = "local"
     #: Source of "now" for every lifecycle decision. Defaults to the real
@@ -159,6 +179,10 @@ class FeedbackRequestStore:
     clock: ClockFn = field(default=lambda: datetime.now(UTC))
     _pending: dict[int, FeedbackRequest] = field(default_factory=dict)
     _ledger: dict[int, _AskLedger] = field(default_factory=dict)
+    #: Reminder log ids already turned into a follow-up. One question per
+    #: ignored/dismissed reminder, ever — asking twice about the same moment
+    #: would just collect the same answer again.
+    _followed_up: set[str] = field(default_factory=set)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     # ── Creation ────────────────────────────────────────────────────────
@@ -185,10 +209,24 @@ class FeedbackRequestStore:
             if not self._within_caps(ledger, now):
                 return None
 
-        decision = await self._decide(user_id, now)
-        if decision is None:
-            return None
-        probability, reasons, window_start, window_end = decision
+        # A reminder the user ignored or rejected is a better question than the
+        # model's own uncertainty: it is about a moment the user just lived
+        # through, and the answer labels the window the reminder fired on.
+        followup = await self._followup_candidate(user_id, now)
+        followed_up_id: str | None = None
+        if followup is not None:
+            followed_up_id, triggered_at, response = followup
+            window_end = triggered_at
+            window_start = window_end - REQUEST_WINDOW
+            probability: float | None = None
+            reasons = [_FOLLOWUP_REASONS[response]]
+            prompt = FOLLOWUP_PROMPT
+        else:
+            decision = await self._decide(user_id, now)
+            if decision is None:
+                return None
+            probability, reasons, window_start, window_end = decision
+            prompt = DEFAULT_PROMPT
 
         if await self._in_deep_work(user_id, now):
             logger.debug("Feedback request skipped: user is in deep work")
@@ -201,7 +239,7 @@ class FeedbackRequestStore:
             window_end=window_end,
             probability=probability,
             reasons=reasons,
-            prompt=DEFAULT_PROMPT,
+            prompt=prompt,
             created_at=now,
         )
 
@@ -214,6 +252,8 @@ class FeedbackRequestStore:
             if not self._within_caps(ledger, now):
                 return None
             self._pending[user_id] = request
+            if followed_up_id is not None:
+                self._followed_up.add(followed_up_id)
             ledger.last_asked_at = now
             today = self._local_today(now)
             if ledger.day != today:
@@ -278,6 +318,40 @@ class FeedbackRequestStore:
                 logger.debug("Feedback request: unparseable window start {!r}", newest)
         window_start = window_end - REQUEST_WINDOW
         return prediction.focus_probability, list(decision.reasons), window_start, window_end
+
+    async def _followup_candidate(
+        self, user_id: int, now: datetime
+    ) -> tuple[str, datetime, str] | None:
+        """The newest reminder the user ignored/rejected and was not asked about.
+
+        Returns ``(intervention_id, triggered_at, user_response)`` or None.
+        The reminder's *own* response is never a label — it only tells us the
+        user declined an interruption — so this method deliberately reads no
+        other field of the row.
+        """
+        repository = self.intervention_repository
+        if repository is None:
+            return None
+        try:
+            rows = await repository.query_range(
+                user_id, now - REQUEST_TTL, now
+            )
+        except Exception as exc:  # noqa: BLE001 — the log is optional context
+            logger.warning("Feedback follow-up: intervention query failed: {}", exc)
+            return None
+
+        for row in reversed(rows):
+            response = str(row.get("user_response") or "")
+            if response not in _FOLLOWUP_RESPONSES:
+                continue
+            intervention_id = str(row.get("id") or "")
+            if not intervention_id or intervention_id in self._followed_up:
+                continue
+            triggered_at = _parse_iso_utc(row.get("triggered_at"))
+            if triggered_at is None:
+                continue
+            return intervention_id, triggered_at, response
+        return None
 
     async def _in_deep_work(self, user_id: int, now: datetime) -> bool:
         """Reuse the intervention service's deep-work rule, when available.
@@ -406,8 +480,24 @@ class FeedbackRequestStore:
             logger.warning("Feedback request broadcast failed: {}", exc)
 
 
+def _parse_iso_utc(value: object) -> datetime | None:
+    """Parse a stored ISO8601 timestamp as UTC; ``None`` when unusable.
+
+    Rows store ``triggered_at`` as ISO text, so a follow-up window needs the
+    same tolerant parse the period-review service uses.
+    """
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
 __all__ = [
     "DEFAULT_PROMPT",
+    "FOLLOWUP_PROMPT",
     "LABEL_DISTRACTED",
     "LABEL_FOCUS",
     "LABEL_SKIP",

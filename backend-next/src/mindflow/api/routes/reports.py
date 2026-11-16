@@ -1,8 +1,9 @@
-"""API routes for daily and weekly reports.
+"""API routes for daily, weekly and period reports.
 
 Endpoints:
-  - GET /reports/daily (get or generate a daily report)
-  - GET /reports/weekly (weekly summary with 7-day trend)
+  - GET  /reports/daily (get or generate a daily report)
+  - GET  /reports/weekly (weekly summary with 7-day trend)
+  - POST /reports/period-review (facts + optional AI narration for 3/7/14 days)
 """
 
 from __future__ import annotations
@@ -13,9 +14,15 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request  # noqa: B008
 from loguru import logger
 
-from mindflow.api.deps import get_report_service
+from mindflow.api.deps import get_period_review_service, get_report_service
 from mindflow.api.errors import _not_found
-from mindflow.api.schemas import DailyReportResponse, WeeklyReportResponse
+from mindflow.api.schemas import (
+    DailyReportResponse,
+    PeriodReviewRequest,
+    PeriodReviewResponse,
+    WeeklyReportResponse,
+)
+from mindflow.services.period_review_service import PeriodReviewService
 from mindflow.services.report_service import ReportService
 from mindflow.time_utils import business_today
 
@@ -65,3 +72,26 @@ async def get_weekly_report(
         start = today - timedelta(days=today.weekday())
 
     return await report_svc.weekly_report(1, start)
+
+
+@router.post("/reports/period-review", response_model=PeriodReviewResponse)
+async def post_period_review(
+    payload: PeriodReviewRequest,
+    period_svc: PeriodReviewService = Depends(get_period_review_service),  # noqa: B008
+) -> PeriodReviewResponse:
+    """Summarise the last 3 / 7 / 14 local days.
+
+    The facts come from re-scoring the stored 5-minute windows; the narrative is
+    AI-written only when asked for *and* the data supports it, and falls back to
+    the local template otherwise (``narrative.fallback_reason`` says why).
+
+    ``user_id`` is fixed to 1, like the daily and weekly routes.
+    """
+    result = await period_svc.review(1, payload.days, payload.use_ai)
+    return PeriodReviewResponse(
+        digest=result.digest,
+        llm_payload=result.llm_payload,
+        ai_requested=result.ai_requested,
+        narrative=result.narrative,
+        generated_at=result.generated_at,
+    )

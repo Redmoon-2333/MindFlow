@@ -92,6 +92,9 @@ from mindflow.infrastructure.repositories.report import (
     SQLAlchemyDailyReportRepository,
 )
 from mindflow.infrastructure.repositories.scheduled_jobs import ScheduledJobRunsRepository
+from mindflow.infrastructure.repositories.task_context import (
+    TaskContextRulesRepository,
+)
 from mindflow.infrastructure.repositories.tasks import SQLAlchemyTaskRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
 from mindflow.infrastructure.repositories.training_jobs import TrainingJobRepository
@@ -121,6 +124,7 @@ from mindflow.services.intervention_throttle import InterventionThrottle
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
+from mindflow.services.period_review_service import PeriodReviewService
 from mindflow.services.prediction_service import FocusPredictionService
 from mindflow.services.report_service import ReportService
 from mindflow.services.scheduler import build_scheduler
@@ -393,6 +397,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             baseline_repository=baseline_repository,
         )
 
+        # Task-context rule stores (feature schema v4). Without them the rollup
+        # still classifies through the built-in heuristics; with them the
+        # user's own app/site assignments decide what a window was for.
+        task_context_rules_repository = TaskContextRulesRepository(
+            session_factory=session_factory,
+        )
         telemetry_service = TelemetryService(
             repository=telemetry_repository,
             preferences_repository=preferences_repository,
@@ -403,6 +413,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             baseline_repository=baseline_repository,
             session_factory=session_factory,
             interval_repository=CollectorIntervalsRepository(session_factory),
+            classification_rules_repository=classification_rules_repository,
+            task_context_rules_repository=task_context_rules_repository,
         )
         telemetry_service.attach_input_watcher(input_telemetry_service)
         telemetry_preferences = await telemetry_service.get_preferences()
@@ -414,6 +426,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             telemetry_repository=telemetry_repository,
             prediction_service=prediction_service,
             activity_repository=activity_repository,
+            # An ignored/rejected reminder is followed up once, and that answer
+            # becomes a window label (appendix B). The store only reads it.
+            intervention_repository=intervention_repository,
             broadcast_fn=broadcast,
             # The daily ask cap resets at the user's midnight, not UTC's.
             timezone=settings.timezone,
@@ -578,6 +593,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         except Exception as exc:
             logger.warning("Failed to create LLMService: {}", exc)
+
+        # ── 7b-2. Period review ("阶段总结") ────────────────────────────────
+        # The digest only re-scores stored windows and reads three enumeration
+        # fields of the reminder log; the AI layer is optional and falls back
+        # to the local template. `gateway_provider` is a callable so a gateway
+        # attached later is still picked up per request.
+        period_review_service = PeriodReviewService(
+            prediction_service=prediction_service,
+            intervention_repo=intervention_repository,
+            gateway_provider=(
+                lambda: provider_registry.get_gateway()
+                if provider_registry is not None
+                else None
+            ),
+            timezone=settings.timezone,
+        )
 
         # ── 7c. Wave 7: Intervention service ───────────────────────────────
         intervention_throttle = InterventionThrottle(
@@ -749,6 +780,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 timezone=settings.timezone,
                 model=provider_registry.get_chat_model(),
                 provider_registry=provider_registry,
+                period_review_service=period_review_service,
             )
             logger.info("ChatService created for G004 conversational assistant")
         except Exception as exc:
@@ -826,6 +858,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.feedback_request_store = feedback_request_store
         app.state.input_telemetry_service = input_telemetry_service
         app.state.classification_rules_repository = classification_rules_repository
+        app.state.task_context_rules_repository = task_context_rules_repository
         app.state.collector_service = collector_service
         app.state.system_token = system_token
         app.state.bootstrap_tickets = bootstrap_tickets
@@ -840,6 +873,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.analysis_service = analysis_service
         app.state.scheduled_job_runs_repository = scheduled_job_runs_repository
         app.state.report_service = report_service
+        app.state.period_review_service = period_review_service
         app.state.maintenance_service = maintenance_service
         app.state.scheduler = scheduler
         app.state.llm_service = llm_service

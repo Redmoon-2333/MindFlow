@@ -3,6 +3,14 @@ import type { components, paths } from "./generated/api-schema";
 import { parseFocusPrediction } from "./prediction-state";
 import type { FocusPredictionResponse } from "./prediction-state";
 import { parseDailyReport, parseWeeklyReport } from "./report-state";
+import type {
+  AssignableContext,
+  AssignableKind,
+  PeriodDays,
+  PeriodReview,
+  TaskContextAssignResponse,
+  UnclassifiedItems,
+} from "./period-review";
 import type { DailyReport, WeeklyReport } from "./report-state";
 import { parseBaselineSummary } from "./baseline-state";
 import type { BaselineSummaryState } from "./baseline-state";
@@ -714,6 +722,47 @@ export const getDailyReport = async (date?: string): Promise<DailyReport> =>
   parseDailyReport(await request<unknown>(`/reports/daily${date ? `?date=${date}` : ""}`));
 export const getWeeklyReport = async (weekStart?: string): Promise<WeeklyReport> =>
   parseWeeklyReport(await request<unknown>(`/reports/weekly${weekStart ? `?week_start=${weekStart}` : ""}`));
+
+/** Period review ("阶段总结"): 3 / 7 / 14 local days of re-scored windows.
+ *
+ *  The AI narration is one deliberate, bounded call; the 105 s deadline covers
+ *  the backend's own 90 s timeout plus transport so a slow provider still
+ *  renders the local-template fallback instead of a client-side abort.
+ */
+export const getPeriodReview = (days: PeriodDays, useAi: boolean): Promise<PeriodReview> =>
+  request<PeriodReview>(
+    "/reports/period-review",
+    { method: "POST", body: JSON.stringify({ days, use_ai: useAi }) },
+    105_000,
+  );
+
+/** Unrecognised apps/sites in the review span (appendix A).
+ *
+ *  Local-only: the names come back so the user can teach MindFlow what they
+ *  are. They are never part of a digest and never sent to an AI. */
+export const getUnclassified = (days: PeriodDays): Promise<UnclassifiedItems> =>
+  request<UnclassifiedItems>(`/task-context/unclassified?days=${days}`);
+
+/** Remember what an unrecognised app or site is used for.
+ *
+ *  The backend saves a permanent rule and starts a 14-day window recompute in
+ *  the background, so this resolves before the change is visible in a digest. */
+export const assignTaskContext = (
+  kind: AssignableKind,
+  key: string,
+  context: AssignableContext,
+): Promise<TaskContextAssignResponse> =>
+  request<TaskContextAssignResponse>("/task-context/assign", {
+    method: "POST",
+    body: JSON.stringify({ kind, key, context }),
+  });
+
+/** Period review ("阶段总结"): 3 / 7 / 14 local days of re-scored windows.
+ *
+ *  The AI narration is one deliberate, bounded call; the 105 s deadline covers
+ *  the backend's own 90 s timeout plus transport so a slow provider still
+ *  renders the local-template fallback instead of a client-side abort.
+ */
 export const getAnalyticsPatterns = (days?: number) => request<AnalyticsPatterns>(`/analytics/patterns${days ? `?days=${days}` : ""}`);
 export const getBaseline = async (): Promise<BaselineSummaryState> =>
   parseBaselineSummary(await request<unknown>("/analytics/baseline"));

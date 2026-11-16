@@ -20,15 +20,23 @@ import asyncio
 import json
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Lock
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from loguru import logger
 
 from mindflow.domain.feature_labels import feature_label
 from mindflow.domain.feature_schema import FEATURE_SCHEMA_VERSION, V2_FEATURE_NAMES
+from mindflow.domain.period_review import (
+    DISTRACTION_PROBA_THRESHOLD,
+    MAX_MODEL_SIGNALS,
+    NON_BEHAVIORAL_FEATURES,
+    DistractionDriver,
+    ScoredWindow,
+)
 from mindflow.domain.prediction import (
     MIN_COVERAGE_RATIO,
     STALE_THRESHOLD_S,
@@ -37,6 +45,7 @@ from mindflow.domain.prediction import (
 )
 from mindflow.infrastructure.repositories.baseline import BaselineRepository
 from mindflow.infrastructure.repositories.telemetry import TelemetryRepository
+from mindflow.services.telemetry_features import task_context_from_feature_window
 from mindflow.time_utils import resolve_timezone
 from mindflow.train.local_explanation import LocalExplainer
 from mindflow.train.models.manager import ModelManager
@@ -46,6 +55,33 @@ _LATEST_LOOKBACK_S: float = 7200.0  # 2 hours
 
 # Maximum windows per batch ``predict_proba`` call
 _MAX_PREDICT_WINDOWS: int = 500
+
+
+@dataclass(frozen=True)
+class WindowScoring:
+    """Per-window focus scores for a time range (period-review input).
+
+    Unlike :class:`FocusPrediction`, which aggregates a range into one number,
+    this keeps every window: the period review re-buckets them by day, daypart
+    and task context, and merges consecutive distracted windows into episodes.
+
+    Attributes:
+        status: ``"ready"`` on success; otherwise why there are no windows
+            (``no_model`` / ``no_data`` / ``schema_mismatch`` /
+            ``inference_error``).
+        model_version: Version tag of the classifier that scored them.
+        windows: Scored windows, ascending by start; empty on failure.
+        drivers: Behavioural features that separate distracted from focused
+            windows (at most :data:`MAX_MODEL_SIGNALS`); empty when either
+            group has fewer than three windows.
+        reason: Human-readable explanation for a non-``ready`` status.
+    """
+
+    status: FocusPredictionStatus
+    model_version: str | None
+    windows: tuple[ScoredWindow, ...]
+    drivers: tuple[DistractionDriver, ...]
+    reason: str = ""
 
 
 class FocusPredictionService:
@@ -254,6 +290,331 @@ class FocusPredictionService:
             False,
             start,
         )
+
+    async def score_windows(
+        self,
+        user_id: int,
+        start: datetime,
+        end: datetime,
+    ) -> WindowScoring:
+        """Score every feature window in ``[start, end)`` individually.
+
+        This is the period-review entry point: it needs one probability per
+        window rather than an aggregate, and it must not truncate the range —
+        a 14-day review covers far more than :data:`_MAX_PREDICT_WINDOWS`
+        windows, so the matrix is scored in chunks and the probabilities are
+        concatenated.
+
+        Never raises: a DB failure becomes ``status="inference_error"``, a
+        missing model ``"no_model"``, and an empty range ``"no_data"``.
+
+        Args:
+            user_id: The user to score for.
+            start: Range start (timezone-aware).
+            end: Range end (timezone-aware).
+
+        Returns:
+            A :class:`WindowScoring` describing the outcome.
+        """
+        model_manager = self._model_manager
+        if model_manager is None:
+            return WindowScoring(
+                status="no_model",
+                model_version=None,
+                windows=(),
+                drivers=(),
+                reason="未加载 ML 模型",
+            )
+        model_version = model_manager.current_version_tag
+        if not bool(getattr(model_manager.classifier, "_is_fitted", False)):
+            return WindowScoring(
+                status="no_model",
+                model_version=model_version,
+                windows=(),
+                drivers=(),
+                reason="分类器尚未训练完成",
+            )
+
+        try:
+            all_windows = await self._telemetry_repo.list_feature_windows_in_range(
+                user_id=user_id,
+                start=start,
+                end=end,
+                feature_schema_version=FEATURE_SCHEMA_VERSION,
+            )
+        except Exception as exc:
+            logger.warning(
+                "FocusPredictionService: score_windows DB query failed: {}", exc
+            )
+            return WindowScoring(
+                status="inference_error",
+                model_version=model_version,
+                windows=(),
+                drivers=(),
+                reason=f"特征窗口查询失败：{exc}",
+            )
+
+        windows = [w for w in all_windows if _window_overlaps_range(w, start, end)]
+        if not windows:
+            return WindowScoring(
+                status="no_data",
+                model_version=model_version,
+                windows=(),
+                drivers=(),
+                reason=(
+                    f"在 {start.isoformat()} ~ {end.isoformat()} 范围内"
+                    "未找到 v2 特征窗口"
+                ),
+            )
+
+        # Offload the CPU-bound part (JSON parsing, numpy, SHAP) to a worker
+        # thread so concurrent HTTP requests are not blocked.
+        return await asyncio.to_thread(
+            self._score_windows_sync, windows, model_manager
+        )
+
+    def _score_windows_sync(
+        self,
+        windows: Sequence[dict[str, Any]],
+        model_manager: ModelManager,
+    ) -> WindowScoring:
+        """Build the feature matrix, score it in chunks, and derive drivers.
+
+        Synchronous by design (runs inside ``asyncio.to_thread``). Never raises
+        — every failure is a status value.
+        """
+        model_version = model_manager.current_version_tag
+
+        # ── Parse rows ──────────────────────────────────────────────────
+        parsed: list[dict[str, float]] = []
+        starts: list[datetime] = []
+        ends: list[datetime] = []
+        contexts: list[str] = []
+        for row in windows:
+            if not _has_activity_data(row):
+                continue
+            try:
+                features = json.loads(str(row.get("features_json", "{}")))
+                if not isinstance(features, dict):
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            window_start = _parse_window_start(row)
+            window_end = _parse_window_end(row)
+            if window_start is None or window_end is None or window_end <= window_start:
+                # A window with no usable span cannot be placed on a day, a
+                # daypart or an episode timeline; scoring it would inflate
+                # totals without ever being attributable.
+                continue
+
+            parsed.append(
+                {
+                    name: _finite_float(features.get(name))
+                    for name in V2_FEATURE_NAMES
+                }
+            )
+            starts.append(window_start)
+            ends.append(window_end)
+            contexts.append(task_context_from_feature_window(features))
+
+        if not parsed:
+            return WindowScoring(
+                status="no_data",
+                model_version=model_version,
+                windows=(),
+                drivers=(),
+                reason="特征窗口解析后全部为空或无效",
+            )
+
+        window_count = len(parsed)
+
+        # ── Build numpy matrix ──────────────────────────────────────────
+        try:
+            matrix = np.asarray(
+                [[row[name] for name in V2_FEATURE_NAMES] for row in parsed],
+                dtype=np.float64,
+            )
+        except (KeyError, ValueError, TypeError) as exc:
+            return WindowScoring(
+                status="schema_mismatch",
+                model_version=model_version,
+                windows=(),
+                drivers=(),
+                reason=f"特征矩阵构建失败（列名不匹配）：{exc}",
+            )
+
+        if matrix.ndim != 2 or matrix.shape[1] != len(V2_FEATURE_NAMES):
+            return WindowScoring(
+                status="schema_mismatch",
+                model_version=model_version,
+                windows=(),
+                drivers=(),
+                reason=(
+                    f"特征矩阵形状异常：{matrix.shape}"
+                    f"（期望 {len(V2_FEATURE_NAMES)} 列）"
+                ),
+            )
+
+        model_feature_names = getattr(model_manager.classifier, "feature_names_", None)
+        if (
+            model_feature_names is not None
+            and isinstance(model_feature_names, (list, tuple))
+            and tuple(model_feature_names) != tuple(V2_FEATURE_NAMES)
+        ):
+            return WindowScoring(
+                status="schema_mismatch",
+                model_version=model_version,
+                windows=(),
+                drivers=(),
+                reason="模型特征名称与当前 V2_FEATURE_NAMES 不匹配",
+            )
+
+        if not np.all(np.isfinite(matrix)):
+            return WindowScoring(
+                status="inference_error",
+                model_version=model_version,
+                windows=(),
+                drivers=(),
+                reason="特征矩阵包含 NaN 或 Infinite 值",
+            )
+
+        # ── Score in chunks — no truncation ─────────────────────────────
+        try:
+            chunk_results: list[np.ndarray[Any, Any]] = []
+            for offset in range(0, window_count, _MAX_PREDICT_WINDOWS):
+                chunk = matrix[offset : offset + _MAX_PREDICT_WINDOWS]
+                chunk_proba = np.asarray(
+                    model_manager.classifier.predict_proba(chunk), dtype=np.float64
+                )
+                if (
+                    chunk_proba.shape != (chunk.shape[0], 2)
+                    or not np.all(np.isfinite(chunk_proba))
+                    or np.any(chunk_proba < 0.0)
+                    or np.any(chunk_proba > 1.0)
+                    or not np.allclose(
+                        chunk_proba.sum(axis=1), 1.0, atol=1e-6, rtol=0
+                    )
+                ):
+                    raise ValueError("invalid binary probability distribution")
+                chunk_results.append(chunk_proba)
+            probabilities = np.concatenate(chunk_results, axis=0)
+        except Exception as exc:
+            logger.warning(
+                "FocusPredictionService: score_windows inference failed: {}", exc
+            )
+            return WindowScoring(
+                status="inference_error",
+                model_version=model_version,
+                windows=(),
+                drivers=(),
+                reason=f"模型推理失败：{exc}",
+            )
+
+        # Column 0 is distraction, column 1 is focus.
+        p_distraction = probabilities[:, 0]
+        scored_windows = tuple(
+            ScoredWindow(
+                start_utc=start,
+                end_utc=end,
+                task_context=context,
+                p_distraction=float(probability),
+            )
+            for start, end, context, probability in zip(
+                starts, ends, contexts, p_distraction, strict=True
+            )
+        )
+
+        return WindowScoring(
+            status="ready",
+            model_version=model_version,
+            windows=scored_windows,
+            drivers=self._distraction_drivers(model_manager, matrix, p_distraction),
+        )
+
+    def _distraction_drivers(
+        self,
+        model_manager: ModelManager,
+        matrix: np.ndarray[Any, Any],
+        p_distraction: np.ndarray[Any, Any],
+    ) -> tuple[DistractionDriver, ...]:
+        """Which behavioural features separate distracted from focused windows.
+
+        Prefers the model's own local explanation — SHAP contributions that push
+        *toward distraction* (negative on the focus scale) — and falls back to a
+        standardised mean difference when SHAP is unavailable or explains
+        nothing. Both paths exclude :data:`NON_BEHAVIORAL_FEATURES`: the user
+        asked what they did, not what hour it was.
+
+        Requires at least three windows in each group, so one window can never
+        become a "signal".
+        """
+        distracted_mask = p_distraction >= DISTRACTION_PROBA_THRESHOLD
+        focused_mask = ~distracted_mask
+        distracted_count = int(np.count_nonzero(distracted_mask))
+        focused_count = int(np.count_nonzero(focused_mask))
+        if distracted_count < 3 or focused_count < 3:
+            return ()
+
+        distracted_matrix = matrix[distracted_mask]
+        focused_matrix = matrix[focused_mask]
+
+        ranked: list[str] = []
+        try:
+            explanation = self._explain(
+                model_manager,
+                distracted_matrix[-_MAX_PREDICT_WINDOWS:],
+                1.0 - p_distraction[distracted_mask][-_MAX_PREDICT_WINDOWS:],
+                None,
+            )
+        except Exception as exc:
+            # ``_explain`` already degrades internally; this is the
+            # belt-and-braces path so a driver failure cannot fail the review.
+            logger.opt(exception=True).warning(
+                "FocusPredictionService: driver explanation failed: {}", exc
+            )
+            explanation = None
+        if explanation is not None:
+            contributions = [
+                item
+                for item in explanation.get("contributions", [])
+                if float(item.get("contribution", 0.0)) < 0.0
+                and str(item.get("feature", "")) not in NON_BEHAVIORAL_FEATURES
+            ]
+            contributions.sort(key=lambda item: float(item.get("contribution", 0.0)))
+            ranked = [str(item["feature"]) for item in contributions]
+
+        if not ranked:
+            ranked = _standardised_mean_difference_ranking(
+                distracted_matrix, focused_matrix
+            )
+
+        distracted_means = np.mean(distracted_matrix, axis=0)
+        focused_means = np.mean(focused_matrix, axis=0)
+        column = {name: index for index, name in enumerate(V2_FEATURE_NAMES)}
+
+        drivers: list[DistractionDriver] = []
+        for feature in ranked[:MAX_MODEL_SIGNALS]:
+            index = column[feature]
+            distracted_mean = round(float(distracted_means[index]), 3)
+            focused_mean = round(float(focused_means[index]), 3)
+            direction: Literal["higher", "lower", "similar"]
+            if distracted_mean > focused_mean * 1.1 + 1e-9:
+                direction = "higher"
+            elif distracted_mean < focused_mean * 0.9 - 1e-9:
+                direction = "lower"
+            else:
+                direction = "similar"
+            drivers.append(
+                DistractionDriver(
+                    feature=feature,
+                    label=feature_label(feature),
+                    direction=direction,
+                    distracted_mean=distracted_mean,
+                    focused_mean=focused_mean,
+                )
+            )
+        return tuple(drivers)
 
     # ══════════════════════════════════════════════════════════════════════
     # Internal: predict from window rows
@@ -663,6 +1024,44 @@ def _parse_window_end(row: dict[str, Any]) -> datetime | None:
         return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
     except (ValueError, TypeError):
         return None
+
+
+def _parse_window_start(row: dict[str, Any]) -> datetime | None:
+    """Parse a feature window's start time from its row dict."""
+    w_start = row.get("window_start_utc")
+    if not w_start:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(w_start).replace("Z", "+00:00"))
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+    except (ValueError, TypeError):
+        return None
+
+
+def _standardised_mean_difference_ranking(
+    distracted_matrix: np.ndarray[Any, Any],
+    focused_matrix: np.ndarray[Any, Any],
+) -> list[str]:
+    """Rank behavioural features by standardised mean difference (effect size).
+
+    ``|m_d - m_f| / sqrt((var_d + var_f) / 2)`` — scale-free, so a count
+    feature and a ratio feature are comparable. Ties keep ``V2_FEATURE_NAMES``
+    order.
+    """
+    distracted_means = np.mean(distracted_matrix, axis=0)
+    focused_means = np.mean(focused_matrix, axis=0)
+    distracted_vars = np.var(distracted_matrix, axis=0)
+    focused_vars = np.var(focused_matrix, axis=0)
+    pooled = np.sqrt((distracted_vars + focused_vars) / 2.0)
+    effect = np.abs(distracted_means - focused_means) / (pooled + 1e-6)
+
+    scored: list[tuple[float, int, str]] = [
+        (float(effect[index]), index, name)
+        for index, name in enumerate(V2_FEATURE_NAMES)
+        if name not in NON_BEHAVIORAL_FEATURES
+    ]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [name for _effect, _index, name in scored]
 
 
 def _window_coverage(

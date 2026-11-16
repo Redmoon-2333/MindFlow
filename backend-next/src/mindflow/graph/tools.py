@@ -164,6 +164,19 @@ class InterventionHistoryOutput(BaseModel):
     error: str | None = None
 
 
+class PeriodReviewOutput(BaseModel):
+    """Output from ``query_period_review``.
+
+    ``digest_json`` is the period digest serialised as-is: it is already a
+    closed whitelist of numbers, categories and dates, so there is nothing to
+    sanitise and nothing personal to leak.
+    """
+
+    digest_json: str = ""
+    data_state: str = ""
+    error: str | None = None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Sanitisation helpers
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -445,6 +458,59 @@ class InterventionHistoryTool(_ContextualTool):
         return InterventionHistoryOutput(interventions=summary, total=len(summary))
 
 
+def period_review_days(days_back: int) -> int:
+    """Map a free-form look-back onto one of the review spans the UI offers.
+
+    The digest supports three lengths (3 / 7 / 14 days): anything up to three
+    days rounds to three so the answer always has enough windows to say
+    something, a week stays a week, and anything longer rounds to two weeks.
+    """
+    if days_back <= 3:
+        return 3
+    if days_back <= 7:
+        return 7
+    return 14
+
+
+class PeriodReviewTool(_ContextualTool):
+    """Typed adapter for the ``query_period_review`` tool.
+
+    Returns the same digest the "阶段总结" page shows, without the AI
+    narration: the chat model gets the numbers and writes its own answer.
+
+    Tool description (preserved):
+        Query the period review statistics for the last few days.
+        Returns distraction counts, which kinds of work and which dayparts
+        distraction happened in, and how the user responded to reminders.
+    """
+
+    def __init__(
+        self,
+        period_review_service: Any,  # PeriodReviewService
+        timezone: TimezoneLike = "local",
+    ) -> None:
+        super().__init__()
+        self._period_review_service = period_review_service
+        self._timezone = timezone
+
+    async def execute(self, days_back: int = 7) -> PeriodReviewOutput:
+        """Build the digest for the nearest allowed span at or below *days_back*."""
+        ctx = self.context
+        if ctx is None or ctx.user_id == 0:
+            return PeriodReviewOutput(error="user_id not set")
+
+        days = period_review_days(days_back)
+        try:
+            digest = await self._period_review_service.build_digest(ctx.user_id, days)
+        except Exception as exc:  # noqa: BLE001
+            return PeriodReviewOutput(error=str(exc))
+
+        return PeriodReviewOutput(
+            digest_json=digest.model_dump_json(),
+            data_state=digest.data_state,
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Output formatting (for LangChain tool return values)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -482,3 +548,11 @@ def format_intervention_output(output: InterventionHistoryOutput) -> str:
     if output.total == 0:
         return "暂无干预记录"
     return json.dumps(output.interventions, ensure_ascii=False)
+
+
+def format_period_review_output(output: PeriodReviewOutput) -> str:
+    """Convert ``PeriodReviewOutput`` to a LangChain-compatible string."""
+    if output.error:
+        return json.dumps({"error": output.error}, ensure_ascii=False)
+    return output.digest_json
+

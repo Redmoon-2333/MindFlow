@@ -44,6 +44,9 @@ from mindflow.infrastructure.repositories.preferences import (
 from mindflow.infrastructure.repositories.report import (
     SQLAlchemyDailyReportRepository,
 )
+from mindflow.infrastructure.repositories.task_context import (
+    TaskContextRulesRepository,
+)
 from mindflow.infrastructure.repositories.tasks import SQLAlchemyTaskRepository
 from mindflow.ports import AnalysisWorkflowPort
 from mindflow.services.analysis_service import AnalysisService
@@ -56,6 +59,7 @@ from mindflow.services.intervention_service import InterventionService
 from mindflow.services.llm_service import LLMService
 from mindflow.services.maintenance_service import MaintenanceService
 from mindflow.services.panel_service import PanelService
+from mindflow.services.period_review_service import PeriodReviewService
 from mindflow.services.report_service import ReportService
 from mindflow.services.telemetry_service import TelemetryService
 
@@ -98,6 +102,14 @@ def get_classification_rules_repo(request: Request) -> AppClassificationRulesRep
     )
 
 
+def get_task_context_rules_repo(request: Request) -> TaskContextRulesRepository:
+    """Return the TaskContextRulesRepository from app.state."""
+    return cast(
+        TaskContextRulesRepository,
+        request.app.state.task_context_rules_repository,
+    )
+
+
 def get_system_token(request: Request) -> str:
     """Return the system token from app.state."""
     return cast(str, request.app.state.system_token)
@@ -121,6 +133,11 @@ def get_analysis_service(request: Request) -> AnalysisService:
 def get_report_service(request: Request) -> ReportService:
     """Return the ReportService from app.state."""
     return cast(ReportService, request.app.state.report_service)
+
+
+def get_period_review_service(request: Request) -> PeriodReviewService:
+    """Return the PeriodReviewService from app.state."""
+    return cast(PeriodReviewService, request.app.state.period_review_service)
 
 
 def get_maintenance_service(request: Request) -> MaintenanceService:

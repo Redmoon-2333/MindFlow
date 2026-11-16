@@ -1,0 +1,226 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Period review ("阶段总结"). Tokens only — no new colour values, so the block
+   reads the same in all four themes (white / black / navy / burgundy).
+   ────────────────────────────────────────────────────────────────────────── */
+
+.period-review {
+  width: 100%;
+}
+
+.period-ai-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-base);
+  color: var(--text);
+}
+
+.period-ai-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--signal);
+}
+
+.period-ai-toggle label {
+  cursor: pointer;
+}
+
+.period-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 0;
+  color: var(--text-dim);
+  font-size: var(--fs-base);
+}
+
+.period-empty {
+  padding: 32px 0;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.period-narrative {
+  margin-top: 0;
+}
+
+.period-source-chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.period-fallback-note {
+  margin: 8px 0 0;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.period-findings {
+  margin: 12px 0 0;
+  padding-left: 20px;
+}
+
+.period-findings li,
+.period-narrative ol li {
+  margin: 6px 0;
+  line-height: 1.7;
+}
+
+.period-suggestions {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.period-subhead {
+  margin: 0 0 4px;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.period-suggestions ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.period-papers {
+  margin: 16px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.period-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  margin: 2px 4px 2px 0;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 18px;
+  border: 1px solid var(--line, currentColor);
+  opacity: 0.85;
+}
+
+.period-metrics {
+  margin-top: 16px;
+}
+
+.period-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.period-daily,
+.period-interventions {
+  margin-top: 16px;
+}
+
+.period-dayparts {
+  margin-top: 8px;
+}
+
+.period-dayparts .kv-row:first-child,
+.period-signals .kv-row:first-child {
+  border-top: none;
+}
+
+.period-dim {
+  color: var(--text-dim);
+}
+
+.period-interventions-line {
+  margin: 8px 0 0;
+  font-size: var(--fs-base);
+}
+
+.period-chips {
+  margin-top: 8px;
+}
+
+.period-payload {
+  max-height: 320px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* ── 未识别项目归类 (appendix A) ──────────────────────────────────────────── */
+
+.period-unclassified {
+  margin-top: 16px;
+}
+
+.period-unclassified-list {
+  margin-top: 8px;
+}
+
+.period-unclassified-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-base);
+}
+
+.period-unclassified-row:first-child {
+  border-top: none;
+}
+
+.period-unclassified-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.period-unclassified-kind {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+.period-unclassified-answer {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Size only: the global select theme supplies the arrow, padding and colours. */
+.period-unclassified-answer select {
+  min-width: 150px;
+}
+
+.period-unclassified-answer .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.period-unclassified-saved {
+  margin-left: auto;
+  color: var(--ok);
+  font-size: var(--fs-sm);
+}
+
+.period-unclassified-error {
+  flex-basis: 100%;
+  color: var(--bad);
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 899px) {
+  .period-grid {
+    grid-template-columns: 1fr;
+  }
+}

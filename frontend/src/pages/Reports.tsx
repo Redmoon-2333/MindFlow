@@ -11,9 +11,10 @@ import MetricStrip from "../components/signal/MetricStrip";
 import type { MetricItem } from "../components/signal/MetricStrip";
 import Segmented from "../components/signal/Segmented";
 import BarChart from "../components/charts/BarChart";
+import PeriodReview from "../components/PeriodReview";
 import "./reports.css";
 
-type Tab = "daily" | "weekly";
+type Tab = "daily" | "weekly" | "period";
 
 function todayStr(): string {
   return localDateStr();
@@ -22,7 +23,7 @@ function todayStr(): string {
 /** Reference always draws four metric cells; when the report is not ready we
  *  keep the row (so the layout matches) but show `—` instead of inventing
  *  numbers, and the state card text below explains why. */
-function placeholderStats(tab: Tab): MetricItem[] {
+function placeholderStats(tab: "daily" | "weekly"): MetricItem[] {
   const labels = tab === "daily"
     ? ["总专注时长", "会话次数", "分心次数", "专注评分"]
     : ["日均专注时长", "有记录天数", "总分心次数", "日均评分"];
@@ -184,135 +185,147 @@ export default function Reports() {
   return (
     <>
       <div className="reports">
-        <p className="page-lede">按日或按周汇总你的专注表现。</p>
+        <p className="page-lede">按日、按周汇总你的专注表现，也可以回顾最近几天的整体情况。</p>
 
         <div className="page-toolbar top-buttom">
           <Segmented
             ariaLabel="报告类型"
-            options={[{ value: "daily", label: "日报" }, { value: "weekly", label: "周报" }]}
+            options={[
+              { value: "daily", label: "日报" },
+              { value: "weekly", label: "周报" },
+              { value: "period", label: "阶段总结" },
+            ]}
             value={tab}
             onChange={(value) => setTab(value as Tab)}
           />
-          <div className="report-datepicker mf-picker">
-            <NativeDateField label="选择日期" value={tab === "daily" ? dailyDate : weekStart} onChange={value => { if (tab === "daily") setDailyDate(value); else setWeekStart(mondayOf(new Date(`${value}T12:00:00`))); }} />
-          </div>
-        </div>
-
-        {error && (
-          <div className="error-box report-error" role="alert">
-            {error}
-            <button
-              className="btn btn-secondary btn-sm report-retry"
-              onClick={() => (tab === "daily" ? loadDaily(dailyDate) : loadWeekly(weekStart))}
-            >
-              重试
-            </button>
-          </div>
-        )}
-
-        <div className="t-state">
-          <MetricStrip label={tab === "daily" ? "当日" : "本周"} items={stats} />
-        </div>
-
-        <Surface as="section" className="zhuanzhudongcha">
-          <SectionHeader
-            title={insightTitle}
-            help={{ what: "根据固定规则自动写出的小结，不调用 AI。" }}
-          />
-          {loading ? (
-            <div className="spinner" />
-          ) : (
-            <div className="zhuanzhudongcha-text">
-              {insight ?? "暂无洞察：等待足够的专注数据后由规则引擎生成。"}
+          {tab !== "period" && (
+            <div className="report-datepicker mf-picker">
+              <NativeDateField label="选择日期" value={tab === "daily" ? dailyDate : weekStart} onChange={value => { if (tab === "daily") setDailyDate(value); else setWeekStart(mondayOf(new Date(`${value}T12:00:00`))); }} />
             </div>
           )}
-        </Surface>
+        </div>
 
-        <Surface as="section" className="chart-box">
-          <SectionHeader title={chartTitle} />
-          <BarChart
-            data={shownBuckets.map((bucket, index) => ({
-              key: `${bucket.hour}-${index}`,
-              // §8.19: `18:00~21:00` is too wide for a tick; the axis uses the
-              // short form and the tooltip keeps the exact range.
-              label: `${bucket.hour.replace(/:00/g, "").replace("~", "–")}点`,
-              value: bucket.minutes,
-              title: bucket.hour,
-            }))}
-            ariaLabel={chartTitle}
-            unit=" 分钟"
-            valueName="专注时长"
-            height={220}
-            colorFor={() => "var(--signal)"}
-            emptyMessage="暂无数据"
-          />
-        </Surface>
+        {tab === "period" && <PeriodReview />}
 
-        <Surface as="section" className="report-detail-list">
-          <SectionHeader title={detailTitle} />
-          {tab === "daily" ? (
-            dailyView && dailyView.topApps.length > 0 ? (
-              <table className="simple-table">
+        {tab !== "period" && (
+          <>
+          {error && (
+            <div className="error-box report-error" role="alert">
+              {error}
+              <button
+                className="btn btn-secondary btn-sm report-retry"
+                onClick={() => (tab === "daily" ? loadDaily(dailyDate) : loadWeekly(weekStart))}
+              >
+                重试
+              </button>
+            </div>
+          )}
+
+          <div className="t-state">
+            <MetricStrip label={tab === "daily" ? "当日" : "本周"} items={stats} />
+          </div>
+
+          <Surface as="section" className="zhuanzhudongcha">
+            <SectionHeader
+              title={insightTitle}
+              help={{ what: "根据固定规则自动写出的小结，不调用 AI。" }}
+            />
+            {loading ? (
+              <div className="spinner" />
+            ) : (
+              <div className="zhuanzhudongcha-text">
+                {insight ?? "暂无洞察：等待足够的专注数据后由规则引擎生成。"}
+              </div>
+            )}
+          </Surface>
+
+          <Surface as="section" className="chart-box">
+            <SectionHeader title={chartTitle} />
+            <BarChart
+              data={shownBuckets.map((bucket, index) => ({
+                key: `${bucket.hour}-${index}`,
+                // §8.19: `18:00~21:00` is too wide for a tick; the axis uses the
+                // short form and the tooltip keeps the exact range.
+                label: `${bucket.hour.replace(/:00/g, "").replace("~", "–")}点`,
+                value: bucket.minutes,
+                title: bucket.hour,
+              }))}
+              ariaLabel={chartTitle}
+              unit=" 分钟"
+              valueName="专注时长"
+              height={220}
+              colorFor={() => "var(--signal)"}
+              emptyMessage="暂无数据"
+            />
+          </Surface>
+
+          <Surface as="section" className="report-detail-list">
+            <SectionHeader title={detailTitle} />
+            {tab === "daily" ? (
+              dailyView && dailyView.topApps.length > 0 ? (
+                <table className="simple-table">
+                  <thead>
+                    <tr>
+                      <th>应用</th>
+                      <th>时长</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dailyView.topApps.map((app) => (
+                      <tr key={app.app}>
+                        <td>{app.app}</td>
+                        <td>{formatMinutes(app.minutes)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="report-empty">{loading ? "加载中…" : "暂无应用使用数据"}</div>
+              )
+            ) : weeklyView && weeklyView.summary.length > 0 ? (
+              <table className="weekly-detail-table">
                 <thead>
                   <tr>
-                    <th>应用</th>
-                    <th>时长</th>
+                    <th>日期</th>
+                    <th>周几</th>
+                    <th>专注时长</th>
+                    <th>专注次数</th>
+                    <th>分心次数</th>
+                    <th>评分</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {dailyView.topApps.map((app) => (
-                    <tr key={app.app}>
-                      <td>{app.app}</td>
-                      <td>{formatMinutes(app.minutes)}</td>
+                  {weeklyView.summary.map((d) => (
+                    <tr key={d.date}>
+                      <td>{d.date ?? "—"}</td>
+                      <td>{dayLabel(d.date)}</td>
+                      <td>{formatMinutes(d.focus_minutes)}</td>
+                      <td>{d.sessions ?? "—"}</td>
+                      <td>{d.distractions ?? "—"}</td>
+                      <td>{d.focus_score != null ? Math.round(d.focus_score) : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             ) : (
-              <div className="report-empty">{loading ? "加载中…" : "暂无应用使用数据"}</div>
-            )
-          ) : weeklyView && weeklyView.summary.length > 0 ? (
-            <table className="weekly-detail-table">
-              <thead>
-                <tr>
-                  <th>日期</th>
-                  <th>周几</th>
-                  <th>专注时长</th>
-                  <th>专注次数</th>
-                  <th>分心次数</th>
-                  <th>评分</th>
-                </tr>
-              </thead>
-              <tbody>
-                {weeklyView.summary.map((d) => (
-                  <tr key={d.date}>
-                    <td>{d.date ?? "—"}</td>
-                    <td>{dayLabel(d.date)}</td>
-                    <td>{formatMinutes(d.focus_minutes)}</td>
-                    <td>{d.sessions ?? "—"}</td>
-                    <td>{d.distractions ?? "—"}</td>
-                    <td>{d.focus_score != null ? Math.round(d.focus_score) : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="report-empty">{loading ? "加载中…" : "暂无每日详情"}</div>
-          )}
+              <div className="report-empty">{loading ? "加载中…" : "暂无每日详情"}</div>
+            )}
 
-          {tab === "weekly" && weeklyView?.trend && weeklyView.trend.metrics.length > 0 && (
-            <div className="trend-row">
-              {weeklyView.trend.metrics.map((m) => (
-                <div className="kv-row kv-row--text" key={m.label}>
-                  <span>{m.label}</span>
-                  <span className={m.good ? "trend-value--good" : "trend-value--bad"}>
-                    {m.display} · {m.sub}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </Surface>
+            {tab === "weekly" && weeklyView?.trend && weeklyView.trend.metrics.length > 0 && (
+              <div className="trend-row">
+                {weeklyView.trend.metrics.map((m) => (
+                  <div className="kv-row kv-row--text" key={m.label}>
+                    <span>{m.label}</span>
+                    <span className={m.good ? "trend-value--good" : "trend-value--bad"}>
+                      {m.display} · {m.sub}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Surface>
+          </>
+        )}
       </div>
     </>
   );

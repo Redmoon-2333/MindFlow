@@ -17,11 +17,13 @@ from langchain_core.tools import BaseTool, tool
 from mindflow.graph.tools import (
     InterventionHistoryTool,
     LatestAnalysisTool,
+    PeriodReviewTool,
     QueryEvidenceTool,
     RunAnalysisTool,
     format_analysis_output,
     format_evidence_output,
     format_intervention_output,
+    format_period_review_output,
     format_run_output,
 )
 
@@ -155,3 +157,35 @@ def make_query_interventions(
         return format_intervention_output(result)
 
     return query_interventions
+
+
+# ── Tool factory: query_period_review ────────────────────────────────────
+
+
+def make_query_period_review(
+    adapter: PeriodReviewTool,
+) -> BaseTool:
+    """Return a ``query_period_review`` tool bound to *adapter*.
+
+    The tool signature exposed to the LLM::
+
+        query_period_review(days_back: int = 7) -> str
+
+    Returns statistics only — the digest carries no window titles, URLs or
+    reminder text.
+    """
+
+    @tool
+    async def query_period_review(days_back: int = 7) -> str:
+        """查看最近几天的阶段总结统计（分心次数、分心发生在哪类事情和哪个时段、主要在做哪类工作、提醒与回应）。用户问“这几天为什么分心”“这周做了什么”“分心了多少次”时调用。只返回统计数字，不含窗口标题和网址。
+
+        Args:
+            days_back: Number of days to look back; rounded to 3, 7 or 14.
+
+        Returns:
+            JSON string of the period digest.
+        """
+        result = await adapter.execute(days_back=days_back)
+        return format_period_review_output(result)
+
+    return query_period_review

@@ -174,6 +174,30 @@ class FeatureWindowRebuildResult:
 
 
 @dataclass(frozen=True, slots=True)
+class UnclassifiedItem:
+    """One process or domain the classifier could not place, with its time.
+
+    This is a *local* view for the settings page: it names the app or site so
+    the user can teach MindFlow what it is. It is never part of a period digest
+    and never reaches the LLM.
+
+    Attributes:
+        kind: ``"app"`` for a foreground process, ``"site"`` for a browser
+            domain.
+        key: What the user's answer will be stored against — the process name
+            for an app, the bare host for a site.
+        display: The name to show; the process name without ``.exe``.
+        minutes: Time attributed to it in the range, rounded to whole minutes
+            and never below 1.
+    """
+
+    kind: Literal["app", "site"]
+    key: str
+    display: str
+    minutes: int
+
+
+@dataclass(frozen=True, slots=True)
 class _PrefetchedRules:
     """Immutable rule list exposed through ``ClassificationRulesProtocol``.
 
@@ -219,6 +243,23 @@ class TelemetryClearResult(int):
 def _as_utc(value: Any) -> datetime:
     timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
     return timestamp.replace(tzinfo=UTC) if timestamp.tzinfo is None else timestamp.astimezone(UTC)
+
+
+def _normalise_process_name(value: Any) -> str:
+    """Process/browser name → comparable lowercase stem (``Chrome.EXE`` → ``chrome``).
+
+    The browser collector records a browser's *name* while the activity
+    collector records its *process*; comparing the two requires dropping the
+    ``.exe`` suffix and the case.
+    """
+    text = str(value or "").strip().lower()
+    return text.removesuffix(".exe")
+
+
+def _display_process_name(value: Any) -> str:
+    """Process name as the user should read it (no ``.exe``, case preserved)."""
+    text = str(value or "").strip()
+    return text[:-4] if text.lower().endswith(".exe") else text
 
 
 def _decode_features(features_json: Any) -> dict[str, Any]:
@@ -690,6 +731,98 @@ class TelemetryService:
             domain_contexts.setdefault(domain, context)
 
         return process_contexts, domain_contexts
+
+    async def list_unclassified(
+        self,
+        user_id: int,
+        start: datetime,
+        end: datetime,
+        limit: int = 10,
+    ) -> list[UnclassifiedItem]:
+        """Processes and domains in the range that resolve to ``unknown``.
+
+        The rollup resolves each process/domain through the same user rules and
+        heuristics it uses to build windows, so "unknown" here means exactly
+        "unknown in the feature window". Browsers are excluded from the app
+        list: a browser process is classified by the *site* it shows, so asking
+        the user what "chrome.exe" is would teach the wrong layer.
+
+        Args:
+            user_id: User identifier.
+            start: Inclusive UTC range start.
+            end: Exclusive UTC range end.
+            limit: Maximum number of items to return, highest minutes first.
+
+        Returns:
+            Items ordered by minutes descending; empty when nothing is unknown.
+        """
+        activity_repository = self._activity_repository
+        if activity_repository is None:
+            return []
+
+        start = _as_utc(start)
+        end = _as_utc(end)
+        events = await activity_repository.query_range(user_id, start, end)
+        browser = await self._repository.list_browser_segments(user_id, start, end)
+        process_contexts, domain_contexts = await self._resolve_task_contexts(
+            user_id, events, browser
+        )
+
+        browser_processes = {
+            _normalise_process_name(segment.get("browser_name"))
+            for segment in browser
+            if segment.get("browser_name")
+        }
+        app_seconds: dict[str, float] = {}
+        for event in events:
+            if event.data.is_idle:
+                continue
+            process = str(event.data.process_name or "")
+            # "unknown" is the collectors' placeholder when no name was readable;
+            # there is nothing the user could name.
+            if not process or process.strip().lower() == "unknown":
+                continue
+            if _normalise_process_name(process) in browser_processes:
+                continue
+            if process_contexts.get(process, TASK_CONTEXT_UNKNOWN) != TASK_CONTEXT_UNKNOWN:
+                continue
+            app_seconds[process] = app_seconds.get(process, 0.0) + max(
+                0.0, float(event.duration_s)
+            )
+
+        site_seconds: dict[str, float] = {}
+        for segment in browser:
+            domain = str(segment.get("domain") or "")
+            if not domain:
+                continue
+            if domain_contexts.get(domain, TASK_CONTEXT_UNKNOWN) != TASK_CONTEXT_UNKNOWN:
+                continue
+            site_seconds[domain] = site_seconds.get(domain, 0.0) + max(
+                0.0, float(segment.get("duration_s", 0.0))
+            )
+
+        items = [
+            UnclassifiedItem(
+                kind="app",
+                key=process,
+                display=_display_process_name(process),
+                minutes=round(seconds / 60),
+            )
+            for process, seconds in app_seconds.items()
+        ] + [
+            UnclassifiedItem(
+                kind="site",
+                key=domain,
+                display=domain,
+                minutes=round(seconds / 60),
+            )
+            for domain, seconds in site_seconds.items()
+        ]
+        items = [item for item in items if item.minutes >= 1]
+        # Ties keep the deterministic order of the accumulation above (first
+        # seen first), so the same range always renders the same list.
+        items.sort(key=lambda item: -item.minutes)
+        return items[: max(0, limit)]
 
     async def _previous_task_context(
         self, user_id: int, start: datetime

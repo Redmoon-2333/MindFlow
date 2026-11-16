@@ -30,6 +30,7 @@ from mindflow.agents.langchain_tools import (
     make_get_latest_analysis,
     make_query_evidence,
     make_query_interventions,
+    make_query_period_review,
     make_run_panel,
 )
 from mindflow.agents.llm_gateway import DeepSeekGateway
@@ -43,6 +44,7 @@ from mindflow.graph.chat_graph import (
 from mindflow.graph.tools import (
     InterventionHistoryTool,
     LatestAnalysisTool,
+    PeriodReviewTool,
     QueryEvidenceTool,
     RunAnalysisTool,
 )
@@ -149,6 +151,7 @@ class ChatService:
         timezone: TimezoneLike | None = None,
         provider_registry: Any | None = None,
         chat_graph: ChatGraph | None = None,
+        period_review_service: Any | None = None,
     ) -> None:
         self._chat_repo = chat_repo or ChatRepository(session_factory=session_factory)
         settings = get_settings()
@@ -192,6 +195,18 @@ class ChatService:
             intervention_adapter,
         ]
 
+        # The period-review tool needs the review service, which itself needs
+        # the prediction service and the reminder repository; it is optional so
+        # a ChatService built in a test (or before the review service exists)
+        # keeps working without the tool.
+        period_adapter: PeriodReviewTool | None = None
+        if period_review_service is not None:
+            period_adapter = PeriodReviewTool(
+                period_review_service=period_review_service,
+                timezone=self._timezone,
+            )
+            self._tool_adapters.append(period_adapter)
+
         # ── Build LangChain tools from adapters ───────────────────────────────
         tools: list[BaseTool] = [
             make_query_evidence(evidence_adapter),
@@ -199,6 +214,8 @@ class ChatService:
             make_run_panel(panel_adapter),
             make_query_interventions(intervention_adapter),
         ]
+        if period_adapter is not None:
+            tools.append(make_query_period_review(period_adapter))
 
         # ── Build LangChain model ───────────────────────────────────────────
         # Read api_key/base_url from the injected gateway's state (E2E finding:

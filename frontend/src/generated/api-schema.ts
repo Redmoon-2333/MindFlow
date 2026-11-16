@@ -554,6 +554,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reports/period-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Period Review
+         * @description Summarise the last 3 / 7 / 14 local days.
+         *
+         *     The facts come from re-scoring the stored 5-minute windows; the narrative is
+         *     AI-written only when asked for *and* the data supports it, and falls back to
+         *     the local template otherwise (``narrative.fallback_reason`` says why).
+         *
+         *     ``user_id`` is fixed to 1, like the daily and weekly routes.
+         */
+        post: operations["post_period_review_api_v1_reports_period_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analytics/patterns": {
         parameters: {
             query?: never;
@@ -992,6 +1018,46 @@ export interface paths {
          * @description Update one task; omitted fields keep their stored values.
          */
         patch: operations["update_task_api_v1_tasks__task_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/task-context/unclassified": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Unclassified
+         * @description Apps and sites the classifier could not place in the last *days* days.
+         */
+        get: operations["list_unclassified_api_v1_task_context_unclassified_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/task-context/assign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assign Task Context
+         * @description Save a permanent rule for *body.key* and queue a 14-day recompute.
+         */
+        post: operations["assign_task_context_api_v1_task_context_assign_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/chat/sessions/{session_id}": {
@@ -1712,6 +1778,20 @@ export interface components {
             message?: string | null;
         };
         /**
+         * ContextMinutes
+         * @description Minutes attributed to one task-context category.
+         */
+        ContextMinutes: {
+            /** Context */
+            context: string;
+            /** Label */
+            label: string;
+            /** Minutes */
+            minutes: number;
+            /** Share */
+            share: number;
+        };
+        /**
          * CreateTrainingJobResponse
          * @description 202 response after a training job is accepted.
          */
@@ -1734,7 +1814,7 @@ export interface components {
             api_key: string;
             /**
              * Service
-             * @default deepseek
+             * @default ecnu
              * @enum {string}
              */
             service: "deepseek" | "ecnu";
@@ -1818,6 +1898,41 @@ export interface components {
             data_state: "ready" | "no_activity" | "events_only" | "neutral_only" | "no_focus" | "future";
         };
         /**
+         * DailyStat
+         * @description One local calendar day; always present, zeros when nothing was recorded.
+         */
+        DailyStat: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Active Minutes */
+            active_minutes: number;
+            /** Distracted Minutes */
+            distracted_minutes: number;
+            /** Episodes */
+            episodes: number;
+            /** Top Context */
+            top_context: string;
+            /** Top Context Label */
+            top_context_label: string;
+        };
+        /**
+         * DaypartStat
+         * @description Distraction in one part of the day.
+         */
+        DaypartStat: {
+            /** Daypart */
+            daypart: string;
+            /** Label */
+            label: string;
+            /** Episodes */
+            episodes: number;
+            /** Distracted Minutes */
+            distracted_minutes: number;
+        };
+        /**
          * DeviationBucket
          * @description The (hour, weekday) bucket the deviation was measured against.
          *
@@ -1898,6 +2013,28 @@ export interface components {
             has_more: boolean;
             /** Next Offset */
             next_offset?: number | null;
+        };
+        /**
+         * EpisodeSummary
+         * @description How often, how long on average, and how long at worst.
+         */
+        EpisodeSummary: {
+            /** Count */
+            count: number;
+            /** Avg Minutes */
+            avg_minutes: number;
+            /** Longest Minutes */
+            longest_minutes: number;
+        };
+        /**
+         * EvidenceRef
+         * @description A digest fact a narrative sentence is allowed to cite.
+         */
+        EvidenceRef: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
         };
         /**
          * Explanation
@@ -2192,6 +2329,24 @@ export interface components {
              */
             source: "auto" | "human";
         };
+        /**
+         * InterventionSummary
+         * @description Reminder counts by response and by reason.
+         */
+        InterventionSummary: {
+            /** Total */
+            total: number;
+            /** Accepted */
+            accepted: number;
+            /** Ignored */
+            ignored: number;
+            /** Dismissed */
+            dismissed: number;
+            /** Pending */
+            pending: number;
+            /** By Reason */
+            by_reason?: components["schemas"]["ReasonCount"][];
+        };
         /** InterventionTriggerRequest */
         InterventionTriggerRequest: {
             /**
@@ -2226,6 +2381,88 @@ export interface components {
             configured: boolean;
             /** Ollama Enabled */
             ollama_enabled: boolean;
+        };
+        /**
+         * ModelInfo
+         * @description Which classifier produced the numbers (``None`` when none is loaded).
+         */
+        ModelInfo: {
+            /** Version */
+            version: string | null;
+            /** Is Base Model */
+            is_base_model: boolean;
+        };
+        /**
+         * ModelSignal
+         * @description One behavioural signal the model used to separate distraction.
+         */
+        ModelSignal: {
+            /** Feature */
+            feature: string;
+            /** Label */
+            label: string;
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "higher" | "lower" | "similar";
+            /** Distracted Mean */
+            distracted_mean: number;
+            /** Focused Mean */
+            focused_mean: number;
+        };
+        /**
+         * Narrative
+         * @description The written summary — AI-generated or from the local template.
+         */
+        Narrative: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "ai" | "template";
+            /** Headline */
+            headline: string;
+            /** Findings */
+            findings?: components["schemas"]["NarrativeFinding"][];
+            /** Suggestions */
+            suggestions?: components["schemas"]["NarrativeSuggestion"][];
+            /** Papers */
+            papers?: components["schemas"]["NarrativePaper"][];
+            /** Fallback Reason */
+            fallback_reason?: ("AI 未配置" | "AI 响应超时" | "AI 调用失败" | "AI 输出未通过校验") | null;
+        };
+        /**
+         * NarrativeFinding
+         * @description One sentence of the summary plus the digest facts behind it.
+         */
+        NarrativeFinding: {
+            /** Text */
+            text: string;
+            /** Evidence */
+            evidence?: components["schemas"]["EvidenceRef"][];
+        };
+        /**
+         * NarrativePaper
+         * @description A literature passage the summary actually cited.
+         */
+        NarrativePaper: {
+            /** Chunk Id */
+            chunk_id: string;
+            /** Title */
+            title: string;
+            /** Pages */
+            pages?: number[];
+        };
+        /**
+         * NarrativeSuggestion
+         * @description One next step, optionally grounded in retrieved literature.
+         */
+        NarrativeSuggestion: {
+            /** Text */
+            text: string;
+            /** Paper Ids */
+            paper_ids?: string[];
         };
         /**
          * NodeEventSummary
@@ -2363,6 +2600,113 @@ export interface components {
             /** Items */
             items?: components["schemas"]["FeedbackRequestModel"][];
         };
+        /**
+         * PeriodDigest
+         * @description The complete, privacy-safe fact sheet for one review span.
+         */
+        PeriodDigest: {
+            period: components["schemas"]["PeriodRange"];
+            /**
+             * Data State
+             * @enum {string}
+             */
+            data_state: "ready" | "insufficient" | "no_model";
+            model: components["schemas"]["ModelInfo"];
+            totals: components["schemas"]["PeriodTotals"];
+            episodes: components["schemas"]["EpisodeSummary"];
+            /** Work Mix */
+            work_mix?: components["schemas"]["ContextMinutes"][];
+            /** Distraction By Context */
+            distraction_by_context?: components["schemas"]["ContextMinutes"][];
+            /** Distraction By Daypart */
+            distraction_by_daypart?: components["schemas"]["DaypartStat"][];
+            /** Daily */
+            daily?: components["schemas"]["DailyStat"][];
+            /** Model Signals */
+            model_signals?: components["schemas"]["ModelSignal"][];
+            interventions: components["schemas"]["InterventionSummary"];
+        };
+        /**
+         * PeriodRange
+         * @description The reviewed local-date span.
+         */
+        PeriodRange: {
+            /**
+             * Start Date
+             * Format: date
+             */
+            start_date: string;
+            /**
+             * End Date
+             * Format: date
+             */
+            end_date: string;
+            /** Days */
+            days: number;
+        };
+        /**
+         * PeriodReviewRequest
+         * @description Ask for a period review over the last 3, 7 or 14 local days.
+         */
+        PeriodReviewRequest: {
+            /**
+             * Days
+             * @default 7
+             * @enum {integer}
+             */
+            days: 3 | 7 | 14;
+            /**
+             * Use Ai
+             * @default true
+             */
+            use_ai: boolean;
+        };
+        /**
+         * PeriodReviewResponse
+         * @description The digest, the exact payload sent to the AI, and the written summary.
+         *
+         *     ``llm_payload`` is the compact JSON that went to the model (or would have,
+         *     when ``use_ai`` was false) — the UI shows it verbatim so the privacy claim
+         *     is inspectable.
+         */
+        PeriodReviewResponse: {
+            digest: components["schemas"]["PeriodDigest"];
+            /** Llm Payload */
+            llm_payload: string;
+            /** Ai Requested */
+            ai_requested: boolean;
+            narrative: components["schemas"]["Narrative"];
+            /** Generated At */
+            generated_at: string;
+        };
+        /**
+         * PeriodTotals
+         * @description Minute totals over the whole span.
+         */
+        PeriodTotals: {
+            /** Active Minutes */
+            active_minutes: number;
+            /** Focused Minutes */
+            focused_minutes: number;
+            /** Distracted Minutes */
+            distracted_minutes: number;
+            /** Distracted Share */
+            distracted_share: number;
+            /** Days With Data */
+            days_with_data: number;
+        };
+        /**
+         * ReasonCount
+         * @description How often one procrastination type was the stated reason.
+         */
+        ReasonCount: {
+            /** Type */
+            type: string;
+            /** Label */
+            label: string;
+            /** Count */
+            count: number;
+        };
         /** RenameChatRequest */
         RenameChatRequest: {
             /** Title */
@@ -2447,6 +2791,42 @@ export interface components {
             status: "ok";
             /** Task Id */
             task_id: string;
+        };
+        /**
+         * TaskContextAssignRequest
+         * @description Remember what an unrecognised app or site is used for.
+         */
+        TaskContextAssignRequest: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "app" | "site";
+            /** Key */
+            key: string;
+            /**
+             * Context
+             * @enum {string}
+             */
+            context: "coding" | "writing" | "reading" | "meeting" | "entertainment" | "social";
+        };
+        /**
+         * TaskContextAssignResponse
+         * @description Acknowledgement: the rule is saved, the 14-day recompute is queued.
+         */
+        TaskContextAssignResponse: {
+            /**
+             * Saved
+             * @default true
+             * @constant
+             */
+            saved: true;
+            /**
+             * Recompute
+             * @default started
+             * @constant
+             */
+            recompute: "started";
         };
         /**
          * TaskCreateRequest
@@ -2729,6 +3109,31 @@ export interface components {
             /** Blockers */
             blockers: components["schemas"]["Blocker"][];
             current_training_job: components["schemas"]["TrainingJobSummary"] | null;
+        };
+        /**
+         * UnclassifiedItemResponse
+         * @description One unrecognised app or site, with the time it accounts for.
+         */
+        UnclassifiedItemResponse: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "app" | "site";
+            /** Key */
+            key: string;
+            /** Display */
+            display: string;
+            /** Minutes */
+            minutes: number;
+        };
+        /**
+         * UnclassifiedItemsResponse
+         * @description Unclassified listing envelope.
+         */
+        UnclassifiedItemsResponse: {
+            /** Items */
+            items: components["schemas"]["UnclassifiedItemResponse"][];
         };
         /**
          * V2GateCheck
@@ -3641,6 +4046,39 @@ export interface operations {
             };
         };
     };
+    post_period_review_api_v1_reports_period_review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PeriodReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PeriodReviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_patterns_api_v1_analytics_patterns_get: {
         parameters: {
             query?: {
@@ -4288,6 +4726,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_unclassified_api_v1_task_context_unclassified_get: {
+        parameters: {
+            query?: {
+                /** @description 回顾天数 */
+                days?: 3 | 7 | 14;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnclassifiedItemsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assign_task_context_api_v1_task_context_assign_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskContextAssignRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskContextAssignResponse"];
                 };
             };
             /** @description Validation Error */

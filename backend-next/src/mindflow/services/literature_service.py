@@ -61,6 +61,10 @@ _ROLE_QUERIES: dict[str, str] = {
     "批评家": "citation evidence attribution multiagent discussion",
     "intervention": "intervention receptivity fatigue goal intention",
     "attribution": "procrastination task intention cognitive emotion regulation",
+    "period_review": (
+        "self-monitoring reflection interruption resumption goal intention "
+        "procrastination"
+    ),
 }
 _ROLE_ALIASES = {"综合主持人": "会诊综合主持人"}
 
@@ -235,6 +239,16 @@ def retrieve_literature(
             roles = row.get("roles", [])
             eligible = role in roles or "all" in roles
             if role == "chat":
+                eligible = eligible or "development" in roles
+            if role == "period_review":
+                # No packaged passage is tagged for this role; the general
+                # mechanism passages chat may cite are the right pool for a
+                # reflection/interruption review too.
+                eligible = eligible or "development" in roles
+            if role == "period_review":
+                # No packaged passage is tagged for this role; the general
+                # mechanism passages chat may cite are the right pool for a
+                # reflection/interruption review too.
                 eligible = eligible or "development" in roles
             if role == "attribution":
                 eligible = eligible or bool(

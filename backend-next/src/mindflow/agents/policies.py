@@ -49,6 +49,7 @@ ROLE_REBUTTAL = "rebuttal"
 ROLE_MODERATOR = "moderator"
 ROLE_CRITIC = "critic"
 ROLE_CHAT = "chat"
+ROLE_PERIOD_REVIEW = "period_review"
 
 #: Minimum ``max_tokens`` for a DeepSeek request that enables thinking mode.
 #: Thinking tokens count against the cap, so a cap sized for the answer alone
@@ -224,6 +225,17 @@ CHAT_POLICY: CompletionPolicy = CompletionPolicy(
     node="chat",
 )
 
+#: Period review ("阶段总结") narration. Independent of the panel like chat:
+#: one call, no tools, low reasoning effort, a small output ceiling because the
+#: answer is a headline plus at most four short findings.
+PERIOD_REVIEW_POLICY: CompletionPolicy = CompletionPolicy(
+    role=ROLE_PERIOD_REVIEW,
+    reasoning_effort="low",
+    max_output_tokens=4096,
+    intent="只根据阶段统计写复盘，不推测具体内容",
+    node="period_review",
+)
+
 #: The plan's table, keyed by canonical role.
 POLICIES: Mapping[str, CompletionPolicy] = {
     ROLE_ANALYST: ANALYST_POLICY,
@@ -307,6 +319,7 @@ __all__ = [
     "CompletionPolicy",
     "EMOTION_POLICY",
     "MODERATOR_POLICY",
+    "PERIOD_REVIEW_POLICY",
     "POLICIES",
     "REBUTTAL_POLICY",
     "ROLE_ANALYST",
@@ -314,6 +327,7 @@ __all__ = [
     "ROLE_CHAT",
     "ROLE_CRITIC",
     "ROLE_MODERATOR",
+    "ROLE_PERIOD_REVIEW",
     "ROLE_REBUTTAL",
     "TMT_POLICY",
     "policy_for_expert",
